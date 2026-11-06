@@ -12,6 +12,7 @@ import {
   type LinkStatus,
 } from "@/lib/protocolV1/managedConnection";
 import type { WorkerClient } from "@/lib/protocolV1/client";
+import { WorkerProtocolError, AUTH_UNTRUSTED } from "@/lib/protocolV1/errors";
 import type { TransportKind } from "@/lib/protocolV1/transport";
 
 /** Minimal WorkerClient stand-in: just the surface ManagedConnection touches. */
@@ -455,5 +456,81 @@ describe("route choice after the fallback window", () => {
 
     expect(conn.route).toBe("ws");
     conn.stop();
+  });
+
+  describe("unpaired by the worker (auth.untrusted)", () => {
+    const untrusted = () => new WorkerProtocolError(AUTH_UNTRUSTED, "not paired");
+
+    it("a reconnect refused as untrusted stops retrying and reports 'unpaired'", async () => {
+      const clock = makeClock();
+      const first = new FakeClient();
+      const { dial, calls } = makeDialQueue([
+        { ok: true, client: first },
+        { ok: false, error: untrusted() },
+      ]);
+      const { log, onStatus } = statusLog();
+      const mc = new ManagedConnection({
+        dial,
+        preferredRoute: "ws",
+        canFallBackToIroh: false,
+        onStatus,
+        onConnected: () => {},
+        now: clock.now,
+        sleep: clock.sleep,
+      });
+
+      await mc.start();
+      first.simulateDrop();
+      await waitUntil(() => log.some(([s]) => s === "unpaired"));
+      await flushMicrotasks();
+
+      expect(calls).toEqual(["ws", "ws"]);
+      expect(mc.client).toBeNull();
+      expect(log).toEqual([
+        ["connected", "ws"],
+        ["reconnecting", "ws"],
+        ["unpaired", "ws"],
+      ]);
+    });
+
+    it("start() refused as untrusted reports 'unpaired' and still throws", async () => {
+      const { dial } = makeDialQueue([{ ok: false, error: untrusted() }]);
+      const { log, onStatus } = statusLog();
+      const mc = new ManagedConnection({
+        dial,
+        preferredRoute: "ws",
+        canFallBackToIroh: false,
+        onStatus,
+        onConnected: () => {},
+      });
+
+      await expect(mc.start()).rejects.toThrow("not paired");
+      expect(log).toEqual([["unpaired", "ws"]]);
+    });
+
+    it("other dial failures keep retrying as before", async () => {
+      const clock = makeClock();
+      const first = new FakeClient();
+      const second = new FakeClient();
+      const { dial } = makeDialQueue([
+        { ok: true, client: first },
+        { ok: false, error: new Error("down") },
+        { ok: true, client: second },
+      ]);
+      const { log, onStatus } = statusLog();
+      const mc = new ManagedConnection({
+        dial,
+        preferredRoute: "ws",
+        canFallBackToIroh: false,
+        onStatus,
+        onConnected: () => {},
+        now: clock.now,
+        sleep: clock.sleep,
+      });
+      await mc.start();
+      first.simulateDrop();
+      await waitUntil(() => mc.client === (second as unknown as WorkerClient));
+      expect(log.some(([s]) => s === "unpaired")).toBe(false);
+    });
   });
 });

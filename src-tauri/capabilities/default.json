@@ -19,7 +19,11 @@
     "fs:allow-rename",
     {
       "identifier": "fs:scope",
-      "allow": [{ "path": "**" }, { "path": "$HOME/.sleap-rtc/**" }]
+      "allow": [
+        { "path": "**" },
+        { "path": "$HOME/.sleap-connect/**" },
+        { "path": "$HOME/.sleap-rtc/**" }
+      ]
     },
     "dialog:default",
     "dialog:allow-open",
@@ -40,6 +44,7 @@
         { "name": "binaries/ffprobe", "sidecar": true, "args": true }
       ]
     },
+    "shell:allow-kill",
     "updater:default",
     "process:default",
     "core:window:allow-close",

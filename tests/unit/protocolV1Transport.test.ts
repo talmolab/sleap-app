@@ -32,7 +32,7 @@ describe("toIrohDialTarget / transportLabel", () => {
   });
 
   it("labels both transports", () => {
-    expect(transportLabel("ws")).toBe("WebSocket");
-    expect(transportLabel("iroh")).toBe("iroh (direct)");
+    expect(transportLabel("ws")).toBe("local network");
+    expect(transportLabel("iroh")).toBe("internet (direct or relay)");
   });
 });

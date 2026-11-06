@@ -291,6 +291,15 @@ export async function upgradeUvTool(
   await streamingInvoke("upgrade_uv_tool", { package: pkg }, onEvent);
 }
 
+/** Uninstall a uv tool via `uv tool uninstall`. */
+export async function uninstallUvTool(
+  pkg: string,
+  onEvent: (event: ProcessEvent) => void
+): Promise<void> {
+  if (!isTauri) return;
+  await streamingInvoke("uninstall_uv_tool", { package: pkg }, onEvent);
+}
+
 /** Update uv itself via `uv self update`. */
 export async function updateUv(
   onEvent: (event: ProcessEvent) => void
@@ -435,6 +444,7 @@ export async function runTraining(
   runName: string,
   onEvent: (event: ProcessEvent) => void,
   modelDir?: string,
+  dryRun = false,
 ): Promise<{ success: boolean; command: string; modelPath: string }> {
   if (!isTauri) {
     console.warn("Training is only available in Tauri desktop mode");
@@ -466,6 +476,7 @@ export async function runTraining(
     labelsPath,
     runName,
     ckptDir,
+    dryRun,
   });
 
   const command = `sleap-nn ${args.join(" ")}`;

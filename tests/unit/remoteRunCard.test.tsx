@@ -49,7 +49,7 @@ describe("RemoteRunCard", () => {
       />,
     );
     expect(screen.getByText("GPU Box")).toBeInTheDocument();
-    expect(screen.getByText(/via WebSocket/i)).toBeInTheDocument();
+    expect(screen.getByText(/via local network/i)).toBeInTheDocument();
   });
 
   it("shows Reconnecting… when the connection drops mid-run", () => {

@@ -11,6 +11,7 @@ import { tinykeys } from "tinykeys";
 import { DEFAULT_SHORTCUTS, STEP_SIZES } from "../lib/shortcuts";
 import { useAppStore } from "../stores/appStore";
 import { Track } from "@talmolab/sleap-io.js";
+import { confirmDeleteInstanceAndTrack } from "@/lib/trackDeleteConfirms";
 import { quitApp } from "../lib/quit";
 import { openNewInstance } from "../lib/newInstance";
 import { dismiss, toast } from "../lib/notify";
@@ -45,6 +46,23 @@ import {
   PasteTrack,
   DeleteInstanceAndTrack,
 } from "../commands";
+import { requestToggleNegativeFrame } from "@/lib/negativeFrame";
+import { isNativeMenuShortcut } from "@/lib/menu/nativeMenuOwnership";
+
+type Bindings = Record<string, (e: KeyboardEvent) => void>;
+
+/** Each binding, skipped while the native menu owns its keystroke. */
+function leaveNativeMenuShortcuts(bindings: Bindings): Bindings {
+  return Object.fromEntries(
+    Object.entries(bindings).map(([binding, handler]) => [
+      binding,
+      (e: KeyboardEvent) => {
+        if (isNativeMenuShortcut(binding)) return;
+        handler(e);
+      },
+    ]),
+  );
+}
 
 function isTextInput(e: KeyboardEvent): boolean {
   const tag = (e.target as HTMLElement)?.tagName;
@@ -55,7 +73,9 @@ export function useKeyboardShortcuts() {
   useEffect(() => {
     const store = useAppStore.getState;
 
-    const unsubscribe = tinykeys(window, {
+    // On macOS desktop the native menu owns its ⌘ shortcuts: leave those to
+    // it (not preventDefault-ed, so the menu still gets the keystroke).
+    const unsubscribe = tinykeys(window, leaveNativeMenuShortcuts({
       // Frame navigation (direct store for responsiveness)
       [DEFAULT_SHORTCUTS["frame next"]]: (e) => {
         e.preventDefault();
@@ -169,7 +189,7 @@ export function useKeyboardShortcuts() {
         e.preventDefault();
         store().toggle("showEdges");
       },
-      [DEFAULT_SHORTCUTS["toggle node visibility"]]: (e) => {
+      [DEFAULT_SHORTCUTS["show non-visible nodes"]]: (e) => {
         if (isTextInput(e)) return;
         e.preventDefault();
         store().toggle("showNonVisibleNodes");
@@ -191,7 +211,14 @@ export function useKeyboardShortcuts() {
         store().toggle("defaultToPan");
       },
 
-      // Toggle place mode (N key)
+      // Mark Frame as Negative (N, as in SLEAP) — asks first if it would remove instances.
+      [DEFAULT_SHORTCUTS["mark negative"]]: (e) => {
+        if (isTextInput(e)) return;
+        e.preventDefault();
+        void requestToggleNegativeFrame();
+      },
+
+      // Toggle place mode (Shift+N)
       [DEFAULT_SHORTCUTS["toggle place mode"]]: (e) => {
         if (isTextInput(e)) return;
         e.preventDefault();
@@ -248,9 +275,9 @@ export function useKeyboardShortcuts() {
         e.preventDefault();
         commandContext.execute(AddTrack);
       },
-      [DEFAULT_SHORTCUTS["delete track"]]: (e) => {
+      [DEFAULT_SHORTCUTS["delete track"]]: async (e) => {
         e.preventDefault();
-        if (confirm("Delete this instance and its track?")) {
+        if (await confirmDeleteInstanceAndTrack()) {
           commandContext.execute(DeleteInstanceAndTrack);
         }
       },
@@ -463,7 +490,7 @@ export function useKeyboardShortcuts() {
         const prev = labels.videos[(idx - 1 + labels.videos.length) % labels.videos.length];
         if (prev) store().setVideo(prev);
       },
-    });
+    }));
 
     // Suggestion navigation fires on Space/Shift+Space *release*, not press,
     // and only if no pan-drag happened while Space was held (see

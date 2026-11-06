@@ -16,6 +16,7 @@ import type { LinkStatus } from "@/lib/protocolV1/managedConnection";
 import { transportLabel, type TransportKind } from "@/lib/protocolV1/transport";
 import { useConnectStore } from "@/stores/connectStore";
 import { PairWorkerForm } from "./PairWorkerForm";
+import { forgetWorkerWithConfirm } from "./forgetWorker";
 
 export type WorkerStatusBucket = "idle" | "busy" | "offline";
 
@@ -24,6 +25,8 @@ export interface WorkerStatusInfo {
   dotClass: string;
   label: string;
   identityMismatch: boolean;
+  /** The worker refused this device as no longer paired (removed there). */
+  unpaired?: boolean;
 }
 
 const IDENTITY_MISMATCH_MARKER = "identified itself as a different node";
@@ -33,7 +36,17 @@ export function classifyWorkerStatus(
   connection: { status: LinkStatus; route: TransportKind } | undefined,
   error: string | null | undefined,
   busy: boolean | undefined,
+  unpaired = false,
 ): WorkerStatusInfo {
+  if (unpaired || connection?.status === "unpaired") {
+    return {
+      bucket: "offline",
+      dotClass: "bg-red-500",
+      label: "Unpaired",
+      identityMismatch: false,
+      unpaired: true,
+    };
+  }
   if (error?.includes(IDENTITY_MISMATCH_MARKER)) {
     return {
       bucket: "offline",
@@ -95,7 +108,12 @@ export function WorkerList({ selectedId, onSelect }: WorkerListProps) {
     for (const w of pairedWorkers) {
       map.set(
         w.nodeId,
-        classifyWorkerStatus(connections[w.nodeId], workerErrors[w.nodeId], workerInfo[w.nodeId]?.busy),
+        classifyWorkerStatus(
+          connections[w.nodeId],
+          workerErrors[w.nodeId],
+          workerInfo[w.nodeId]?.busy,
+          !!w.unpairedAt,
+        ),
       );
     }
     return map;
@@ -138,14 +156,14 @@ export function WorkerList({ selectedId, onSelect }: WorkerListProps) {
 
       {pairedWorkers.length === 0 ? (
         <div className="p-3 space-y-1.5 text-[11px] text-muted-foreground">
-          <p>No workers paired yet. On the machine you want to train/infer on:</p>
+          <p>No workers paired yet. On the machine you want to train/infer on, in your data folder:</p>
           <code className="block bg-black/30 px-1.5 py-1 rounded font-mono text-[10px]">
-            sleap-rtc serve --daemonize
+            sleap-connect serve
           </code>
-          <code className="block bg-black/30 px-1.5 py-1 rounded font-mono text-[10px]">
-            sleap-rtc pair
-          </code>
-          <p>Then paste the one-line code it prints below.</p>
+          <p>
+            Then paste the pairing code it prints below (for a new one:{" "}
+            <code className="font-mono">sleap-connect pair</code>).
+          </p>
         </div>
       ) : (
         <>
@@ -215,13 +233,40 @@ export function WorkerList({ selectedId, onSelect }: WorkerListProps) {
                       </Button>
                     </div>
                   )}
+                  {status.unpaired && repairingId !== w.nodeId && (
+                    <div className="px-2 space-y-1 text-[10px] text-red-400">
+                      <p>
+                        This device was unpaired by {w.label}. Ask for a new code
+                        (<code className="font-mono">sleap-connect pair</code>) to use it again.
+                      </p>
+                      <div className="flex items-center gap-1.5">
+                        <Button
+                          size="xs"
+                          variant="outline"
+                          className="h-5 text-[10px]"
+                          onClick={() => setRepairingId(w.nodeId)}
+                        >
+                          Re-pair
+                        </Button>
+                        <Button
+                          size="xs"
+                          variant="ghost"
+                          className="h-5 text-[10px] text-muted-foreground"
+                          onClick={() => void forgetWorkerWithConfirm(w.nodeId)}
+                        >
+                          Forget
+                        </Button>
+                      </div>
+                    </div>
+                  )}
                   {repairingId === w.nodeId && (
                     <PairWorkerForm
                       showCancel
                       onPaired={() => {
-                        // The old (dead) identity's entry would otherwise
-                        // linger forever alongside the freshly-paired one.
-                        forgetWorker(w.nodeId);
+                        // A new identity is a new worker entry: the old (dead)
+                        // one would otherwise linger alongside it. An unpaired
+                        // worker re-pairs into its OWN entry — keep that.
+                        if (status.identityMismatch) void forgetWorker(w.nodeId);
                         setRepairingId(null);
                       }}
                       onCancel={() => setRepairingId(null)}

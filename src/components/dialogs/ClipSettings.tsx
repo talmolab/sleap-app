@@ -1,7 +1,9 @@
 /**
- * Per-video export settings for the focused video: start/end/fps/scale/background.
+ * Per-video export settings for the focused video: start/end/fps/scale/
+ * background, and whether frames without instances are written.
  * All settings are per-video (design); edits dispatch to the dialog's reducer.
  */
+import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import {
@@ -25,6 +27,7 @@ interface ClipSettingsProps {
   onFps: (fps: number) => void;
   onScale: (scale: number) => void;
   onBackground: (bg: ClipBackground) => void;
+  onIncludeUnlabeled: (include: boolean) => void;
 }
 
 export function ClipSettings({
@@ -34,6 +37,7 @@ export function ClipSettings({
   onFps,
   onScale,
   onBackground,
+  onIncludeUnlabeled,
 }: ClipSettingsProps) {
   const len = config.video.shape?.[0] ?? 0;
   const maxIdx = Math.max(0, len - 1);
@@ -117,6 +121,20 @@ export function ClipSettings({
           </SelectContent>
         </Select>
       </div>
+      <label
+        htmlFor="clip-include-unlabeled"
+        className="col-span-2 flex items-start gap-2 text-sm"
+        title="When off, only frames with labeled or predicted instances are written. When on, every frame in the range is written, with overlays where there are instances."
+      >
+        <Checkbox
+          id="clip-include-unlabeled"
+          checked={config.includeUnlabeled}
+          onCheckedChange={(v) => onIncludeUnlabeled(v === true)}
+          disabled={disabled}
+          className="mt-0.5"
+        />
+        Include unlabeled frames in range
+      </label>
     </div>
   );
 }

@@ -23,6 +23,8 @@ fn main() {
                     // file / native
                     "read_range",
                     "file_size",
+                    // native menu bar (macOS)
+                    "set_app_menu",
                     "write_open",
                     "write_open_append",
                     "write_at",
@@ -37,7 +39,9 @@ fn main() {
                     "window_set_file",
                     "read_image_file",
                     "reveal_in_file_manager",
+                    "open_in_default_app",
                     "open_preferences_directory",
+                    "computer_name",
                     // environment (uv / python / training)
                     "detect_uv",
                     "detect_gpu",
@@ -52,6 +56,7 @@ fn main() {
                     "install_python",
                     "install_uv_tool",
                     "upgrade_uv_tool",
+                    "uninstall_uv_tool",
                     "update_uv",
                     "install_uv",
                     "run_python_command",

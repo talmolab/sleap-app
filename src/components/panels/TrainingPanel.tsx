@@ -17,11 +17,13 @@ import { BackendPicker } from "@/components/common/BackendPicker";
 import { RemoteFileBrowser } from "@/components/dialogs/RemoteFileBrowser";
 import { TrainingConfigDialog } from "@/components/dialogs/TrainingConfigDialog";
 import { RemoteDataSummary } from "@/components/connect/RemoteDataSummary";
+import { RemoteOutputFolder } from "@/components/connect/RemoteOutputFolder";
 import { HiddenVideosDialog } from "@/components/connect/HiddenVideosDialog";
 import { RemoteRunCard } from "@/components/connect/RemoteRunCard";
 import { LossViewerDialog } from "@/components/monitors/LossViewerDialog";
 import { LogTerminalDialog } from "@/components/monitors/LogTerminalDialog";
 import { ErrorOutput } from "@/components/monitors/ErrorOutput";
+import { DryRunResult } from "@/components/panels/DryRunResult";
 import { useAppStore } from "@/stores/appStore";
 import { isTauri } from "@/platform/index";
 import { getBaselineProfilesForHead, slotToHeadType } from "@/lib/trainingProfiles";
@@ -29,6 +31,7 @@ import { computeInstanceSizeStats, hasUserLabeledInstances, recommendBackbonePro
 import type { DiscoveredModel } from "@/lib/modelDiscovery";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { NumberInput } from "@/components/NumberInput";
 import { Separator } from "@/components/ui/separator";
 import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
@@ -50,6 +53,7 @@ import {
   ChevronDown,
   ChevronRight,
   ExternalLink,
+  FlaskConical,
   Folder,
   Square,
   Settings2,
@@ -643,11 +647,10 @@ function HyperparamsFields({
           Max Epochs
           <HelpTooltip text="Maximum number of epochs to train for. Training can be stopped manually or automatically if early stopping is enabled and a plateau is detected." />
         </span>
-        <Input
-          type="number"
+        <NumberInput min={1} max={1000} integer
           value={hp.maxEpochs}
-          onChange={(e) => onUpdate(slot, { maxEpochs: Number(e.target.value) })}
-          min={1}
+          onCommit={(n) => onUpdate(slot, { maxEpochs: n })}
+
           className="h-6 text-[10px] w-20"
           disabled={disabled}
         />
@@ -658,12 +661,11 @@ function HyperparamsFields({
           Batch Size
           <HelpTooltip text="Number of examples per minibatch. Higher numbers can increase generalization by averaging gradient updates over more examples, at the cost of more GPU memory. Lower numbers may lead to overfitting but can help optimization with few varied examples." />
         </span>
-        <Input
-          type="number"
+        <NumberInput min={1} max={512} integer
           value={hp.batchSize}
-          onChange={(e) => onUpdate(slot, { batchSize: Number(e.target.value) })}
-          min={1}
-          max={128}
+          onCommit={(n) => onUpdate(slot, { batchSize: n })}
+
+
           className="h-6 text-[10px] w-20"
           disabled={disabled}
         />
@@ -726,6 +728,9 @@ export function TrainingPanel() {
   const wandbUrl = useTrainingStore((s) => s.wandbUrl);
   const modelOutputDirs = useTrainingStore((s) => s.modelOutputDirs);
   const postTrainingInference = useTrainingStore((s) => s.postTrainingInference);
+  // Training is over once post-training inference runs: Stop Early has
+  // nothing to stop (it would just end the inference job), so only Cancel.
+  const inferenceRunning = postTrainingInference?.status === "running";
   const fetchAndLoadPostTrainingPredictions = useTrainingStore((s) => s.fetchAndLoadPostTrainingPredictions);
   const [fetchingPredictions, setFetchingPredictions] = useState(false);
   const openExport = useExportStore((s) => s.openExport);
@@ -758,11 +763,15 @@ export function TrainingPanel() {
   const startTraining = useTrainingStore((s) => s.startTraining);
   const stopTraining = useTrainingStore((s) => s.stopTraining);
   const cancelTraining = useTrainingStore((s) => s.cancelTraining);
+  const dryRun = useTrainingStore((s) => s.dryRun);
+  const startDryRun = useTrainingStore((s) => s.startDryRun);
+  const dryRunning = dryRun?.status === "running";
   const reset = useTrainingStore((s) => s.reset);
   const resetSeq = useTrainingStore((s) => s.resetSeq);
   const { parseYamlConfig: parseConfig, addConfigFile: addConfig } = useTrainingStore();
   const [discoveredModels, setDiscoveredModels] = useState<DiscoveredModel[]>([]);
   const projectPath = useAppStore((s) => s.projectPath);
+  const filename = useAppStore((s) => s.filename);
   const tutorialActive = useAppStore((s) => s.tutorialActive);
   const tutorialSteps = useAppStore((s) => s.tutorialSteps);
   const tutorialStepIndex = useAppStore((s) => s.tutorialStepIndex);
@@ -874,16 +883,13 @@ export function TrainingPanel() {
         if (source) {
           const parsed = parseConfig(source.yamlText, source.filename, slot, source.checkpointPath);
           if (parsed) {
-            // Fresh baseline configs start in Auto mode for max_stride (see
-            // recommendMaxStride in modelStats.ts) rather than inheriting the
-            // preset's fixed value. A trained run's own max_stride is always
-            // honored as-is. The centroid head's input scale similarly starts
-            // from the size-derived recommendation instead of the baseline's
-            // static 0.5, for a small-in-frame animal (see
-            // recommendCentroidScale in modelStats.ts).
+            // Fresh baseline configs keep the preset's fixed max_stride, as in
+            // SLEAP (Auto is opt-in; see recommendMaxStride in modelStats.ts).
+            // The centroid head's input scale starts from the size-derived
+            // recommendation instead of the baseline's static 0.5, for a
+            // small-in-frame animal (see recommendCentroidScale in modelStats.ts).
             const hyperparams = { ...parsed.hyperparams };
             if (source.source === "baseline") {
-              hyperparams.maxStride = null;
               if (slot === "centroid" && centroidScaleRecommendation) {
                 hyperparams.scale = centroidScaleRecommendation.scale;
               }
@@ -932,6 +938,8 @@ export function TrainingPanel() {
   // Latest visibility check from RemoteDataSummary, lifted here so Start (and
   // the pre-submit hidden-videos dialog) can use it without recomputing.
   const [visibility, setVisibility] = useState<VideoVisibility[] | null>(null);
+  // "This window" runs: the worker folder for models + predictions (RemoteOutputFolder).
+  const [remoteOutputDir, setRemoteOutputDir] = useState<string | null>(null);
   const [hiddenDialogOpen, setHiddenDialogOpen] = useState(false);
   const [inferenceTarget, setInferenceTarget] = useState<string>("suggestions");
   const [sampleCount, setSampleCount] = useState(20);
@@ -1031,6 +1039,21 @@ export function TrainingPanel() {
   }, [log.length]);
 
   const isRunning = status === "running";
+
+  // Predict ▸ Training… asks for the Full Configuration window too: open it
+  // once there's a configuration to show (the recommended model type is
+  // picked for a freshly loaded project), and not over a running job.
+  const configDialogRequest = useAppStore((s) => s.configDialogRequest);
+  useEffect(() => {
+    if (configDialogRequest !== "training") return;
+    if (labels == null || isRunning) {
+      useAppStore.getState().set("configDialogRequest", null);
+      return;
+    }
+    if (config.configs.length === 0) return; // not picked yet: wait for it
+    useAppStore.getState().set("configDialogRequest", null);
+    setConfigDialogOpen(true);
+  }, [configDialogRequest, labels, isRunning, config.configs.length]);
   const isDone =
     status === "completed" || status === "error" || status === "stopped";
 
@@ -1138,6 +1161,7 @@ export function TrainingPanel() {
       // recomputes it itself (via checkVideoVisibility) if still unknown.
       visibility: visibility ?? undefined,
       embedFramesToPredict,
+      outputDir: remoteOutputDir ?? undefined,
       valLabelsPath: remoteValLabelsPath || undefined,
       inferenceTarget,
       sampleCount,
@@ -1297,7 +1321,7 @@ export function TrainingPanel() {
                 >
                   <label className="flex items-center gap-1.5 text-xs cursor-pointer">
                     <RadioGroupItem value="window" id="labels-source-window" disabled={isRunning} />
-                    This window ({projectTag(projectPath).name})
+                    This window ({projectPath ? projectTag(projectPath).name : (filename ?? "untitled.slp")})
                   </label>
                   <label className="flex items-center gap-1.5 text-xs cursor-pointer">
                     <RadioGroupItem value="worker-file" id="labels-source-worker-file" disabled={isRunning} />
@@ -1335,6 +1359,14 @@ export function TrainingPanel() {
                     onResult={setVisibility}
                   />
                 )}
+                <RemoteOutputFolder
+                  workerId={selectedWorkerId}
+                  labelsSource={labelsSource}
+                  workerLabelsPath={remoteLabelsPath || undefined}
+                  projectPath={projectPath}
+                  filename={filename}
+                  onChange={setRemoteOutputDir}
+                />
               </div>
             ) : (
               <div className="flex gap-1">
@@ -1434,8 +1466,8 @@ export function TrainingPanel() {
                   Sample count
                   <HelpTooltip text="How many frames to randomly sample for post-training inference." />
                 </span>
-                <Input type="number" min={1} value={sampleCount}
-                  onChange={(e) => setSampleCount(Math.max(1, Number(e.target.value)))}
+                <NumberInput min={1} integer value={sampleCount}
+                  onCommit={(n) => setSampleCount(n)}
                   className="h-6 text-[10px] w-20" disabled={isRunning} />
               </div>
             )}
@@ -1588,15 +1620,32 @@ export function TrainingPanel() {
         )}
         {status === "idle" && (
           <>
-            <Button
-              className="w-full h-8 text-xs"
-              onClick={handleStart}
-              disabled={!canStart}
-              data-tutorial="start-training-button"
-            >
-              <Upload className="h-3.5 w-3.5 mr-1.5" />
-              {remoteEnabled ? "Start Remote Training" : "Start Training"}
-            </Button>
+            <div className="flex gap-2">
+              <Button
+                className="flex-1 h-8 text-xs"
+                onClick={handleStart}
+                disabled={!canStart || dryRunning}
+                data-tutorial="start-training-button"
+              >
+                <Upload className="h-3.5 w-3.5 mr-1.5" />
+                {remoteEnabled ? "Start Remote Training" : "Start Training"}
+              </Button>
+              {/* sleap-nn's --dry-run runs here, on this machine; a worker has
+                  no way to run one yet. */}
+              {isTauri && !remoteEnabled && (
+                <Button
+                  variant="outline"
+                  className="h-8 text-xs"
+                  onClick={() => startDryRun()}
+                  disabled={!canStart || dryRunning}
+                  title="Check the config and data first, in seconds: setup plus one training and one validation batch per model, with your settings. Also checks it can save to the model folder; nothing is kept."
+                >
+                  <FlaskConical className="h-3.5 w-3.5 mr-1.5" />
+                  Dry run
+                </Button>
+              )}
+            </div>
+            {dryRun && !remoteEnabled && <DryRunResult dryRun={dryRun} />}
             {!canStart && (
               <p className="text-[10px] text-muted-foreground text-center mt-1">
                 {!hasAllConfigs
@@ -1619,14 +1668,16 @@ export function TrainingPanel() {
 
         {isRunning && (
           <div className="flex gap-2">
-            <Button
-              variant="outline"
-              className="flex-1 h-8 text-xs border-yellow-500/50 text-yellow-500 hover:bg-yellow-500/10"
-              onClick={() => stopTraining()}
-            >
-              <Square className="h-3 w-3 mr-1" />
-              Stop Early
-            </Button>
+            {!inferenceRunning && (
+              <Button
+                variant="outline"
+                className="flex-1 h-8 text-xs border-yellow-500/50 text-yellow-500 hover:bg-yellow-500/10"
+                onClick={() => stopTraining()}
+              >
+                <Square className="h-3 w-3 mr-1" />
+                Stop Early
+              </Button>
+            )}
             <Button
               variant="destructive"
               className="flex-1 h-8 text-xs"
@@ -2006,7 +2057,8 @@ export function TrainingPanel() {
         isActive={
           viewerIndex !== null &&
           viewerIndex === currentModelIndex &&
-          isRunning
+          isRunning &&
+          !inferenceRunning
         }
         onStopEarly={() => stopTraining()}
         onCancel={() => cancelTraining()}

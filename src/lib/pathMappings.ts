@@ -2,7 +2,8 @@
  * Path mapping utilities for translating between local and remote worker
  * filesystem paths during remote training/inference.
  *
- * Mappings are stored in ~/.sleap-rtc/config.toml as [[path_mappings]] entries.
+ * Mappings are stored in ~/.sleap-connect/config.toml as [[path_mappings]]
+ * entries (~/.sleap-rtc/config.toml before the rename, still read).
  */
 
 import { isTauri } from "@/lib/platform";
@@ -228,11 +229,26 @@ export function resolveProjectPaths(
 // Persistence (Tauri only)
 // ---------------------------------------------------------------------------
 
-const CONFIG_DIR = ".sleap-rtc";
+// The current folder first, then its name before the sleap-rtc → sleap-connect
+// rename (the worker moves it on first run, leaving a symlink on macOS/Linux).
+const CONFIG_DIRS = [".sleap-connect", ".sleap-rtc"];
 const CONFIG_FILE = "config.toml";
 
+/** The config folder in use: the first that exists, else the current name. */
+async function configDir(
+  home: string,
+  join: (...paths: string[]) => Promise<string>,
+  exists: (path: string) => Promise<boolean>,
+): Promise<string> {
+  for (const name of CONFIG_DIRS) {
+    const dir = await join(home, name);
+    if (await exists(dir)) return dir;
+  }
+  return join(home, CONFIG_DIRS[0]);
+}
+
 /**
- * Load saved path mappings from ~/.sleap-rtc/config.toml.
+ * Load saved path mappings from ~/.sleap-connect/config.toml.
  * Returns empty array in browser mode or if the file doesn't exist.
  */
 export async function loadSavedMappings(): Promise<PathMapping[]> {
@@ -243,7 +259,7 @@ export async function loadSavedMappings(): Promise<PathMapping[]> {
     const { homeDir, join } = await import("@tauri-apps/api/path");
 
     const home = await homeDir();
-    const configPath = await join(home, CONFIG_DIR, CONFIG_FILE);
+    const configPath = await join(await configDir(home, join, exists), CONFIG_FILE);
 
     if (!(await exists(configPath))) return [];
 
@@ -256,7 +272,7 @@ export async function loadSavedMappings(): Promise<PathMapping[]> {
 }
 
 /**
- * Save a new path mapping to ~/.sleap-rtc/config.toml.
+ * Save a new path mapping to ~/.sleap-connect/config.toml.
  * Appends to the file (does not overwrite existing mappings).
  * No-op in browser mode.
  */
@@ -270,7 +286,7 @@ export async function saveMapping(mapping: PathMapping): Promise<void> {
     const { homeDir, join } = await import("@tauri-apps/api/path");
 
     const home = await homeDir();
-    const dirPath = await join(home, CONFIG_DIR);
+    const dirPath = await configDir(home, join, exists);
     const configPath = await join(dirPath, CONFIG_FILE);
 
     // Ensure directory exists

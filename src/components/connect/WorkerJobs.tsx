@@ -25,9 +25,11 @@ import type { JobSummary, JobStatus } from "@/lib/protocolV1/client";
 import { useAppStore } from "@/stores/appStore";
 import { useConnectStore } from "@/stores/connectStore";
 import { confirmDialog } from "@/stores/confirmStore";
+import { CANCEL_BUTTON_CLASS, STOP_EARLY_BUTTON_CLASS, endJobConfirm } from "./endJobConfirm";
 import { JobViewerDialog } from "./JobViewerDialog";
 import { MergePredictionsDialog } from "./MergePredictionsDialog";
 import { NewJobWizard, seedWizardFromRun, type NewJobWizardSeed } from "./NewJobWizard";
+import { cancelRunConfirm, isActiveGroup, unfinishedJobs } from "./WorkerQueue";
 
 /** Last path segment of a worker path (handles both `/` and `\`), or `null` if absent. */
 function basename(p: string | undefined): string | null {
@@ -134,6 +136,37 @@ export function statusChipFor(state: string, queuePosition: number | null = null
     return { text: `Queued · #${queuePosition}`, className };
   }
   return { text: state.charAt(0).toUpperCase() + state.slice(1), className };
+}
+
+/**
+ * When to say a job happened: nothing while queued (it hasn't started, and a
+ * submission time there reads like a start time), "started …" while running,
+ * "finished …" once done. The start time is the worker's `started_at`, or
+ * when it left the queue (`updatedAt` of a running job) from a worker that
+ * doesn't report it.
+ */
+export function jobTimeLabel(job: JobSummary): string | null {
+  if (job.state === "queued") return null;
+  if (job.state === "running") {
+    const started = job.startedAt ?? job.updatedAt;
+    return started ? `started ${timeAgo(started)}` : null;
+  }
+  return `${job.state === "completed" ? "finished" : "ended"} ${timeAgo(job.updatedAt ?? job.createdAt)}`;
+}
+
+/** A run's time, by the same rules: none while it waits, its first job's start while running, its last job's end once done. */
+export function groupTimeLabel(group: JobGroup): string | null {
+  if (group.status === "queued") return null;
+  const times = (pick: (j: JobSummary) => string | undefined) =>
+    group.jobs.map(pick).filter((t): t is string => !!t).map((t) => new Date(t).getTime());
+  if (group.status === "running") {
+    const starts = times((j) => j.startedAt ?? (j.state === "running" ? j.updatedAt : undefined));
+    return starts.length ? `started ${timeAgo(new Date(Math.min(...starts)).toISOString())}` : null;
+  }
+  const ends = times((j) => j.updatedAt ?? j.createdAt);
+  return ends.length
+    ? `${group.status === "completed" ? "finished" : "ended"} ${timeAgo(new Date(Math.max(...ends)).toISOString())}`
+    : null;
 }
 
 export function jobStatusChip(job: JobSummary): JobStatusChip {
@@ -284,6 +317,8 @@ export interface WorkerJobsProps {
   setIntervalImpl?: (cb: () => void, ms: number) => unknown;
   /** Overridable for tests; defaults to the real `clearInterval`. */
   clearIntervalImpl?: (handle: unknown) => void;
+  /** Scroll to and briefly highlight this run (a queue card's click); the nonce lets a repeat click scroll again. */
+  focusRun?: { key: string; nonce: number } | null;
 }
 
 const DEFAULT_POLL_MS = 10000;
@@ -306,6 +341,7 @@ export function WorkerJobs({
   refreshToken = 0,
   setIntervalImpl = defaultSetInterval,
   clearIntervalImpl = defaultClearInterval,
+  focusRun = null,
 }: WorkerJobsProps) {
   const projectPath = useAppStore((s) => s.projectPath);
   const listJobs = useConnectStore((s) => s.listJobs);
@@ -324,6 +360,10 @@ export function WorkerJobs({
   const [wizardOpen, setWizardOpen] = useState(false);
   const [wizardSeed, setWizardSeed] = useState<NewJobWizardSeed | null>(null);
   const [query, setQuery] = useState("");
+  const [highlightKey, setHighlightKey] = useState<string | null>(null);
+  // Runs whose Cancel run was sent: the button reads "Canceling…" until the
+  // worker's list shows nothing of the run left running or queued.
+  const [cancelingRuns, setCancelingRuns] = useState<Set<string>>(new Set());
 
   const label = workerLabel ?? workerId;
   const myProjectId = useMemo(() => projectTag(projectPath).id, [projectPath]);
@@ -373,6 +413,38 @@ export function WorkerJobs({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [workerId, pollIntervalMs, refreshToken]);
 
+  // A run's "Canceling…" ends once the worker shows nothing of it left
+  // running or queued (or the run is gone from the list).
+  useEffect(() => {
+    setCancelingRuns((prev) => {
+      if (prev.size === 0) return prev;
+      const stillActive = new Set(groups.filter(isActiveGroup).map((g) => g.key));
+      const next = new Set([...prev].filter((k) => stillActive.has(k)));
+      return next.size === prev.size ? prev : next;
+    });
+  }, [groups]);
+
+  // A queue card's click: clear a search that could hide the run, then scroll
+  // it into view and flash it. Retries briefly while the list is loading.
+  useEffect(() => {
+    if (!focusRun) return;
+    setQuery("");
+    let tries = 0;
+    let timer = 0;
+    const find = () => {
+      const el = document.querySelector<HTMLElement>(`[data-run-key="${CSS.escape(focusRun.key)}"]`);
+      if (el) {
+        el.scrollIntoView({ block: "center", behavior: "smooth" });
+        setHighlightKey(focusRun.key);
+        timer = window.setTimeout(() => setHighlightKey(null), 1800);
+      } else if (tries++ < 20) {
+        timer = window.setTimeout(find, 100);
+      }
+    };
+    find();
+    return () => window.clearTimeout(timer);
+  }, [focusRun]);
+
   // An inference job has no loss curve to monitor — its viewer opens on logs.
   const openViewer = (job: JobSummary, initialView: "monitor" | "logs") =>
     setViewer({
@@ -383,23 +455,41 @@ export function WorkerJobs({
       canStop: isManagedJob(job, myProjectId, trackedJobIds),
     });
 
-  const handleCancelOrStop = async (job: JobSummary) => {
-    const mode: "cancel" | "stop" = job.state === "running" ? "stop" : "cancel";
-    const label = mode === "stop" ? "Stop" : "Cancel";
-    const ok = await confirmDialog({
-      title: `${label} job?`,
-      message: `${label} "${jobTitle(job)}" on this worker?`,
-      confirmLabel: label,
-      destructive: true,
-    });
+  // Like SLEAP's training monitor: Stop Early finishes training and keeps the
+  // model trained so far; Cancel ends the job without one.
+  const handleEndJob = async (job: JobSummary, mode: "cancel" | "stop") => {
+    const ok = await confirmDialog(endJobConfirm(jobTitle(job), mode, job.state === "queued"));
     if (!ok) return;
     try {
       await cancelJobOn(workerId, job.jobId, mode);
       await refresh();
     } catch (err) {
-      toast.error(`Failed to ${label.toLowerCase()} job`, {
+      toast.error(mode === "stop" ? "Failed to stop training early" : "Failed to cancel job", {
         description: err instanceof Error ? err.message : String(err),
       });
+    }
+  };
+
+  // Ends every unfinished job of the run, like the Training panel's Cancel:
+  // the model training now and the ones still queued behind it.
+  const handleCancelRun = async (group: JobGroup) => {
+    const unfinished = unfinishedJobs(group);
+    if (unfinished.length === 0) return;
+    if (!(await confirmDialog(cancelRunConfirm(group)))) return;
+    setCancelingRuns((s) => new Set(s).add(group.key));
+    try {
+      for (const job of unfinished) await cancelJobOn(workerId, job.jobId, "cancel");
+    } catch (err) {
+      setCancelingRuns((s) => {
+        const next = new Set(s);
+        next.delete(group.key);
+        return next;
+      });
+      toast.error("Failed to cancel run", {
+        description: err instanceof Error ? err.message : String(err),
+      });
+    } finally {
+      await refresh();
     }
   };
 
@@ -501,14 +591,17 @@ export function WorkerJobs({
         <div className="space-y-2">
           {visibleGroups.map((group) => {
             const groupChip = statusChipFor(group.status);
+            const canCancelRun =
+              isActiveGroup(group) && group.jobs.some((j) => isManagedJob(j, myProjectId, trackedJobIds));
             return (
               <div
                 key={group.key}
-                className={`rounded-md border border-border p-2.5 space-y-1.5 ${
+                data-run-key={group.key}
+                className={`rounded-md border p-2.5 space-y-1.5 transition-shadow ${
                   // Not dimmed with opacity: that greyed out the whole card,
                   // buttons included, so it read as disabled.
                   group.mine ? "bg-zinc-800/50" : "bg-transparent"
-                }`}
+                } ${highlightKey === group.key ? "border-primary ring-2 ring-primary/60" : "border-border"}`}
               >
                 <div className="flex items-center gap-2 flex-wrap">
                   {group.mine && <span className="text-orange-400 text-xs shrink-0">★</span>}
@@ -526,13 +619,26 @@ export function WorkerJobs({
                   >
                     {groupChip.text}
                   </span>
-                  <span className="text-[10px] text-muted-foreground shrink-0">{timeAgo(group.createdAt)}</span>
+                  {groupTimeLabel(group) && (
+                    <span className="text-[10px] text-muted-foreground shrink-0">{groupTimeLabel(group)}</span>
+                  )}
                   <span
                     className="text-[9px] font-mono text-muted-foreground shrink-0"
                     title={`Run ${group.key}`}
                   >
                     {group.key.slice(0, 8)}
                   </span>
+                  {canCancelRun && (
+                    <Button
+                      size="xs"
+                      variant="outline"
+                      className={`${CANCEL_BUTTON_CLASS} shrink-0`}
+                      disabled={cancelingRuns.has(group.key)}
+                      onClick={() => void handleCancelRun(group)}
+                    >
+                      {cancelingRuns.has(group.key) ? "Canceling…" : "Cancel run"}
+                    </Button>
+                  )}
                   {canDeleteRun(group.jobs) && (
                     <Button
                       size="icon-xs"
@@ -556,7 +662,11 @@ export function WorkerJobs({
                     const canWatch = job.state === "running";
                     const canView =
                       job.state === "completed" || job.state === "failed" || job.state === "canceled";
-                    const canCancel = managed && (job.state === "queued" || job.state === "running");
+                    // A queued job is canceled with its whole run (Cancel run, in
+                    // the run's header); the job running now gets its own
+                    // Stop Early / Cancel.
+                    const canCancel = managed && job.state === "running";
+                    const canStopEarly = canCancel && job.kind !== "track";
                     const canFetch = job.kind === "track" && job.state === "completed";
                     const canRunAgain = managed && job.kind === "train" && job.state === "failed";
                     return (
@@ -579,9 +689,9 @@ export function WorkerJobs({
                           >
                             {chip.text}
                           </span>
-                          <span className="text-[10px] text-muted-foreground shrink-0">
-                            {timeAgo(job.createdAt)}
-                          </span>
+                          {jobTimeLabel(job) && (
+                            <span className="text-[10px] text-muted-foreground shrink-0">{jobTimeLabel(job)}</span>
+                          )}
                         </div>
 
                         {job.modelName && (
@@ -623,14 +733,24 @@ export function WorkerJobs({
                           >
                             Logs
                           </Button>
+                          {canStopEarly && (
+                            <Button
+                              size="xs"
+                              variant="outline"
+                              className={STOP_EARLY_BUTTON_CLASS}
+                              onClick={() => handleEndJob(job, "stop")}
+                            >
+                              Stop Early
+                            </Button>
+                          )}
                           {canCancel && (
                             <Button
                               size="xs"
                               variant="outline"
-                              className="h-6 text-[10px]"
-                              onClick={() => handleCancelOrStop(job)}
+                              className={CANCEL_BUTTON_CLASS}
+                              onClick={() => handleEndJob(job, "cancel")}
                             >
-                              {job.state === "running" ? "Stop" : "Cancel"}
+                              Cancel
                             </Button>
                           )}
                           {canRunAgain && (

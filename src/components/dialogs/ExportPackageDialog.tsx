@@ -57,8 +57,8 @@ const OPTIONS: {
   },
   {
     level: "full",
-    title: "All labeled frames",
-    desc: "Every labeled frame, including predictions (Level 3).",
+    title: "Labeled + predicted + suggested frames",
+    desc: "Every labeled frame, including predictions, plus suggested frames (Level 3).",
   },
 ];
 
@@ -70,8 +70,10 @@ export function ExportPackageDialog({
   const [level, setLevel] = useState<ExportPackageLevel>("training");
 
   const handleExport = useCallback(async () => {
-    await commandContext.execute(COMMAND_BY_LEVEL[level]);
+    // Close first, as PyQt does: the export's progress overlay (with Cancel)
+    // sits below dialogs, so an open dialog would hide it for the whole export.
     onOpenChange(false);
+    await commandContext.execute(COMMAND_BY_LEVEL[level]);
   }, [level, onOpenChange]);
 
   if (!labels) return null;

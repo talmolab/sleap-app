@@ -43,11 +43,26 @@ import {
   clipBackgroundColor,
   buildInitialClipConfigs,
   clipExportReducer,
+  labeledFramesInRange,
   type ClipConfig,
+  type ClipQuality,
 } from "@/lib/videoExport";
 import { ClipPreview } from "./ClipPreview";
 import { ClipVideoList, type ClipJobInfo } from "./ClipVideoList";
 import { ClipSettings } from "./ClipSettings";
+import { Checkbox } from "@/components/ui/checkbox";
+import { Label } from "@/components/ui/label";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+import { renderTrails } from "@/canvas/TrailRenderer";
+import { toastExported } from "@/lib/exportToast";
+import { sleapCmd } from "@/lib/sleapPlugin";
+import { invoke } from "@tauri-apps/api/core";
 
 type Phase = "form" | "checking" | "unsupported" | "encoding";
 
@@ -92,6 +107,7 @@ export function ExportClipDialog() {
   const markerSize = useAppStore((s) => s.markerSize);
   const nodeLabelSize = useAppStore((s) => s.nodeLabelSize);
   const edgeStyle = useAppStore((s) => s.edgeStyle);
+  const trailLength = useAppStore((s) => s.trailLength);
 
   const [state, dispatch] = useReducer(clipExportReducer, { configs: [], focused: null });
   const [phase, setPhase] = useState<Phase>("checking");
@@ -100,6 +116,9 @@ export function ExportClipDialog() {
   // Bumped after a focused video is probed, to re-render the preview with dims.
   const [, bumpProbe] = useReducer((n: number) => n + 1, 0);
   const abortRef = useRef<AbortController | null>(null);
+  // Whole-export output options (PyQt's Quality group / "Open video when done").
+  const [quality, setQuality] = useState<ClipQuality>("high");
+  const [openWhenDone, setOpenWhenDone] = useState(true);
 
   const focused = state.focused;
   const focusedConfig = state.configs.find((c) => c.video === focused) ?? null;
@@ -199,6 +218,11 @@ export function ExportClipDialog() {
       const scale = clampClipScale(cfg.scale);
       const output = computeClipOutputDimensions(srcW, srcH, scale);
 
+      // PyQt's default: only the frames with instances, back to back.
+      const frames = cfg.includeUnlabeled
+        ? undefined
+        : labeledFramesInRange(labels, fvideo, rr.range);
+
       const frameToLf = new Map<number, LabeledFrame>();
       for (const lf of labels.find({ video: fvideo })) frameToLf.set(lf.frameIdx, lf);
       const tracks = labels.tracks;
@@ -227,6 +251,23 @@ export function ExportClipDialog() {
         video: fvideo,
         decodeFrame: (frameIdx) => decodeExportFrame(fvideo, frameIdx),
         overlayForFrame,
+        // Motion trails, as the live view draws them (View → trail length).
+        renderUnderlay:
+          trailLength > 0
+            ? (ctx, frameIdx, zoom) =>
+                renderTrails(
+                  ctx,
+                  labels,
+                  frameIdx,
+                  fvideo,
+                  trailLength,
+                  tracks,
+                  palette,
+                  zoom,
+                  trackColorOverrides
+                )
+            : undefined,
+        quality,
       });
       return runClipExport(
         {
@@ -237,6 +278,7 @@ export function ExportClipDialog() {
           sourceHeight: srcH,
           output,
           background: clipBackgroundColor(cfg.background),
+          frames,
           renderOptions: {
             markerSize,
             nodeLabelSize,
@@ -265,6 +307,9 @@ export function ExportClipDialog() {
       markerSize,
       nodeLabelSize,
       edgeStyle,
+      trailLength,
+      trackColorOverrides,
+      quality,
     ]
   );
 
@@ -293,6 +338,7 @@ export function ExportClipDialog() {
       const controller = new AbortController();
       abortRef.current = controller;
       setPhase("encoding");
+      const savedPaths: string[] = [];
       try {
         const summary = await runClipExportBatch(toExport, {
           exportOne: (cfg, cbk) => encodeOne(cfg, cbk),
@@ -301,9 +347,11 @@ export function ExportClipDialog() {
             const rr = resolveClipFrameRange(cfg.start, cfg.end, len);
             const range = rr.ok ? rr.range : { start: cfg.start, end: cfg.end };
             const name = deriveClipFilename(filename, range, videoLabel(cfg.video));
-            return dir
-              ? saveBytesToDir(dir, name, bytes)
-              : saveBytesFile(bytes, name, { name: "MP4 Video", ext: "mp4" });
+            const saved = dir
+              ? await saveBytesToDir(dir, name, bytes)
+              : await saveBytesFile(bytes, name, { name: "MP4 Video", ext: "mp4" });
+            if (saved) savedPaths.push(saved);
+            return saved;
           },
           onStatus: (v, status, extra) =>
             setJobs((prev) => {
@@ -316,9 +364,21 @@ export function ExportClipDialog() {
 
         const { done, failed, cancelled } = summary;
         if (failed === 0 && cancelled === 0) {
-          toast.success(`Exported ${done} clip${done === 1 ? "" : "s"}`, {
-            description: dir ?? undefined,
-          });
+          const title = `Exported ${done} clip${done === 1 ? "" : "s"}`;
+          const where = savedPaths.length === 1 ? savedPaths[0] : dir;
+          if (where) toastExported(title, where, dir !== null);
+          else toast.success(title);
+          // PyQt's "Open video when done": play a single clip, or show the
+          // folder of several (desktop only — the browser downloaded them).
+          if (openWhenDone && dir && savedPaths.length > 0) {
+            const [cmd, path] =
+              savedPaths.length === 1
+                ? ["open_in_default_app", savedPaths[0]]
+                : ["reveal_in_file_manager", savedPaths[0]];
+            void invoke(sleapCmd(cmd), { path }).catch((e: unknown) =>
+              console.warn(`[ExportClip] ${cmd} failed:`, e)
+            );
+          }
         } else if (cancelled > 0) {
           toast.info(`Export cancelled — ${done} done, ${cancelled} skipped`);
         } else {
@@ -329,7 +389,7 @@ export function ExportClipDialog() {
         setPhase((p) => (p === "encoding" ? "form" : p));
       }
     },
-    [labels, state.configs, filename, encodeOne]
+    [labels, state.configs, filename, encodeOne, openWhenDone]
   );
 
   if (!video || !labels) return null;
@@ -406,7 +466,49 @@ export function ExportClipDialog() {
                   onBackground={(background) =>
                     dispatch({ type: "setBackground", video: focusedConfig.video, background })
                   }
+                  onIncludeUnlabeled={(includeUnlabeled) =>
+                    dispatch({
+                      type: "setIncludeUnlabeled",
+                      video: focusedConfig.video,
+                      includeUnlabeled,
+                    })
+                  }
                 />
+              )}
+              {!encoding && (
+                <div className="grid grid-cols-2 gap-3 border-t border-border pt-3">
+                  <div className="space-y-1">
+                    <Label htmlFor="clip-quality">Quality (all clips)</Label>
+                    <Select
+                      value={quality}
+                      onValueChange={(v) => setQuality(v as ClipQuality)}
+                    >
+                      <SelectTrigger id="clip-quality" className="w-full">
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="low">Low (smallest file)</SelectItem>
+                        <SelectItem value="medium">Medium</SelectItem>
+                        <SelectItem value="high">High</SelectItem>
+                        <SelectItem value="very-high">Very high (largest file)</SelectItem>
+                      </SelectContent>
+                    </Select>
+                  </div>
+                  <label
+                    htmlFor="clip-open-when-done"
+                    className="flex items-end gap-2 pb-2 text-sm"
+                  >
+                    <Checkbox
+                      id="clip-open-when-done"
+                      checked={openWhenDone}
+                      onCheckedChange={(v) => setOpenWhenDone(v === true)}
+                    />
+                    Open when done
+                  </label>
+                  <p className="col-span-2 text-xs text-muted-foreground">
+                    Overlay style, including motion trails, follows the View settings.
+                  </p>
+                </div>
               )}
               {encoding && (
                 <div className="space-y-1 pt-1">

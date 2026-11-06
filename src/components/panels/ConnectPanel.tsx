@@ -1,10 +1,12 @@
 import { useEffect, useRef, useState } from "react";
-import { ExternalLink, Loader2, Plug, Trash2, Unplug, Zap } from "lucide-react";
+import { ExternalLink, Loader2, Plug, Trash2, Unplug } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { preferredTransport } from "@/lib/protocolV1/pairingPlan";
 import { irohTransportAvailable, transportLabel, type TransportKind } from "@/lib/protocolV1/transport";
 import { useConnectStore } from "@/stores/connectStore";
 import { useAppStore } from "@/stores/appStore";
 import { PairWorkerForm } from "@/components/connect/PairWorkerForm";
+import { forgetWorkerWithConfirm } from "@/components/connect/forgetWorker";
 
 export function ConnectPanel() {
   const setConnectWindowOpen = useAppStore((s) => s.setConnectWindowOpen);
@@ -15,7 +17,6 @@ export function ConnectPanel() {
   const activeTransport = useConnectStore((s) => s.activeTransport);
   const connectToWorker = useConnectStore((s) => s.connectToWorker);
   const disconnect = useConnectStore((s) => s.disconnect);
-  const forgetWorker = useConnectStore((s) => s.forgetWorker);
 
   const [deviceId, setDeviceId] = useState<string | null>(null);
   const [showPairForm, setShowPairForm] = useState(pairedWorkers.length === 0);
@@ -85,7 +86,8 @@ export function ConnectPanel() {
             const isReconnecting = isSelected && connectionStatus === "reconnecting";
             const isConnecting =
               connectingId === w.nodeId || (isSelected && connectionStatus === "connecting");
-            const offersIroh = irohAvailable && w.iroh !== undefined;
+            // How to reach it, picked for the user (see `preferredTransport`).
+            const route = preferredTransport(w, irohAvailable);
             return (
               <div
                 key={w.nodeId}
@@ -107,17 +109,22 @@ export function ConnectPanel() {
                     size="xs"
                     className="ml-auto h-5 w-5 p-0 text-muted-foreground hover:text-red-400"
                     title="Forget this worker"
-                    onClick={() => forgetWorker(w.nodeId)}
+                    onClick={() => void forgetWorkerWithConfirm(w.nodeId)}
                   >
                     <Trash2 className="h-3 w-3" />
                   </Button>
                 </div>
                 <div className="text-[10px] text-muted-foreground font-mono mt-0.5 truncate">
-                  {w.nodeId.slice(0, 16)}… · {w.addrs[0] ?? "no known address"}
+                  {w.nodeId.slice(0, 16)}…{w.addrs[0] ? ` · ${w.addrs[0]}` : ""}
                 </div>
                 {isConnected && activeTransport && (
                   <div className="text-[10px] text-muted-foreground mt-0.5">
                     Connected via {transportLabel(activeTransport)}
+                  </div>
+                )}
+                {w.unpairedAt && (
+                  <div className="text-[10px] text-red-400 mt-0.5">
+                    Unpaired by this worker — re-pair with a new code to use it again.
                   </div>
                 )}
                 {isReconnecting && (
@@ -137,33 +144,24 @@ export function ConnectPanel() {
                       Disconnect
                     </Button>
                   ) : (
-                    <>
-                      <Button
-                        size="sm"
-                        className="w-full h-7 text-xs"
-                        disabled={isConnecting || !w.addrs[0]}
-                        onClick={() => handleConnect(w.nodeId, offersIroh ? "ws" : undefined)}
-                      >
-                        {isConnecting ? (
-                          <Loader2 className="h-3 w-3 mr-1.5 animate-spin" />
-                        ) : (
-                          <Plug className="h-3 w-3 mr-1.5" />
-                        )}
-                        {isConnecting ? "Connecting…" : offersIroh ? "Connect (WebSocket)" : "Connect"}
-                      </Button>
-                      {offersIroh && (
-                        <Button
-                          size="sm"
-                          variant="outline"
-                          className="w-full h-7 text-xs"
-                          disabled={isConnecting}
-                          onClick={() => handleConnect(w.nodeId, "iroh")}
-                        >
-                          <Zap className="h-3 w-3 mr-1.5" />
-                          Connect directly (iroh)
-                        </Button>
+                    <Button
+                      size="sm"
+                      className="w-full h-7 text-xs"
+                      disabled={isConnecting || route === null}
+                      title={
+                        route === null
+                          ? "This worker can't be reached from here: pair it again with a new code."
+                          : undefined
+                      }
+                      onClick={() => route && handleConnect(w.nodeId, route)}
+                    >
+                      {isConnecting ? (
+                        <Loader2 className="h-3 w-3 mr-1.5 animate-spin" />
+                      ) : (
+                        <Plug className="h-3 w-3 mr-1.5" />
                       )}
-                    </>
+                      {isConnecting ? "Connecting…" : "Connect"}
+                    </Button>
                   )}
                 </div>
               </div>

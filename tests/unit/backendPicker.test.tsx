@@ -159,8 +159,8 @@ describe("BackendPicker rendering", () => {
   });
 
   it.each([
-    ["ws" as const, "via WebSocket"],
-    ["iroh" as const, "via iroh (direct)"],
+    ["ws" as const, "via local network"],
+    ["iroh" as const, "via internet (direct or relay)"],
   ])("shows the %s transport while connected", async (transport, expectedText) => {
     useConnectStore.setState({
       pairedWorkers: [WORKER_A],
@@ -173,7 +173,7 @@ describe("BackendPicker rendering", () => {
     expect(screen.getByText(expectedText)).toBeInTheDocument();
   });
 
-  it("shows the transport while reconnecting (e.g. 'via iroh (direct)' for an automatic fallback)", async () => {
+  it("shows the transport while reconnecting (e.g. 'via internet (direct or relay)' for an automatic fallback)", async () => {
     useConnectStore.setState({
       pairedWorkers: [WORKER_A],
       selectedWorkerId: WORKER_A.nodeId,
@@ -182,7 +182,7 @@ describe("BackendPicker rendering", () => {
     });
     await renderPicker({ remoteEnabled: true });
     expect(screen.getByText("Reconnecting…")).toBeInTheDocument();
-    expect(screen.getByText("via iroh (direct)")).toBeInTheDocument();
+    expect(screen.getByText("via internet (direct or relay)")).toBeInTheDocument();
   });
 
   it("shows no transport when the connection failed or is down", async () => {
@@ -215,7 +215,7 @@ describe("BackendPicker rendering", () => {
       connectionStatus: "connected",
       trackedJobs: [makeTracked({ jobId: "job_abc" })],
       reattachableJob: { jobId: "job_abc", state: "running" },
-      cancelJob: vi.fn(),
+      cancelJob: vi.fn() as unknown as (runId?: string) => void,
     });
     await renderPicker({ remoteEnabled: true });
 

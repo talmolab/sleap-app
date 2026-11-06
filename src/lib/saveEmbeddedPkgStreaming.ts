@@ -37,14 +37,19 @@
 import {
   saveSlpStructureToBytes,
   buildSerializableEmbedPlan,
+  appendEncodedVideos,
   StreamingH5Writer,
   StreamingH5File,
+  type EmbedOption,
   type RangeSink,
   type RangeSource,
   type Labels,
   type SerializableEmbedPlan,
+  type SlpWriteOptions,
+  type AppendEncodedVideosOptions,
 } from "@talmolab/sleap-io.js";
 import {
+  withNativeWriteHandle,
   writeOpen,
   writeOpenAppend,
   writeAt,
@@ -66,8 +71,17 @@ const H5WASM_URL =
 export interface SaveEmbeddedPkgStreamingOptions {
   /** Same semantics as `saveSlpToBytes`'s `embed` option. Defaults to `false`
    * (re-save/preserve: already-embedded videos are auto-preserved without
-   * re-encoding). */
-  embed?: boolean | string;
+   * re-encoding). A new embed of a continuous video (e.g. Export Labels
+   * Package from an mp4) has its frames read here and PNG-encoded + appended
+   * by the worker (io `appendEncodedVideos`). */
+  embed?: EmbedOption;
+  /** As `saveSlpToBytes`'s: frames embedded so far; return `false` to cancel
+   * (throws io's `ExportCancelled`, after removing the partial file). */
+  onProgress?: SlpWriteOptions["onProgress"];
+  /** Supplies a new embed's frames from outside the app's decoders (desktop:
+   * ffmpeg-extracted PNGs, see `extractFrames.ts`); as io's
+   * `appendEncodedVideos` option. */
+  frameReader?: AppendEncodedVideosOptions["frameReader"];
 }
 
 /** Fresh, collision-resistant random suffix for a temp file name. */
@@ -144,45 +158,68 @@ async function removeFileBestEffort(path: string): Promise<void> {
 
 /**
  * Open the temp file in append mode (preserving the structure bytes already
- * written) and stream-copy every planned video's stored embedded images from
- * `sourcePath` into it, via the dual-bridge `StreamingH5Writer`. Always closes
+ * written) and add every planned video's embedded images to it via the
+ * `StreamingH5Writer`: stored images are stream-copied from `sourcePath` (raw
+ * entries, dual bridge), and new embeds have their frames read from `labels`
+ * and PNG-encoded + appended in the worker (encode entries). Always closes
  * both the worker and the native write handle, even on failure.
  */
 async function appendEmbeddedVideosToTemp(
   plan: SerializableEmbedPlan,
   tempPath: string,
-  sourcePath: string
+  sourcePath: string | null,
+  labels: Labels,
+  options: Pick<SaveEmbeddedPkgStreamingOptions, "onProgress" | "frameReader"> = {}
 ): Promise<void> {
   await writeOpenAppend(tempPath);
   const writer = new StreamingH5Writer();
   try {
     const destSize = await fileSize(tempPath);
-    const sourceSize = await fileSize(sourcePath);
-
     const destSink: RangeSink = {
       writeAt: (o, b) => writeAt(o, b),
       readAt: (o, l) => readAt(o, l),
       truncate: (l) => truncateFile(l),
       close: () => writeClose(),
     };
-    const source: RangeSource = {
-      size: sourceSize,
-      readRange: (o, l) => readRange(sourcePath, o, l),
-    };
 
-    await writer.openAppend(destSink, tempPath, destSize, source, sourcePath, H5WASM_URL);
-    const res = await writer.appendEmbeddedVideos(plan.entries);
-    if (res.success !== true) {
-      throw new Error(
-        `saveEmbeddedPkgStreaming: appendEmbeddedVideos failed: ${
-          res.error ?? JSON.stringify(res)
-        }`
+    if (plan.entries.length > 0) {
+      if (!sourcePath) {
+        throw new Error(
+          "saveEmbeddedPkgStreaming: copying already-embedded images needs the source file"
+        );
+      }
+      const sourceSize = await fileSize(sourcePath);
+      const source: RangeSource = {
+        size: sourceSize,
+        readRange: (o, l) => readRange(sourcePath, o, l),
+      };
+      await writer.openAppend(destSink, tempPath, destSize, source, sourcePath, H5WASM_URL);
+      const res = await writer.appendEmbeddedVideos(plan.entries);
+      if (res.success !== true) {
+        throw new Error(
+          `saveEmbeddedPkgStreaming: appendEmbeddedVideos failed: ${
+            res.error ?? JSON.stringify(res)
+          }`
+        );
+      }
+      console.log(
+        `[saveEmbeddedPkgStreaming] appended ${plan.entries.length} video(s) ` +
+          `(perVideo=${JSON.stringify(res.perVideo)})`
+      );
+    } else {
+      await writer.openWrite(destSink, tempPath, destSize, H5WASM_URL);
+    }
+
+    if (plan.encodeEntries.length > 0) {
+      await appendEncodedVideos(writer, labels, plan.encodeEntries, {
+        onProgress: options.onProgress,
+        frameReader: options.frameReader,
+      });
+      console.log(
+        `[saveEmbeddedPkgStreaming] embedded ${plan.encodeEntries.length} video(s) ` +
+          `(${plan.encodeEntries.reduce((n, e) => n + e.frameNumbers.length, 0)} frames)`
       );
     }
-    console.log(
-      `[saveEmbeddedPkgStreaming] appended ${plan.entries.length} video(s) ` +
-        `(perVideo=${JSON.stringify(res.perVideo)})`
-    );
   } finally {
     // Belt-and-suspenders close, mirroring writeBridgeSpike.ts's pattern: close
     // the worker first, then the native handle. Both are best-effort so a
@@ -213,7 +250,7 @@ async function verifyAppendedTemp(
   const reader = new StreamingH5File();
   await reader.openRange(source, { h5wasmUrl: H5WASM_URL });
   try {
-    for (const entry of plan.entries) {
+    for (const entry of [...plan.entries, ...plan.encodeEntries]) {
       const group = `video${entry.videoIndex}`;
       const meta = await reader.getDatasetMeta(`${group}/frame_numbers`);
       const got = meta.shape[0] ?? 0;
@@ -246,14 +283,29 @@ async function verifyAppendedTemp(
  * @param destPath Final on-disk destination (may equal `sourcePath` for an
  *   in-place re-save, or a new path for Save As).
  * @param sourcePath On-disk path of the currently-open project file that the
- *   embedded images are copied FROM (read-only).
+ *   embedded images are copied FROM (read-only). `null` when no video's images
+ *   are already embedded (e.g. exporting a package of an mp4 project).
  * @param options `embed` mirrors `saveSlpToBytes`'s option; defaults to
- *   `false` (re-save/preserve).
+ *   `false` (re-save/preserve). `onProgress` reports (and can cancel) a new
+ *   embed.
  */
-export async function saveEmbeddedPkgStreaming(
+export function saveEmbeddedPkgStreaming(
   labels: Labels,
   destPath: string,
-  sourcePath: string,
+  sourcePath: string | null,
+  options?: SaveEmbeddedPkgStreamingOptions
+): Promise<void> {
+  // One save/export at a time owns the native write handle (see
+  // withNativeWriteHandle); a second one waits instead of breaking the first.
+  return withNativeWriteHandle(() =>
+    saveEmbeddedPkgStreamingNow(labels, destPath, sourcePath, options)
+  );
+}
+
+async function saveEmbeddedPkgStreamingNow(
+  labels: Labels,
+  destPath: string,
+  sourcePath: string | null,
   options?: SaveEmbeddedPkgStreamingOptions
 ): Promise<void> {
   if (
@@ -300,15 +352,23 @@ export async function saveEmbeddedPkgStreaming(
       // Use the SAME embedMode for the plan as for the structure write, so
       // videos_json (which claims which videos are embedded) and the actually
       // appended datasets agree.
-      const plan = await buildSerializableEmbedPlan(labels, embedMode, sourcePath);
+      const plan = await buildSerializableEmbedPlan(labels, embedMode, sourcePath ?? "", {
+        allowEncode: true,
+      });
 
-      if (plan.entries.length === 0) {
+      if (plan.entries.length === 0 && plan.encodeEntries.length === 0) {
         // Nothing to append — the structure IS the whole file.
         console.log(
           "[saveEmbeddedPkgStreaming] no embedded entries to append; structure is the whole file"
         );
       } else {
-        await appendEmbeddedVideosToTemp(plan, stagePath, sourcePath);
+        await appendEmbeddedVideosToTemp(
+          plan,
+          stagePath,
+          sourcePath,
+          labels,
+          { onProgress: options?.onProgress, frameReader: options?.frameReader }
+        );
         await verifyAppendedTemp(plan, stagePath);
       }
 

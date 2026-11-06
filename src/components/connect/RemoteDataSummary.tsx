@@ -103,7 +103,7 @@ export function RemoteDataSummary({
       void checkFn(videoPaths, {
         rules,
         mounts,
-        stat: (p) => statWorkerPath(p).then((r) => r.exists),
+        stat: (p) => statWorkerPath(p),
       }).then((v) => {
         if (requestRef.current !== myRequest) return; // a newer check superseded this one
         setResult(v);
@@ -120,6 +120,7 @@ export function RemoteDataSummary({
   const hidden = result?.filter((v) => !v.visible) ?? [];
   const visibleCount = result ? result.length - hidden.length : 0;
   const shown = hidden.slice(0, MAX_HIDDEN_SHOWN);
+  const notShared = result?.filter((v) => v.visible && v.shared === false).length ?? 0;
 
   return (
     <div className="rounded-md border border-border bg-muted/30 p-2 space-y-1.5 text-[10px]">
@@ -133,6 +134,13 @@ export function RemoteDataSummary({
           </span>
         )}
       </div>
+
+      {notShared > 0 && (
+        <p className="text-muted-foreground">
+          {notShared === 1 ? "1 video is" : `${notShared} videos are`} outside the worker&apos;s shared
+          folders: training can read {notShared === 1 ? "it" : "them"}, but you can&apos;t browse there.
+        </p>
+      )}
 
       {shown.length > 0 && (
         <div className="space-y-1">

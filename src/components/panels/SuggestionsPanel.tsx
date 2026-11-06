@@ -294,7 +294,9 @@ export function SuggestionsPanel({
       originalIndex: i,
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       score: computeFrameScore(s, labels as any),
+      // Includes negative (background) frames, which count as labeled (SLEAP #2894).
       hasLabels: frameHasUserLabels(labels, s.video, s.frameIdx),
+      isNegative: labels?.find({ video: s.video, frameIdx: s.frameIdx })[0]?.isNegative ?? false,
     }));
 
     // Sort
@@ -1273,8 +1275,11 @@ export function SuggestionsPanel({
                   <TableCell className="py-0.5 px-1 text-xs text-center">
                     {entry.hasLabels && (
                       <span
-                        className="inline-block w-2 h-2 rounded-full bg-green-500"
-                        title="Has user labels"
+                        className={cn(
+                          "inline-block w-2 h-2 rounded-full",
+                          entry.isNegative ? "bg-red-500" : "bg-green-500",
+                        )}
+                        title={entry.isNegative ? "Negative (background) frame" : "Has user labels"}
                       />
                     )}
                   </TableCell>

@@ -48,6 +48,7 @@ import {
   buildBlobByteSourceDescriptor,
   buildUrlByteSourceDescriptor,
   runWorkerDecodeUpgrade,
+  type WorkerUpgradeOutcome,
 } from "./workerDecodeUpgrade";
 import type { ByteSourceDescriptor } from "@talmolab/sleap-io.js";
 import { useTranscodeStore } from "@/stores/transcodeStore";
@@ -1264,7 +1265,7 @@ export async function resolveAllVideosFromFolder(
  * channels immediately (no autodetect decode needed), matching the import
  * dialog's checkbox, which always yields a definite boolean, never "autodetect".
  */
-async function createBackendForFile(
+export async function createBackendForFile(
   file: File,
   grayscale?: boolean | null,
   hdf5?: Hdf5VideoHints
@@ -1616,28 +1617,54 @@ export async function scheduleBackgroundProxyBuild(
  */
 export async function scheduleWorkerDecodeUpgrade(
   video: Video,
-  path: string
-): Promise<void> {
-  if (!isWorkerDecodeAvailable()) return;
+  path: string,
+  isStillActive: () => boolean = () => useAppStore.getState().video === video
+): Promise<WorkerUpgradeOutcome> {
+  if (!isWorkerDecodeAvailable()) return "skipped";
   const name = getBasename(path);
-  if (backendKindForFilename(name) !== "mp4box") return;
+  if (backendKindForFilename(name) !== "mp4box") return "skipped";
   const platform = await getPlatform();
-  if (!platform.isTauri) return; // desktop wiring; browser is a follow-up
+  if (!platform.isTauri) return "skipped"; // desktop wiring; browser is a follow-up
   const original = video.backend;
-  if (!original) return;
-  await runWorkerDecodeUpgrade(original, path, name, {
+  if (!original) return "skipped";
+  return runWorkerDecodeUpgrade(original, path, name, {
     isAvailable: isWorkerDecodeAvailable,
     buildDescriptor: buildTauriByteSourceDescriptor,
     createWorkerBackend: (params) => WorkerMp4BoxBackend.create(params),
-    isStillActive: () => useAppStore.getState().video === video,
+    isStillActive,
     currentBackend: () => video.backend,
     swap: (backend) => {
       video.backend = backend;
     },
-    triggerReread: () => useAppStore.getState().bumpBackendSwapNonce(),
+    triggerReread: () => {
+      if (useAppStore.getState().video === video) {
+        useAppStore.getState().bumpBackendSwapNonce();
+      }
+    },
     onUpgraded: () =>
       console.info(`[offmain] worker decode active for "${name}"`),
   });
+}
+
+/**
+ * Get `videos` ready for a long run of frame reads (Export Labels Package's
+ * embedding): open any still-lazy backend, then upgrade each desktop MP4 to the
+ * off-main worker decoder. The open-time upgrade only covers the video on
+ * screen, and an export reads every video, so without this the reads of the
+ * others decode on the UI thread and freeze the window for the whole export.
+ * Awaited, unlike the open-time upgrade, so the export starts on the worker.
+ * Each upgrade is best-effort: a video that can't upgrade keeps its backend.
+ */
+export async function prepareVideosForFrameReads(
+  videos: readonly Video[]
+): Promise<void> {
+  const stillOpen = (video: Video) => () =>
+    useAppStore.getState().labels?.videos.includes(video) ?? false;
+  for (const video of videos) {
+    if (!(await ensureVideoBackend(video))) continue;
+    const path = Array.isArray(video.filename) ? null : video.filename;
+    if (path) await scheduleWorkerDecodeUpgrade(video, path, stillOpen(video));
+  }
 }
 
 /**
@@ -1698,6 +1725,38 @@ export async function scheduleWorkerDecodeUpgradeBrowser(
     onUpgraded: () =>
       console.info(`[offmain] worker decode active (browser) for "${name}"`),
   });
+}
+
+/**
+ * Open a native video path with the reader the viewer uses, but none of the
+ * open path's side work: no scrub proxy, no background swaps, no transcode
+ * prompt. For a frame check, which needs a private reader. A legacy-codec video
+ * the app shows from its converted copy is read from that copy (it never starts
+ * a conversion); otherwise it gets the reader's unsupported-codec error.
+ */
+export async function createPlainBackendForPath(path: string): Promise<VideoBackend> {
+  const name = getBasename(path);
+  switch (backendKindForFilename(name)) {
+    case "mediabunny":
+      return MediaBunnyVideoBackend.fromRangeSource(await makeVideoRangeSource(path), name);
+    case "avi": {
+      const decodable = await ensureDecodablePath(path, createTauriTranscodeDeps(), {
+        confirmTranscode: async () => false,
+      });
+      if (decodable.transcoded) {
+        return new Mp4BoxVideoBackend(await makeVideoRangeSource(decodable.path), {
+          filename: name,
+        });
+      }
+      return AviVideoBackend.fromRangeSource(await makeVideoRangeSource(path), name);
+    }
+    case "seq": {
+      const platform = await getPlatform();
+      return SeqVideoBackend.create(new File([await platform.readFile(path)], name));
+    }
+    default:
+      return new Mp4BoxVideoBackend(await makeVideoRangeSource(path), { filename: name });
+  }
 }
 
 /**
@@ -2029,10 +2088,22 @@ export async function assignVideoBackend(
     persistHdf5Dataset(video);
     return ok; // HDF5 containers have no MP4 stream to hand the decode worker
   }
+  if (ok) browserVideoFiles.set(video, file);
   // Browser: upgrade to off-main worker decode (the worker slices this Blob
   // directly). No-ops on desktop / non-mp4. Fire-and-forget.
   if (ok) void scheduleWorkerDecodeUpgradeBrowser(video, file, file.name);
   return ok;
+}
+
+/**
+ * The File each browser video was last opened from. The viewer's backend keeps
+ * its source private, and a frame check needs to open a reader of its own.
+ */
+const browserVideoFiles = new WeakMap<Video, File>();
+
+/** The File a browser video was opened from, if it was opened from one here. */
+export function browserVideoFile(video: Video): File | null {
+  return browserVideoFiles.get(video) ?? null;
 }
 
 /**

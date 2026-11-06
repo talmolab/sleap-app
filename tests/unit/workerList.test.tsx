@@ -20,6 +20,7 @@ const GPU_INFO: WorkerInfo = {
   gpuCount: 1,
   cudaVersion: "12.4",
   sleapNnVersion: "0.3.1",
+  features: [],
   busy: false,
 };
 
@@ -43,7 +44,7 @@ function resetConnectStore() {
     workerErrors: {},
     workerInfo: {},
     selectedWorkerId: null,
-    forgetWorker: () => {},
+    forgetWorker: async () => {},
   });
 }
 
@@ -51,6 +52,12 @@ beforeEach(resetConnectStore);
 afterEach(cleanup);
 
 describe("classifyWorkerStatus (pure logic)", () => {
+  it("an unpaired worker is 'Unpaired' (red), whatever its link says", () => {
+    const s = classifyWorkerStatus({ status: "connected", route: "ws" }, null, false, true);
+    expect(s).toMatchObject({ bucket: "offline", label: "Unpaired", unpaired: true, dotClass: "bg-red-500" });
+    expect(classifyWorkerStatus({ status: "unpaired", route: "ws" }, null, false).unpaired).toBe(true);
+  });
+
   it("connected + not busy -> idle", () => {
     expect(classifyWorkerStatus({ status: "connected", route: "ws" }, null, false).bucket).toBe(
       "idle",
@@ -104,8 +111,8 @@ describe("WorkerList rendering", () => {
   it("shows the empty state with the pairing commands when no workers are paired", () => {
     render(<WorkerList selectedId={null} onSelect={() => {}} />);
     expect(screen.getByText(/No workers paired yet/)).toBeInTheDocument();
-    expect(screen.getByText("sleap-rtc serve --daemonize")).toBeInTheDocument();
-    expect(screen.getByText("sleap-rtc pair")).toBeInTheDocument();
+    expect(screen.getByText("sleap-connect serve")).toBeInTheDocument();
+    expect(screen.getByText("sleap-connect pair")).toBeInTheDocument();
   });
 
   it("shows a card's label, status, specs line, and route", () => {
@@ -118,7 +125,7 @@ describe("WorkerList rendering", () => {
     expect(screen.getByText("gpu-box")).toBeInTheDocument();
     expect(screen.getByText("Idle")).toBeInTheDocument();
     expect(screen.getByText("RTX 4090 · 24 GB ×1 · CUDA 12.4 · sleap-nn 0.3.1")).toBeInTheDocument();
-    expect(screen.getByText(/via WebSocket/)).toBeInTheDocument();
+    expect(screen.getByText(/via local network/)).toBeInTheDocument();
   });
 
   it("selecting a card calls onSelect only — never touches connectStore.selectedWorkerId", () => {
@@ -175,7 +182,9 @@ describe("WorkerList rendering", () => {
       workerErrors: {
         "node-a": "Worker at ws://a:1 identified itself as a different node than expected",
       },
-      forgetWorker: (id: string) => forgotten.push(id),
+      forgetWorker: async (id: string) => {
+        forgotten.push(id);
+      },
       pairWithTicket: async (ticketJson: string, addrOverride?: string, options?: ConnectOptions) => {
         calls.push([ticketJson, addrOverride, options]);
       },
@@ -184,9 +193,11 @@ describe("WorkerList rendering", () => {
     fireEvent.click(screen.getByRole("button", { name: "Re-pair" }));
 
     fireEvent.change(screen.getByPlaceholderText("sleap1…"), {
-      target: { value: '{"node_id":"n2","secret":"s"}' },
+      target: { value: '{"node_id":"n2","secret":"s","addrs":["ws://a:1"]}' },
     });
-    fireEvent.click(screen.getByRole("button", { name: /^Pair$/ }));
+    const pair = screen.getByRole("button", { name: /^Pair$/ });
+    await waitFor(() => expect(pair).not.toBeDisabled());
+    fireEvent.click(pair);
 
     await waitFor(() => expect(forgotten).toEqual(["node-a"]));
   });

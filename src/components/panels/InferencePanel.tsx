@@ -19,6 +19,7 @@ import { isTauri } from "../../platform/index";
 import { detectGpu } from "../../platform/backend";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { NumberInput } from "@/components/NumberInput";
 import { Separator } from "@/components/ui/separator";
 import { HintBubble } from "@/components/HintBubble";
 import { RUN_INFERENCE_STEP } from "@/lib/tutorial/steps";
@@ -191,10 +192,9 @@ function NumField({
   return (
     <div className="flex items-center justify-between gap-2">
       <FieldLabel label={label} hint={hint} />
-      <Input
-        type="number"
+      <NumberInput
         value={value}
-        onChange={(e) => onChange(Number(e.target.value))}
+        onCommit={(n) => onChange(n)}
         min={min}
         max={max}
         step={step}
@@ -229,10 +229,9 @@ function NullableNumField({
   return (
     <div className="flex items-center justify-between gap-2">
       <FieldLabel label={label} hint={hint} />
-      <Input
-        type="number"
-        value={value ?? ""}
-        onChange={(e) => onChange(e.target.value ? Number(e.target.value) : null)}
+      <NumberInput nullable
+        value={value}
+        onCommit={(n) => onChange(n)}
         min={min}
         max={max}
         step={step}
@@ -560,6 +559,15 @@ export function InferencePanel() {
     (t) => t.name === "sleap-nn" || t.commands?.includes("sleap-nn")
   );
   const isRunning = inferenceStatus === "running";
+
+  // Predict ▸ Inference… asks for the Full Configuration window too (not over
+  // a running job).
+  const configDialogRequest = useAppStore((s) => s.configDialogRequest);
+  useEffect(() => {
+    if (configDialogRequest !== "inference") return;
+    useAppStore.getState().set("configDialogRequest", null);
+    if (!isRunning) setConfigDialogOpen(true);
+  }, [configDialogRequest, isRunning]);
   const isDone = inferenceStatus === "completed" || inferenceStatus === "error" || inferenceStatus === "cancelled";
   const activeModelPaths = remoteEnabled ? remoteModelPaths : modelPaths;
 
@@ -771,8 +779,8 @@ export function InferencePanel() {
             {(frameRange === "random_video" || frameRange === "random") && (
               <div className="flex items-center justify-between gap-2 mt-1">
                 <span className="text-[10px] text-muted-foreground shrink-0">Sample count</span>
-                <Input type="number" min={1} value={sampleCount}
-                  onChange={(e) => setSampleCount(Math.max(1, Number(e.target.value)))}
+                <NumberInput min={1} integer value={sampleCount}
+                  onCommit={(n) => setSampleCount(n)}
                   className="h-6 text-[10px] w-20" disabled={isRunning} />
               </div>
             )}

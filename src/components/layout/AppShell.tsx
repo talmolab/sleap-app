@@ -18,7 +18,9 @@ import { Fragment, useCallback, useEffect, useRef, useState } from "react";
 import { PathResolutionDialog } from "../dialogs/PathResolutionDialog";
 import type { ResolvedPath } from "@/lib/pathMappings";
 import { Toaster } from "sonner";
+import { Button } from "@/components/ui/button";
 import { MenuBar } from "./MenuBar";
+import { NATIVE_MENU_BAR } from "@/lib/menu/nativeMenuBar";
 import { StatusBar } from "./StatusBar";
 import { ErrorBoundary } from "./ErrorBoundary";
 import { VideoPlayer } from "../video/VideoPlayer";
@@ -35,6 +37,8 @@ import { GoToFrameDialog } from "../dialogs/GoToFrameDialog";
 import { NewProjectDialog } from "../dialogs/NewProjectDialog";
 import { TranscodeProgressDialog } from "../dialogs/TranscodeProgressDialog";
 import { TranscodeConfirmDialog } from "../dialogs/TranscodeConfirmDialog";
+import { VideoCheckDialog } from "../dialogs/VideoCheckDialog";
+import { useQuickVideoChecks } from "@/hooks/useQuickVideoChecks";
 import { ConfirmDialog } from "../dialogs/ConfirmDialog";
 import { ChoiceDialog } from "../dialogs/ChoiceDialog";
 import { PromptDialog } from "../dialogs/PromptDialog";
@@ -43,13 +47,13 @@ import { DeletePredictionsDialog } from "../dialogs/DeletePredictionsDialog";
 import { MergeProjectDialog } from "../dialogs/MergeProjectDialog";
 import { ExportModelDialog } from "../dialogs/ExportModelDialog";
 import { AddVideoUrlDialog } from "../dialogs/AddVideoUrlDialog";
-import { ExportDialog } from "../dialogs/ExportDialog";
 import { ExportClipDialog } from "../dialogs/ExportClipDialog";
 import { ModelMetricsDialog } from "../dialogs/ModelMetricsDialog";
 import { SizeDistributionDialog } from "../dialogs/SizeDistributionDialog";
 import { LabelQcDialog } from "../dialogs/LabelQcDialog";
 import { OverlayModelsDialog } from "../dialogs/OverlayModelsDialog";
 import { ExportPackageDialog } from "../dialogs/ExportPackageDialog";
+import { ExtractClipDialog } from "../dialogs/ExtractClipDialog";
 import { ShortcutsDialog } from "../dialogs/ShortcutsDialog";
 import { LabelingTipsDialog } from "../dialogs/LabelingTipsDialog";
 import { HelpDialog } from "../dialogs/HelpDialog";
@@ -140,7 +144,9 @@ export function AppShell() {
   const windowDragActive = useAppStore((s) => s.windowDragActive);
   const loadingMessage = useAppStore((s) => s.loadingMessage);
   const loadingProgress = useAppStore((s) => s.loadingProgress);
+  const loadingCancel = useAppStore((s) => s.loadingCancel);
   const sidebarSide = useAppStore((s) => s.sidebarSide);
+  useQuickVideoChecks();
 
   // Dialog state
   const deletePredictionsDialogOpen = useAppStore(
@@ -149,8 +155,6 @@ export function AppShell() {
   const setDeletePredictionsDialogOpen = useAppStore(
     (s) => s.setDeletePredictionsDialogOpen
   );
-  const exportDialogOpen = useAppStore((s) => s.exportDialogOpen);
-  const setExportDialogOpen = useAppStore((s) => s.setExportDialogOpen);
   const modelMetricsDialogOpen = useAppStore((s) => s.modelMetricsDialogOpen);
   const setModelMetricsDialogOpen = useAppStore(
     (s) => s.setModelMetricsDialogOpen
@@ -254,14 +258,25 @@ export function AppShell() {
 
   return (
     <div className="flex flex-col h-full w-full bg-background">
-      <MenuBar />
+      {/* On macOS desktop the menus are in the native menu bar instead. */}
+      {!NATIVE_MENU_BAR && <MenuBar />}
 
       <ErrorBoundary>
-        <div className="flex-1 flex overflow-hidden relative">
+        <div
+          className={cn(
+            "flex-1 flex overflow-hidden relative",
+            // With the menus in the native menu bar nothing sits between the
+            // window edge and the frame viewer, so give it a margin, like
+            // PyQt SLEAP's around its viewer.
+            NATIVE_MENU_BAR && "p-3",
+          )}
+        >
           {projectLoaded ? (
             <div
               className={cn(
                 "flex-1 flex min-w-0 h-full",
+                // The same margin between the viewer and the sidebar.
+                NATIVE_MENU_BAR && "gap-3",
                 // Sidebar on the left → reverse the row so it docks left of the
                 // canvas. The Sidebar mirrors its own internals to match.
                 sidebarSide === "left" && "flex-row-reverse"
@@ -295,6 +310,11 @@ export function AppShell() {
                   {/* Strip the trailing "(NN%)" — the bar shows the number now. */}
                   {loadingMessage.replace(/\s*\(\d+%\)\s*$/, "") || "Loading..."}
                 </p>
+                {loadingCancel && (
+                  <Button variant="outline" size="sm" onClick={loadingCancel}>
+                    Cancel
+                  </Button>
+                )}
               </div>
             </div>
           )}
@@ -326,6 +346,7 @@ export function AppShell() {
       <PromptDialog />
       <TranscodeConfirmDialog />
       <TranscodeProgressDialog />
+      <VideoCheckDialog />
       <SelectToFrameDialog />
       <MergeProjectDialog />
       <AddVideoUrlDialog />
@@ -333,10 +354,6 @@ export function AppShell() {
       <DeletePredictionsDialog
         open={deletePredictionsDialogOpen}
         onOpenChange={setDeletePredictionsDialogOpen}
-      />
-      <ExportDialog
-        open={exportDialogOpen}
-        onOpenChange={setExportDialogOpen}
       />
       <ExportClipDialog />
       <ModelMetricsDialog
@@ -360,6 +377,7 @@ export function AppShell() {
         open={exportPackageDialogOpen}
         onOpenChange={setExportPackageDialogOpen}
       />
+      <ExtractClipDialog />
       <ShortcutsDialog
         open={shortcutsDialogOpen}
         onOpenChange={setShortcutsDialogOpen}

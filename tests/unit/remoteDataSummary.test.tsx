@@ -83,6 +83,27 @@ describe("RemoteDataSummary", () => {
     expect(screen.queryByText(/Locate on worker/)).toBeNull();
   });
 
+  it("videos outside the worker's shared folders count as visible, with a note", async () => {
+    seedWorker("w1");
+    const labels = labelsWithVideos(["/local/a.mp4", "/local/b.mp4"]);
+    const { fn: checkFn } = fixedCheck([
+      { index: 0, local: "/local/a.mp4", worker: "/mnt/data/a.mp4", visible: true },
+      { index: 1, local: "/local/b.mp4", worker: "/raw/b.mp4", visible: true, shared: false },
+    ]);
+    render(
+      <RemoteDataSummary
+        workerId="w1"
+        labels={labels}
+        onResult={() => {}}
+        checkFn={checkFn}
+        debounceMs={0}
+      />,
+    );
+    await waitFor(() => expect(screen.getByText(/Videos 2\/2 visible on GPU Box/)).toBeInTheDocument());
+    expect(screen.getByText(/1 video is outside the worker's shared folders/)).toBeInTheDocument();
+    expect(screen.queryByText(/Locate on worker/)).toBeNull();
+  });
+
   it("some hidden: lists up to 3 basenames with Locate links, 'and K more' beyond that", async () => {
     seedWorker("w1");
     const paths = ["/a/v0.mp4", "/a/v1.mp4", "/a/v2.mp4", "/a/v3.mp4", "/a/v4.mp4"];

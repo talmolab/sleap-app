@@ -7,14 +7,43 @@ import {
   capTrackedJobs,
   migrateConnectPersisted,
   resubscribeWorker,
+  syncConnectFromStorage,
   __resetManagedConnections,
   __setManagedDeps,
 } from "@/stores/connectStore";
 import type { JobSpec } from "@/lib/sleapConnect";
 import type { WorkerClient } from "@/lib/protocolV1/client";
 import type { PathMapping } from "@/lib/pathMappings";
-import { WorkerProtocolError, FS_NOT_FOUND, FS_FORBIDDEN } from "@/lib/protocolV1/errors";
+import {
+  WorkerProtocolError,
+  FS_NOT_FOUND,
+  FS_FORBIDDEN,
+  AUTH_UNTRUSTED,
+} from "@/lib/protocolV1/errors";
 import { buildPairCode, base64UrlEncode, fakeBytes, mistypeCode } from "./buildPairCode";
+import type { SharedConnectState } from "@/lib/connectSync";
+
+/** The shared fields of a store state, as another window would have saved them. */
+function sharedOf(s: SharedConnectState): SharedConnectState {
+  return {
+    pairedWorkers: s.pairedWorkers,
+    trackedJobs: s.trackedJobs,
+    deviceName: s.deviceName,
+    lastSelectedWorkerId: s.lastSelectedWorkerId,
+  };
+}
+
+/** A raw persisted Connect value, as a `storage` event's `newValue` carries it. */
+function storedConnect(state: SharedConnectState): string {
+  return JSON.stringify({ state, version: 3 });
+}
+
+/** Another window saving `state`: it writes the shared key, then this window gets the `storage` event. */
+function otherWindowSaves(state: SharedConnectState): void {
+  const raw = storedConnect(state);
+  localStorage.setItem("sleap-app-connect", raw);
+  syncConnectFromStorage(raw);
+}
 
 // connectStore's own actions (pairing flow, browse pagination, job
 // submission/multi-model splitting, cancel/stop) are what's under test here.
@@ -46,6 +75,8 @@ class FakeWorkerClient {
   static nextPeerNodeId: string | null = "worker-node-id";
   /** One-shot: the NEXT-constructed instance's connect() throws this once, then clears — simulates a failed redial. */
   static nextConnectShouldThrow: Error | null = null;
+  /** One-shot: the NEXT-constructed instance's authProve() throws this. */
+  static nextAuthProveShouldThrow: Error | null = null;
 
   peerNodeId: string | null;
   authenticated = false;
@@ -95,9 +126,29 @@ class FakeWorkerClient {
   private _seq = 0;
   private _closeListeners = new Set<(info: { intentional: boolean; error?: unknown }) => void>();
 
-  constructor(public opts: { url: string; createSocket?: (url: string) => unknown }) {
+  clientsRenameCalls: string[] = [];
+  clientsLeaveCalls = 0;
+
+  async clientsLeave() {
+    this.clientsLeaveCalls++;
+    return { removed: true };
+  }
+
+  async clientsRename(name: string) {
+    this.clientsRenameCalls.push(name);
+  }
+
+  constructor(
+    public opts: {
+      url: string;
+      createSocket?: (url: string) => unknown;
+      agent?: { device_name?: string };
+    },
+  ) {
     this.mountsResult = FakeWorkerClient.nextMounts;
     this.peerNodeId = FakeWorkerClient.nextPeerNodeId;
+    this.authProveShouldThrow = FakeWorkerClient.nextAuthProveShouldThrow;
+    FakeWorkerClient.nextAuthProveShouldThrow = null;
     FakeWorkerClient.instances.push(this);
   }
 
@@ -147,8 +198,10 @@ class FakeWorkerClient {
     return this.jobsSubmitResult;
   }
 
+  jobsCancelShouldThrow: Error | null = null;
   async jobsCancel(jobId: string, mode: string) {
     this.jobsCancelCalls.push([jobId, mode]);
+    if (this.jobsCancelShouldThrow) throw this.jobsCancelShouldThrow;
   }
 
   async jobsDelete(jobIds: string[]) {
@@ -321,6 +374,7 @@ describe("connectStore", () => {
     FakeWorkerClient.nextMounts = [];
     FakeWorkerClient.nextPeerNodeId = "worker-node-id";
     FakeWorkerClient.nextConnectShouldThrow = null;
+    FakeWorkerClient.nextAuthProveShouldThrow = null;
     nextSavedMappings = [];
     // `managed`/`activeSubscriptions` are module-level state that outlives
     // any one test in this file (--isolate resets per FILE, not per test) —
@@ -338,6 +392,7 @@ describe("connectStore", () => {
       pairedWorkers: [],
       selectedWorkerId: null,
       trackedJobs: [],
+      deviceName: null,
       connectionStatus: "disconnected",
       connectionError: null,
       workerMounts: [],
@@ -526,7 +581,7 @@ describe("connectStore", () => {
       });
 
       await expect(useConnectStore.getState().pairWithTicket(code)).rejects.toThrow(
-        /This pairing code expired at .*run `sleap-rtc pair` again/,
+        /This pairing code expired at .*run `sleap-connect pair` again/,
       );
       // Never got as far as opening a connection.
       expect(FakeWorkerClient.instances).toHaveLength(0);
@@ -775,12 +830,13 @@ describe("connectStore", () => {
       });
     });
 
-    it("maps FS_FORBIDDEN to {exists: false}", async () => {
+    it("maps FS_FORBIDDEN (an older worker, outside its shared folders) to {exists: false, forbidden: true}", async () => {
       const client = lastClient();
       client.fsStatResults["/mnt/secret"] = new WorkerProtocolError(FS_FORBIDDEN, "forbidden");
 
       await expect(useConnectStore.getState().statWorkerPath("/mnt/secret")).resolves.toEqual({
         exists: false,
+        forbidden: true,
       });
     });
 
@@ -856,9 +912,9 @@ describe("connectStore", () => {
   });
 
   describe("forgetWorker", () => {
-    it("removes the worker from the paired list", () => {
+    it("removes the worker from the paired list", async () => {
       useConnectStore.setState({ pairedWorkers: [PAIRED_WORKER] });
-      useConnectStore.getState().forgetWorker(PAIRED_WORKER.nodeId);
+      await useConnectStore.getState().forgetWorker(PAIRED_WORKER.nodeId);
       expect(useConnectStore.getState().pairedWorkers).toEqual([]);
     });
 
@@ -867,7 +923,7 @@ describe("connectStore", () => {
       await useConnectStore.getState().connectToWorker(PAIRED_WORKER.nodeId);
       const client = lastClient();
 
-      useConnectStore.getState().forgetWorker(PAIRED_WORKER.nodeId);
+      await useConnectStore.getState().forgetWorker(PAIRED_WORKER.nodeId);
 
       expect(client.closed).toBe(true);
       const state = useConnectStore.getState();
@@ -880,7 +936,7 @@ describe("connectStore", () => {
       useConnectStore.setState({ pairedWorkers: [PAIRED_WORKER, other] });
       await useConnectStore.getState().connectToWorker(PAIRED_WORKER.nodeId);
 
-      useConnectStore.getState().forgetWorker("other");
+      await useConnectStore.getState().forgetWorker("other");
 
       const state = useConnectStore.getState();
       expect(state.selectedWorkerId).toBe(PAIRED_WORKER.nodeId);
@@ -938,6 +994,143 @@ describe("connectStore", () => {
         ["/mnt", 0],
         ["/mnt", 1],
       ]);
+    });
+  });
+
+  describe("unpaired by the worker / Forget", () => {
+    it("Forget over a live connection unpairs on the worker, then closes it", async () => {
+      useConnectStore.setState({ pairedWorkers: [PAIRED_WORKER] });
+      await useConnectStore.getState().connectToWorker(PAIRED_WORKER.nodeId);
+      const client = lastClient();
+
+      await useConnectStore.getState().forgetWorker(PAIRED_WORKER.nodeId);
+
+      expect(client.clientsLeaveCalls).toBe(1);
+      expect(client.closed).toBe(true);
+      expect(useConnectStore.getState().pairedWorkers).toEqual([]);
+    });
+
+    it("Forget while not connected dials once to unpair, and closes that client", async () => {
+      useConnectStore.setState({ pairedWorkers: [PAIRED_WORKER] });
+      await useConnectStore.getState().forgetWorker(PAIRED_WORKER.nodeId);
+      const client = lastClient();
+      expect(client.clientsLeaveCalls).toBe(1);
+      expect(client.closed).toBe(true);
+      expect(useConnectStore.getState().pairedWorkers).toEqual([]);
+    });
+
+    it("Forget of an unreachable worker still forgets it locally", async () => {
+      useConnectStore.setState({ pairedWorkers: [PAIRED_WORKER] });
+      FakeWorkerClient.nextConnectShouldThrow = new Error("unreachable");
+      await useConnectStore.getState().forgetWorker(PAIRED_WORKER.nodeId);
+      expect(useConnectStore.getState().pairedWorkers).toEqual([]);
+    });
+
+    it("a connect refused as untrusted marks the worker unpaired, and automatic dials stop", async () => {
+      useConnectStore.setState({ pairedWorkers: [PAIRED_WORKER] });
+      FakeWorkerClient.nextAuthProveShouldThrow = new WorkerProtocolError(AUTH_UNTRUSTED, "not paired");
+
+      await expect(useConnectStore.getState().connectToWorker(PAIRED_WORKER.nodeId)).rejects.toThrow();
+
+      const state = useConnectStore.getState();
+      expect(state.pairedWorkers[0].unpairedAt).toBeTruthy();
+      expect(state.connectionError).toContain("unpaired by the worker");
+      const dials = FakeWorkerClient.instances.length;
+      await expect(state.clientFor(PAIRED_WORKER.nodeId)).rejects.toThrow("unpaired by the worker");
+      expect(FakeWorkerClient.instances.length).toBe(dials);
+    });
+
+    it("clientFor during an explicit connect waits for that dial instead of failing", async () => {
+      useConnectStore.setState({ pairedWorkers: [PAIRED_WORKER] });
+      const connecting = useConnectStore.getState().connectToWorker(PAIRED_WORKER.nodeId);
+      const client = await useConnectStore.getState().clientFor(PAIRED_WORKER.nodeId);
+      await connecting;
+      expect(client).toBe(lastClient() as unknown as WorkerClient);
+      expect(FakeWorkerClient.instances.length).toBe(1);
+    });
+
+    it("re-pairing an unpaired worker keeps its name and path rules", async () => {
+      useConnectStore.setState({
+        pairedWorkers: [
+          {
+            ...PAIRED_WORKER,
+            label: "GPU box",
+            pathRules: [{ local: "/a", worker: "/mnt/a" }],
+            unpairedAt: "2026-10-23T00:00:00Z",
+          },
+        ],
+        connections: { [PAIRED_WORKER.nodeId]: { status: "unpaired", route: "ws" } },
+      });
+
+      await useConnectStore.getState().pairWithTicket(TICKET);
+
+      const [w] = useConnectStore.getState().pairedWorkers;
+      expect(w.label).toBe("GPU box");
+      expect(w.pathRules).toEqual([{ local: "/a", worker: "/mnt/a" }]);
+      expect(w.unpairedAt).toBeUndefined();
+      expect(useConnectStore.getState().connections[PAIRED_WORKER.nodeId]?.status).not.toBe("unpaired");
+    });
+  });
+
+  describe("device name", () => {
+    const OTHER_WORKER: PairedWorker = {
+      nodeId: "other-worker-id",
+      label: "Other",
+      addrs: ["ws://10.0.0.6:9631"],
+      pairedAt: "2026-09-27T00:00:00Z",
+    };
+
+    beforeEach(() => {
+      useConnectStore.setState({ pairedWorkers: [OTHER_WORKER] });
+      FakeWorkerClient.nextPeerNodeId = OTHER_WORKER.nodeId;
+    });
+
+    it("sends the chosen name in the hello agent", async () => {
+      useConnectStore.setState({ deviceName: "Bench PC" });
+      await useConnectStore.getState().clientFor(OTHER_WORKER.nodeId);
+      expect(lastClient().opts.agent?.device_name).toBe("Bench PC");
+    });
+
+    it("sends a default name when none is chosen", async () => {
+      await useConnectStore.getState().clientFor(OTHER_WORKER.nodeId);
+      expect(lastClient().opts.agent?.device_name).toBeTruthy();
+    });
+
+    it("setDeviceName saves the trimmed name and pushes it to connected workers", async () => {
+      await useConnectStore.getState().clientFor(OTHER_WORKER.nodeId);
+      await useConnectStore.getState().setDeviceName("  Lab   Mac ");
+      expect(useConnectStore.getState().deviceName).toBe("Lab Mac");
+      expect(lastClient().clientsRenameCalls).toEqual(["Lab Mac"]);
+    });
+
+    it("a rename in another tab updates this tab and pushes it to this tab's workers", async () => {
+      useConnectStore.setState({ deviceName: "Old" });
+      await useConnectStore.getState().clientFor(OTHER_WORKER.nodeId);
+      otherWindowSaves({ ...sharedOf(useConnectStore.getState()), deviceName: "New" });
+      expect(useConnectStore.getState().deviceName).toBe("New");
+      await Promise.resolve();
+      expect(lastClient().clientsRenameCalls).toEqual(["New"]);
+      // The next hello carries it too.
+      __resetManagedConnections();
+      await useConnectStore.getState().clientFor(OTHER_WORKER.nodeId);
+      expect(lastClient().opts.agent?.device_name).toBe("New");
+    });
+
+    it("ignores storage writes that don't change the name, or aren't parseable", async () => {
+      useConnectStore.setState({ deviceName: "Same" });
+      await useConnectStore.getState().clientFor(OTHER_WORKER.nodeId);
+      otherWindowSaves(sharedOf(useConnectStore.getState()));
+      syncConnectFromStorage("not json");
+      syncConnectFromStorage(null);
+      await Promise.resolve();
+      expect(useConnectStore.getState().deviceName).toBe("Same");
+      expect(lastClient().clientsRenameCalls).toEqual([]);
+    });
+
+    it("setDeviceName ignores a blank name", async () => {
+      useConnectStore.setState({ deviceName: "Keep" });
+      await useConnectStore.getState().setDeviceName("   ");
+      expect(useConnectStore.getState().deviceName).toBe("Keep");
     });
   });
 
@@ -1624,6 +1817,111 @@ describe("connectStore", () => {
       expect(lastClient().jobsCancelCalls).toEqual([["job_1", "stop"]]);
     });
 
+    // A split multi-model run is N sequential jobs sharing run.id: model 1
+    // runs while the rest wait in the worker's queue. Stop Early (like local
+    // training and SLEAP) ends only the model in progress, so the next one
+    // still trains; Cancel ends the whole run.
+    function splitRun() {
+      useConnectStore.setState({
+        trackedJobs: [
+          makeTracked({ jobId: "job_a", kind: "train", submittedAt: 1 }),
+          makeTracked({ jobId: "job_b", kind: "train", submittedAt: 2 }),
+        ],
+      });
+      lastClient().jobsListResult = [
+        { jobId: "job_a", state: "running", createdAt: "t1", queuePosition: null, modelTypes: [], run: { id: "run_1", index: 0, count: 2 } },
+        { jobId: "job_b", state: "queued", createdAt: "t2", queuePosition: 1, modelTypes: [], run: { id: "run_1", index: 1, count: 2 } },
+      ];
+    }
+
+    it("stopJob on a split run stops the model in progress, not the queued last one", async () => {
+      splitRun();
+      useConnectStore.getState().stopJob();
+      await flushAsync();
+      expect(lastClient().jobsCancelCalls).toEqual([["job_a", "stop"]]);
+    });
+
+    it("cancelJob on a split run cancels every unfinished job in it", async () => {
+      splitRun();
+      useConnectStore.getState().cancelJob();
+      await flushAsync();
+      expect(lastClient().jobsCancelCalls).toEqual([
+        ["job_a", "cancel"],
+        ["job_b", "cancel"],
+      ]);
+    });
+
+    it("cancelJob leaves another run's jobs alone", async () => {
+      splitRun();
+      useConnectStore.setState({
+        trackedJobs: [
+          makeTracked({ jobId: "job_old", kind: "track", submittedAt: 0 }),
+          ...useConnectStore.getState().trackedJobs,
+        ],
+      });
+      lastClient().jobsListResult = [
+        { jobId: "job_old", state: "running", createdAt: "t0", queuePosition: null, modelTypes: [], run: { id: "run_0", index: 0, count: 1 } },
+        ...lastClient().jobsListResult,
+      ];
+      useConnectStore.getState().cancelJob();
+      await flushAsync();
+      expect(lastClient().jobsCancelCalls.map(([id]) => id)).toEqual(["job_a", "job_b"]);
+    });
+
+    it("cancelJob(runId) cancels that run even when a newer run was started since", async () => {
+      // The Training panel's run (run_1) and, after it, a run queued from the
+      // Connect window's New job wizard (run_2): the panel's Cancel must end
+      // run_1, and run_2 must be left to start next.
+      splitRun();
+      useConnectStore.setState({
+        trackedJobs: [
+          ...useConnectStore.getState().trackedJobs,
+          makeTracked({ jobId: "job_w1", kind: "train", source: "worker-file", submittedAt: 3 }),
+          makeTracked({ jobId: "job_w2", kind: "train", source: "worker-file", submittedAt: 4 }),
+        ],
+      });
+      lastClient().jobsListResult = [
+        ...lastClient().jobsListResult,
+        { jobId: "job_w1", state: "queued", createdAt: "t3", queuePosition: 2, modelTypes: [], run: { id: "run_2", index: 0, count: 2 } },
+        { jobId: "job_w2", state: "queued", createdAt: "t4", queuePosition: 3, modelTypes: [], run: { id: "run_2", index: 1, count: 2 } },
+      ];
+      useConnectStore.getState().cancelJob("run_1");
+      await flushAsync();
+      expect(lastClient().jobsCancelCalls).toEqual([
+        ["job_a", "cancel"],
+        ["job_b", "cancel"],
+      ]);
+    });
+
+    it("stopJob(runId) stops that run's model in progress", async () => {
+      splitRun();
+      useConnectStore.getState().stopJob("run_1");
+      await flushAsync();
+      expect(lastClient().jobsCancelCalls).toEqual([["job_a", "stop"]]);
+    });
+
+    it("falls back to the latest tracked job when the worker's job list is unavailable", async () => {
+      useConnectStore.setState({ trackedJobs: [makeTracked()] });
+      lastClient().jobsListShouldThrow = new Error("offline");
+      useConnectStore.getState().stopJob();
+      await flushAsync();
+      expect(lastClient().jobsCancelCalls).toEqual([["job_1", "stop"]]);
+      lastClient().jobsListShouldThrow = null;
+    });
+
+    it("shows an error toast when the worker refuses the stop", async () => {
+      useConnectStore.setState({ trackedJobs: [makeTracked()] });
+      lastClient().jobsCancelShouldThrow = new Error("job.not_found");
+      useConnectStore.getState().stopJob();
+      await flushAsync();
+      const { toast } = await import("@/lib/notify");
+      expect(toast.error).toHaveBeenCalledWith(
+        expect.stringContaining("Couldn't stop training"),
+        expect.objectContaining({ description: expect.stringContaining("job.not_found") }),
+      );
+      lastClient().jobsCancelShouldThrow = null;
+    });
+
     it("only cancels a job tracked against the currently-selected worker", async () => {
       useConnectStore.setState({
         trackedJobs: [makeTracked({ workerId: "other-worker", jobId: "job_other" })],
@@ -1722,6 +2020,21 @@ describe("connectStore", () => {
     });
   });
 
+  describe("output folders (Change…)", () => {
+    it("remembers a folder per project on a worker, and forgets it", () => {
+      useConnectStore.setState({ pairedWorkers: [PAIRED_WORKER] });
+      const { setOutputDir } = useConnectStore.getState();
+      setOutputDir(PAIRED_WORKER.nodeId, "p1", "/root/vast/amick/out");
+      setOutputDir(PAIRED_WORKER.nodeId, "p2", "/root/vast/amick/other");
+      expect(useConnectStore.getState().pairedWorkers[0].outputDirs).toEqual({
+        p1: "/root/vast/amick/out",
+        p2: "/root/vast/amick/other",
+      });
+      setOutputDir(PAIRED_WORKER.nodeId, "p1", null);
+      expect(useConnectStore.getState().pairedWorkers[0].outputDirs).toEqual({ p2: "/root/vast/amick/other" });
+    });
+  });
+
   describe("per-worker job actions + worker info", () => {
     beforeEach(() => {
       useConnectStore.setState({ pairedWorkers: [PAIRED_WORKER] });
@@ -1737,6 +2050,7 @@ describe("connectStore", () => {
         cudaVersion: "12.4",
         sleapNnVersion: "0.2.0",
         busy: true,
+        features: ["output_dir"],
       };
       await useConnectStore.getState().refreshWorkerInfo(PAIRED_WORKER.nodeId);
       expect(useConnectStore.getState().workerInfo[PAIRED_WORKER.nodeId]).toEqual({
@@ -1746,6 +2060,7 @@ describe("connectStore", () => {
         cudaVersion: "12.4",
         sleapNnVersion: "0.2.0",
         busy: true,
+        features: ["output_dir"],
       });
     });
 
@@ -2176,9 +2491,12 @@ describe("trackedJobs persisted migration (v1 -> v2)", () => {
   });
 
   it("leaves already-v2 persisted state untouched", () => {
-    const existing = { pairedWorkers: [], selectedWorkerId: null, trackedJobs: [makeTracked()] };
+    // One job, not two makeTracked() calls: each stamps Date.now(), and two
+    // calls a millisecond apart made this flaky.
+    const job = makeTracked();
+    const existing = { pairedWorkers: [], selectedWorkerId: null, trackedJobs: [job] };
     const migrated = migrateConnectPersisted(existing, 2) as typeof existing;
-    expect(migrated.trackedJobs).toEqual([makeTracked()]);
+    expect(migrated.trackedJobs).toEqual([job]);
   });
 });
 
@@ -2206,5 +2524,116 @@ describe("capTrackedJobs", () => {
     );
 
     expect(capTrackedJobs(active)).toHaveLength(51);
+  });
+});
+
+describe("selection persisted migration (v2 -> v3)", () => {
+  it("moves the shared selectedWorkerId to lastSelectedWorkerId", () => {
+    const migrated = migrateConnectPersisted(
+      { pairedWorkers: [], selectedWorkerId: "w-1", trackedJobs: [] },
+      2,
+    ) as Record<string, unknown>;
+
+    expect(migrated.lastSelectedWorkerId).toBe("w-1");
+    expect("selectedWorkerId" in migrated).toBe(false);
+  });
+});
+
+describe("Connect state shared across windows (#453)", () => {
+  const W1: PairedWorker = { nodeId: "W1", label: "W1", addrs: ["ws://w1"], pairedAt: "2026-11-05T00:00:00Z" };
+  const W2: PairedWorker = { nodeId: "W2", label: "W2", addrs: ["ws://w2"], pairedAt: "2026-11-05T00:00:00Z" };
+  const job = (lastSeq: number): TrackedJob => ({
+    workerId: "W1",
+    jobId: "job-1",
+    lastSeq,
+    kind: "train",
+    label: "Train",
+    source: "window",
+    state: "active",
+    seen: false,
+    submittedAt: 1,
+  });
+  const stored = () =>
+    (JSON.parse(localStorage.getItem("sleap-app-connect") ?? "null") as { state: SharedConnectState }).state;
+  const settle = async () => {
+    for (let i = 0; i < 5; i++) await Promise.resolve();
+  };
+
+  beforeEach(async () => {
+    __resetManagedConnections();
+    localStorage.clear();
+    sessionStorage.clear();
+    // Start from a clean stored copy: the first save after clearing has
+    // nothing to merge with, so it becomes this window's base.
+    useConnectStore.setState({
+      pairedWorkers: [W1],
+      trackedJobs: [job(10)],
+      deviceName: null,
+      lastSelectedWorkerId: null,
+      selectedWorkerId: null,
+    });
+    await settle();
+  });
+
+  it("keeps a worker another window paired when this window saves job progress (W1/W2)", async () => {
+    // The other window's save lands in storage before its event reaches us.
+    localStorage.setItem(
+      "sleap-app-connect",
+      storedConnect({ pairedWorkers: [W1, W2], trackedJobs: [job(10)], deviceName: null, lastSelectedWorkerId: null }),
+    );
+    useConnectStore.setState({ trackedJobs: [job(12)] });
+    await settle();
+
+    expect(stored().pairedWorkers.map((w) => w.nodeId)).toEqual(["W1", "W2"]);
+    expect(stored().trackedJobs[0].lastSeq).toBe(12);
+    // ...and this window now shows it too.
+    expect(useConnectStore.getState().pairedWorkers.map((w) => w.nodeId)).toEqual(["W1", "W2"]);
+  });
+
+  it("doesn't bring back a worker another window forgot", async () => {
+    useConnectStore.setState({ pairedWorkers: [W1, W2], selectedWorkerId: "W1" });
+    await settle();
+
+    otherWindowSaves({ pairedWorkers: [W2], trackedJobs: [], deviceName: null, lastSelectedWorkerId: "W1" });
+    await settle();
+    expect(useConnectStore.getState().pairedWorkers.map((w) => w.nodeId)).toEqual(["W2"]);
+    expect(useConnectStore.getState().selectedWorkerId).toBeNull();
+
+    useConnectStore.setState({ deviceName: "Bench" }); // any later save here
+    await settle();
+    expect(stored().pairedWorkers.map((w) => w.nodeId)).toEqual(["W2"]);
+  });
+
+  it("shows another window's path rules, and keeps them through this window's saves", async () => {
+    const rules = [{ local: "/data", remote: "/mnt/data" }] as unknown as PathMapping[];
+    otherWindowSaves({ pairedWorkers: [{ ...W1, pathRules: rules }], trackedJobs: [job(10)], deviceName: null, lastSelectedWorkerId: null });
+    await settle();
+    expect(useConnectStore.getState().pairedWorkers[0].pathRules).toEqual(rules);
+
+    useConnectStore.setState({ trackedJobs: [job(11)] });
+    await settle();
+    expect(stored().pairedWorkers[0].pathRules).toEqual(rules);
+  });
+
+  it("keeps each window's selection its own", async () => {
+    useConnectStore.setState({ pairedWorkers: [W1, W2], selectedWorkerId: "W1" });
+    await settle();
+    expect(sessionStorage.getItem("sleap-app-connect-selected")).toBe("W1");
+    expect(stored().lastSelectedWorkerId).toBe("W1");
+
+    otherWindowSaves({ pairedWorkers: [W1, W2], trackedJobs: [job(10)], deviceName: null, lastSelectedWorkerId: "W2" });
+    await settle();
+
+    expect(useConnectStore.getState().selectedWorkerId).toBe("W1");
+    expect(useConnectStore.getState().lastSelectedWorkerId).toBe("W2");
+  });
+
+  it("never lets job progress go backwards from a stale window's copy", async () => {
+    useConnectStore.setState({ trackedJobs: [job(20)] });
+    await settle();
+    otherWindowSaves({ pairedWorkers: [W1], trackedJobs: [job(15)], deviceName: null, lastSelectedWorkerId: null });
+    await settle();
+    // The other window changed the job too (10 -> 15), so both changed: max wins.
+    expect(useConnectStore.getState().trackedJobs[0].lastSeq).toBe(20);
   });
 });

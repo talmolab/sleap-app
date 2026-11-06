@@ -14,12 +14,16 @@
  * split), so this never materializes the file in memory either.
  */
 import {
+  openH5Worker,
   readSlpStreaming,
+  StreamingHdf5VideoBackend,
   type Labels,
   type RangeSource,
+  type StreamingH5File,
 } from "@talmolab/sleap-io.js";
+import { frameToBitmap } from "@/lib/frameBitmap";
 import type { WorkerClient } from "@/lib/protocolV1/client";
-import { WorkerProtocolError, FS_NOT_FOUND, FS_FORBIDDEN } from "@/lib/protocolV1/errors";
+import { WorkerProtocolError, FS_NOT_FOUND, FS_FORBIDDEN, PROTO_UNKNOWN_METHOD } from "@/lib/protocolV1/errors";
 import { translatePath, type PathMapping } from "@/lib/pathMappings";
 import type { VideoVisibility } from "@/lib/remoteVisibility";
 
@@ -42,14 +46,23 @@ const FS_READ_MAX_BYTES = 4 * 1024 * 1024;
 // Default page size for `createWorkerFileRangeSource`'s cache: large enough
 // that `readSlpStreaming`'s small, sequential metadata reads mostly land on
 // an already-fetched page (one `fs.read` round trip serves many `readRange`
-// calls), small enough that a handful of cached pages is a bounded,
-// negligible amount of memory.
+// calls), small enough that a scattered metadata read doesn't pull megabytes.
 const DEFAULT_PAGE_SIZE = 1024 * 1024; // 1 MiB
 
 // Small LRU: a worker-side SLP's structure is read front-to-back once, not
 // randomly re-scanned, so only a handful of recently-touched pages are ever
-// worth keeping around.
-const DEFAULT_MAX_PAGES = 8;
+// worth keeping around (plus room for the read-ahead below).
+const DEFAULT_MAX_PAGES = 16;
+
+// How many `fs.read` calls a large read (a whole pose table) keeps in flight.
+// Over a relay each round trip costs far more than its bytes, so overlapping
+// them is what makes a big table arrive in seconds instead of minutes.
+const BULK_CONCURRENCY = 4;
+
+// Read-ahead for runs of small sequential reads (a table read in small
+// pieces): after moving forward N pages in a row, prefetch up to N (at most
+// this many) following pages.
+const MAX_READ_AHEAD_PAGES = 4;
 
 /**
  * A `RangeSource` reading one worker-side file via `fs.read`, with an
@@ -73,29 +86,37 @@ export interface WorkerFileRangeSource extends RangeSource {
   lastError(): unknown;
 }
 
-/** Fetches `[offset, offset + length)` from the worker, splitting into ≤`FS_READ_MAX_BYTES` calls if `length` exceeds it (only possible with an `opts.pageSize` override above the worker's own cap). */
+/** Fetches `[offset, offset + length)` from the worker in ≤`FS_READ_MAX_BYTES` calls, up to `concurrency` at a time. */
 async function readWorkerRange(
   client: WorkerClient,
   path: string,
   offset: number,
   length: number,
+  concurrency = 1,
 ): Promise<Uint8Array> {
   if (length <= FS_READ_MAX_BYTES) {
     const { content } = await client.fsRead(path, offset, length);
     return content;
   }
-  const chunks: Uint8Array[] = [];
-  let got = 0;
-  while (got < length) {
-    const chunkLength = Math.min(FS_READ_MAX_BYTES, length - got);
-    const { content } = await client.fsRead(path, offset + got, chunkLength);
-    chunks.push(content);
-    got += content.length;
-    if (content.length < chunkLength) break; // short read — EOF reached early
+  const pieces: Array<{ offset: number; length: number }> = [];
+  for (let got = 0; got < length; got += FS_READ_MAX_BYTES) {
+    pieces.push({ offset: offset + got, length: Math.min(FS_READ_MAX_BYTES, length - got) });
   }
-  const out = new Uint8Array(got);
+  const results: Uint8Array[] = new Array(pieces.length);
+  let next = 0;
+  const run = async () => {
+    while (next < pieces.length) {
+      const i = next++;
+      results[i] = (await client.fsRead(path, pieces[i].offset, pieces[i].length)).content;
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(concurrency, pieces.length) }, run));
+  // A short piece means EOF came early: nothing after it is real data.
+  const short = results.findIndex((r, i) => r.length < pieces[i].length);
+  const kept = short === -1 ? results : results.slice(0, short + 1);
+  const out = new Uint8Array(kept.reduce((n, r) => n + r.length, 0));
   let written = 0;
-  for (const chunk of chunks) {
+  for (const chunk of kept) {
     out.set(chunk, written);
     written += chunk.length;
   }
@@ -108,41 +129,89 @@ async function readWorkerRange(
  * (`tauriIrohBlob.ts`), used to read a worker-side `.slp`'s structure via
  * `readSlpStreaming` without ever transferring the whole file.
  *
- * Reads are page-aligned (`opts.pageSize`, default 1 MiB) and cached in a
- * small LRU (`opts.maxPages`, default 8) keyed by page index, so
- * `readSlpStreaming`'s sequential small reads mostly hit an
- * already-fetched page instead of round-tripping `fs.read` per call.
+ * Tuned by what's being read:
+ * - **Small reads** (HDF5 metadata) are page-aligned (`opts.pageSize`,
+ *   default 1 MiB) and cached in a small LRU (`opts.maxPages`), so the
+ *   reader's many small sequential reads mostly hit an already-fetched page.
+ *   Reading forward page after page (a table read in small pieces) also
+ *   prefetches the next few pages in parallel.
+ * - **Large reads** (at least a page, e.g. a whole pose table) skip the cache
+ *   and are fetched in worker-sized pieces, several in flight at once.
+ *
+ * `opts.onBytes` is told how many bytes each `fs.read` brought back (for a
+ * progress readout).
  */
 export function createWorkerFileRangeSource(
   client: WorkerClient,
   path: string,
   size: number,
-  opts?: { pageSize?: number; maxPages?: number },
+  opts?: { pageSize?: number; maxPages?: number; onBytes?: (n: number) => void },
 ): WorkerFileRangeSource {
   const pageSize = opts?.pageSize ?? DEFAULT_PAGE_SIZE;
   const maxPages = opts?.maxPages ?? DEFAULT_MAX_PAGES;
+  const onBytes = opts?.onBytes;
+  const counted = onBytes
+    ? ({
+        fsRead: async (p: string, o?: number, l?: number) => {
+          const result = await client.fsRead(p, o, l);
+          onBytes(result.content.length);
+          return result;
+        },
+      } as unknown as WorkerClient)
+    : client;
   // Insertion order doubles as recency order: a cache hit deletes + re-sets
   // its own entry so it becomes the newest, and eviction always drops
   // whichever key iterates first (the least recently touched).
   const cache = new Map<number, Uint8Array>();
+  const inFlight = new Map<number, Promise<Uint8Array>>();
+  // The page the reader last moved onto, and how many pages in a row it has
+  // moved forward one at a time (hits on read-ahead pages included).
+  let lastPage = -2;
+  let run = 0;
   let lastError: unknown = null;
 
+  function fetchPage(pageIndex: number): Promise<Uint8Array> {
+    const pending = inFlight.get(pageIndex);
+    if (pending) return pending;
+    const pageOffset = pageIndex * pageSize;
+    const pageLength = Math.min(pageSize, size - pageOffset);
+    const promise = readWorkerRange(counted, path, pageOffset, pageLength).then(
+      (bytes) => {
+        inFlight.delete(pageIndex);
+        cache.set(pageIndex, bytes);
+        while (cache.size > maxPages) {
+          const oldest = cache.keys().next().value;
+          if (oldest === undefined) break;
+          cache.delete(oldest);
+        }
+        return bytes;
+      },
+      (err) => {
+        inFlight.delete(pageIndex);
+        throw err;
+      },
+    );
+    inFlight.set(pageIndex, promise);
+    return promise;
+  }
+
   async function readPage(pageIndex: number): Promise<Uint8Array> {
+    if (pageIndex !== lastPage) {
+      run = pageIndex === lastPage + 1 ? run + 1 : 0;
+      lastPage = pageIndex;
+      // Reading forward page by page: fetch the next few pages ahead of it.
+      const ahead = Math.min(run, MAX_READ_AHEAD_PAGES);
+      for (let i = 1; i <= ahead && (pageIndex + i) * pageSize < size; i++) {
+        if (!cache.has(pageIndex + i)) fetchPage(pageIndex + i).catch(() => {});
+      }
+    }
     const cached = cache.get(pageIndex);
     if (cached) {
       cache.delete(pageIndex);
       cache.set(pageIndex, cached);
       return cached;
     }
-    const pageOffset = pageIndex * pageSize;
-    const pageLength = Math.min(pageSize, size - pageOffset);
-    const bytes = await readWorkerRange(client, path, pageOffset, pageLength);
-    cache.set(pageIndex, bytes);
-    if (cache.size > maxPages) {
-      const oldest = cache.keys().next().value;
-      if (oldest !== undefined) cache.delete(oldest);
-    }
-    return bytes;
+    return fetchPage(pageIndex);
   }
 
   return {
@@ -151,10 +220,13 @@ export function createWorkerFileRangeSource(
     readRange: async (offset, length) => {
       const end = Math.min(offset + length, size);
       if (end <= offset) return new Uint8Array(0);
-      const out = new Uint8Array(end - offset);
-      let pos = offset;
-      let written = 0;
       try {
+        if (end - offset >= pageSize) {
+          return await readWorkerRange(counted, path, offset, end - offset, BULK_CONCURRENCY);
+        }
+        const out = new Uint8Array(end - offset);
+        let pos = offset;
+        let written = 0;
         while (pos < end) {
           const pageIndex = Math.floor(pos / pageSize);
           const pageStart = pageIndex * pageSize;
@@ -166,11 +238,11 @@ export function createWorkerFileRangeSource(
           written += take;
           pos += take;
         }
+        return written === out.length ? out : out.subarray(0, written);
       } catch (err) {
         lastError = err;
         throw err;
       }
-      return written === out.length ? out : out.subarray(0, written);
     },
   };
 }
@@ -179,16 +251,36 @@ export function createWorkerFileRangeSource(
  * Reads a worker-side `.slp`'s structure (skeleton, videos, labeled frames)
  * via `fs.stat` + `fs.read` only — never the embedded image bytes
  * (`openVideos: false`), since the launcher wizard only needs stats to
- * build a spec and check video reachability, not to render anything.
+ * build a spec and check video reachability, not to render anything — and
+ * only user instances (`userInstancesOnly`): predicted points are most of a
+ * predictions file and never used here.
  */
-export async function loadWorkerLabels(client: WorkerClient, path: string): Promise<Labels> {
+export async function loadWorkerLabels(
+  client: WorkerClient,
+  path: string,
+  opts?: { onProgress?: (progress: WorkerLabelsProgress) => void },
+): Promise<Labels> {
   const stat = await client.fsStat(path);
-  const source = createWorkerFileRangeSource(client, path, stat.size);
+  const progress: WorkerLabelsProgress = { stage: "Reading metadata", bytesRead: 0, fileSize: stat.size };
+  const report = () => opts?.onProgress?.({ ...progress });
+  const source = createWorkerFileRangeSource(client, path, stat.size, {
+    onBytes: (n) => {
+      progress.bytesRead += n;
+      report();
+    },
+  });
   try {
     return await readSlpStreaming(source, {
       openVideos: false,
+      // Only the labels: never download pred_points, which is most of a
+      // predictions file and nothing the wizard uses.
+      userInstancesOnly: true,
       filenameHint: path,
       h5wasmUrl: H5WASM_URL,
+      onProgress: (_current, _total, message) => {
+        if (message) progress.stage = message;
+        report();
+      },
     });
   } catch (err) {
     // See WorkerFileRangeSource.lastError's doc: a readRange failure never
@@ -197,6 +289,15 @@ export async function loadWorkerLabels(client: WorkerClient, path: string): Prom
     // failure the swallowed short read produced.
     throw source.lastError() ?? err;
   }
+}
+
+/** How far {@link loadWorkerLabels} has got: the reader's current stage and the bytes fetched so far. */
+export interface WorkerLabelsProgress {
+  /** sleap-io.js's stage label, e.g. "Reading instances". */
+  stage: string;
+  bytesRead: number;
+  /** The whole file's size (an upper bound: not every table is necessarily read). */
+  fileSize: number;
 }
 
 /** One video's reachability from a worker's point of view, as checked by {@link checkWorkerFileVideos}. */
@@ -352,4 +453,116 @@ export function videoChecksToVisibility(checks: WorkerFileVideoCheck[]): VideoVi
       ? { index: c.index, local: c.path, worker: null, visible: false }
       : { index: c.index, local: c.path, worker: c.workerPath, visible: c.workerPath !== null },
   );
+}
+
+/**
+ * The worker-side file holding frame `frameIdx` of a worker `.slp`'s video,
+ * given that video's {@link WorkerFileVideoCheck}: its resolved `workerPath`
+ * for a single-file video; for a multi-file `ImageVideo`, frame `frameIdx`'s
+ * own image, assumed to sit in the same folder the first image resolved to
+ * (only the first is ever checked). `null` when there's no such file — an
+ * embedded video, one not found on the worker, or a frame past the list.
+ */
+export function workerFramePath(
+  filename: string | string[],
+  check: WorkerFileVideoCheck,
+  frameIdx: number,
+): string | null {
+  if (check.embedded || check.workerPath === null) return null;
+  if (!Array.isArray(filename) || filename.length <= 1) return check.workerPath;
+  const image = filename[frameIdx];
+  if (image === undefined) return null;
+  const dir = dirnameOf(check.workerPath);
+  return dir ? `${dir}/${basenameOf(image)}` : basenameOf(image);
+}
+
+/** A decoded preview frame, with the original video frame's size (the image itself may be scaled down). */
+export interface PreviewFrame {
+  bitmap: ImageBitmap;
+  width: number;
+  height: number;
+}
+
+/**
+ * Frame `frameIdx` of video `videoIndex` of a worker `.slp`, decoded on the
+ * worker (`media.frame`) — for the receptive-field preview, since the app
+ * can't decode a worker-side video itself. Throws an `Error` whose message
+ * is fit to show in the preview when it can't.
+ */
+export async function fetchWorkerPreviewFrame(
+  client: WorkerClient,
+  labels: Labels,
+  labelsPath: string,
+  checks: WorkerFileVideoCheck[],
+  videoIndex: number,
+  frameIdx: number,
+): Promise<PreviewFrame> {
+  const video = labels.videos[videoIndex];
+  const check = checks.find((c) => c.index === videoIndex);
+  if (!video || !check) throw new Error("Preview unavailable");
+  if (check.embedded) return readEmbeddedPreviewFrame(client, labelsPath, video, videoIndex, frameIdx);
+  const path = workerFramePath(video.filename, check, frameIdx);
+  if (path === null) throw new Error("Video not found on the worker");
+  let frame;
+  try {
+    frame = await client.mediaFrame(path, frameIdx);
+  } catch (err) {
+    if (err instanceof WorkerProtocolError && err.code === PROTO_UNKNOWN_METHOD) {
+      throw new Error("Update SLEAP Connect on the worker to preview its videos");
+    }
+    if (err instanceof WorkerProtocolError && err.code === FS_NOT_FOUND) {
+      throw new Error("Video not found on the worker");
+    }
+    throw new Error("Couldn't load a frame from the worker");
+  }
+  const blob = new Blob([frame.content as BlobPart], { type: frame.mime });
+  return { bitmap: await createImageBitmap(blob), width: frame.width, height: frame.height };
+}
+
+/**
+ * One frame of a video embedded in a worker-side `pkg.slp`: the frame's own
+ * stored image (PNG/JPEG, small) is read straight out of the file via
+ * `fs.read` and decoded here — no worker-side decoding needed. Opens its own
+ * short-lived reader over the file and closes it afterwards. A frame that
+ * isn't stored (frame 0 when no frame is labeled) falls back to the first one
+ * that is.
+ */
+async function readEmbeddedPreviewFrame(
+  client: WorkerClient,
+  labelsPath: string,
+  video: Labels["videos"][number],
+  videoIndex: number,
+  frameIdx: number,
+): Promise<PreviewFrame> {
+  const fail = () => new Error("Couldn't read the embedded frame from the worker");
+  let h5: StreamingH5File | null = null;
+  try {
+    const stat = await client.fsStat(labelsPath);
+    h5 = await openH5Worker(createWorkerFileRangeSource(client, labelsPath, stat.size), {
+      filenameHint: labelsPath,
+      h5wasmUrl: H5WASM_URL,
+    });
+    const meta = video.backendMetadata ?? {};
+    const datasetPath =
+      typeof meta.dataset === "string" ? meta.dataset : `video${videoIndex}/video`;
+    const backend = new StreamingHdf5VideoBackend({
+      filename: labelsPath,
+      h5file: h5,
+      datasetPath,
+      format: typeof meta.format === "string" ? meta.format : undefined,
+      channelOrder: typeof meta.channel_order === "string" ? meta.channel_order : undefined,
+      deferred: true,
+    });
+    await backend.ensureLoaded();
+    const stored = backend.frameNumbers;
+    const target = stored.includes(frameIdx) ? frameIdx : stored[0];
+    if (target === undefined) throw fail();
+    const bitmap = await frameToBitmap(await backend.getFrame(target), backend.shape);
+    if (!bitmap) throw fail();
+    return { bitmap, width: bitmap.width, height: bitmap.height };
+  } catch (err) {
+    throw err instanceof Error && err.message.startsWith("Couldn't") ? err : fail();
+  } finally {
+    await h5?.close().catch(() => {});
+  }
 }

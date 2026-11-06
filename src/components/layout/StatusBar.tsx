@@ -17,7 +17,7 @@ import {
 } from "@/components/ui/tooltip";
 import { Crosshair, Minus, Pencil, Plus } from "lucide-react";
 import { isTauri } from "../../platform/index";
-import { computeStatusStats, instancesToShowCount } from "@/lib/statusStats";
+import { computeStatusStats, formatLabeledCount, instancesToShowCount } from "@/lib/statusStats";
 import { DEFAULT_SHORTCUTS } from "@/lib/shortcuts";
 import { formatShortcut } from "@/lib/formatShortcut";
 
@@ -116,9 +116,9 @@ export function StatusBar() {
             </button>
             <Separator orientation="vertical" className="h-3.5" />
             <span className="whitespace-nowrap">
-              Labeled: {stats.userInVideo.toLocaleString()}
+              Labeled: {formatLabeledCount(stats.userInVideo, stats.negativeInVideo)}
               {stats.totalVideos > 1
-                ? ` in video, ${stats.userInProject.toLocaleString()} in project`
+                ? ` in video, ${formatLabeledCount(stats.userInProject, stats.negativeInProject)} in project`
                 : ""}
             </span>
             {stats.predictedInVideo > 0 && (
@@ -226,7 +226,7 @@ export function StatusBar() {
               </Button>
             </TooltipTrigger>
             <TooltipContent side="top">
-              <p>{labelingMode === "place" ? "Place mode (N to switch to Select)" : "Select mode (N to switch to Place)"}</p>
+              <p>{labelingMode === "place" ? "Place mode (Shift+N to switch to Select)" : "Select mode (Shift+N to switch to Place)"}</p>
             </TooltipContent>
           </Tooltip>
           <Separator orientation="vertical" className="h-3.5 mr-1" />

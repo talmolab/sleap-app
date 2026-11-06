@@ -10,15 +10,17 @@ import type { Labels } from "@/types";
 
 /**
  * Why a video isn't visible on the worker:
- * - "no-location": no worker mount prefix and no path rule covers it — we
- *   don't even have a candidate worker path to check.
+ * - "no-location": no shared-folder prefix and no path rule covers it, and
+ *   the local path itself doesn't exist on the worker either.
  * - "not-found": we have a candidate path, but the worker's `fs.stat` says
  *   it doesn't exist there.
- * - "outside-shares": the candidate path (whether pass-through or
- *   rule-translated) isn't under any of the worker's mounts — the worker's
- *   `fs.stat` only serves paths under a configured mount, so this is never
- *   checked remotely at all.
+ * - "outside-shares": the candidate isn't under a shared folder and the
+ *   worker won't say whether it exists (an older worker refuses `fs.stat`
+ *   outside its shared folders).
  * - "error": the `stat` call itself failed (e.g. a dropped connection).
+ *
+ * A newer worker does confirm paths outside its shared folders exist (jobs
+ * can read media there): those count as visible, with `shared: false`.
  */
 export type HiddenReason = "no-location" | "not-found" | "outside-shares" | "error";
 
@@ -29,7 +31,14 @@ export interface VideoVisibility {
   worker: string | null;
   visible: boolean;
   reason?: HiddenReason;
+  /** False when visible but outside the worker's shared folders (can't be browsed there). */
+  shared?: boolean;
 }
+
+/** What a `stat` probe reports: just "exists", or the worker's fuller answer. */
+export type StatProbe =
+  | boolean
+  | { exists: boolean; shared?: boolean; forbidden?: boolean };
 
 export type VisibilityCase = "all" | "some" | "none";
 
@@ -44,29 +53,27 @@ export function projectVideoPaths(labels: Labels): string[] {
 
 /**
  * Checks every video path against the worker, bounded to `deps.concurrency`
- * (default 8) concurrent `stat` calls — only paths that resolve to a
- * worker-mount candidate ever call `stat`; "no-location"/"outside-shares"
- * are decided locally and never consume a concurrency slot.
+ * (default 8) concurrent `stat` calls. The candidate is the path itself when
+ * it's already under a shared folder, else the path-rule translation, else
+ * the path as-is (the same path may exist on both machines).
  */
 export async function checkVideoVisibility(
   videoPaths: string[],
   deps: {
     rules: PathMapping[];
     mounts: string[];
-    stat: (workerPath: string) => Promise<boolean>;
+    stat: (workerPath: string) => Promise<StatProbe>;
     concurrency?: number;
   },
 ): Promise<VideoVisibility[]> {
+  // Whether each candidate came from a shared folder or a path rule (vs. the
+  // bare local path, which says "no-location" rather than "not-found").
+  const located: boolean[] = [];
   const results: VideoVisibility[] = videoPaths.map((local, index) => {
-    const candidate = isWorkerPath(local, deps.mounts) ? local : translatePath(local, deps.rules);
-    if (candidate === null) {
-      return { index, local, worker: null, visible: false, reason: "no-location" };
-    }
-    if (!isWorkerPath(candidate, deps.mounts)) {
-      return { index, local, worker: candidate, visible: false, reason: "outside-shares" };
-    }
+    const mapped = isWorkerPath(local, deps.mounts) ? local : translatePath(local, deps.rules);
+    located[index] = mapped !== null;
     // Pending: needs a `stat` call below. `reason` stays unset as the marker.
-    return { index, local, worker: candidate, visible: false };
+    return { index, local, worker: mapped ?? local, visible: false };
   });
 
   const pending = results
@@ -80,8 +87,16 @@ export async function checkVideoVisibility(
       const i = pending[cursor++];
       const r = results[i];
       try {
-        const exists = await deps.stat(r.worker as string);
-        results[i] = exists ? { ...r, visible: true } : { ...r, visible: false, reason: "not-found" };
+        const probe = await deps.stat(r.worker as string);
+        const { exists, shared, forbidden } =
+          typeof probe === "boolean" ? { exists: probe, shared: undefined, forbidden: false } : probe;
+        if (exists) {
+          results[i] = shared === false ? { ...r, visible: true, shared: false } : { ...r, visible: true };
+        } else if (!located[i]) {
+          results[i] = { ...r, worker: null, visible: false, reason: "no-location" };
+        } else {
+          results[i] = { ...r, visible: false, reason: forbidden ? "outside-shares" : "not-found" };
+        }
       } catch {
         results[i] = { ...r, visible: false, reason: "error" };
       }

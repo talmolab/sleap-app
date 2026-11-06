@@ -154,6 +154,7 @@ describe("Component rendering", () => {
         userInstances: [{}],
         unusedPredictions: [],
         hasUserInstances: true,
+        isUserLabeled: true,
         hasPredictedInstances: false,
         isNegative: false,
         instances: [{}],
@@ -212,6 +213,7 @@ describe("Component rendering", () => {
         userInstances: [{}],
         unusedPredictions: [],
         hasUserInstances: true,
+        isUserLabeled: true,
         hasPredictedInstances: false,
         isNegative: false,
         instances: [{}],
@@ -245,6 +247,7 @@ describe("Component rendering", () => {
         userInstances: [],
         unusedPredictions: [{}],
         hasUserInstances: false,
+        isUserLabeled: false,
         hasPredictedInstances: true,
         isNegative: false,
         instances: [{}],
@@ -277,6 +280,7 @@ describe("Component rendering", () => {
         userInstances: [{}],
         unusedPredictions: [],
         hasUserInstances: true,
+        isUserLabeled: true,
         hasPredictedInstances: false,
         isNegative: false,
         instances: [{}],
@@ -310,6 +314,7 @@ describe("Component rendering", () => {
         userInstances: [],
         unusedPredictions: [],
         hasUserInstances: false,
+        isUserLabeled: true, // a negative frame counts as user-labeled (io.js)
         hasPredictedInstances: false,
         isNegative: true,
         instances: [],
@@ -478,10 +483,10 @@ describe("Component rendering", () => {
       render(<MenuBar />);
 
       expect(screen.getByText("File")).toBeInTheDocument();
-      expect(screen.getByText("Edit")).toBeInTheDocument();
+      expect(screen.queryByText("Edit")).not.toBeInTheDocument();
       expect(screen.getByText("Go")).toBeInTheDocument();
       expect(screen.getByText("View")).toBeInTheDocument();
-      expect(screen.getByText("Panels")).toBeInTheDocument();
+      expect(screen.getByText("Analyze")).toBeInTheDocument();
       expect(screen.getByText("Labels")).toBeInTheDocument();
       expect(screen.getByText("Predict")).toBeInTheDocument();
       expect(screen.getByText("Tracks")).toBeInTheDocument();

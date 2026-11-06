@@ -70,6 +70,8 @@ const {
   jobMatches,
   canDeleteRun,
   deleteRunMessage,
+  jobTimeLabel,
+  groupTimeLabel,
 } = await import("@/components/connect/WorkerJobs");
 
 const WORKER_ID = "node-a";
@@ -379,24 +381,71 @@ describe("WorkerJobs rendering", () => {
     expect(screen.queryByText(/exit code 1/)).not.toBeInTheDocument();
   });
 
-  it("a running job owned by this project shows Watch live, Logs, and Stop — not Fetch & Load", async () => {
-    useConnectStore.setState({ listJobs: async () => [job({ state: "running" })] });
+  it("a running training job owned by this project shows Watch live, Logs, Stop Early and Cancel — not Fetch & Load", async () => {
+    useConnectStore.setState({ listJobs: async () => [job({ state: "running", kind: "train" })] });
     render(
       <WorkerJobs workerId={WORKER_ID} setIntervalImpl={noopSetInterval} clearIntervalImpl={noopClearInterval} />,
     );
     await waitFor(() => expect(screen.getByRole("button", { name: "Watch live" })).toBeInTheDocument());
     expect(screen.getByRole("button", { name: "Logs" })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Stop" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Stop Early" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Cancel" })).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /Fetch & Load/ })).not.toBeInTheDocument();
   });
 
-  it("a queued job owned by this project shows Cancel, not Stop/Watch live", async () => {
-    useConnectStore.setState({ listJobs: async () => [job({ state: "queued", queuePosition: 1 })] });
+  it("a running inference job offers Cancel but not Stop Early", async () => {
+    useConnectStore.setState({ listJobs: async () => [job({ state: "running", kind: "track" })] });
     render(
       <WorkerJobs workerId={WORKER_ID} setIntervalImpl={noopSetInterval} clearIntervalImpl={noopClearInterval} />,
     );
     await waitFor(() => expect(screen.getByRole("button", { name: "Cancel" })).toBeInTheDocument());
-    expect(screen.queryByRole("button", { name: "Stop" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Stop Early" })).not.toBeInTheDocument();
+  });
+
+  it("Stop Early confirms, then sends mode stop", async () => {
+    const calls: Array<[string, string, string]> = [];
+    useConnectStore.setState({
+      listJobs: async () => [job({ state: "running", kind: "train" })],
+      cancelJobOn: async (workerId: string, jobId: string, mode: string) => {
+        calls.push([workerId, jobId, mode]);
+      },
+    });
+    render(
+      <WorkerJobs workerId={WORKER_ID} setIntervalImpl={noopSetInterval} clearIntervalImpl={noopClearInterval} />,
+    );
+    await waitFor(() => expect(screen.getByRole("button", { name: "Stop Early" })).toBeInTheDocument());
+    fireEvent.click(screen.getByRole("button", { name: "Stop Early" }));
+    await waitFor(() => expect(useConfirmStore.getState().request).not.toBeNull());
+    useConfirmStore.getState().respond(true);
+    await waitFor(() => expect(calls).toEqual([[WORKER_ID, "job_1", "stop"]]));
+  });
+
+  it("Cancel on a running training job sends mode cancel", async () => {
+    const calls: Array<[string, string, string]> = [];
+    useConnectStore.setState({
+      listJobs: async () => [job({ state: "running", kind: "train" })],
+      cancelJobOn: async (workerId: string, jobId: string, mode: string) => {
+        calls.push([workerId, jobId, mode]);
+      },
+    });
+    render(
+      <WorkerJobs workerId={WORKER_ID} setIntervalImpl={noopSetInterval} clearIntervalImpl={noopClearInterval} />,
+    );
+    await waitFor(() => expect(screen.getByRole("button", { name: "Cancel" })).toBeInTheDocument());
+    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+    await waitFor(() => expect(useConfirmStore.getState().request).not.toBeNull());
+    useConfirmStore.getState().respond(true);
+    await waitFor(() => expect(calls).toEqual([[WORKER_ID, "job_1", "cancel"]]));
+  });
+
+  it("a queued job owned by this project is canceled with its run: Cancel run, no per-job Cancel/Stop Early/Watch live", async () => {
+    useConnectStore.setState({ listJobs: async () => [job({ state: "queued", queuePosition: 1 })] });
+    render(
+      <WorkerJobs workerId={WORKER_ID} setIntervalImpl={noopSetInterval} clearIntervalImpl={noopClearInterval} />,
+    );
+    await waitFor(() => expect(screen.getByRole("button", { name: "Cancel run" })).toBeInTheDocument());
+    expect(screen.queryByRole("button", { name: "Cancel" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Stop Early" })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Watch live" })).not.toBeInTheDocument();
   });
 
@@ -476,7 +525,7 @@ describe("WorkerJobs rendering", () => {
     await waitFor(() => expect(screen.getByText("Train centroid")).toBeInTheDocument());
     expect(screen.getByRole("button", { name: "Watch live" })).toBeInTheDocument();
     expect(screen.getAllByRole("button", { name: "Logs" })).toHaveLength(2);
-    expect(screen.queryByRole("button", { name: "Stop" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Stop Early" })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Run again" })).not.toBeInTheDocument();
     // Fetch & Load (PR5b) is offered on ANY completed track job, mine or
     // not — the compatibility dialog (mocked above) decides what's safe to
@@ -484,7 +533,7 @@ describe("WorkerJobs rendering", () => {
     expect(screen.getByRole("button", { name: "Fetch & Load" })).toBeInTheDocument();
   });
 
-  it("Cancel confirms, then calls cancelJobOn and refreshes the list", async () => {
+  it("Cancel run on a queued run confirms, calls cancelJobOn and shows Canceling…", async () => {
     const cancelCalls: Array<[string, string, string]> = [];
     useConnectStore.setState({
       listJobs: async () => [job({ state: "queued", queuePosition: 1 })],
@@ -495,8 +544,8 @@ describe("WorkerJobs rendering", () => {
     render(
       <WorkerJobs workerId={WORKER_ID} setIntervalImpl={noopSetInterval} clearIntervalImpl={noopClearInterval} />,
     );
-    await waitFor(() => expect(screen.getByRole("button", { name: "Cancel" })).toBeInTheDocument());
-    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+    await waitFor(() => expect(screen.getByRole("button", { name: "Cancel run" })).toBeInTheDocument());
+    fireEvent.click(screen.getByRole("button", { name: "Cancel run" }));
 
     // confirmDialog renders via ConfirmDialog elsewhere — answer it directly
     // through the store, the same way ConfirmDialog's own buttons would.
@@ -504,6 +553,8 @@ describe("WorkerJobs rendering", () => {
     useConfirmStore.getState().respond(true);
 
     await waitFor(() => expect(cancelCalls).toEqual([[WORKER_ID, "job_1", "cancel"]]));
+    // The worker still lists it as queued here, so the button keeps saying so.
+    expect(screen.getByRole("button", { name: "Canceling…" })).toBeDisabled();
   });
 
   it("shows the run's trash icon once no job in it is queued or running", async () => {
@@ -851,5 +902,73 @@ describe("WorkerJobs — grouping + search", () => {
     );
     await waitFor(() => expect(screen.getByText("job_abcd")).toBeInTheDocument());
     expect(screen.getByText("run_zzzz")).toBeInTheDocument();
+  });
+});
+
+describe("Cancel run and jump-to-run (sidebar queue)", () => {
+  const RUN = { id: "run_top", index: 0, count: 2 };
+
+  it("an active run of this project has Cancel run, which cancels only its unfinished jobs", async () => {
+    const calls: Array<[string, string]> = [];
+    useConnectStore.setState({
+      listJobs: async () => [
+        job({ jobId: "j_done", state: "completed", run: RUN }),
+        job({ jobId: "j_run", state: "running", modelTypes: ["centered_instance"], run: { ...RUN, index: 1 } }),
+      ],
+      cancelJobOn: async (_w: string, jobId: string, mode: string) => {
+        calls.push([jobId, mode]);
+      },
+    });
+    render(<WorkerJobs workerId={WORKER_ID} setIntervalImpl={noopSetInterval} clearIntervalImpl={noopClearInterval} />);
+    await waitFor(() => expect(screen.getByRole("button", { name: "Cancel run" })).toBeInTheDocument());
+    fireEvent.click(screen.getByRole("button", { name: "Cancel run" }));
+    await waitFor(() => expect(useConfirmStore.getState().request).not.toBeNull());
+    useConfirmStore.getState().respond(true);
+    await waitFor(() => expect(calls).toEqual([["j_run", "cancel"]]));
+  });
+
+  it("no Cancel run on a finished run or another project's run", async () => {
+    useConnectStore.setState({
+      listJobs: async () => [
+        job({ jobId: "j_done", state: "completed", run: { id: "r1", index: 0, count: 1 } }),
+        job({ jobId: "j_other", state: "running", project: { id: "other", name: "x.slp" }, run: { id: "r2", index: 0, count: 1 } }),
+      ],
+    });
+    render(<WorkerJobs workerId={WORKER_ID} setIntervalImpl={noopSetInterval} clearIntervalImpl={noopClearInterval} />);
+    await waitFor(() => expect(screen.getAllByRole("button", { name: "Logs" })).toHaveLength(2));
+    expect(screen.queryByRole("button", { name: "Cancel run" })).not.toBeInTheDocument();
+  });
+
+  it("focusRun highlights that run's card", async () => {
+    useConnectStore.setState({
+      listJobs: async () => [job({ jobId: "j1", state: "queued", run: { id: "run_x", index: 0, count: 1 } })],
+    });
+    render(
+      <WorkerJobs
+        workerId={WORKER_ID}
+        setIntervalImpl={noopSetInterval}
+        clearIntervalImpl={noopClearInterval}
+        focusRun={{ key: "run_x", nonce: 1 }}
+      />,
+    );
+    await waitFor(() =>
+      expect(document.querySelector('[data-run-key="run_x"]')?.className).toContain("ring-primary"),
+    );
+  });
+});
+
+describe("job and run times", () => {
+  it("nothing while queued, 'started' while running, 'finished' once done", () => {
+    expect(jobTimeLabel(job({ state: "queued" }))).toBeNull();
+    expect(jobTimeLabel(job({ state: "running", updatedAt: new Date().toISOString() }))).toBe("started just now");
+    expect(
+      jobTimeLabel(job({ state: "running", startedAt: new Date(Date.now() - 5 * 60_000).toISOString() })),
+    ).toBe("started 5 min ago");
+    expect(jobTimeLabel(job({ state: "completed", updatedAt: new Date().toISOString() }))).toBe("finished just now");
+  });
+
+  it("a queued run shows no time", () => {
+    const [g] = groupJobs([job({ state: "queued" })], myProject.id);
+    expect(groupTimeLabel(g!)).toBeNull();
   });
 });

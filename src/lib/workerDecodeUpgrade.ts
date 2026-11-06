@@ -15,10 +15,11 @@
  * @module
  */
 
-import type {
-  ByteSourceDescriptor,
-  Mp4ParseResult,
-  VideoBackend,
+import {
+  GrayscaleVideoBackend,
+  type ByteSourceDescriptor,
+  type Mp4ParseResult,
+  type VideoBackend,
 } from "@talmolab/sleap-io.js";
 import { convertFileSrc } from "@tauri-apps/api/core";
 import { fileSize } from "./nativeRange";
@@ -142,11 +143,18 @@ export async function runWorkerDecodeUpgrade(
   deps: WorkerUpgradeDeps,
 ): Promise<WorkerUpgradeOutcome> {
   if (!deps.isAvailable()) return "skipped";
-  if (!canParse(originalBackend)) return "skipped";
+  // A grayscale-forced video (the import checkbox, or `grayscale` in the .slp)
+  // wraps its mp4 decoder in a GrayscaleVideoBackend, which has no parse result
+  // of its own. Upgrade the decoder inside it and re-wrap, or every grayscale
+  // video would stay on the on-main decoder.
+  const grayscaleWrapper =
+    originalBackend instanceof GrayscaleVideoBackend ? originalBackend : null;
+  const decoder = grayscaleWrapper ? grayscaleWrapper.inner : originalBackend;
+  if (!canParse(decoder)) return "skipped";
 
   let parseResult: Mp4ParseResult;
   try {
-    parseResult = await originalBackend.getParseResult();
+    parseResult = await decoder.getParseResult();
   } catch {
     return "skipped";
   }
@@ -188,7 +196,14 @@ export async function runWorkerDecodeUpgrade(
     return "superseded";
   }
 
-  deps.swap(workerBackend);
+  deps.swap(
+    grayscaleWrapper
+      ? GrayscaleVideoBackend.wrap({
+          inner: workerBackend,
+          grayscale: grayscaleWrapper.grayscale,
+        })
+      : workerBackend,
+  );
   deps.triggerReread();
   deps.onUpgraded?.();
   // Free the on-main backend's decoder/cache. Its parse result (sample table) is

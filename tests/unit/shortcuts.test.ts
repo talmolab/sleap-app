@@ -21,7 +21,46 @@ describe("DEFAULT_SHORTCUTS", () => {
     );
   });
 
-  it("keeps 'toggle place mode' on the N key", () => {
-    expect(DEFAULT_SHORTCUTS["toggle place mode"]).toBe("KeyN");
+  it("puts Mark Negative on N (as in SLEAP) and node placement mode on Shift+N", () => {
+    expect(DEFAULT_SHORTCUTS["mark negative"]).toBe("KeyN");
+    expect(DEFAULT_SHORTCUTS["toggle place mode"]).toBe("Shift+KeyN");
+  });
+});
+
+describe("N vs Shift+N (tinykeys)", () => {
+  it("Shift+N fires only node placement mode; plain N only Mark Negative", async () => {
+    const { tinykeys } = await import("tinykeys");
+    const fired: string[] = [];
+    const unbind = tinykeys(window, {
+      [DEFAULT_SHORTCUTS["mark negative"]]: () => fired.push("negative"),
+      [DEFAULT_SHORTCUTS["toggle place mode"]]: () => fired.push("place"),
+    });
+    const press = (shiftKey: boolean) =>
+      window.dispatchEvent(new KeyboardEvent("keydown", { key: shiftKey ? "N" : "n", code: "KeyN", shiftKey }));
+    press(true);
+    press(false);
+    unbind();
+    expect(fired).toEqual(["place", "negative"]);
+  });
+});
+
+describe("V vs Shift+V", () => {
+  it("binds V to the node toggle and Shift+V to Show Non-Visible Nodes (as in SLEAP)", () => {
+    expect(DEFAULT_SHORTCUTS["toggle node visibility"]).toBe("KeyV");
+    expect(DEFAULT_SHORTCUTS["show non-visible nodes"]).toBe("Shift+KeyV");
+  });
+
+  it("Shift+V fires Show Non-Visible Nodes; plain V doesn't (tinykeys)", async () => {
+    const { tinykeys } = await import("tinykeys");
+    const fired: string[] = [];
+    const unbind = tinykeys(window, {
+      [DEFAULT_SHORTCUTS["show non-visible nodes"]]: () => fired.push("show non-visible"),
+    });
+    const press = (shiftKey: boolean) =>
+      window.dispatchEvent(new KeyboardEvent("keydown", { key: shiftKey ? "V" : "v", code: "KeyV", shiftKey }));
+    press(false);
+    press(true);
+    unbind();
+    expect(fired).toEqual(["show non-visible"]);
   });
 });

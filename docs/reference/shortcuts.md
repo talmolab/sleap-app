@@ -65,6 +65,7 @@ this page is the full list.
 | Add instance | ++cmd+i++ |
 | Delete instance | ++cmd+backspace++ |
 | Accept all predictions on frame | ++cmd+shift+a++ |
+| Mark frame as negative | ++n++ |
 | Delete predictions in area | ++cmd+k++ |
 | Copy instance | ++cmd+c++ |
 | Paste instance | ++cmd+v++ |
@@ -89,12 +90,13 @@ this page is the full list.
 | Fit view to instances | ++cmd+equal++ |
 | Reset view | ++r++ |
 | Toggle pan mode | ++p++ |
-| Node placement mode | ++n++ |
+| Node placement mode | ++shift+n++ |
 | Next / previous node, in node placement mode | ++tab++ / ++shift+tab++ |
 | Show / hide instances | ++h++ |
 | Show / hide node names | ++t++ |
 | Show / hide edges | ++cmd+shift+tab++ |
-| Toggle non-visible nodes | ++v++ |
+| Mark the node under the pointer (or the selected nodes) visible / non-visible | ++v++ |
+| Toggle non-visible nodes | ++shift+v++ |
 | Increase text size | ++cmd+shift+equal++ |
 | Decrease text size | ++cmd+minus++ |
 

@@ -1,3 +1,4 @@
+mod app_menu;
 mod environment;
 mod iroh_client;
 mod rtc;
@@ -365,6 +366,46 @@ fn remove_file(path: String) -> Result<(), String> {
     }
 }
 
+/// This computer's name, as people know it ("Liezl's MacBook Pro"), for
+/// naming this device to a sleap-connect worker. macOS: the Sharing
+/// "Computer Name"; Windows: COMPUTERNAME; Linux: the systemd "pretty"
+/// hostname, else the kernel hostname (read from files — minimal distros
+/// ship no `hostname` binary). None if it can't be read (the app falls
+/// back to a generic name, as it does in the browser).
+#[tauri::command]
+fn computer_name() -> Option<String> {
+    fn clean(s: &str) -> Option<String> {
+        let s = s.trim().trim_matches('"').trim();
+        (!s.is_empty() && s != "localhost").then(|| s.to_string())
+    }
+    #[cfg(target_os = "macos")]
+    let name = {
+        let run = |cmd: &str, args: &[&str]| {
+            let out = std::process::Command::new(cmd).args(args).output().ok()?;
+            if !out.status.success() {
+                return None;
+            }
+            clean(&String::from_utf8(out.stdout).ok()?)
+        };
+        run("scutil", &["--get", "ComputerName"]).or_else(|| run("hostname", &[]))
+    };
+    #[cfg(target_os = "windows")]
+    let name = std::env::var("COMPUTERNAME").ok().and_then(|n| clean(&n));
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    let name = {
+        let read = |p: &str| std::fs::read_to_string(p).ok();
+        read("/etc/machine-info")
+            .and_then(|s| {
+                s.lines()
+                    .find_map(|l| l.strip_prefix("PRETTY_HOSTNAME=").and_then(clean))
+            })
+            .or_else(|| read("/proc/sys/kernel/hostname").and_then(|s| clean(&s)))
+            .or_else(|| read("/etc/hostname").and_then(|s| clean(&s)))
+            .or_else(|| std::env::var("HOSTNAME").ok().and_then(|s| clean(&s)))
+    };
+    name
+}
+
 /// Reveal a file in the OS file manager (Finder / Explorer / xdg-open).
 #[tauri::command]
 fn reveal_in_file_manager(path: String) -> Result<(), String> {
@@ -392,6 +433,40 @@ fn reveal_in_file_manager(path: String) -> Result<(), String> {
         let parent = p.parent().unwrap_or(p);
         std::process::Command::new("xdg-open")
             .arg(parent)
+            .spawn()
+            .map_err(|e| e.to_string())?;
+    }
+
+    Ok(())
+}
+
+/// Open a file with the OS's default app for its type (e.g. play an exported
+/// clip), as PyQt SLEAP's `open_file`.
+#[tauri::command]
+fn open_in_default_app(path: String) -> Result<(), String> {
+    if !std::path::Path::new(&path).exists() {
+        return Err(format!("Path does not exist: {}", path));
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        std::process::Command::new("open")
+            .arg(&path)
+            .spawn()
+            .map_err(|e| e.to_string())?;
+    }
+    #[cfg(target_os = "windows")]
+    {
+        // `start` is a cmd builtin; the empty "" is its window title argument.
+        std::process::Command::new("cmd")
+            .args(["/C", "start", "", &path])
+            .spawn()
+            .map_err(|e| e.to_string())?;
+    }
+    #[cfg(target_os = "linux")]
+    {
+        std::process::Command::new("xdg-open")
+            .arg(&path)
             .spawn()
             .map_err(|e| e.to_string())?;
     }
@@ -551,6 +626,13 @@ fn window_set_file(state: tauri::State<WindowFiles>, label: String, path: Option
     state.0.lock().unwrap().insert(label, key);
 }
 
+/// Closes the iroh connections webview `label` opened, in the background.
+fn close_iroh_connections(clients: &iroh_client::IrohClients, label: &str) {
+    let clients = clients.clone();
+    let label = label.to_string();
+    tauri::async_runtime::spawn(async move { clients.close_owned_by(&label).await });
+}
+
 /// SPIKE (spike/tauri-localhost-origin): the inlined "sleap" plugin bundling the range
 /// reader's byte-pipe commands (`read_range`, `file_size`) so they resolve as
 /// `plugin:sleap|...` and stay reachable from the http://localhost (remote) origin. The
@@ -558,6 +640,7 @@ fn window_set_file(state: tauri::State<WindowFiles>, label: String, path: Option
 fn sleap_plugin<R: tauri::Runtime>() -> tauri::plugin::TauriPlugin<R> {
     tauri::plugin::Builder::new("sleap")
         .invoke_handler(tauri::generate_handler![
+            app_menu::set_app_menu,
             read_range,
             file_size,
             write_open,
@@ -574,7 +657,9 @@ fn sleap_plugin<R: tauri::Runtime>() -> tauri::plugin::TauriPlugin<R> {
             window_set_file,
             read_image_file,
             reveal_in_file_manager,
+            open_in_default_app,
             open_preferences_directory,
+            computer_name,
             environment::detect_uv,
             environment::detect_gpu,
             environment::detect_accelerator,
@@ -588,6 +673,7 @@ fn sleap_plugin<R: tauri::Runtime>() -> tauri::plugin::TauriPlugin<R> {
             environment::install_python,
             environment::install_uv_tool,
             environment::upgrade_uv_tool,
+            environment::uninstall_uv_tool,
             environment::update_uv,
             environment::install_uv,
             environment::run_python_command,
@@ -702,7 +788,7 @@ fn localhost_capability(port: u16) -> String {
     "fs:allow-exists",
     "fs:allow-stat",
     "fs:allow-rename",
-    {{ "identifier": "fs:scope", "allow": [{{ "path": "**" }}, {{ "path": "$HOME/.sleap-rtc/**" }}] }},
+    {{ "identifier": "fs:scope", "allow": [{{ "path": "**" }}, {{ "path": "$HOME/.sleap-connect/**" }}, {{ "path": "$HOME/.sleap-rtc/**" }}] }},
     "dialog:default",
     "dialog:allow-open",
     "dialog:allow-save",
@@ -829,15 +915,26 @@ pub fn run() {
     .manage(WriteHandle(Mutex::new(None)))
     .manage(WindowFiles(Mutex::new(HashMap::new())))
     .manage(tokio::sync::Mutex::new(rtc::RtcState::new()))
-    .manage(tokio::sync::Mutex::new(iroh_client::IrohClientState::new()))
-    .manage(tokio::sync::Mutex::new(iroh_client::IrohBlobState::new()))
+    .manage(iroh_client::IrohClients::default())
     // Self-heal the open-file registry: when a window is destroyed (closed or
     // crashed) drop its claim so a later open can't be mis-routed to a dead
     // window. The frontend keeps the map otherwise (window_set_file).
+    // A reloaded page has a fresh JS heap that knows nothing of the iroh
+    // connections its previous page opened, so close them (Destroyed, below,
+    // covers a closed window).
+    .on_page_load(|webview, payload| {
+      if payload.event() == tauri::webview::PageLoadEvent::Started {
+        use tauri::Manager;
+        close_iroh_connections(webview.state::<iroh_client::IrohClients>().inner(), webview.label());
+      }
+    })
+    // Native menu bar clicks (macOS): the web app runs the item by its id.
+    .on_menu_event(|app, event| app_menu::forward_menu_event(app, event.id().as_ref()))
     .on_window_event(|window, event| {
       if let tauri::WindowEvent::Destroyed = event {
         use tauri::Manager;
         window.state::<WindowFiles>().0.lock().unwrap().remove(window.label());
+        close_iroh_connections(window.state::<iroh_client::IrohClients>().inner(), window.label());
         // The diagnostics "running" sentinel is intentionally NOT cleared here:
         // with multiple windows (File > New Project spawns a sibling) a per-window
         // Destroyed would clear the SHARED sentinel while other windows are still

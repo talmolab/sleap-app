@@ -10,10 +10,11 @@ import {
   buildUrlByteSourceDescriptor,
   type WorkerUpgradeDeps,
 } from "@/lib/workerDecodeUpgrade";
-import type {
-  ByteSourceDescriptor,
-  Mp4ParseResult,
-  VideoBackend,
+import {
+  GrayscaleVideoBackend,
+  type ByteSourceDescriptor,
+  type Mp4ParseResult,
+  type VideoBackend,
 } from "@talmolab/sleap-io.js";
 
 function parseResult(fileSize = 1000): Mp4ParseResult {
@@ -123,6 +124,24 @@ describe("runWorkerDecodeUpgrade", () => {
     expect(calls.reread).toBe(1);
     expect(calls.upgraded).toBe(1);
     expect(origState.closed).toBe(true);
+  });
+
+  it("upgrades the decoder inside a grayscale wrapper and keeps it grayscale", async () => {
+    // Grayscale videos are opened as GrayscaleVideoBackend(Mp4Box), which has
+    // no getParseResult of its own; they used to be skipped and stay on-main.
+    const { backend: inner, state: innerState } = fakeOriginal();
+    const original = GrayscaleVideoBackend.wrap({ inner, grayscale: true });
+    const { backend: worker } = fakeWorkerBackend();
+    const { deps, calls } = makeDeps(original, worker);
+
+    const outcome = await runWorkerDecodeUpgrade(original, "/x.mp4", "x.mp4", deps);
+
+    expect(outcome).toBe("upgraded");
+    const swapped = calls.swapped as GrayscaleVideoBackend;
+    expect(swapped).toBeInstanceOf(GrayscaleVideoBackend);
+    expect(swapped.inner).toBe(worker);
+    expect(swapped.grayscale).toBe(true);
+    expect(innerState.closed).toBe(true);
   });
 
   it("unsupported: worker self-test rejects → keeps the on-main backend", async () => {

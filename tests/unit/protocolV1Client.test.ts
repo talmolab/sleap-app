@@ -467,6 +467,77 @@ describe("protocolV1 WorkerClient", () => {
       ]);
     });
 
+    it("clientsList maps devices, converting unix seconds to ISO and keeping nulls", async () => {
+      const identity = await freshIdentity();
+      const socket = new FakeWorkerSocket({
+        handleRequest: (method) => {
+          if (method === "pair.claim") return { result: {} };
+          if (method === "clients.list") {
+            return {
+              result: {
+                clients: [
+                  {
+                    node_id: "me",
+                    name: "Lab Mac",
+                    platform: "tauri",
+                    app_version: "0.1.2",
+                    paired_at: 1_700_000_000,
+                    last_seen_at: 1_700_000_060,
+                    you: true,
+                  },
+                  { node_id: "old", name: null, platform: null, app_version: null, paired_at: null, last_seen_at: null, you: false },
+                ],
+              },
+            };
+          }
+          return { error: { code: "proto.unknown_method", msg: "?" } };
+        },
+      });
+      const client = await pairedClient(identity, socket);
+
+      expect(await client.clientsList()).toEqual([
+        {
+          nodeId: "me",
+          name: "Lab Mac",
+          platform: "tauri",
+          appVersion: "0.1.2",
+          pairedAt: new Date(1_700_000_000_000).toISOString(),
+          lastSeenAt: new Date(1_700_000_060_000).toISOString(),
+          you: true,
+        },
+        { nodeId: "old", name: null, platform: null, appVersion: null, pairedAt: null, lastSeenAt: null, you: false },
+      ]);
+    });
+
+    it("clientsRename sends the new name", async () => {
+      const identity = await freshIdentity();
+      const sent: Array<Record<string, unknown>> = [];
+      const socket = new FakeWorkerSocket({
+        handleRequest: (method, p) => {
+          if (method === "pair.claim") return { result: {} };
+          if (method === "clients.rename") {
+            sent.push(p);
+            return { result: {} };
+          }
+          return { error: { code: "proto.unknown_method", msg: "?" } };
+        },
+      });
+      const client = await pairedClient(identity, socket);
+
+      await client.clientsRename("Bench PC");
+      expect(sent).toEqual([{ name: "Bench PC" }]);
+    });
+
+    it("sends agent.device_name in the hello", async () => {
+      const identity = await freshIdentity();
+      const socket = new FakeWorkerSocket();
+      await connected(identity, socket, {
+        agent: { name: "sleap-app", version: "1", platform: "web", device_name: "Chrome on macOS" },
+      });
+      const hello = socket.sent.find((f) => f.type === "hello");
+      expect((hello?.agent as Record<string, unknown>).device_name).toBe("Chrome on macOS");
+    });
+
     it("fsMounts maps the mounts array", async () => {
       const identity = await freshIdentity();
       const socket = new FakeWorkerSocket({
@@ -534,7 +605,23 @@ describe("protocolV1 WorkerClient", () => {
         type: "file",
         size: 123,
         modified: 1700000000,
+        shared: true,
       });
+    });
+
+    it("fsStat reports a path outside the shared folders as shared: false", async () => {
+      const identity = await freshIdentity();
+      const socket = new FakeWorkerSocket({
+        handleRequest: (method) => {
+          if (method === "pair.claim") return { result: {} };
+          if (method === "fs.stat") return { result: { path: "/raw/v.mp4", type: "file", shared: false } };
+          return { error: { code: "proto.unknown_method", msg: "?" } };
+        },
+      });
+      const client = await pairedClient(identity, socket);
+      const result = await client.fsStat("/raw/v.mp4");
+      expect(result.shared).toBe(false);
+      expect(result.type).toBe("file");
     });
 
     it("fsRead sends path/offset/length and base64-decodes the content", async () => {
@@ -565,6 +652,36 @@ describe("protocolV1 WorkerClient", () => {
       expect(result).toMatchObject({ path: "/mnt/data/a.yaml", offset: 0, size: 5, totalSize: 5, eof: true });
       const readReq = socket.sent.find((f) => f.method === "fs.read");
       expect(readReq?.params).toEqual({ path: "/mnt/data/a.yaml", offset: 0, length: 10 });
+    });
+
+    it("mediaFrame sends path/frame_idx and returns the decoded JPEG with both sizes", async () => {
+      const identity = await freshIdentity();
+      const socket = new FakeWorkerSocket({
+        handleRequest: (method) => {
+          if (method === "pair.claim") return { result: {} };
+          if (method === "media.frame") {
+            return {
+              result: {
+                content_base64: btoa("jpegbytes"),
+                mime: "image/jpeg",
+                width: 4096,
+                height: 2048,
+                scaled_width: 2048,
+                scaled_height: 1024,
+              },
+            };
+          }
+          return { error: { code: "proto.unknown_method", msg: "?" } };
+        },
+      });
+      const client = await pairedClient(identity, socket);
+
+      const result = await client.mediaFrame("/data/v.mp4", 42);
+
+      expect(new TextDecoder().decode(result.content)).toBe("jpegbytes");
+      expect(result).toMatchObject({ mime: "image/jpeg", width: 4096, height: 2048, scaledWidth: 2048, scaledHeight: 1024 });
+      const req = socket.sent.find((f) => f.method === "media.frame");
+      expect(req?.params).toEqual({ path: "/data/v.mp4", frame_idx: 42 });
     });
 
     it("fsRead omits length from params when not given", async () => {
@@ -667,6 +784,7 @@ describe("protocolV1 WorkerClient", () => {
         cudaVersion: "12.4",
         sleapNnVersion: "0.1.0",
         busy: true,
+        features: [],
       });
     });
 
@@ -689,6 +807,7 @@ describe("protocolV1 WorkerClient", () => {
         cudaVersion: "unknown",
         sleapNnVersion: "unknown",
         busy: false,
+        features: [],
       });
     });
 

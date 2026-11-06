@@ -28,6 +28,12 @@ export interface RecoverableDraft {
   displayName: string;
   /** Epoch ms the draft was last written (for "saved N ago"). */
   savedAt: number;
+  /** Where the project was saved, when known (desktop only; null = never saved). */
+  projectPath: string | null;
+  /** Number of videos the draft references. */
+  videoCount: number;
+  /** Whether the draft embeds its frames (pkg.slp) rather than linking videos. */
+  embedded: boolean;
   /** Restore this draft as the active project (loads labels, re-links source). */
   restore: () => Promise<unknown>;
   /** Permanently discard this draft (delete file/entry). */
@@ -42,6 +48,9 @@ export function normalizeTauriDrafts(
     key: e.draftPath,
     displayName: e.displayName,
     savedAt: e.savedAt,
+    projectPath: e.projectPath,
+    videoCount: e.videoCount,
+    embedded: e.embedded,
     restore: () => restoreTauriDraft(e),
     discard: () => removeTauriDraft(e.draftPath),
   }));
@@ -55,6 +64,9 @@ export function normalizeBrowserDrafts(
     key: e.draftPath,
     displayName: e.displayName,
     savedAt: e.savedAt,
+    projectPath: null,
+    videoCount: e.videoCount,
+    embedded: e.embedded,
     restore: () => restoreDraft(e),
     discard: () => discardDraft(e),
   }));

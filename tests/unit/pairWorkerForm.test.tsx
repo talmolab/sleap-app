@@ -1,14 +1,8 @@
 /**
- * PR4b §4b.1 — PairWorkerForm, extracted from ConnectPanel's inline pairing
- * form. Covers the extraction's own contract (submits ticket/address, calls
- * onPaired/onCancel, Cancel only shown per `showCancel`) — ConnectPanel's
- * existing behavior around it is unchanged and isn't retested here.
- *
- * PR6a §a.2 widened the pasted "ticket" to also accept `sleap-rtc pair`'s
- * one-line pairing code (now the primary, single-line `Input`), while still
- * accepting the legacy JSON ticket — both paths are covered below, including
- * the iroh checkbox's visibility (`ticketHasIroh`, true only when a relay is
- * present either way).
+ * PairWorkerForm in the browser (no iroh): the user only pastes a code; the
+ * form works out how to connect (`planPairing`) and only asks for an
+ * address when the code can't be used without one, saying why. The
+ * desktop (iroh) cases are in pairWorkerFormIroh.test.tsx.
  */
 import { describe, it, expect, afterEach, vi } from "../bun-test";
 import { render, screen, cleanup, fireEvent, waitFor } from "@testing-library/react";
@@ -20,8 +14,7 @@ afterEach(cleanup);
 
 /**
  * `useConnectStore`'s own `vi.fn()` shim can't satisfy `pairWithTicket`'s
- * strictly-typed required `ticketJson: string` param (same limitation noted
- * in hiddenVideosDialog.test.tsx's `trackedTrain`) — track calls by hand
+ * strictly-typed required `ticketJson: string` param — track calls by hand
  * instead, with the exact store signature.
  */
 function trackedPairWithTicket(shouldThrow?: Error) {
@@ -33,23 +26,111 @@ function trackedPairWithTicket(shouldThrow?: Error) {
   return { fn, calls };
 }
 
+const inAnHour = () => Math.floor(Date.now() / 1000) + 3600;
+
+function paste(text: string) {
+  fireEvent.change(screen.getByPlaceholderText("sleap1…"), { target: { value: text } });
+}
+
 describe("PairWorkerForm", () => {
-  it("submits the pasted ticket and address, then calls onPaired", async () => {
+  it("pairs a code with a network address without asking for anything", async () => {
     const { fn: pairWithTicket, calls } = trackedPairWithTicket();
     useConnectStore.setState({ pairWithTicket });
     const onPaired = vi.fn();
+    const code = await buildPairCode({
+      nodeId: fakeBytes(32),
+      secret: fakeBytes(16, 101),
+      expiresAt: inAnHour(),
+      addrs: [{ ip: [192, 168, 1, 42], port: 9631 }],
+    });
     render(<PairWorkerForm onPaired={onPaired} showCancel={false} />);
 
-    fireEvent.change(screen.getByPlaceholderText("sleap1…"), {
-      target: { value: '{"node_id":"n1","secret":"s"}' },
-    });
-    fireEvent.change(screen.getByPlaceholderText(/ws:\/\/192\.168\.1\.42:9631/), {
-      target: { value: "ws://10.0.0.1:9631" },
-    });
+    paste(code);
+    await waitFor(() =>
+      expect(screen.getByText(/Connects over your network \(ws:\/\/192\.168\.1\.42:9631\)/)).toBeInTheDocument(),
+    );
+    expect(screen.queryByLabelText(/Worker address/)).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: /^Pair$/ }));
 
     await waitFor(() => expect(onPaired).toHaveBeenCalledTimes(1));
-    expect(calls).toEqual([['{"node_id":"n1","secret":"s"}', "ws://10.0.0.1:9631", undefined]]);
+    expect(calls).toEqual([[code, undefined, { transport: "ws" }]]);
+  });
+
+  it("opens the address box, saying why, for a code with no way in from the browser", async () => {
+    const { fn: pairWithTicket, calls } = trackedPairWithTicket();
+    useConnectStore.setState({ pairWithTicket });
+    const code = await buildPairCode({
+      nodeId: fakeBytes(32),
+      secret: fakeBytes(16, 101),
+      expiresAt: inAnHour(),
+      relay: { index: 1 },
+    });
+    render(<PairWorkerForm showCancel={false} />);
+
+    paste(code);
+    await waitFor(() =>
+      expect(screen.getByText(/The web version can only reach workers on your network/)).toBeInTheDocument(),
+    );
+    const pair = screen.getByRole("button", { name: /^Pair$/ });
+    expect(pair).toBeDisabled();
+
+    fireEvent.change(screen.getByLabelText(/Worker address/), {
+      target: { value: "ws://10.0.0.1:9631" },
+    });
+    await waitFor(() => expect(pair).not.toBeDisabled());
+    fireEvent.click(pair);
+
+    await waitFor(() => expect(calls).toHaveLength(1));
+    expect(calls[0]).toEqual([code, "ws://10.0.0.1:9631", { transport: "ws" }]);
+  });
+
+  it("explains a code with no connection info at all (worker wasn't running)", async () => {
+    const code = await buildPairCode({
+      nodeId: fakeBytes(32),
+      secret: fakeBytes(16, 101),
+      expiresAt: inAnHour(),
+    });
+    render(<PairWorkerForm showCancel={false} />);
+
+    paste(code);
+
+    await waitFor(() =>
+      expect(screen.getByText(/doesn't say how to reach the worker/)).toBeInTheDocument(),
+    );
+    expect(screen.getByLabelText(/Worker address/)).toBeInTheDocument();
+  });
+
+  it("rejects an expired code and text that isn't a code", async () => {
+    const expired = await buildPairCode({
+      nodeId: fakeBytes(32),
+      secret: fakeBytes(16, 101),
+      expiresAt: Math.floor(Date.now() / 1000) - 600,
+      addrs: [{ ip: [192, 168, 1, 42], port: 9631 }],
+    });
+    render(<PairWorkerForm showCancel={false} />);
+
+    paste(expired);
+    await waitFor(() => expect(screen.getByText(/This code expired 10 min ago/)).toBeInTheDocument());
+    expect(screen.getByRole("button", { name: /^Pair$/ })).toBeDisabled();
+
+    paste("hello");
+    await waitFor(() =>
+      expect(screen.getByText(/doesn't look like a pairing code/)).toBeInTheDocument(),
+    );
+    expect(screen.getByRole("button", { name: /^Pair$/ })).toBeDisabled();
+  });
+
+  it("still takes a legacy JSON ticket", async () => {
+    const { fn: pairWithTicket, calls } = trackedPairWithTicket();
+    useConnectStore.setState({ pairWithTicket });
+    render(<PairWorkerForm showCancel={false} />);
+
+    paste('{"node_id":"n1","secret":"s","addrs":["ws://10.0.0.1:9631"]}');
+    await waitFor(() => expect(screen.getByRole("button", { name: /^Pair$/ })).not.toBeDisabled());
+    fireEvent.click(screen.getByRole("button", { name: /^Pair$/ }));
+
+    await waitFor(() => expect(calls).toHaveLength(1));
+    expect(calls[0]![2]).toEqual({ transport: "ws" });
   });
 
   it("shows the pairing error instead of calling onPaired on failure", async () => {
@@ -58,18 +139,32 @@ describe("PairWorkerForm", () => {
     const onPaired = vi.fn();
     render(<PairWorkerForm onPaired={onPaired} showCancel={false} />);
 
-    fireEvent.change(screen.getByPlaceholderText("sleap1…"), {
-      target: { value: '{"node_id":"n1","secret":"s"}' },
-    });
+    paste('{"node_id":"n1","secret":"s","addrs":["ws://10.0.0.1:9631"]}');
+    await waitFor(() => expect(screen.getByRole("button", { name: /^Pair$/ })).not.toBeDisabled());
     fireEvent.click(screen.getByRole("button", { name: /^Pair$/ }));
 
     await waitFor(() => expect(screen.getByText("bad ticket")).toBeInTheDocument());
     expect(onPaired).not.toHaveBeenCalled();
   });
 
-  it("disables Pair until a ticket is pasted", () => {
+  it("keeps the address box under Advanced until it's needed", async () => {
+    render(<PairWorkerForm showCancel={false} />);
+    expect(screen.queryByLabelText(/Worker address/)).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: /Advanced: connect by address/ }));
+    expect(screen.getByLabelText(/Worker address/)).toBeInTheDocument();
+  });
+
+  it("disables Pair until a code is pasted", () => {
     render(<PairWorkerForm showCancel={false} />);
     expect(screen.getByRole("button", { name: /^Pair$/ })).toBeDisabled();
+  });
+
+  it("shows its one line of help, and never transport names", () => {
+    render(<PairWorkerForm showCancel={false} />);
+    expect(screen.getByText("sleap-connect serve")).toBeInTheDocument();
+    expect(screen.getByText("sleap-connect pair")).toBeInTheDocument();
+    expect(screen.getByText(/printed on the worker/)).toBeInTheDocument();
+    expect(screen.queryByText(/iroh|WebSocket/i)).not.toBeInTheDocument();
   });
 
   it("hides Cancel when showCancel is false", () => {
@@ -82,53 +177,5 @@ describe("PairWorkerForm", () => {
     render(<PairWorkerForm showCancel onCancel={onCancel} />);
     fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
     expect(onCancel).toHaveBeenCalledTimes(1);
-  });
-
-  it("shows the single-line pairing-code input with its help text", () => {
-    render(<PairWorkerForm showCancel={false} />);
-    expect(screen.getByPlaceholderText("sleap1…").tagName).toBe("INPUT");
-    // The help text's plain-text segments live in their own text nodes
-    // around the inline `sleap-rtc pair` <code>, so they're asserted
-    // separately rather than as one spanning string (RTL's getByText only
-    // matches a node's own direct text-node children, not nested elements).
-    expect(screen.getByText("sleap-rtc pair")).toBeInTheDocument();
-    expect(screen.getByText(/paste the code below/)).toBeInTheDocument();
-  });
-
-  it("submits a pasted one-line pairing code as-is", async () => {
-    const { fn: pairWithTicket, calls } = trackedPairWithTicket();
-    useConnectStore.setState({ pairWithTicket });
-    const code = await buildPairCode({
-      nodeId: fakeBytes(32),
-      secret: fakeBytes(16, 101),
-      expiresAt: Math.floor(Date.now() / 1000) + 3600,
-    });
-    render(<PairWorkerForm showCancel={false} />);
-
-    fireEvent.change(screen.getByPlaceholderText("sleap1…"), { target: { value: code } });
-    fireEvent.click(screen.getByRole("button", { name: /^Pair$/ }));
-
-    await waitFor(() => expect(calls).toHaveLength(1));
-    expect(calls[0]![0]).toBe(code);
-  });
-
-  // The iroh checkbox only ever shows when `irohTransportAvailable()`
-  // (desktop/Tauri) — see pairWorkerFormIroh.test.tsx for its ticketHasIroh
-  // coverage (needs `@/platform/index` mocked to `isTauri: true`, which a
-  // separate file is the established way to do alongside a ws-default file
-  // that imports the component statically, per connectStoreIroh.test.ts).
-  it("never shows the iroh checkbox outside Tauri, even for a code with a relay", async () => {
-    const code = await buildPairCode({
-      nodeId: fakeBytes(32),
-      secret: fakeBytes(16, 101),
-      expiresAt: Math.floor(Date.now() / 1000) + 3600,
-      relay: { index: 1 },
-    });
-    render(<PairWorkerForm showCancel={false} />);
-
-    fireEvent.change(screen.getByPlaceholderText("sleap1…"), { target: { value: code } });
-
-    await waitFor(() => expect(screen.getByPlaceholderText("sleap1…")).toHaveValue(code));
-    expect(screen.queryByText(/Connect directly \(iroh\)/)).not.toBeInTheDocument();
   });
 });

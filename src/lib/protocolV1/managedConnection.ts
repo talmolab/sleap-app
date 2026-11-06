@@ -11,9 +11,26 @@
  * into store state; tests supply a fake clock (`now`/`sleep`) instead.
  */
 import type { WorkerClient, CloseInfo } from "./client";
+import { AUTH_UNTRUSTED, WorkerProtocolError } from "./errors";
 import type { TransportKind } from "./transport";
 
-export type LinkStatus = "connecting" | "connected" | "reconnecting" | "offline" | "stopped";
+/**
+ * `unpaired`: the worker refused this device (`auth.untrusted`) — it was
+ * removed there (`sleap-rtc clients remove`). Terminal: retrying can't help
+ * until the device pairs again, so the connection stops like `stopped`.
+ */
+export type LinkStatus =
+  | "connecting"
+  | "connected"
+  | "reconnecting"
+  | "offline"
+  | "stopped"
+  | "unpaired";
+
+/** Whether `err` is the worker refusing this device because it's no longer paired. */
+export function isUnpairedError(err: unknown): boolean {
+  return err instanceof WorkerProtocolError && err.code === AUTH_UNTRUSTED;
+}
 
 export interface ManagedConnectionDeps {
   /** Make + connect + verify peer + authProve over `route`; resolves an authenticated client or throws. */
@@ -83,7 +100,13 @@ export class ManagedConnection {
    * first dial is the caller's to handle; no silent retry loop starts.
    */
   async start(): Promise<WorkerClient> {
-    const client = await this._dial(this._preferredRoute);
+    let client: WorkerClient;
+    try {
+      client = await this._dial(this._preferredRoute);
+    } catch (err) {
+      if (isUnpairedError(err)) this._markUnpaired();
+      throw err;
+    }
     this._route = this._preferredRoute;
     this._adopt(client);
     this._onStatus("connected", this._route);
@@ -101,6 +124,15 @@ export class ManagedConnection {
     this._client = null;
     this._onStatus("stopped", this._route);
     client?.close();
+  }
+
+  /** The worker no longer trusts this device: stop for good and say so. */
+  private _markUnpaired(): void {
+    this._stopped = true;
+    this._generation++;
+    this._probeGeneration++;
+    this._client = null;
+    this._onStatus("unpaired", this._route);
   }
 
   /** Makes `client` the current one and wires its close notification to this generation. */
@@ -157,8 +189,13 @@ export class ManagedConnection {
         this._onConnected(client, this._route);
         if (this._route !== this._preferredRoute) this._startProbeLoop();
         return;
-      } catch {
-        // Fall through to backoff + retry below.
+      } catch (err) {
+        // Removed on the worker: no amount of retrying gets back in.
+        if (isUnpairedError(err) && !this._stopped && generation === this._generation) {
+          this._markUnpaired();
+          return;
+        }
+        // Otherwise fall through to backoff + retry below.
       }
 
       if (this._stopped || generation !== this._generation) return;

@@ -66,6 +66,12 @@ export interface BuildTrainingArgsOptions {
   controllerPort?: number;
   /** ZMQ publish port (progress). Defaults to {@link ZMQ_PUBLISH_PORT}. */
   publishPort?: number;
+  /**
+   * Append `--dry-run` (sleap-nn after 0.3.5): run setup plus one training and
+   * one validation batch, write nothing, and print a summary. The rest of the
+   * argv is a real run's, so the check covers the same command.
+   */
+  dryRun?: boolean;
 }
 
 /**
@@ -81,8 +87,9 @@ export function buildTrainingArgs({
   ckptDir,
   controllerPort = ZMQ_CONTROLLER_PORT,
   publishPort = ZMQ_PUBLISH_PORT,
+  dryRun = false,
 }: BuildTrainingArgsOptions): string[] {
-  return [
+  const args = [
     "train",
     "--config-name",
     configFileName,
@@ -95,4 +102,6 @@ export function buildTrainingArgs({
     `trainer_config.zmq.controller_port=${controllerPort}`,
     `trainer_config.zmq.publish_port=${publishPort}`,
   ];
+  if (dryRun) args.push("--dry-run");
+  return args;
 }

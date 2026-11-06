@@ -25,7 +25,7 @@ import {
 } from "@/canvas/SkeletonRenderer";
 import { getInstanceColor, getPaletteColor, resolveColorTarget } from "@/lib/colorPalettes";
 import { toImageCoords } from "@/lib/cropTransform";
-import type { Instance, Track, Video } from "@/types";
+import type { Instance, Labels, Track, Video } from "@/types";
 
 /** The codec used for clip export. `avc` is H.264 (universally playable mp4). */
 export const CLIP_EXPORT_CODEC = "avc" as const;
@@ -140,6 +140,12 @@ export interface ClipConfig {
   fps: number;
   scale: number;
   background: ClipBackground;
+  /**
+   * Write every frame in the range (overlays where there are instances), not
+   * just the frames with labeled or predicted instances. Off by default, as
+   * PyQt SLEAP's "Include unlabeled frames in range".
+   */
+  includeUnlabeled: boolean;
 }
 
 /** The export dialog's per-video state: one config per video + which is focused. */
@@ -157,6 +163,7 @@ export type ClipExportAction =
   | { type: "setFps"; video: Video; fps: number }
   | { type: "setScale"; video: Video; scale: number }
   | { type: "setBackground"; video: Video; background: ClipBackground }
+  | { type: "setIncludeUnlabeled"; video: Video; includeUnlabeled: boolean }
   | { type: "reset"; state: ClipExportState };
 
 /**
@@ -185,6 +192,7 @@ export function buildInitialClipConfigs(
       fps,
       scale: 1,
       background: "original" as ClipBackground,
+      includeUnlabeled: false,
     };
   });
   return { configs, focused: currentVideo ?? videos[0] ?? null };
@@ -219,6 +227,8 @@ export function clipExportReducer(
       return patch(action.video, { scale: action.scale });
     case "setBackground":
       return patch(action.video, { background: action.background });
+    case "setIncludeUnlabeled":
+      return patch(action.video, { includeUnlabeled: action.includeUnlabeled });
     case "reset":
       return action.state;
     default:
@@ -415,6 +425,38 @@ export function expandFrameBytesToRGBA(
   return out;
 }
 
+/**
+ * RGBA pixels of a raw pixel frame object — `{ data, width, height,
+ * channels? }`, e.g. the 1-channel frame a grayscale video's
+ * `GrayscaleVideoBackend` returns — or null for anything else. The channel
+ * count comes from `channels`, else the data length. Pure.
+ */
+export function rawFrameToRGBA(
+  frame: unknown
+): { rgba: Uint8ClampedArray; width: number; height: number } | null {
+  const f = frame as {
+    data?: unknown;
+    width?: unknown;
+    height?: unknown;
+    channels?: unknown;
+  } | null;
+  if (
+    !f ||
+    typeof f.width !== "number" ||
+    typeof f.height !== "number" ||
+    !(f.data instanceof Uint8Array || f.data instanceof Uint8ClampedArray)
+  ) {
+    return null;
+  }
+  const { width, height } = f;
+  const data = f.data instanceof Uint8Array ? f.data : new Uint8Array(f.data.buffer, f.data.byteOffset, f.data.byteLength);
+  const channels =
+    typeof f.channels === "number"
+      ? f.channels
+      : inferFrameChannels(data.length, width, height, null);
+  return { rgba: expandFrameBytesToRGBA(data, width, height, channels), width, height };
+}
+
 /** Clip-export background choices surfaced in the dialog (PyQt parity). */
 export type ClipBackground = "original" | "black" | "white" | "grey";
 
@@ -469,25 +511,48 @@ export interface ClipTimelineEntry {
 
 /**
  * Expand a frame range into an ordered timeline of `{frameIdx, timestamp,
- * duration}` at a target `fps`. Timestamps are `i / fps` seconds; every frame is
- * emitted (no dropping). Pure — the encode loop consumes this.
+ * duration}` at a target `fps`. Timestamps are `i / fps` seconds. Every frame in
+ * the range is emitted, or only `frames` (sorted source frames inside the
+ * range) when given, back to back — PyQt's labeled-frames-only clip. Pure — the
+ * encode loop consumes this.
  */
 export function planClipTimeline(
   range: FrameRange,
-  fps: number
+  fps: number,
+  frames?: readonly number[]
 ): ClipTimelineEntry[] {
   const rate = Number.isFinite(fps) && fps > 0 ? fps : 30;
   const dur = 1 / rate;
-  const out: ClipTimelineEntry[] = [];
-  for (let i = 0; i < range.count; i++) {
-    out.push({
-      frameIdx: range.start + i,
-      timestamp: i * dur,
-      duration: dur,
-    });
-  }
-  return out;
+  const sources =
+    frames ?? Array.from({ length: range.count }, (_, i) => range.start + i);
+  return sources.map((frameIdx, i) => ({
+    frameIdx,
+    timestamp: i * dur,
+    duration: dur,
+  }));
 }
+
+/**
+ * The frames of `video` inside `range` that have a labeled frame (user or
+ * predicted instances), sorted — what PyQt SLEAP renders when "Include
+ * unlabeled frames" is off. Pure.
+ */
+export function labeledFramesInRange(
+  labels: Labels,
+  video: Video,
+  range: { start: number; end: number }
+): number[] {
+  return labels.labeledFrames
+    .filter(
+      (lf) =>
+        lf.video === video && lf.frameIdx >= range.start && lf.frameIdx <= range.end
+    )
+    .map((lf) => lf.frameIdx)
+    .sort((a, b) => a - b);
+}
+
+/** Encode quality: mediabunny's bitrate presets (PyQt uses a CRF instead). */
+export type ClipQuality = "low" | "medium" | "high" | "very-high";
 
 /** Outcome of probing whether this environment can encode the clip. */
 export interface EncodeSupport {
@@ -665,6 +730,11 @@ export interface ClipExportDeps {
   /** Build the encoder bound to the output canvas. */
   encoder: ClipEncoder;
   /**
+   * Draw under the skeletons (in source-pixel space, sizes divided by `zoom`):
+   * the motion trails, as the live view draws them. Optional.
+   */
+  renderUnderlay?: (ctx: CanvasRenderingContext2D, frameIdx: number, zoom: number) => void;
+  /**
    * Draw the overlay onto the context. Defaults to {@link renderInstances};
    * injected so the integration test can stub it (the real renderer needs a
    * full 2D context that happy-dom doesn't provide).
@@ -687,6 +757,11 @@ export interface ClipExportParams {
   renderOptions: Omit<RenderOptions, "zoom">;
   /** CSS colour painted before the frame (shows through where a frame is missing). */
   background?: string;
+  /**
+   * Only these source frames (sorted, inside `range`) instead of every frame
+   * in it — see {@link labeledFramesInRange}.
+   */
+  frames?: readonly number[];
 }
 
 /** Progress + cancellation callbacks. */
@@ -717,7 +792,12 @@ export async function runClipExport(
   callbacks: ClipExportCallbacks = {}
 ): Promise<Uint8Array> {
   const { range, scale, sourceWidth, sourceHeight, output } = params;
-  const timeline = planClipTimeline(range, params.fps);
+  const timeline = planClipTimeline(range, params.fps, params.frames);
+  if (timeline.length === 0) {
+    throw new Error(
+      "No labeled frames in this range. Turn on \"Include unlabeled frames\" to export every frame."
+    );
+  }
   const render = deps.renderOverlay ?? renderInstances;
   const background = params.background ?? "#000000";
   const ctx = deps.ctx;
@@ -759,6 +839,7 @@ export async function runClipExport(
       // factor (renderInstances divides sizes by zoom), matching the on-canvas
       // look.
       ctx.setTransform(scale, 0, 0, scale, 0, 0);
+      deps.renderUnderlay?.(ctx as unknown as CanvasRenderingContext2D, frameIdx, scale);
       render(ctx as unknown as CanvasRenderingContext2D, deps.overlayForFrame(frameIdx), {
         ...params.renderOptions,
         zoom: scale,

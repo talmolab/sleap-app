@@ -152,3 +152,40 @@ describe("protocolV1 identity storage (no CryptoKey objects at rest)", () => {
     expect(c).toBe(a);
   });
 });
+
+describe("protocolV1 identity: first run in two tabs at once", () => {
+  // Two tabs share IndexedDB but not memory — modeled by dropping the
+  // in-memory cache between two concurrent first calls.
+  async function twoTabsFirstRun(): Promise<[string, string]> {
+    _resetClientIdentityCache();
+    await clearClientIdentity();
+    const a = getClientIdentity();
+    _resetClientIdentityCache();
+    const b = getClientIdentity();
+    const [ia, ib] = await Promise.all([a, b]);
+    _resetClientIdentityCache();
+    return [ia.nodeId, ib.nodeId];
+  }
+
+  it("both tabs end up with the same stored key when Web Locks serializes creation", async () => {
+    // Minimal exclusive Web Locks: one holder at a time, FIFO.
+    let tail: Promise<unknown> = Promise.resolve();
+    const locks = {
+      request: (_name: string, _opts: unknown, fn: () => Promise<unknown>) => {
+        const run = tail.then(fn);
+        tail = run.catch(() => {});
+        return run;
+      },
+    };
+    const original = Object.getOwnPropertyDescriptor(navigator, "locks");
+    Object.defineProperty(navigator, "locks", { value: locks, configurable: true });
+    try {
+      const [a, b] = await twoTabsFirstRun();
+      expect(a).toBe(b);
+      expect((await getClientIdentity()).nodeId).toBe(a);
+    } finally {
+      if (original) Object.defineProperty(navigator, "locks", original);
+      else delete (navigator as unknown as Record<string, unknown>).locks;
+    }
+  });
+});

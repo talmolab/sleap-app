@@ -20,7 +20,6 @@ import { render, screen, cleanup, act, within, waitFor } from "@testing-library/
 import { useAppStore } from "@/stores/appStore";
 import { commandContext } from "@/commands/CommandContext";
 import { AddTrack } from "@/commands/trackCommands";
-import { ToggleNegativeFrame } from "@/commands/editCommands";
 import {
   Labels,
   Instance,
@@ -97,12 +96,14 @@ describe("InstancesPanel reflects a track assignment immediately", () => {
   });
 
   it("still updates after the frame is marked Negative (the reported case)", async () => {
-    const { inst0 } = loadTwoInstanceFrame();
+    const { inst0, labels } = loadTwoInstanceFrame();
     // Reach the exact reported state up front (frame negative, instance selected)
-    // so AddTrack's in-place mutation is the sole re-render trigger.
-    await act(async () => {
-      await commandContext.execute(ToggleNegativeFrame); // frame → negative
-    });
+    // so AddTrack's in-place mutation is the sole re-render trigger. Marking a
+    // frame negative now removes its instances (SLEAP #2894), so set the flag
+    // directly — the state a project saved by an older version can still load in.
+    const lf = labels.labeledFrames[0];
+    lf.isNegative = true;
+    useAppStore.setState({ labeledFrame: lf });
     expect(useAppStore.getState().labeledFrame?.isNegative).toBe(true);
     useAppStore.setState({ instance: inst0 });
 

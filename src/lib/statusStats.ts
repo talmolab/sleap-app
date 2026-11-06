@@ -21,10 +21,17 @@ export interface StatusStats {
   /** 0-based index of `video` within `labels.videos`; -1 if absent. */
   videoIndex: number;
   totalVideos: number;
-  /** Frames in `video` with >=1 user instance. */
+  /**
+   * User-labeled frames in `video`: any user labeling, negative (background)
+   * frames included — sleap-io's `user_labeled_frames`, as SLEAP counts them.
+   */
   userInVideo: number;
-  /** Frames across all videos with >=1 user instance. */
+  /** `userInVideo` across all videos. */
   userInProject: number;
+  /** How many of `userInVideo` are negative frames. */
+  negativeInVideo: number;
+  /** How many of `userInProject` are negative frames. */
+  negativeInProject: number;
   /** Frames in `video` with >=1 predicted instance. */
   predictedInVideo: number;
   /** predictedInVideo / totalFrames * 100 (0 when totalFrames is falsy). */
@@ -46,6 +53,8 @@ export function computeStatusStats(
     totalVideos: 0,
     userInVideo: 0,
     userInProject: 0,
+    negativeInVideo: 0,
+    negativeInProject: 0,
     predictedInVideo: 0,
     predictedPct: 0,
   };
@@ -57,13 +66,20 @@ export function computeStatusStats(
 
   let userInProject = 0;
   let userInVideo = 0;
+  let negativeInProject = 0;
+  let negativeInVideo = 0;
   let predictedInVideo = 0;
   for (const lf of frames) {
-    if (lf.hasUserInstances) userInProject++;
-    if (video && lf.video === video) {
-      if (lf.hasUserInstances) userInVideo++;
-      if (lf.hasPredictedInstances) predictedInVideo++;
+    const inVideo = video !== null && lf.video === video;
+    if (lf.isUserLabeled) {
+      userInProject++;
+      if (inVideo) userInVideo++;
     }
+    if (lf.isNegative) {
+      negativeInProject++;
+      if (inVideo) negativeInVideo++;
+    }
+    if (inVideo && lf.hasPredictedInstances) predictedInVideo++;
   }
 
   const predictedPct =
@@ -76,7 +92,16 @@ export function computeStatusStats(
     totalVideos,
     userInVideo,
     userInProject,
+    negativeInVideo,
+    negativeInProject,
     predictedInVideo,
     predictedPct,
   };
+}
+
+/** "6" or "6 (2 negative frames)" — SLEAP's `format_labeled_frame_count`. */
+export function formatLabeledCount(labeled: number, negative: number): string {
+  const n = labeled.toLocaleString();
+  if (negative === 0) return n;
+  return `${n} (${negative.toLocaleString()} negative frame${negative === 1 ? "" : "s"})`;
 }

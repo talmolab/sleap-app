@@ -21,19 +21,21 @@
  * save keystroke) and passes the handle in here; the build + stream then run with
  * no further gesture requirement.
  *
- * SCOPE: re-save / Save As of an ALREADY-embedded pkg.slp. Chromium only (needs
+ * SCOPE: re-save / Save As of an ALREADY-embedded pkg.slp
+ * ({@link saveEmbeddedPkgOpfs}), and Export Labels Package of continuous videos
+ * ({@link exportNewPkgOpfs}: frames are read here and PNG-encoded + appended by
+ * the writer's worker, io `appendEncodedVideos`). Chromium only (needs
  * `showSaveFilePicker`); Firefox/Safari fall back to the in-memory save until a
- * service-worker streamed download lands. Brand-new embedding of fresh video
- * frames is a deferred follow-up (`buildSerializableEmbedPlan` throws for the
- * encode path).
+ * service-worker streamed download lands.
  */
 
 import {
   StreamingH5Writer,
   saveSlpStructureToBytes,
   buildSerializableEmbedPlan,
+  appendEncodedVideos,
 } from "@talmolab/sleap-io.js";
-import type { Labels } from "@talmolab/sleap-io.js";
+import type { EmbedOption, Labels, SlpWriteOptions } from "@talmolab/sleap-io.js";
 
 // Same derivation as loadProject.ts / saveEmbeddedPkgStreaming.ts: h5wasm served
 // same-origin (works with or without cross-origin isolation).
@@ -109,9 +111,7 @@ export async function saveEmbeddedPkgOpfs(
   // the encode (new-embed) path — out of scope for this re-save writer.
   const plan = await buildSerializableEmbedPlan(labels, false, sourceFile.name);
 
-  const opfsPath = `sleap-save-${Date.now()}-${Math.random()
-    .toString(16)
-    .slice(2)}.slp`;
+  const opfsPath = newOpfsPath();
 
   // 2. Build the file into OPFS: seed the structure, then copy image datasets
   //    from the source (WORKERFS) into OPFS (sync-handle device), in the Worker.
@@ -138,8 +138,76 @@ export async function saveEmbeddedPkgOpfs(
     await writer.close().catch(() => {});
   }
 
-  // 3. Stream the OPFS file into the user's chosen destination (no whole-file
-  //    buffer), then clean up the OPFS staging file.
+  // 3. Stream the OPFS file into the user's chosen destination.
+  return publishOpfsFile(opfsPath, destHandle);
+}
+
+/**
+ * Export a NEW labels package (Export Labels Package of continuous videos, e.g.
+ * an mp4 project) into the pre-acquired `destHandle`, the same way as
+ * {@link saveEmbeddedPkgOpfs}: the small structure is seeded into an OPFS file,
+ * then each embedded frame is read here (an mp4 decodes in its own worker) and
+ * PNG-encoded + appended by the writer's worker, so the window stays responsive
+ * and only a few frames are in memory at a time. Finally the OPFS file is
+ * streamed into `destHandle`. Returns the saved file name.
+ *
+ * `onProgress` returning `false` cancels (io throws `ExportCancelled`); the
+ * staging file is removed on any failure, and the destination is left as the
+ * picker made it (an empty new file is removed).
+ */
+export async function exportNewPkgOpfs(
+  labels: Labels,
+  destHandle: FileSystemFileHandle,
+  options: { embed: EmbedOption; onProgress?: SlpWriteOptions["onProgress"] }
+): Promise<string> {
+  const structureBytes = await saveSlpStructureToBytes(labels, { embed: options.embed });
+  const plan = await buildSerializableEmbedPlan(labels, options.embed, "", {
+    allowEncode: true,
+  });
+
+  const opfsPath = newOpfsPath();
+  try {
+    // 1. Seed the OPFS file with the structure.
+    const root = await navigator.storage.getDirectory();
+    const fh = await root.getFileHandle(opfsPath, { create: true });
+    const seed = await fh.createWritable();
+    await seed.write(structureBytes as Uint8Array<ArrayBuffer>);
+    await seed.close();
+
+    // 2. Append the frames: open it non-truncating and stream them in.
+    if (plan.encodeEntries.length > 0) {
+      const writer = new StreamingH5Writer();
+      try {
+        await writer.openWriteOpfs(opfsPath, structureBytes.byteLength, H5WASM_URL);
+        await appendEncodedVideos(writer, labels, plan.encodeEntries, {
+          onProgress: options.onProgress,
+        });
+      } finally {
+        await writer.close().catch(() => {});
+      }
+    }
+  } catch (err) {
+    await removeOpfsFile(opfsPath);
+    await removeIfEmpty(destHandle);
+    throw err;
+  }
+
+  // 3. Stream the OPFS file into the user's chosen destination.
+  return publishOpfsFile(opfsPath, destHandle);
+}
+
+function newOpfsPath(): string {
+  return `sleap-save-${Date.now()}-${Math.random().toString(16).slice(2)}.slp`;
+}
+
+/**
+ * Stream the finished OPFS file into the user's chosen destination (no
+ * whole-file buffer), then clean up the OPFS staging file.
+ */
+async function publishOpfsFile(
+  opfsPath: string,
+  destHandle: FileSystemFileHandle
+): Promise<string> {
   try {
     const root = await navigator.storage.getDirectory();
     const fh = await root.getFileHandle(opfsPath, { create: false });
@@ -149,6 +217,21 @@ export async function saveEmbeddedPkgOpfs(
     return destHandle.name;
   } finally {
     await removeOpfsFile(opfsPath);
+  }
+}
+
+/**
+ * Chromium creates the picked file (empty) when the picker closes; remove it
+ * when nothing was written, so a cancelled export leaves no empty package.
+ * A file that already had content is never touched.
+ */
+async function removeIfEmpty(handle: FileSystemFileHandle): Promise<void> {
+  try {
+    const file = await handle.getFile();
+    const removable = handle as FileSystemFileHandle & { remove?: () => Promise<void> };
+    if (file.size === 0 && typeof removable.remove === "function") await removable.remove();
+  } catch {
+    // best-effort cleanup
   }
 }
 

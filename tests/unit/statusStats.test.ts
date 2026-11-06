@@ -3,7 +3,7 @@
  * updateStatusMessage / get_labeled_frame_count / get_instances_to_show).
  */
 import { describe, it, expect } from "../bun-test";
-import { instancesToShowCount, computeStatusStats } from "@/lib/statusStats";
+import { instancesToShowCount, computeStatusStats, formatLabeledCount } from "@/lib/statusStats";
 import type { Labels, Video, LabeledFrame } from "@/types";
 
 /** A labeled frame whose getters mimic sleap-io.js semantics. */
@@ -22,6 +22,8 @@ function mockLF(opts: {
     hasUserInstances: opts.hasUser ?? (opts.user ?? 0) > 0,
     hasPredictedInstances: opts.hasPred ?? false,
     isNegative: opts.isNegative ?? false,
+    // io.js: any user labeling, a negative flag included (matches sleap-io).
+    isUserLabeled: (opts.hasUser ?? (opts.user ?? 0) > 0) || (opts.isNegative ?? false),
   } as unknown as LabeledFrame;
 }
 
@@ -57,6 +59,8 @@ describe("computeStatusStats", () => {
       totalVideos: 0,
       userInVideo: 0,
       userInProject: 0,
+      negativeInVideo: 0,
+      negativeInProject: 0,
       predictedInVideo: 0,
       predictedPct: 0,
     });
@@ -98,5 +102,27 @@ describe("computeStatusStats", () => {
     const labels = mockLabels([vidA], [mockLF({ video: vidA, hasPred: true })]);
     expect(computeStatusStats(labels, vidA, null).predictedPct).toBe(0);
     expect(computeStatusStats(labels, vidA, 0).predictedPct).toBe(0);
+  });
+
+  it("counts negative frames as labeled, like SLEAP #2894, and reports how many", () => {
+    const frames = [
+      mockLF({ video: vidA, user: 1 }),
+      mockLF({ video: vidA, isNegative: true }),
+      mockLF({ video: vidB, isNegative: true }),
+      mockLF({ video: vidB, hasPred: true }), // predictions only: not labeled
+    ];
+    const s = computeStatusStats(mockLabels([vidA, vidB], frames), vidA, 100);
+    expect(s.userInVideo).toBe(2);
+    expect(s.userInProject).toBe(3);
+    expect(s.negativeInVideo).toBe(1);
+    expect(s.negativeInProject).toBe(2);
+  });
+});
+
+describe("formatLabeledCount", () => {
+  it("adds SLEAP's negative-frame note only when there are any", () => {
+    expect(formatLabeledCount(6, 0)).toBe("6");
+    expect(formatLabeledCount(6, 1)).toBe("6 (1 negative frame)");
+    expect(formatLabeledCount(1234, 2)).toBe(`${(1234).toLocaleString()} (2 negative frames)`);
   });
 });

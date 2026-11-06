@@ -57,6 +57,8 @@ export interface WebSocketLike {
   onmessage: ((ev: { data: string }) => void) | null;
   onclose: ((ev: unknown) => void) | null;
   onerror: ((ev: unknown) => void) | null;
+  /** The desktop iroh socket's Rust-side connection id (`tauriIrohSocket.ts`), once open; absent on a real `WebSocket`. */
+  readonly irohConnectionId?: number | null;
 }
 
 const WS_OPEN = 1;
@@ -72,6 +74,8 @@ export interface WorkerInfo {
   cudaVersion: string;
   sleapNnVersion: string;
   busy: boolean;
+  /** What the worker supports beyond the base protocol (e.g. "output_dir"); [] on older workers. */
+  features: string[];
 }
 
 export interface JobProject {
@@ -110,6 +114,8 @@ export interface JobSummary {
   // Added by sleap-connect #98; omitted (not defaulted) by an older worker
   // except where noted, since there's no safe default for "unknown".
   updatedAt?: string;
+  /** When the job's process started (wire: `started_at`); absent while queued, or from a worker that doesn't report it. */
+  startedAt?: string;
   error?: string | null;
   queuePosition: number | null;
   kind?: "train" | "track";
@@ -163,6 +169,24 @@ export interface FsStatResult {
   type: "file" | "directory";
   size: number;
   modified: number;
+  /**
+   * False for a path outside the worker's shared folders: the worker only
+   * confirms it exists (no size/mtime). Jobs can still read media there.
+   */
+  shared: boolean;
+}
+
+/** One video frame from `media.frame`, decoded and re-encoded as a JPEG by the worker. */
+export interface MediaFrameResult {
+  /** The JPEG's bytes, already base64-decoded. */
+  content: Uint8Array;
+  mime: string;
+  /** The frame's original size, before the worker scaled it down to fit `maxSide`. */
+  width: number;
+  height: number;
+  /** The JPEG's own size. */
+  scaledWidth: number;
+  scaledHeight: number;
 }
 
 export interface FsReadResult {
@@ -224,6 +248,7 @@ function _mapJobSummary(j: Record<string, unknown>): JobSummary {
     state: j.state as string,
     createdAt: _isoTimestamp(j.created_at) ?? "",
     updatedAt: _isoTimestamp(j.updated_at),
+    startedAt: _isoTimestamp(j.started_at),
     error: j.error as string | null | undefined,
     queuePosition: (j.queue_position as number | null | undefined) ?? null,
     kind: j.kind as "train" | "track" | undefined,
@@ -252,6 +277,21 @@ export interface WorkerEvent {
 export interface CloseInfo {
   intentional: boolean;
   error?: WorkerProtocolError;
+}
+
+/** A device paired with a worker, from `clients.list`. */
+export interface PairedDevice {
+  nodeId: string;
+  /** The name it reports; null if it paired before devices were named. */
+  name: string | null;
+  /** "tauri" (desktop app) or "web" (browser), if reported. */
+  platform: string | null;
+  appVersion: string | null;
+  pairedAt: string | null;
+  /** When it last connected or disconnected. */
+  lastSeenAt: string | null;
+  /** This device's own entry. */
+  you: boolean;
 }
 
 export interface WorkerClientOptions {
@@ -323,6 +363,11 @@ export class WorkerClient {
 
   get authenticated(): boolean {
     return this._state === "authenticated";
+  }
+
+  /** The Rust-side id of this client's iroh connection (desktop only), for `tauriIrohBlob.ts`; `null` over a WebSocket or before it opens. */
+  get irohConnectionId(): number | null {
+    return this._socket?.irohConnectionId ?? null;
   }
 
   /** The worker's node_id, known once the `hello` handshake completes. */
@@ -484,6 +529,38 @@ export class WorkerClient {
     return jobs.map((j) => _mapJobSummary(j));
   }
 
+  /**
+   * `clients.list` — every device paired with this worker (who can use it),
+   * with `you` on this device's own entry.
+   */
+  async clientsList(): Promise<PairedDevice[]> {
+    const result = await this._request("clients.list", {});
+    const clients = (result.clients as Array<Record<string, unknown>>) ?? [];
+    return clients.map((c) => ({
+      nodeId: c.node_id as string,
+      name: (c.name as string | null) ?? null,
+      platform: (c.platform as string | null) ?? null,
+      appVersion: (c.app_version as string | null) ?? null,
+      pairedAt: _isoTimestamp(c.paired_at) ?? null,
+      lastSeenAt: _isoTimestamp(c.last_seen_at) ?? null,
+      you: !!c.you,
+    }));
+  }
+
+  /**
+   * `clients.leave` — unpairs this device from the worker (the app's
+   * Forget). The worker closes this connection right after replying.
+   */
+  async clientsLeave(): Promise<{ removed: boolean }> {
+    const result = await this._request("clients.leave", {});
+    return { removed: !!result.removed };
+  }
+
+  /** `clients.rename` — sets this device's own name on the worker now (it's also sent with every hello). */
+  async clientsRename(name: string): Promise<void> {
+    await this._request("clients.rename", { name });
+  }
+
   /** A snapshot of the worker's own hardware/software (spec/sleap-connect #98). */
   async workerInfo(): Promise<WorkerInfo> {
     const result = await this._request("worker.info", {});
@@ -494,6 +571,7 @@ export class WorkerClient {
       cudaVersion: (result.cuda_version as string) ?? "unknown",
       sleapNnVersion: (result.sleap_nn_version as string) ?? "unknown",
       busy: !!result.busy,
+      features: Array.isArray(result.features) ? (result.features as string[]) : [],
     };
   }
 
@@ -527,6 +605,19 @@ export class WorkerClient {
 
     return () => {
       listeners.delete(onEvent);
+    };
+  }
+
+  /**
+   * `fs.mounts` plus the folder `sleap-rtc serve` started in (when it's
+   * shared; null otherwise or on older workers).
+   */
+  async fsMountsAndServeFolder(): Promise<{ mounts: Mount[]; serveFolder: string | null }> {
+    const result = await this._request("fs.mounts", {});
+    const mounts = (result.mounts as Array<Record<string, unknown>>) ?? [];
+    return {
+      mounts: mounts.map((m) => ({ path: m.path as string, label: m.label as string | undefined })),
+      serveFolder: typeof result.serve_folder === "string" ? result.serve_folder : null,
     };
   }
 
@@ -575,6 +666,7 @@ export class WorkerClient {
       type: result.type as "file" | "directory",
       size: (result.size as number) ?? 0,
       modified: (result.modified as number) ?? 0,
+      shared: result.shared !== false,
     };
   }
 
@@ -597,6 +689,26 @@ export class WorkerClient {
       size: (result.size as number) ?? 0,
       totalSize: (result.total_size as number) ?? 0,
       eof: !!result.eof,
+    };
+  }
+
+  /**
+   * One frame of a worker-side video (or a single image), decoded by the
+   * worker and re-encoded as a JPEG with its longest side capped at
+   * `maxSide` — for previews of videos the app can't decode itself
+   * (sleap-connect `media.frame`; check for the `media_frame` feature).
+   */
+  async mediaFrame(path: string, frameIdx: number, maxSide?: number): Promise<MediaFrameResult> {
+    const params: Record<string, unknown> = { path, frame_idx: frameIdx };
+    if (maxSide !== undefined) params.max_side = maxSide;
+    const result = await this._request("media.frame", params);
+    return {
+      content: base64ToBytes((result.content_base64 as string) ?? ""),
+      mime: (result.mime as string) ?? "image/jpeg",
+      width: (result.width as number) ?? 0,
+      height: (result.height as number) ?? 0,
+      scaledWidth: (result.scaled_width as number) ?? 0,
+      scaledHeight: (result.scaled_height as number) ?? 0,
     };
   }
 

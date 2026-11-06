@@ -1035,6 +1035,19 @@ pub async fn upgrade_uv_tool<R: Runtime>(
     Ok(())
 }
 
+/// Uninstall a uv tool (e.g. `sleap-rtc`, before installing it as
+/// `sleap-connect`: both provide the same executables).
+#[tauri::command]
+pub async fn uninstall_uv_tool<R: Runtime>(
+    app: AppHandle<R>,
+    package: String,
+    on_event: Channel<ProcessEvent>,
+) -> Result<(), String> {
+    let uv = resolve_uv(&app).await;
+    stream_command(&app, &uv, &["tool", "uninstall", &package], &on_event).await?;
+    Ok(())
+}
+
 /// Update uv itself via `uv self update`.
 #[tauri::command]
 pub async fn update_uv<R: Runtime>(

@@ -14,6 +14,8 @@ import {
   trackSpawnFrameIndices,
   stepLabeled,
   nearestFrameInDomain,
+  navigableDomain,
+  suggestedFrameIndices,
 } from "@/lib/navigableFrames";
 import { useAppStore } from "@/stores/appStore";
 import {
@@ -190,6 +192,22 @@ function emptyVideo(name = "mixed.mp4") {
   });
 }
 
+describe("labeledFrameIndices keeps negative frames", () => {
+  it("includes a negative (background) frame even though it has no instances", () => {
+    // Navigate ▸ Labeled frames should land on frames marked negative (SLEAP
+    // #2894 counts them as labeled), while still skipping plain empty frames.
+    const skeleton = new Skeleton({ nodes: ["a", "b"], name: "s" });
+    const video = emptyVideo();
+    const labels = new Labels({ videos: [video], skeletons: [skeleton] });
+    labels.labeledFrames.push(new LabeledFrame({ video, frameIdx: 10, instances: [userInst(skeleton)] }));
+    labels.labeledFrames.push(new LabeledFrame({ video, frameIdx: 20, isNegative: true }));
+    labels.labeledFrames.push(new LabeledFrame({ video, frameIdx: 30 })); // empty, not negative
+
+    expect(labeledFrameIndices(labels, video)).toEqual([10, 20]);
+    expect(navigableDomain(labels, video, "labeled")).toEqual([10, 20]);
+  });
+});
+
 describe("allLabeledFrameIndices (includes empty frames — GoNext/PrevLabeledFrame parity)", () => {
   it("returns every LabeledFrame index sorted, INCLUDING empty ones", () => {
     // GoNext/PrevLabeledFrame intentionally keep empty frames (PyQt parity),
@@ -343,5 +361,48 @@ describe("incrementFrameIdx (labeled-only mode)", () => {
 
     useAppStore.getState().incrementFrameIdx(1);
     expect(useAppStore.getState().frameIdx).toBe(1);
+  });
+});
+
+describe("suggested frames only", () => {
+  beforeEach(() => {
+    useAppStore.setState(useAppStore.getInitialState());
+  });
+
+  function withSuggestions(frames: number[], otherVideoFrames: number[] = []) {
+    const { labels, video } = makeProject([5]);
+    const other = new Video({
+      filename: "other.mp4",
+      backendMetadata: { shape: [100, 480, 640, 3] },
+      openBackend: false,
+    });
+    labels.videos.push(other);
+    labels.suggestions = [
+      ...frames.map((frameIdx) => ({ video, frameIdx })),
+      ...otherVideoFrames.map((frameIdx) => ({ video: other, frameIdx })),
+    ] as unknown as typeof labels.suggestions;
+    return { labels, video };
+  }
+
+  it("is the video's suggestions, sorted and unique", () => {
+    const { labels, video } = withSuggestions([40, 12, 40, 70], [3]);
+    expect(suggestedFrameIndices(labels, video)).toEqual([12, 40, 70]);
+    expect(navigableDomain(labels, video, "suggested")).toEqual([12, 40, 70]);
+  });
+
+  it("steps only through suggested frames, wrapping around", () => {
+    const { labels } = withSuggestions([12, 40, 70]);
+    useAppStore.getState().setLabels(labels, "test.slp");
+    useAppStore.getState().setNavigationDomain("suggested");
+    useAppStore.getState().setFrameIdx(12);
+
+    useAppStore.getState().incrementFrameIdx(1);
+    expect(useAppStore.getState().frameIdx).toBe(40);
+    useAppStore.getState().incrementFrameIdx(1);
+    expect(useAppStore.getState().frameIdx).toBe(70);
+    useAppStore.getState().incrementFrameIdx(1);
+    expect(useAppStore.getState().frameIdx).toBe(12);
+    useAppStore.getState().incrementFrameIdx(-1);
+    expect(useAppStore.getState().frameIdx).toBe(70);
   });
 });

@@ -50,6 +50,12 @@ export {
 } from "./exportPackageCommands";
 export type { ExportPackageLevel, EmbedMode } from "./exportPackageCommands";
 
+// Labels → Extract Clip and Labels / Extract Clip Labels Package (PyQt parity)
+export {
+  ExtractClipAndLabelsCommand,
+  ExtractClipLabelsPackageCommand,
+} from "./extractClipCommands";
+
 // Export NWB (ndx-pose) — Labels -> .nwb via the sleap-nn env's sleap-io (desktop)
 export {
   ExportNwbCommand,

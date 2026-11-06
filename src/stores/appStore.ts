@@ -236,6 +236,14 @@ export interface AppState {
   showInset: boolean;
   trailLength: number;
   trailShade: string;
+  /** Magnifier plays the ±temporalWindow frames around the cursor. Persisted. */
+  temporalLoupe: boolean;
+  /** The magnifier includes frames before the current one. Persisted. */
+  neighborFramesEarlier: boolean;
+  /** The magnifier includes frames after the current one. Persisted. */
+  neighborFramesLater: boolean;
+  /** Frames on each side of the current one the magnifier plays. Persisted. */
+  temporalWindow: number;
   lutMin: number;
   lutMax: number;
   frameHistogram: Uint32Array | null;
@@ -463,6 +471,11 @@ export interface AppState {
    * (e.g. "Locating videos…"), so the bar holds rather than jumping back.
    */
   loadingProgress: number;
+  /**
+   * When set, the loading overlay shows a Cancel button that calls it (e.g.
+   * Export Labels Package). Cleared when the overlay is dismissed.
+   */
+  loadingCancel: (() => void) | null;
 
   // === Dialog state ===
   inferenceDialogOpen: boolean;
@@ -476,17 +489,23 @@ export interface AppState {
   /** A file is being dragged over the app window (drives the drop-catcher overlay). */
   windowDragActive: boolean;
   addVideoUrlDialogOpen: boolean;
-  exportDialogOpen: boolean;
   exportClipDialogOpen: boolean;
   modelMetricsDialogOpen: boolean;
   sizeDistributionDialogOpen: boolean;
   labelQcDialogOpen: boolean;
   overlayModelsDialogOpen: boolean;
   exportPackageDialogOpen: boolean;
+  /** Labels → Extract Clip options dialog: which variant is open, if any. */
+  extractClipDialog: "clip" | "package" | null;
   shortcutsDialogOpen: boolean;
   labelingTipsDialogOpen: boolean;
   helpDialogOpen: boolean;
   menuSearchDialogOpen: boolean;
+  /**
+   * Predict ▸ Training… / Inference…: the panel's Full Configuration window
+   * to open once that panel is showing (it owns the window; cleared there).
+   */
+  configDialogRequest: "training" | "inference" | null;
   diagnosticsDialogOpen: boolean;
   /** The Connect window (PR4b) — paired workers and every job on them. */
   connectWindowOpen: boolean;
@@ -586,6 +605,7 @@ export interface AppState {
   /** Migrate a track's color override across a rename (called by SetTrackName). */
   renameTrackColor: (oldName: string, newName: string) => void;
   setLoading: (loading: boolean, message?: string, progress?: number) => void;
+  setLoadingCancel: (cancel: (() => void) | null) => void;
   setInferenceDialogOpen: (open: boolean) => void;
   setNewProjectDialogOpen: (open: boolean) => void;
   setGoToFrameDialogOpen: (open: boolean) => void;
@@ -595,13 +615,13 @@ export interface AppState {
   setMergeProjectSeedPath: (path: string | null) => void;
   setWindowDragActive: (active: boolean) => void;
   setAddVideoUrlDialogOpen: (open: boolean) => void;
-  setExportDialogOpen: (open: boolean) => void;
   setExportClipDialogOpen: (open: boolean) => void;
   setModelMetricsDialogOpen: (open: boolean) => void;
   setSizeDistributionDialogOpen: (open: boolean) => void;
   setLabelQcDialogOpen: (open: boolean) => void;
   setOverlayModelsDialogOpen: (open: boolean) => void;
   setExportPackageDialogOpen: (open: boolean) => void;
+  setExtractClipDialog: (variant: "clip" | "package" | null) => void;
   setShortcutsDialogOpen: (open: boolean) => void;
   setLabelingTipsDialogOpen: (open: boolean) => void;
   setHelpDialogOpen: (open: boolean) => void;
@@ -705,6 +725,10 @@ export const PERSISTED_KEYS: (keyof AppState)[] = [
   "showLabelingHints",
   "hasSeenLabelingHintsPrompt",
   "trailLength",
+  "temporalLoupe",
+  "neighborFramesEarlier",
+  "neighborFramesLater",
+  "temporalWindow",
   "insetSize",
   "insetZoom",
   "showInset",
@@ -743,7 +767,7 @@ export function navigationDomainFromPersisted(p: {
   navigationDomain?: string;
   navigateLabeledOnly?: boolean;
 }): NavigationDomain {
-  const valid: NavigationDomain[] = ["all", "labeled", "imaged"];
+  const valid: NavigationDomain[] = ["all", "labeled", "suggested", "imaged"];
   if (p.navigationDomain && (valid as string[]).includes(p.navigationDomain)) {
     return p.navigationDomain as NavigationDomain;
   }
@@ -815,6 +839,10 @@ export const useAppStore = create<AppState>()(
       showInset: true,
       trailLength: 0,
       trailShade: "Normal",
+      temporalLoupe: false,
+      neighborFramesEarlier: true,
+      neighborFramesLater: true,
+      temporalWindow: 2,
       lutMin: 0,
       lutMax: 255,
       frameHistogram: null,
@@ -886,6 +914,7 @@ export const useAppStore = create<AppState>()(
       isLoading: false,
       loadingMessage: "",
       loadingProgress: 0,
+      loadingCancel: null,
 
       // Dialog state
       inferenceDialogOpen: false,
@@ -897,17 +926,18 @@ export const useAppStore = create<AppState>()(
       mergeProjectSeedPath: null,
       windowDragActive: false,
       addVideoUrlDialogOpen: false,
-      exportDialogOpen: false,
       exportClipDialogOpen: false,
       modelMetricsDialogOpen: false,
       sizeDistributionDialogOpen: false,
       labelQcDialogOpen: false,
       overlayModelsDialogOpen: false,
       exportPackageDialogOpen: false,
+      extractClipDialog: null,
       shortcutsDialogOpen: false,
       labelingTipsDialogOpen: false,
       helpDialogOpen: false,
       menuSearchDialogOpen: false,
+      configDialogRequest: null,
       diagnosticsDialogOpen: false,
       connectWindowOpen: false,
       quitConfirmOpen: false,
@@ -1125,7 +1155,7 @@ export const useAppStore = create<AppState>()(
 
       cycleNavigationDomain: () =>
         set((state) => {
-          const order: NavigationDomain[] = ["all", "labeled", "imaged"];
+          const order: NavigationDomain[] = ["all", "labeled", "suggested", "imaged"];
           const i = order.indexOf(state.navigationDomain);
           state.navigationDomain = order[(i + 1) % order.length];
         }),
@@ -1293,7 +1323,15 @@ export const useAppStore = create<AppState>()(
           // messages without a percent (e.g. "Locating videos…") hold the bar
           // rather than snapping it to 0. Reset once the overlay is dismissed.
           if (progress !== undefined) state.loadingProgress = progress;
-          if (!loading) state.loadingProgress = 0;
+          if (!loading) {
+            state.loadingProgress = 0;
+            state.loadingCancel = null;
+          }
+        }),
+
+      setLoadingCancel: (cancel) =>
+        set((state) => {
+          state.loadingCancel = cancel;
         }),
 
       setInferenceDialogOpen: (open) =>
@@ -1338,11 +1376,6 @@ export const useAppStore = create<AppState>()(
           state.addVideoUrlDialogOpen = open;
         }),
 
-      setExportDialogOpen: (open) =>
-        set((state) => {
-          state.exportDialogOpen = open;
-        }),
-
       setExportClipDialogOpen: (open) =>
         set((state) => {
           state.exportClipDialogOpen = open;
@@ -1371,6 +1404,11 @@ export const useAppStore = create<AppState>()(
       setExportPackageDialogOpen: (open) =>
         set((state) => {
           state.exportPackageDialogOpen = open;
+        }),
+
+      setExtractClipDialog: (variant) =>
+        set((state) => {
+          state.extractClipDialog = variant;
         }),
 
       setShortcutsDialogOpen: (open) =>

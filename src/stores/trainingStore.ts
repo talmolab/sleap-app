@@ -5,6 +5,12 @@ import { ZMQ_CONTROLLER_PORT, ZMQ_PUBLISH_PORT } from "@/platform/trainingArgs";
 import { isTauri } from "@/platform";
 import { computeRuntimeMetrics } from "@/lib/trainingMetrics";
 import { lastErrorLine } from "@/lib/processLog";
+import {
+  isDryRunUnsupported,
+  removeDryRunLeftovers,
+  parseDryRunSummary,
+  type DryRunSummaryField,
+} from "@/lib/trainingDryRun";
 import { formatRunTimestamp } from "@/lib/timestamp";
 import { computeInstanceSizeStats, recommendMaxStride, detectVideoChannels, resolveInputChannels, formatBytes } from "@/lib/modelStats";
 import { confirmDialog } from "@/stores/confirmStore";
@@ -223,9 +229,9 @@ export interface ConfigHyperparams {
   scale: number;
   // Model — backbone
   stemStride: number | null;
-  /** `null` = Auto (live-recomputed from the loaded project's instance
-   *  sizes, see recommendMaxStride in modelStats.ts); a number is a
-   *  manual override. */
+  /** A fixed max stride (the default, as in SLEAP), or `null` = Auto
+   *  (opt-in: live-recomputed from the loaded project's instance sizes,
+   *  see recommendMaxStride in modelStats.ts). */
   maxStride: number | null;
   filters: number;
   filtersRate: number;
@@ -333,7 +339,7 @@ export const defaultHyperparams: ConfigHyperparams = {
   sigma: 5.0,
   scale: 1.0,
   stemStride: null,
-  maxStride: null,
+  maxStride: 16,
   filters: 16,
   filtersRate: 2.0,
   middleBlock: true,
@@ -456,6 +462,8 @@ export interface RemoteTrainingOptions {
   visibility?: VideoVisibility[];
   /** labelsSource: "window" — also embed "frames to predict" pixels (suggestions) so post-training inference can cover a hidden video too. */
   embedFramesToPredict?: boolean;
+  /** "window" runs: the worker folder for models + predictions (`spec.output_dir`). */
+  outputDir?: string;
   valLabelsPath?: string;
   /** Post-training inference target ("nothing"/absent = skip). Run as a separate track job once all models train. */
   inferenceTarget?: string;
@@ -590,6 +598,9 @@ interface TrainingState {
   startedAt: number | null;
   _stopRequested: boolean;
   _isRemote: boolean;
+  /** The remote run's id (every job of it, training and post-training
+   *  inference, shares it), so Stop Early / Cancel end exactly this run. */
+  _remoteRunId: string | null;
 
   // Progress
   models: ModelProgress[];
@@ -609,6 +620,9 @@ interface TrainingState {
    */
   resetSeq: number;
 
+  /** The last dry run (local only), or null when none has run since a reset. */
+  dryRun: DryRunState | null;
+
   // Actions
   setConfig: <K extends keyof TrainingConfig>(key: K, value: TrainingConfig[K]) => void;
   updateConfigHyperparams: (slot: string, updates: Partial<ConfigHyperparams>) => void;
@@ -622,6 +636,14 @@ interface TrainingState {
   startTraining: (opts?: RemoteTrainingOptions | LocalTrainingOptions) => Promise<void>;
   stopTraining: () => Promise<void>;
   cancelTraining: () => Promise<void>;
+  /**
+   * Check the current configs locally with `sleap-nn train --dry-run` before
+   * committing to a long run: setup plus one training and one validation batch
+   * per config, nothing written. Desktop only; never touches `status`.
+   */
+  startDryRun: () => Promise<void>;
+  cancelDryRun: () => Promise<void>;
+  clearDryRun: () => void;
   recordEpoch: (modelIndex: number, sample: EpochSample) => void;
   recordBatch: (modelIndex: number, sample: BatchInput) => void;
   recordBatches: (modelIndex: number, samples: BatchInput[]) => void;
@@ -1201,6 +1223,96 @@ export function applyHyperparamsToYaml(
   return yaml.dump(doc, { lineWidth: -1 });
 }
 
+/**
+ * The config YAML and run name a local run of `cf` trains with, resolved
+ * against the project. Shared by `startTraining` and `startDryRun`, so a dry
+ * run checks exactly the config a real run would use.
+ */
+function prepareLocalRun(
+  cf: ConfigFile,
+  labels: Labels | null,
+  sizeStats: ReturnType<typeof computeInstanceSizeStats>,
+): { configYaml: string; runName: string } {
+  // max_stride has no server-side Auto resolution (unlike crop_size)
+  // — resolve it client-side from the project's actual instance
+  // sizes before this config is written out for training.
+  const isPretrainedBackbone = !!cf.hyperparams.backbone && cf.hyperparams.backbone !== "unet";
+  const resolvedMaxStride =
+    cf.hyperparams.maxStride == null && (sizeStats || isPretrainedBackbone)
+      ? recommendMaxStride(
+          sizeStats?.avgAnimalSize ?? 0,
+          sizeStats?.maxBboxDim ?? 0,
+          cf.hyperparams.scale,
+          cf.hyperparams.backbone,
+        )
+      : undefined;
+  // in_channels has no server-side Auto resolution either — resolve
+  // colorMode against the project's actual video channel count
+  // before this config is written out for training.
+  const resolvedInChannels = resolveInputChannels(
+    cf.hyperparams.colorMode,
+    detectVideoChannels(labels),
+  );
+  const configYaml = applyHyperparamsToYaml(
+    cf.content,
+    cf.hyperparams,
+    cf.checkpointPath,
+    resolvedMaxStride,
+    resolvedInChannels,
+  );
+  // Default run name matches legacy SLEAP's format exactly:
+  // `{timestamp}.{head_name}.n={num_user_labeled_frames}`
+  // (sleap/gui/learning/runners.py get_timestamp() + base_run_name) —
+  // the `n=` count is the project's training-data size at the moment
+  // training starts, which is what made the old scheme's "which run
+  // used how much data" comparisons useful across a project's history.
+  let runName = cf.hyperparams.runName;
+  if (!runName) {
+    const n = countUserLabeledFrames(labels);
+    const ts = formatRunTimestamp();
+    runName = n !== null ? `${ts}.${cf.modelType}.n=${n}` : `${ts}.${cf.modelType}`;
+  }
+  return { configYaml, runName };
+}
+
+/** The local labels file training reads: the picked file, else the project. */
+async function localTrainingLabelsPath(config: TrainingConfig): Promise<string> {
+  return (
+    config.trainingLabelsPath ||
+    (await import("@/stores/appStore")).useAppStore.getState().projectPath ||
+    ""
+  );
+}
+
+let dryRunSeq = 0;
+
+/** One model's result in a dry run (`sleap-nn train --dry-run`). */
+export interface DryRunModel {
+  label: string;
+  status: "pending" | "running" | "passed" | "failed";
+  /** sleap-nn's summary of the run this config would do; set once passed. */
+  summary: DryRunSummaryField[] | null;
+  /** The likely cause (last stderr line); set once failed. */
+  error: string | null;
+  /** The last stderr lines of a failed run (its traceback), for the card's error box. */
+  stderrTail: string[];
+}
+
+/**
+ * A dry run of every config the current model type trains, one after another
+ * (both heads for top-down). `unsupported`: the installed sleap-nn predates
+ * `--dry-run`. `config` is the config it checked, so the panel can tell when
+ * the result no longer matches what's set up.
+ */
+export interface DryRunState {
+  /** Tells this dry run's late writes apart from a newer one's. */
+  id: number;
+  status: "running" | "passed" | "failed" | "unsupported" | "cancelled";
+  models: DryRunModel[];
+  log: string[];
+  config: TrainingConfig;
+}
+
 // ── Initial state ─────────────────────────────────────────────────
 
 const initialConfig: TrainingConfig = {
@@ -1218,6 +1330,7 @@ const initialState = {
   startedAt: null as number | null,
   _stopRequested: false,
   _isRemote: false,
+  _remoteRunId: null,
   models: [] as ModelProgress[],
   currentModelIndex: 0,
   wandbUrl: null as string | null,
@@ -1225,6 +1338,7 @@ const initialState = {
   log: [] as string[],
   postTrainingInference: null as PostTrainingInference | null,
   resetSeq: 0,
+  dryRun: null as DryRunState | null,
 };
 
 // ── Store ─────────────────────────────────────────────────────────
@@ -1640,6 +1754,8 @@ export const useTrainingStore = create<TrainingState>()((set, get) => ({
     })),
 
   startTraining: async (opts?: RemoteTrainingOptions | LocalTrainingOptions) => {
+    // One sleap-nn subprocess at a time: Cancel kills whichever is running.
+    if (get().dryRun?.status === "running") return;
     const remoteOpts = opts && "remote" in opts ? opts : undefined;
     const localOpts = opts && !("remote" in opts) ? opts as LocalTrainingOptions : undefined;
     const { config } = get();
@@ -1662,12 +1778,14 @@ export const useTrainingStore = create<TrainingState>()((set, get) => ({
       startedAt: Date.now(),
       _stopRequested: false,
       _isRemote: !!remoteOpts?.remote,
+      _remoteRunId: remoteOpts?.remote ? crypto.randomUUID() : null,
       models,
       currentModelIndex: 0,
       wandbUrl: null,
       modelOutputDirs: [],
       log: [],
       postTrainingInference: null,
+      dryRun: null,
     });
 
     if (remoteOpts?.remote) {
@@ -1680,10 +1798,13 @@ export const useTrainingStore = create<TrainingState>()((set, get) => ({
         remoteOpts.workerId;
 
       const { useAppStore } = await import("@/stores/appStore");
-      const { labels, projectPath } = useAppStore.getState();
+      const { labels, projectPath, filename } = useAppStore.getState();
 
       const { projectTag } = await import("@/lib/projectTag");
-      const project = projectTag(projectPath);
+      // A browser-opened project has no path: keep its id (what "my runs"
+      // matches on) but name it after the file, not "untitled.slp".
+      const tag = projectTag(projectPath);
+      const project = projectPath || !filename ? tag : { ...tag, name: filename };
 
       // Which videos get post-training inference. `undefined` = unrestricted
       // (every video) — the "worker-file" default and most "window" runs;
@@ -1716,7 +1837,7 @@ export const useTrainingStore = create<TrainingState>()((set, get) => ({
           visibility = await checkVideoVisibility(projectVideoPaths(labels), {
             rules: pathRulesFor(remoteOpts.workerId),
             mounts: mounts.map((m) => m.path),
-            stat: (p) => statWorkerPath(p).then((r) => r.exists),
+            stat: (p) => statWorkerPath(p),
           });
         }
 
@@ -1834,6 +1955,9 @@ export const useTrainingStore = create<TrainingState>()((set, get) => ({
         labels_content: labelsContentField,
         val_labels_path: remoteOpts.valLabelsPath || undefined,
         project,
+        ...(remoteOpts.labelsSource === "window" && remoteOpts.outputDir
+          ? { output_dir: remoteOpts.outputDir }
+          : {}),
       };
 
       set((state) => ({
@@ -1856,6 +1980,7 @@ export const useTrainingStore = create<TrainingState>()((set, get) => ({
       try {
         const trainResults: JobResult[] = [];
         const result = await submitJob(spec, onLogLine, {
+          ...(get()._remoteRunId ? { run: { id: get()._remoteRunId as string } } : {}),
           onTelemetry: (telemetry, jobIndex) => get().applyRemoteTelemetry(jobIndex, telemetry),
           onModelComplete: (modelResult) => {
             trainResults.push(modelResult);
@@ -1882,6 +2007,9 @@ export const useTrainingStore = create<TrainingState>()((set, get) => ({
         logFlusher.flush();
 
         if (!result.success) {
+          // The user's own Cancel already set "Training cancelled"; the run
+          // ending is that cancel landing, not a failure to report.
+          if (get().error === "Training cancelled") return;
           const message = result.error || "Training failed";
           set((s) => ({
             status: "error",
@@ -1975,7 +2103,14 @@ export const useTrainingStore = create<TrainingState>()((set, get) => ({
               currentFrameIdx: frameIdx ?? 0,
               activeVideoFrameCount: video?.shape?.[0] ?? 0,
               allowedVideoIndices,
-            }).map((trackSpec) => ({ ...trackSpec, project }));
+            }).map((trackSpec) => ({
+              ...trackSpec,
+              project,
+              // A "window" run's predictions go with its models (stage 4).
+              ...(remoteOpts.labelsSource === "window" && remoteOpts.outputDir
+                ? { output_dir: remoteOpts.outputDir }
+                : {}),
+            }));
             set((s) => ({
               postTrainingInference: { status: "running", message: null, pendingMerge: null, merged: false },
               log: appendLog(s.log, `— Running inference (${inferenceTarget}) on the worker with models: ${modelDirs.join(", ")}...`),
@@ -2012,9 +2147,18 @@ export const useTrainingStore = create<TrainingState>()((set, get) => ({
               }));
             } catch (e) {
               logFlusher.flush();
-              const message = `Post-training inference failed: ${e instanceof Error ? e.message : String(e)}`;
+              // The user's own Cancel ended the inference job: not a failure.
+              const canceled = get().error === "Training cancelled";
+              const message = canceled
+                ? "Post-training inference canceled"
+                : `Post-training inference failed: ${e instanceof Error ? e.message : String(e)}`;
               set((s) => ({
-                postTrainingInference: { status: "error", message, pendingMerge: null, merged: false },
+                postTrainingInference: {
+                  status: canceled ? "skipped" : "error",
+                  message,
+                  pendingMerge: null,
+                  merged: false,
+                },
                 log: appendLog(s.log, `— ${message}`),
               }));
             }
@@ -2051,7 +2195,7 @@ export const useTrainingStore = create<TrainingState>()((set, get) => ({
       }
 
       const { runTraining, startZmqRelay, stopZmqRelay, startProgressRelay, stopProgressRelay, listenTrainingProgress } = await import("@/platform/backend");
-      const labelsPath = config.trainingLabelsPath || (await import("@/stores/appStore")).useAppStore.getState().projectPath || "";
+      const labelsPath = await localTrainingLabelsPath(config);
       if (!labelsPath) {
         set({ status: "error", error: "No training labels file selected" });
         return;
@@ -2190,45 +2334,7 @@ export const useTrainingStore = create<TrainingState>()((set, get) => ({
             log: i > 0 ? appendLog(s.log, `— Starting ${s.models[i]?.label}...`) : s.log,
           }));
 
-          // max_stride has no server-side Auto resolution (unlike crop_size)
-          // — resolve it client-side from the project's actual instance
-          // sizes before this config is written out for training.
-          const isPretrainedBackbone = !!cf.hyperparams.backbone && cf.hyperparams.backbone !== "unet";
-          const resolvedMaxStride =
-            cf.hyperparams.maxStride == null && (localSizeStats || isPretrainedBackbone)
-              ? recommendMaxStride(
-                  localSizeStats?.avgAnimalSize ?? 0,
-                  localSizeStats?.maxBboxDim ?? 0,
-                  cf.hyperparams.scale,
-                  cf.hyperparams.backbone,
-                )
-              : undefined;
-          // in_channels has no server-side Auto resolution either — resolve
-          // colorMode against the project's actual video channel count
-          // before this config is written out for training.
-          const resolvedInChannels = resolveInputChannels(
-            cf.hyperparams.colorMode,
-            detectVideoChannels(localLabels),
-          );
-          const configYaml = applyHyperparamsToYaml(
-            cf.content,
-            cf.hyperparams,
-            cf.checkpointPath,
-            resolvedMaxStride,
-            resolvedInChannels,
-          );
-          // Default run name matches legacy SLEAP's format exactly:
-          // `{timestamp}.{head_name}.n={num_user_labeled_frames}`
-          // (sleap/gui/learning/runners.py get_timestamp() + base_run_name) —
-          // the `n=` count is the project's training-data size at the moment
-          // training starts, which is what made the old scheme's "which run
-          // used how much data" comparisons useful across a project's history.
-          let runName = cf.hyperparams.runName;
-          if (!runName) {
-            const n = countUserLabeledFrames(localLabels);
-            const ts = formatRunTimestamp();
-            runName = n !== null ? `${ts}.${cf.modelType}.n=${n}` : `${ts}.${cf.modelType}`;
-          }
+          const { configYaml, runName } = prepareLocalRun(cf, localLabels, localSizeStats);
 
           set((s) => ({
             models: s.models.map((m, j) =>
@@ -2492,7 +2598,7 @@ export const useTrainingStore = create<TrainingState>()((set, get) => ({
       // Remote: jobs.cancel(mode: "stop") for graceful early stop
       const { useConnectStore } = await import("@/stores/connectStore");
       const { stopJob } = useConnectStore.getState();
-      stopJob();
+      stopJob(get()._remoteRunId ?? undefined);
       set((s) => ({
         log: appendLog(s.log, "— Stop Early requested, saving checkpoint..."),
       }));
@@ -2519,13 +2625,165 @@ export const useTrainingStore = create<TrainingState>()((set, get) => ({
       // Remote: jobs.cancel(mode: "cancel")
       const { useConnectStore } = await import("@/stores/connectStore");
       const { cancelJob } = useConnectStore.getState();
-      cancelJob();
+      cancelJob(get()._remoteRunId ?? undefined);
     } else {
       // Local: kill subprocess
       await cancelCommand();
     }
     set({ status: "error", error: "Training cancelled" });
   },
+
+  startDryRun: async () => {
+    if (!isTauri || get().status !== "idle" || get().dryRun?.status === "running") return;
+    const { config } = get();
+    const slots = getConfigSlots(config.modelType);
+    const id = ++dryRunSeq;
+    set({
+      dryRun: {
+        id,
+        status: "running",
+        models: slots.map((slot) => ({
+          label: getSlotLabel(slot).replace(" Config", ""),
+          status: "pending",
+          summary: null,
+          error: null,
+          stderrTail: [],
+        })),
+        log: [],
+        config,
+      },
+    });
+
+    // Every write goes through here, so a cancel, a reset or a newer dry run
+    // that replaced this one is never overwritten by its late results.
+    const update = (fn: (d: DryRunState) => Partial<DryRunState>) =>
+      set((s) =>
+        s.dryRun?.id === id && s.dryRun.status === "running"
+          ? { dryRun: { ...s.dryRun, ...fn(s.dryRun) } }
+          : s,
+      );
+    const setModel = (i: number, patch: Partial<DryRunModel>) =>
+      update((d) => ({ models: d.models.map((m, j) => (j === i ? { ...m, ...patch } : m)) }));
+    const isLive = () => get().dryRun?.id === id && get().dryRun?.status === "running";
+
+    // sleap-nn's progress bar repaints many times a second, one line event
+    // each: buffer lines and flush a few times a second, never set() per line.
+    let pending: string[] = [];
+    const flush = () => {
+      if (pending.length === 0) return;
+      const lines = pending;
+      pending = [];
+      update((d) => ({ log: appendLog(d.log, ...lines) }));
+    };
+    const flushTimer = setInterval(flush, 250);
+
+    const labelsPath = await localTrainingLabelsPath(config);
+    const { useAppStore } = await import("@/stores/appStore");
+    const labels = useAppStore.getState().labels;
+    const sizeStats = computeInstanceSizeStats(labels);
+    const { runTraining } = await import("@/platform/backend");
+    // Next to the labels file, as a real run: the summary's run folder shows it.
+    const modelDir = labelsPath.replace(/[/\\][^/\\]+$/, "") + "/models";
+    // sleap-nn creates `modelDir` for its write check and removes it again; if a
+    // Cancel kills it first, the app does (only if it wasn't there before).
+    let modelDirExisted = true;
+    try {
+      const { exists } = await import("@tauri-apps/plugin-fs");
+      modelDirExisted = await exists(modelDir);
+    } catch {
+      /* can't tell: keep the folder */
+    }
+
+    let allPassed = true;
+    try {
+      for (let i = 0; i < slots.length && isLive(); i++) {
+        const cf = config.configs.find((c) => c.slot === slots[i]);
+        if (!labelsPath || !cf) {
+          setModel(i, {
+            status: "failed",
+            error: !labelsPath ? "No training labels file selected" : "No config loaded",
+          });
+          allPassed = false;
+          continue;
+        }
+        setModel(i, { status: "running" });
+        pending.push(`— Dry run: ${get().dryRun?.models[i]?.label}...`);
+
+        const output: string[] = [];
+        const stderrTail: string[] = [];
+        const { configYaml, runName } = prepareLocalRun(cf, labels, sizeStats);
+        let success = false;
+        try {
+          ({ success } = await runTraining(
+            configYaml,
+            labelsPath,
+            runName,
+            (event) => {
+              if (event.event !== "stdout" && event.event !== "stderr") return;
+              // Lines arrive with their newline; without stripping it, joining
+              // them (the log, the error box, Copy) double-spaces every line.
+              const line = event.data.line.replace(/\r?\n$/, "");
+              output.push(line);
+              pending.push(line);
+              if (event.event === "stderr" && line.trim()) {
+                stderrTail.push(line);
+                if (stderrTail.length > 25) stderrTail.shift();
+              }
+            },
+            modelDir,
+            true,
+          ));
+        } catch (e) {
+          stderrTail.push(e instanceof Error ? e.message : String(e));
+        }
+        flush();
+        if (!isLive()) {
+          // Cancel killed sleap-nn (it has exited now) before it could remove its
+          // scratch folder; this dry run's own leftovers are the app's to clear.
+          const d = get().dryRun;
+          if (d?.id === id && d.status === "cancelled") {
+            await removeDryRunLeftovers(modelDir, runName, !modelDirExisted);
+          }
+          return;
+        }
+
+        if (isDryRunUnsupported(output)) {
+          setModel(i, {
+            status: "failed",
+            error: "The installed sleap-nn has no --dry-run option.",
+          });
+          update(() => ({ status: "unsupported" }));
+          return;
+        }
+        const summary = parseDryRunSummary(output);
+        if (success && summary) {
+          setModel(i, { status: "passed", summary });
+        } else {
+          // Check the remaining configs anyway: a top-down run's second head
+          // can have its own problem, and both are worth fixing before a run.
+          setModel(i, {
+            status: "failed",
+            error: lastErrorLine(stderrTail) ?? "sleap-nn exited with an error",
+            stderrTail: [...stderrTail],
+          });
+          allPassed = false;
+        }
+      }
+      update(() => ({ status: allPassed ? "passed" : "failed" }));
+    } finally {
+      clearInterval(flushTimer);
+      flush();
+    }
+  },
+
+  cancelDryRun: async () => {
+    const d = get().dryRun;
+    if (d?.status !== "running") return;
+    set({ dryRun: { ...d, status: "cancelled" } });
+    await cancelCommand();
+  },
+
+  clearDryRun: () => set({ dryRun: null }),
 
   recordEpoch: (modelIndex, sample) =>
     set((state) => {

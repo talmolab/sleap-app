@@ -113,6 +113,9 @@ const checkWorkerFileVideosMock = vi.fn(async () => checkWorkerFileVideosResult)
 vi.mock("@/lib/workerLabels", () => ({
   loadWorkerLabels: loadWorkerLabelsMock,
   checkWorkerFileVideos: checkWorkerFileVideosMock,
+  fetchWorkerPreviewFrame: async () => {
+    throw new Error("Preview unavailable");
+  },
   needsLabelsRepoint: (checks: WorkerFileVideoCheck[]) =>
     checks.some((c) => c.via === "rule" || c.via === "next-to-labels"),
   videoChecksToVisibility: (checks: WorkerFileVideoCheck[]) =>

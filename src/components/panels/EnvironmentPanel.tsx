@@ -2,7 +2,8 @@
  * Environment panel for Python/uv toolchain configuration.
  *
  * Shows uv status, lets users pick a Python interpreter,
- * install Python versions, and manage uv tools (sleap-nn, sleap-rtc).
+ * install Python versions, and manage uv tools (sleap-nn, and the SLEAP
+ * Connect worker, sleap-connect).
  */
 
 import { useCallback, useEffect, useRef, useState } from "react";
@@ -39,7 +40,12 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { isTauri } from "../../platform/index";
-import { classifyVersion, VERSION_KIND_LABEL } from "@/lib/version";
+import {
+  classifyVersion,
+  releaseNotesUrlFor,
+  SLEAP_APP_RELEASES_URL,
+  VERSION_KIND_LABEL,
+} from "@/lib/version";
 import {
   useEnvironmentStore,
   type DetectionStatus,
@@ -69,9 +75,9 @@ import {
 import { useAppStore, type UpdateChannel } from "@/stores/appStore";
 import { hasUnsavedWork } from "@/lib/unsavedGuard";
 import { toast } from "@/lib/notify";
+import { confirmDialog } from "@/stores/confirmStore";
 
 const SLEAP_NN_RELEASES_URL = "https://github.com/talmolab/sleap-nn/releases/tag";
-const SLEAP_APP_RELEASES_URL = "https://github.com/talmolab/sleap-app/releases/tag";
 
 // ---------------------------------------------------------------------------
 // Shared components
@@ -617,6 +623,38 @@ export function isOlderVersion(target: string, current: string): boolean {
 // reusing the word "dev" for both.
 const isLocalBuild = import.meta.env.DEV;
 
+/**
+ * Release-notes link for the INSTALLED build: a URL when it has notes of its
+ * own, otherwise null and the tooltip says why the button is greyed out.
+ *
+ * Only stable and pre-release ("latest") builds are a published GitHub Release
+ * with real notes. A dev build's rolling `dev` release describes no particular
+ * build, and a local build's version is just whatever package.json on `main`
+ * says -- it would link the notes of a release this tree is not. Exported for
+ * tests: `isLocalBuild` is always truthy under `bun test`, so the panel itself
+ * can only exercise the local-build branch.
+ */
+export function installedReleaseNotes(
+  version: string,
+  localBuild: boolean,
+): { url: string | null; title: string } {
+  if (localBuild) {
+    return {
+      url: null,
+      title:
+        "Running from source (tauri:dev) — this isn't a published release, so it has no release notes.",
+    };
+  }
+  const url = releaseNotesUrlFor(version);
+  return url
+    ? { url, title: `View release notes for v${version}` }
+    : {
+        url: null,
+        title:
+          "Dev builds are built continuously from main and have no release notes of their own.",
+      };
+}
+
 // Exported for tests only (environmentPanelChannelLabel.test.tsx); the panel
 // itself renders it below.
 export function AppUpdateSection() {
@@ -722,9 +760,12 @@ export function AppUpdateSection() {
     // restart, not a hot-reload — so warn first if there's anything that
     // hasn't been saved to disk yet.
     if (hasUnsavedWork(useAppStore.getState())) {
-      const proceed = window.confirm(
-        "You have unsaved changes. Installing this update will restart SLEAP. Continue?"
-      );
+      const proceed = await confirmDialog({
+        title: "Unsaved changes",
+        message: "You have unsaved changes. Installing this update will restart SLEAP. Continue?",
+        confirmLabel: "Install and restart",
+        destructive: true,
+      });
       if (!proceed) return;
     }
     setUpdating(true);
@@ -774,13 +815,40 @@ export function AppUpdateSection() {
   // links to notes for a version there's no installer here to apply.
   const hasReleaseNotesPage =
     updateAvailable && channel !== "dev" && !isLocalBuild;
+  const installedNotes = version
+    ? installedReleaseNotes(version, !!isLocalBuild)
+    : null;
 
   return (
     <Section
       title="SLEAP App"
       aside={
         version ? (
-          <span className="text-xs text-muted-foreground">v{version}</span>
+          <>
+            {/* aria-disabled rather than `disabled`: a disabled button swallows
+                the hover that shows its tooltip, and the tooltip is the only
+                place that explains why the notes aren't available. */}
+            {installedNotes && (
+              <button
+                type="button"
+                onClick={() => {
+                  if (installedNotes.url) void openExternal(installedNotes.url);
+                }}
+                aria-disabled={!installedNotes.url}
+                title={installedNotes.title}
+                className={cn(
+                  "flex shrink-0 items-center gap-0.5 text-[10px] text-muted-foreground transition-colors",
+                  installedNotes.url
+                    ? "hover:text-foreground"
+                    : "cursor-not-allowed opacity-50"
+                )}
+              >
+                Release notes
+                <ExternalLink className="h-2.5 w-2.5" />
+              </button>
+            )}
+            <span className="text-xs text-muted-foreground">v{version}</span>
+          </>
         ) : null
       }
     >
@@ -991,6 +1059,7 @@ export function EnvironmentPanel() {
     installExtras,
     doUpgradeTool,
     doReinstallTool,
+    switchToSleapConnect,
     doUpdateUv,
     doInstallUv,
     clearInstallLog,
@@ -1022,7 +1091,12 @@ export function EnvironmentPanel() {
   }
 
   const sleapNnTool = tools.find((t) => t.name === "sleap-nn");
-  const sleapRtcTool = tools.find((t) => t.name === "sleap-rtc");
+  // The SLEAP Connect worker. Up to 0.0.7 its PyPI package was `sleap-rtc`;
+  // an install under that name is offered a switch to `sleap-connect`.
+  const connectTool = tools.find((t) => t.name === "sleap-connect");
+  const oldConnectTool = connectTool
+    ? undefined
+    : tools.find((t) => t.name === "sleap-rtc");
   const isDetecting = detectionStatus === "checking";
   const detected = detectionStatus === "done" || detectionStatus === "error";
   const isInstalling = installStatus === "installing";
@@ -1365,43 +1439,84 @@ export function EnvironmentPanel() {
           </Section>
         )}
 
-        {/* sleap-rtc: remote-worker transport. One row — it has no
-            accelerator or extras of its own. */}
+        {/* sleap-connect (the SLEAP Connect worker): lets other computers train and run
+            inference on this one. One row — it runs its jobs with the
+            sleap-nn above, so it has no accelerator or extras of its own. */}
         {detected && uv?.available && (
           <Section
-            title="sleap-rtc"
+            title="sleap-connect"
             aside={
-              sleapRtcTool?.version ? (
+              (connectTool ?? oldConnectTool)?.version ? (
                 <span className="text-xs text-muted-foreground">
-                  v{sleapRtcTool.version}
+                  v{(connectTool ?? oldConnectTool)?.version}
                 </span>
               ) : null
             }
           >
             <Field label="Status">
               <span className="flex min-w-0 items-center gap-1.5">
-                <StatusIcon ok={!!sleapRtcTool} />
+                <StatusIcon ok={!!connectTool} />
                 <span
                   className={cn(
                     "truncate",
-                    !sleapRtcTool && "text-muted-foreground"
+                    !connectTool && "text-muted-foreground"
                   )}
                 >
-                  {sleapRtcTool ? "Installed" : "Not installed"}
+                  {connectTool
+                    ? "Installed"
+                    : oldConnectTool
+                      ? "Installed under its old name, sleap-rtc"
+                      : "Not installed"}
                 </span>
+                <Hint>
+                  Lets SLEAP on other computers train and run inference on
+                  this one. Start a Worker in a remote machine with{" "}
+                  <code>sleap-connect serve</code>, then pair with{" "}
+                  <code>sleap-connect pair</code>. Its jobs use the sleap-nn
+                  installed above.
+                </Hint>
               </span>
             </Field>
+            {oldConnectTool && (
+              <p className="text-[10px] text-amber-400">
+                SLEAP Connect is now installed as sleap-connect. Switch to get
+                updates; paired devices and shared folders are kept.
+              </p>
+            )}
+            {(connectTool || oldConnectTool) && !sleapNnTool && (
+              <p className="text-[10px] text-amber-400">
+                Jobs on this worker run with sleap-nn — install it above.
+              </p>
+            )}
             <Actions>
-              <ToolActions
-                tool={sleapRtcTool}
-                installing={
-                  isInstalling &&
-                  (installTarget?.includes("sleap-rtc") ?? false)
-                }
-                onInstall={() => doInstallTool("sleap-rtc")}
-                onUpgrade={() => doUpgradeTool("sleap-rtc")}
-                onReinstall={() => doReinstallTool("sleap-rtc")}
-              />
+              {oldConnectTool ? (
+                <Button
+                  size="sm"
+                  variant="outline"
+                  className="h-6 text-[11px]"
+                  disabled={isInstalling}
+                  onClick={() => switchToSleapConnect()}
+                >
+                  {isInstalling &&
+                  (installTarget?.includes("sleap-connect") ?? false) ? (
+                    <Loader2 className="mr-1 h-3 w-3 animate-spin" />
+                  ) : (
+                    <ArrowUpCircle className="mr-1 h-3 w-3" />
+                  )}
+                  Switch to sleap-connect
+                </Button>
+              ) : (
+                <ToolActions
+                  tool={connectTool}
+                  installing={
+                    isInstalling &&
+                    (installTarget?.includes("sleap-connect") ?? false)
+                  }
+                  onInstall={() => doInstallTool("sleap-connect")}
+                  onUpgrade={() => doUpgradeTool("sleap-connect")}
+                  onReinstall={() => doReinstallTool("sleap-connect")}
+                />
+              )}
             </Actions>
           </Section>
         )}

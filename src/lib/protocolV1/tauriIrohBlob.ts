@@ -56,13 +56,14 @@ async function sha256Hex(bytes: Uint8Array): Promise<string> {
 }
 
 /**
- * Builds a `RangeSource` for one blob's worth of reads over the currently
- * active iroh connection (there's only ever one — `iroh_blob_open` operates
- * on Tauri-managed global state, the same way `iroh_connect`/`iroh_send` do
- * for the control connection), plus a `dispose()` the caller MUST run once
- * done — `RangeSource` itself has no `close()`/lifecycle hook of its own.
+ * Builds a `RangeSource` for one blob's worth of reads over iroh connection
+ * `connId` (the worker's `WorkerClient.irohConnectionId` — each connection
+ * has its own blob stream slot in `iroh_client.rs`), plus a `dispose()` the
+ * caller MUST run once done — `RangeSource` itself has no
+ * `close()`/lifecycle hook of its own.
  */
 export function createTauriIrohBlobRangeSource(
+  connId: number,
   sha256: string,
   size: number,
   getIpc: () => Promise<TauriBlobIpc> = defaultTauriIpc,
@@ -70,7 +71,7 @@ export function createTauriIrohBlobRangeSource(
   let opened: Promise<IrohBlobOpenResult> | null = null;
   const ensureOpen = (ipc: TauriBlobIpc): Promise<IrohBlobOpenResult> => {
     if (!opened) {
-      opened = ipc.invoke(sleapCmd("iroh_blob_open"), { sha256 }) as Promise<IrohBlobOpenResult>;
+      opened = ipc.invoke(sleapCmd("iroh_blob_open"), { connId, sha256 }) as Promise<IrohBlobOpenResult>;
     }
     return opened;
   };
@@ -92,6 +93,7 @@ export function createTauriIrohBlobRangeSource(
         const alignedLength = Math.min(size, (lastChunk + 1) * chunkSize) - alignedOffset;
 
         const raw = await ipc.invoke(sleapCmd("iroh_blob_read_range"), {
+          connId,
           offset: alignedOffset,
           length: alignedLength,
         });
@@ -120,7 +122,7 @@ export function createTauriIrohBlobRangeSource(
     dispose: async () => {
       if (!opened) return; // never actually opened a stream — nothing to close
       const ipc = await getIpc();
-      await ipc.invoke(sleapCmd("iroh_blob_close"));
+      await ipc.invoke(sleapCmd("iroh_blob_close"), { connId });
     },
   };
 }

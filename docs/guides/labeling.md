@@ -39,7 +39,7 @@ Once you have a model, **Copy Predictions** turns labeling into correction.
   draw a selection box.
 - **Right-click** a node or instance for its context menu — visibility, deletion,
   track assignment, and more.
-- **Node placement mode** (++n++, or **View ▸ Node Placement Mode**) is for
+- **Node placement mode** (++shift+n++, or **View ▸ Node Placement Mode**) is for
   clicking nodes down one at a time rather than dragging a pre-posed template.
 
 ### Visibility
@@ -49,10 +49,10 @@ parked somewhere plausible — a guessed point is training signal that says the
 part is *there*, which it isn't.
 
 - To mark a node non-visible, right-click it ▸ **Mark Node Non-Visible** (or
-  **Mark Node Visible** to undo it).
-- ++v++ toggles **View ▸ Show Non-Visible Nodes** — whether non-visible nodes
-  are drawn at all. If the pointer is over a node, or nodes are selected, ++v++
-  also flips those nodes' visibility.
+  **Mark Node Visible** to undo it), or press ++v++ with the pointer over it.
+  With nodes selected, ++v++ flips all of them.
+- ++shift+v++ toggles **View ▸ Show Non-Visible Nodes**: whether non-visible
+  nodes are drawn at all.
 - **View ▸ Display** controls how much of the hidden geometry you see:
 
     | Mode | Shows |
@@ -118,10 +118,13 @@ is what training actually consumes.
 
 ## Negative frames
 
-**Labels ▸ Mark Frame as Negative** records that a frame genuinely contains no
-animals. This is real training signal, not an empty frame that you skipped, and
-the [label quality check](label-qc.md) will flag a negative frame that still has
-instances on it.
+**Labels ▸ Mark Frame as Negative** (++n++, or right-click the video) records
+that a frame genuinely contains no animals. This is real training signal, not an
+empty frame that you skipped. Marking a frame that still has instances asks
+first, then removes them (undo brings them back), and adding an instance to a
+negative frame unmarks it. A negative frame shows a red border with a "Negative
+Frame" label on the video and a red tick on the seekbar, and it counts toward
+the status bar's labeled total, e.g. "Labeled: 6 (2 negative frames)".
 
 ## Undo
 

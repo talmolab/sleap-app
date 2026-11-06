@@ -113,3 +113,23 @@ describe("TrainingPanel — RemoteRunCard not-live default", () => {
     expect(screen.getByText(/Training: Centroid/)).toBeInTheDocument();
   });
 });
+
+describe("TrainingPanel — Stop Early vs Cancel", () => {
+  it("offers Stop Early and Cancel while a model trains", () => {
+    seedRunning({ remote: true });
+    render(<TrainingPanel />);
+    expect(screen.getByRole("button", { name: /Stop Early/ })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /^Cancel$/ })).toBeInTheDocument();
+  });
+
+  it("offers only Cancel once post-training inference is running", () => {
+    seedRunning({ remote: true });
+    useTrainingStore.setState({
+      models: [runningModel({ status: "completed" })],
+      postTrainingInference: { status: "running", message: null, pendingMerge: null, merged: false },
+    });
+    render(<TrainingPanel />);
+    expect(screen.queryByRole("button", { name: /Stop Early/ })).toBeNull();
+    expect(screen.getByRole("button", { name: /^Cancel$/ })).toBeInTheDocument();
+  });
+});
