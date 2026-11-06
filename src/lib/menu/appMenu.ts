@@ -646,15 +646,6 @@ function predictMenu(s: MenuSnapshot): TopMenu {
         title: "Export a trained model to ONNX/TensorRT for faster inference (desktop only)",
         run: () => useExportStore.getState().openExport([]),
       },
-      {
-        kind: "item",
-        id: "predict.importPredictions",
-        label: "Import Predictions...",
-        run: () =>
-          alert(
-            "Import Predictions is not yet implemented.\n\nUse File > Open Project to load an SLP file containing predictions."
-          ),
-      },
       SEP,
       { kind: "item", id: "predict.metrics", label: "Evaluation Metrics for Trained Models...", run: () => store().setModelMetricsDialogOpen(true) },
       {
@@ -719,7 +710,7 @@ function tracksMenu(s: MenuSnapshot): TopMenu {
       shortcut: "$mod+Shift+Backspace",
       enabled: s.hasInstance,
       run: async () => {
-        if (await confirmDeleteInstanceAndTrack()) commandContext.execute(DeleteInstanceAndTrack);
+        if (await confirmDeleteInstanceAndTrack(commandContext.state)) commandContext.execute(DeleteInstanceAndTrack);
       },
     },
     SEP,

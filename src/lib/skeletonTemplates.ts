@@ -1,6 +1,6 @@
 /**
  * Predefined skeleton templates: the ones legacy SLEAP ships, each with a
- * labeled example image, plus a blank skeleton.
+ * labeled example image, a human body skeleton, plus a blank skeleton.
  *
  * Each template defines nodes and edges that can be loaded into the skeleton
  * editor to quickly set up annotation for standard body plans.
@@ -129,6 +129,25 @@ const miceOfRef: SkeletonTemplate = {
   },
 };
 
+/**
+ * The 17-keypoint COCO human body skeleton: the keypoint set most human pose
+ * models share (YOLO-pose, RTMPose/MMPose, ViTPose, OpenPose's COCO mode). Node
+ * names are COCO's own, so labels map one-to-one onto COCO data and models.
+ * Edges are COCO's 19 limbs, pointed outward from the head and torso.
+ *
+ * Not from a SLEAP reference dataset, so it has no `dataset` example. Its preview
+ * is drawn by us (not a COCO photo: those are Flickr images under each
+ * photographer's own license, so they can't be bundled freely).
+ */
+const humanCoco: SkeletonTemplate = {
+  name: "Human, COCO (17 nodes)",
+  description: "People, with the 17-keypoint COCO body skeleton most human pose models use",
+  nodes: ["nose", "left_eye", "right_eye", "left_ear", "right_ear", "left_shoulder", "right_shoulder", "left_elbow", "right_elbow", "left_wrist", "right_wrist", "left_hip", "right_hip", "left_knee", "right_knee", "left_ankle", "right_ankle"],
+  edges: [[0, 1], [0, 2], [1, 2], [1, 3], [2, 4], [3, 5], [4, 6], [5, 6], [5, 7], [7, 9], [6, 8], [8, 10], [5, 11], [6, 12], [11, 12], [11, 13], [13, 15], [12, 14], [14, 16]],
+  symmetries: [[1, 2], [3, 4], [5, 6], [7, 8], [9, 10], [11, 12], [13, 14], [15, 16]],
+  previewImage: "human_coco.png",
+};
+
 /** All available skeleton templates keyed by ID. */
 export const SKELETON_TEMPLATES: Record<string, SkeletonTemplate> = {
   bees: beesRef,
@@ -137,12 +156,13 @@ export const SKELETON_TEMPLATES: Record<string, SkeletonTemplate> = {
   gerbils: gerbilsRef,
   mice_hc: miceHcRef,
   mice_of: miceOfRef,
+  human_coco: humanCoco,
   custom,
 };
 
 /**
  * Ordered list of template IDs for UI display: legacy SLEAP's order (its
- * template files listed by name), then the blank skeleton.
+ * template files listed by name), then the human skeleton, then the blank one.
  */
 export const TEMPLATE_ORDER = [
   "bees",
@@ -151,5 +171,6 @@ export const TEMPLATE_ORDER = [
   "gerbils",
   "mice_hc",
   "mice_of",
+  "human_coco",
   "custom",
 ] as const;
