@@ -56,14 +56,14 @@ function makeFakeIpc(overrides: {
 describe("createTauriIrohBlobRangeSource", () => {
   it("does not open a stream until the first readRange call", async () => {
     const { ipc, calls } = makeFakeIpc();
-    createTauriIrohBlobRangeSource("abc123", BLOB_BYTES.length, async () => ipc);
+    createTauriIrohBlobRangeSource(7, "abc123", BLOB_BYTES.length, async () => ipc);
 
     expect(calls.length).toBe(0);
   });
 
   it("opens lazily on first read and reuses the same session for later reads", async () => {
     const { ipc, calls } = makeFakeIpc();
-    const { source } = createTauriIrohBlobRangeSource("abc123", BLOB_BYTES.length, async () => ipc);
+    const { source } = createTauriIrohBlobRangeSource(7, "abc123", BLOB_BYTES.length, async () => ipc);
 
     await source.readRange(0, 4);
     await source.readRange(4, 4);
@@ -77,7 +77,7 @@ describe("createTauriIrohBlobRangeSource", () => {
 
   it("returns exactly the requested bytes for a read entirely inside one chunk", async () => {
     const { ipc } = makeFakeIpc();
-    const { source } = createTauriIrohBlobRangeSource("abc123", BLOB_BYTES.length, async () => ipc);
+    const { source } = createTauriIrohBlobRangeSource(7, "abc123", BLOB_BYTES.length, async () => ipc);
 
     const bytes = await source.readRange(0, 4);
 
@@ -86,31 +86,31 @@ describe("createTauriIrohBlobRangeSource", () => {
 
   it("aligns a read spanning two chunks to the chunk boundary on the wire, but returns only what was asked for", async () => {
     const { ipc, calls } = makeFakeIpc();
-    const { source } = createTauriIrohBlobRangeSource("abc123", BLOB_BYTES.length, async () => ipc);
+    const { source } = createTauriIrohBlobRangeSource(7, "abc123", BLOB_BYTES.length, async () => ipc);
 
     // Chunk 1 = bytes [4,8), chunk 2 = bytes [8,12) — this spans both.
     const bytes = await source.readRange(6, 4);
 
     expect(new TextDecoder().decode(bytes)).toBe("6789");
     const read = calls.find((c) => c.cmd.endsWith("iroh_blob_read_range"));
-    expect(read?.args).toEqual({ offset: 4, length: 8 }); // aligned to chunks [1,2]
+    expect(read?.args).toEqual({ connId: 7, offset: 4, length: 8 }); // aligned to chunks [1,2]
   });
 
   it("aligns a read starting mid-chunk to the enclosing chunk on the wire", async () => {
     const { ipc, calls } = makeFakeIpc();
-    const { source } = createTauriIrohBlobRangeSource("abc123", BLOB_BYTES.length, async () => ipc);
+    const { source } = createTauriIrohBlobRangeSource(7, "abc123", BLOB_BYTES.length, async () => ipc);
 
     // Offset 2 is mid-chunk-0; length 1 stays within chunk 0.
     const bytes = await source.readRange(2, 1);
 
     expect(new TextDecoder().decode(bytes)).toBe("2");
     const read = calls.find((c) => c.cmd.endsWith("iroh_blob_read_range"));
-    expect(read?.args).toEqual({ offset: 0, length: 4 }); // aligned to chunk [0]
+    expect(read?.args).toEqual({ connId: 7, offset: 0, length: 4 }); // aligned to chunk [0]
   });
 
   it("throws BLOB_HASH_MISMATCH when the returned bytes don't match the registered chunk hash", async () => {
     const { ipc } = makeFakeIpc({ chunkHashes: ["0000000000000000000000000000000000000000000000000000000000000000".slice(0, 64)] });
-    const { source } = createTauriIrohBlobRangeSource("abc123", BLOB_BYTES.length, async () => ipc);
+    const { source } = createTauriIrohBlobRangeSource(7, "abc123", BLOB_BYTES.length, async () => ipc);
 
     let error: unknown;
     try {
@@ -125,7 +125,7 @@ describe("createTauriIrohBlobRangeSource", () => {
 
   it("dispose() is a no-op if readRange was never called", async () => {
     const { ipc, calls } = makeFakeIpc();
-    const { dispose } = createTauriIrohBlobRangeSource("abc123", BLOB_BYTES.length, async () => ipc);
+    const { dispose } = createTauriIrohBlobRangeSource(7, "abc123", BLOB_BYTES.length, async () => ipc);
 
     await dispose();
 
@@ -134,11 +134,21 @@ describe("createTauriIrohBlobRangeSource", () => {
 
   it("dispose() closes the stream once it was actually opened", async () => {
     const { ipc, calls } = makeFakeIpc();
-    const { source, dispose } = createTauriIrohBlobRangeSource("abc123", BLOB_BYTES.length, async () => ipc);
+    const { source, dispose } = createTauriIrohBlobRangeSource(7, "abc123", BLOB_BYTES.length, async () => ipc);
 
     await source.readRange(0, 4);
     await dispose();
 
     expect(calls.filter((c) => c.cmd.endsWith("iroh_blob_close")).length).toBe(1);
+  });
+
+  it("names its connection on every blob command", async () => {
+    const { ipc, calls } = makeFakeIpc();
+    const { source, dispose } = createTauriIrohBlobRangeSource(7, "abc123", BLOB_BYTES.length, async () => ipc);
+
+    await source.readRange(0, 4);
+    await dispose();
+
+    expect(calls.map((c) => c.args?.connId)).toEqual([7, 7, 7]);
   });
 });

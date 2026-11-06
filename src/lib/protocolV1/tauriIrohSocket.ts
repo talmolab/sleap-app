@@ -109,6 +109,9 @@ class TauriIrohSocket implements WebSocketLike {
   onclose: ((ev: unknown) => void) | null = null;
   onerror: ((ev: unknown) => void) | null = null;
 
+  /** This socket's connection in the Rust registry (`iroh_client.rs`), set once `iroh_connect` returns. */
+  irohConnectionId: number | null = null;
+
   private _ipc: TauriIpc | null = null;
   private _closedByUs = false;
 
@@ -145,14 +148,14 @@ class TauriIrohSocket implements WebSocketLike {
     channel.onmessage = (event) => this._handleEvent(event);
 
     try {
-      await ipc.invoke(sleapCmd("iroh_connect"), {
+      this.irohConnectionId = (await ipc.invoke(sleapCmd("iroh_connect"), {
         target: {
           nodeId: target.nodeId,
           relayUrl: target.relayUrl,
           directAddrs: target.directAddrs,
         },
         onMessage: channel,
-      });
+      })) as number;
     } catch (err) {
       this._failToConnect(err);
       return;
@@ -197,7 +200,7 @@ class TauriIrohSocket implements WebSocketLike {
   send(data: string): void {
     if (this.readyState !== WS_OPEN || !this._ipc) return;
     void this._ipc
-      .invoke(sleapCmd("iroh_send"), { msg: data })
+      .invoke(sleapCmd("iroh_send"), { connId: this.irohConnectionId, msg: data })
       .catch((err) => this.onerror?.(err));
   }
 
@@ -217,7 +220,7 @@ class TauriIrohSocket implements WebSocketLike {
   private async _disconnect(): Promise<void> {
     try {
       if (this._ipc) {
-        await this._ipc.invoke(sleapCmd("iroh_disconnect"));
+        await this._ipc.invoke(sleapCmd("iroh_disconnect"), { connId: this.irohConnectionId });
       }
     } finally {
       if (this.readyState !== WS_CLOSED) {

@@ -243,11 +243,13 @@ export async function loadRemotePredictions(
   const ref = result.resultBlobs?.predictions;
   if (!ref) return null;
   const { useConnectStore } = await import("@/stores/connectStore");
-  const { activeTransport } = useConnectStore.getState();
+  const { activeTransport, _client } = useConnectStore.getState();
 
   if (activeTransport === "iroh") {
+    const connId = _client?.authenticated ? _client.irohConnectionId : null;
+    if (connId === null || connId === undefined) throw new Error("Not connected to a worker");
     const { createTauriIrohBlobRangeSource } = await import("@/lib/protocolV1/tauriIrohBlob");
-    const { source, dispose } = createTauriIrohBlobRangeSource(ref.sha256, ref.size);
+    const { source, dispose } = createTauriIrohBlobRangeSource(connId, ref.sha256, ref.size);
     try {
       return await readSlpStreaming(source, {
         openVideos: false,
