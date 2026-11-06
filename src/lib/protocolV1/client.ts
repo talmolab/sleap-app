@@ -57,6 +57,8 @@ export interface WebSocketLike {
   onmessage: ((ev: { data: string }) => void) | null;
   onclose: ((ev: unknown) => void) | null;
   onerror: ((ev: unknown) => void) | null;
+  /** The desktop iroh socket's Rust-side connection id (`tauriIrohSocket.ts`), once open; absent on a real `WebSocket`. */
+  readonly irohConnectionId?: number | null;
 }
 
 const WS_OPEN = 1;
@@ -361,6 +363,11 @@ export class WorkerClient {
 
   get authenticated(): boolean {
     return this._state === "authenticated";
+  }
+
+  /** The Rust-side id of this client's iroh connection (desktop only), for `tauriIrohBlob.ts`; `null` over a WebSocket or before it opens. */
+  get irohConnectionId(): number | null {
+    return this._socket?.irohConnectionId ?? null;
   }
 
   /** The worker's node_id, known once the `hello` handshake completes. */

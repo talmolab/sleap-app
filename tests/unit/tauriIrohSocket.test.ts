@@ -22,11 +22,14 @@ function makeFakeIpc(overrides: {
 } = {}) {
   const calls: RecordedInvoke[] = [];
   let channelOnMessage: ((payload: unknown) => void) | null = null;
+  let nextConnId = 0;
 
   const ipc: TauriIpc = {
     invoke: async (cmd, args) => {
       calls.push({ cmd, args });
       if (overrides.onInvoke) return overrides.onInvoke(cmd, args);
+      // Like the Rust registry: every iroh_connect gets its own id.
+      if (cmd.endsWith("iroh_connect")) return ++nextConnId;
       return undefined;
     },
     createChannel: () => {
@@ -217,6 +220,31 @@ describe("TauriIrohSocket send", () => {
 
     const sendCall = calls.find((c) => c.cmd.endsWith("iroh_send"));
     expect(sendCall?.args?.msg).toBe('{"type":"req"}');
+    expect(sendCall?.args?.connId).toBe(1);
+  });
+
+  it("routes each socket's sends and close to its own connection id", async () => {
+    const { ipc, calls } = makeFakeIpc();
+    const createSocket = createTauriIrohSocket(async () => ipc);
+    const a = createSocket(encodeIrohDialUrl({ nodeId: "node-a" }));
+    const b = createSocket(encodeIrohDialUrl({ nodeId: "node-b" }));
+    await flush();
+
+    expect(a.irohConnectionId).toBe(1);
+    expect(b.irohConnectionId).toBe(2);
+    b.send("to-b");
+    a.send("to-a");
+    a.close();
+    await flush();
+
+    const sends = calls.filter((c) => c.cmd.endsWith("iroh_send")).map((c) => [c.args?.connId, c.args?.msg]);
+    expect(sends).toEqual([
+      [2, "to-b"],
+      [1, "to-a"],
+    ]);
+    const disconnects = calls.filter((c) => c.cmd.endsWith("iroh_disconnect")).map((c) => c.args?.connId);
+    expect(disconnects).toEqual([1]);
+    expect(b.readyState).toBe(1);
   });
 
   it("silently drops a send before OPEN", async () => {
@@ -245,7 +273,9 @@ describe("TauriIrohSocket close", () => {
     await flush();
     socket.close(); // idempotent
 
-    expect(calls.filter((c) => c.cmd.endsWith("iroh_disconnect")).length).toBe(1);
+    const disconnects = calls.filter((c) => c.cmd.endsWith("iroh_disconnect"));
+    expect(disconnects.length).toBe(1);
+    expect(disconnects[0].args?.connId).toBe(1);
     expect(closeCount).toBe(1);
     expect(socket.readyState).toBe(3);
   });
@@ -266,11 +296,11 @@ describe("TauriIrohSocket close", () => {
       opened = true;
     };
     socket.close(); // before the underlying iroh_connect ever resolves
-    connectGate.resolve(undefined); // Rust-side connection "succeeds" anyway
+    connectGate.resolve(42); // Rust-side connection "succeeds" anyway
     await flush();
 
     expect(opened).toBe(false);
-    expect(calls.some((c) => c.cmd.endsWith("iroh_disconnect"))).toBe(true);
+    expect(calls.find((c) => c.cmd.endsWith("iroh_disconnect"))?.args?.connId).toBe(42);
     expect(socket.readyState).toBe(3);
   });
 });

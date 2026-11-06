@@ -42,7 +42,10 @@ use iroh::{
     Endpoint, EndpointAddr, PublicKey, RelayUrl,
 };
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::net::SocketAddr;
+use std::sync::Arc;
+use tokio::sync::Mutex;
 use tokio::time::{timeout, Duration};
 
 /// Must match the worker's `sleap_rtc/protocol_v1/iroh_transport.py::ALPN`
@@ -83,46 +86,127 @@ pub enum IrohClientEvent {
     Error { message: String },
 }
 
-pub struct IrohClientState {
-    endpoint: Option<Endpoint>,
-    connection: Option<Connection>,
-    send: Option<SendStream>,
+/// Identifies one open connection. `iroh_connect` returns it, and every
+/// later command for that connection names it — so connections from
+/// different windows (each its own JS heap with its own `WorkerClient`s), or
+/// to different workers from one window, never share a stream.
+pub type ConnId = u32;
+
+/// One worker connection: the endpoint it was dialed from, the control
+/// stream's send half, and its blob stream slot. The send half and blob slot
+/// each sit behind their own lock, so a slow write or blob read on one
+/// connection never stalls another, and a blob read never stalls `iroh_send`
+/// on its own connection.
+struct IrohConn {
+    /// Label of the webview that opened it — closed when that webview
+    /// reloads or its window is destroyed ([`IrohClients::close_owned_by`]).
+    owner: String,
+    endpoint: Endpoint,
+    connection: Connection,
+    send: Arc<Mutex<SendStream>>,
+    blob: Arc<Mutex<IrohBlobState>>,
 }
 
-impl IrohClientState {
-    pub fn new() -> Self {
-        Self {
-            endpoint: None,
-            connection: None,
-            send: None,
+impl IrohConn {
+    async fn close(self) {
+        self.connection.close(0u32.into(), b"client disconnect");
+        self.endpoint.close().await;
+    }
+}
+
+#[derive(Default)]
+struct Registry {
+    next_id: ConnId,
+    conns: HashMap<ConnId, IrohConn>,
+}
+
+/// Every open iroh connection in the app, keyed by [`ConnId`]. Tauri-managed
+/// and shared by all windows; cheap to clone (the reader task holds a clone
+/// so it can drop its own connection when the stream ends).
+#[derive(Clone, Default)]
+pub struct IrohClients(Arc<Mutex<Registry>>);
+
+impl IrohClients {
+    async fn add(
+        &self,
+        owner: String,
+        endpoint: Endpoint,
+        connection: Connection,
+        send: SendStream,
+    ) -> ConnId {
+        let mut r = self.0.lock().await;
+        r.next_id = r.next_id.wrapping_add(1);
+        let id = r.next_id;
+        r.conns.insert(
+            id,
+            IrohConn {
+                owner,
+                endpoint,
+                connection,
+                send: Arc::new(Mutex::new(send)),
+                blob: Arc::new(Mutex::new(IrohBlobState::default())),
+            },
+        );
+        id
+    }
+
+    /// Clones what `f` picks out of connection `id` while holding the
+    /// registry lock only that long.
+    async fn with_conn<T>(&self, id: ConnId, f: impl FnOnce(&IrohConn) -> T) -> Result<T, String> {
+        let r = self.0.lock().await;
+        r.conns
+            .get(&id)
+            .map(f)
+            .ok_or_else(|| "Not connected to a worker over iroh".to_string())
+    }
+
+    async fn send(&self, id: ConnId, msg: &str) -> Result<(), String> {
+        let send = self.with_conn(id, |c| c.send.clone()).await?;
+        let mut send = send.lock().await;
+        write_frame(&mut send, msg).await
+    }
+
+    /// Removes and closes connection `id`. A no-op if it's already gone.
+    async fn close(&self, id: ConnId) {
+        let conn = self.0.lock().await.conns.remove(&id);
+        if let Some(conn) = conn {
+            conn.close().await;
+        }
+    }
+
+    /// Closes every connection opened by webview `owner` — its JS side is
+    /// gone (reload or window closed), so nothing will ever disconnect them.
+    pub async fn close_owned_by(&self, owner: &str) {
+        let owned: Vec<IrohConn> = {
+            let mut r = self.0.lock().await;
+            let ids: Vec<ConnId> = r
+                .conns
+                .iter()
+                .filter(|(_, c)| c.owner == owner)
+                .map(|(id, _)| *id)
+                .collect();
+            ids.iter().filter_map(|id| r.conns.remove(id)).collect()
+        };
+        for conn in owned {
+            conn.close().await;
         }
     }
 }
 
-/// State for the blob-reading stream (item 2.4), kept **separate** from
-/// [`IrohClientState`] behind its own `tokio::sync::Mutex` — a blob read in
+/// State for one connection's blob-reading stream (item 2.4), kept
+/// **separate** from the control stream behind its own lock — a blob read in
 /// progress (which can take a while over a slow/relayed path) must never
-/// block `iroh_send`/`iroh_disconnect`, or vice versa. Only one blob stream
-/// is tracked at a time: today's remote-merge flow fetches one job result at
-/// a time, sequentially, so a single slot matches actual usage. A second
-/// `iroh_blob_open` before `iroh_blob_close` replaces this slot outright,
+/// block `iroh_send`/`iroh_disconnect`, or vice versa. One blob stream per
+/// connection: today's remote-merge flow fetches one job result at a time,
+/// sequentially, so a single slot matches actual usage. A second
+/// `iroh_blob_open` before `iroh_blob_close` replaces the slot outright,
 /// dropping whatever stream was open before.
-#[derive(Debug)]
+#[derive(Debug, Default)]
 pub struct IrohBlobState {
     #[allow(dead_code)] // kept for debugging/future multi-slot support, not read today
     sha256: Option<String>,
     send: Option<SendStream>,
     recv: Option<RecvStream>,
-}
-
-impl IrohBlobState {
-    pub fn new() -> Self {
-        Self {
-            sha256: None,
-            send: None,
-            recv: None,
-        }
-    }
 }
 
 fn decode_node_id(node_id: &str) -> Result<PublicKey, String> {
@@ -191,27 +275,26 @@ async fn dial(
     Ok((endpoint, connection, send, recv))
 }
 
+/// Dials a worker and returns the new connection's [`ConnId`], which the
+/// caller passes to every later command for it. Each call is its own
+/// connection — it never replaces another window's (or another worker's).
 #[tauri::command]
-pub async fn iroh_connect(
+pub async fn iroh_connect<R: tauri::Runtime>(
     target: IrohDialTarget,
     on_message: tauri::ipc::Channel<IrohClientEvent>,
-    state: tauri::State<'_, tokio::sync::Mutex<IrohClientState>>,
-) -> Result<(), String> {
+    webview: tauri::Webview<R>,
+    clients: tauri::State<'_, IrohClients>,
+) -> Result<ConnId, String> {
     let endpoint_addr = build_endpoint_addr(&target)?;
     let (endpoint, connection, send, recv) = dial(endpoint_addr, presets::N0).await?;
 
-    spawn_reader(recv, on_message);
-
-    let mut s = state.lock().await;
-    // Defensive: a stale entry here (e.g. a caller that reconnects without
-    // disconnecting first) must never leak a previous QUIC endpoint.
-    if let Some(old) = s.endpoint.take() {
-        old.close().await;
-    }
-    s.endpoint = Some(endpoint);
-    s.connection = Some(connection);
-    s.send = Some(send);
-    Ok(())
+    // Registered before the reader starts, so a stream that ends at once
+    // still finds (and drops) its own entry.
+    let id = clients
+        .add(webview.label().to_string(), endpoint, connection, send)
+        .await;
+    spawn_reader(recv, on_message, clients.inner().clone(), id);
+    Ok(id)
 }
 
 /// Writes one length-prefixed frame: a 4-byte big-endian length, then that
@@ -246,7 +329,15 @@ async fn read_frame(recv: &mut RecvStream) -> Result<Option<String>, String> {
         .map_err(|e| format!("Received non-UTF-8 frame: {e}"))
 }
 
-fn spawn_reader(mut recv: RecvStream, on_message: tauri::ipc::Channel<IrohClientEvent>) {
+/// Forwards frames to the frontend until the stream ends (or the frontend
+/// stops listening), then drops connection `id` so a worker-side close
+/// doesn't leave its endpoint open.
+fn spawn_reader(
+    mut recv: RecvStream,
+    on_message: tauri::ipc::Channel<IrohClientEvent>,
+    clients: IrohClients,
+    id: ConnId,
+) {
     tokio::spawn(async move {
         loop {
             match read_frame(&mut recv).await {
@@ -265,6 +356,7 @@ fn spawn_reader(mut recv: RecvStream, on_message: tauri::ipc::Channel<IrohClient
                 }
             }
         }
+        clients.close(id).await;
         let _ = on_message.send(IrohClientEvent::Closed);
     });
 }
@@ -273,31 +365,21 @@ fn spawn_reader(mut recv: RecvStream, on_message: tauri::ipc::Channel<IrohClient
 
 #[tauri::command]
 pub async fn iroh_send(
+    conn_id: ConnId,
     msg: String,
-    state: tauri::State<'_, tokio::sync::Mutex<IrohClientState>>,
+    clients: tauri::State<'_, IrohClients>,
 ) -> Result<(), String> {
-    let mut s = state.lock().await;
-    let send = s
-        .send
-        .as_mut()
-        .ok_or("Not connected to a worker over iroh")?;
-    write_frame(send, &msg).await
+    clients.send(conn_id, &msg).await
 }
 
 // ── Disconnect Command ────────────────────────────────────────────
 
 #[tauri::command]
 pub async fn iroh_disconnect(
-    state: tauri::State<'_, tokio::sync::Mutex<IrohClientState>>,
+    conn_id: ConnId,
+    clients: tauri::State<'_, IrohClients>,
 ) -> Result<(), String> {
-    let mut s = state.lock().await;
-    s.send = None;
-    if let Some(conn) = s.connection.take() {
-        conn.close(0u32.into(), b"client disconnect");
-    }
-    if let Some(endpoint) = s.endpoint.take() {
-        endpoint.close().await;
-    }
+    clients.close(conn_id).await;
     Ok(())
 }
 
@@ -371,23 +453,21 @@ async fn open_blob_stream(
     Ok((result, state))
 }
 
-/// Opens a fresh stream on the existing control connection dedicated to
-/// reading one blob, and replaces whatever blob stream was previously open
-/// (§1/§5 of the design doc scope this to one blob stream at a time).
+/// Opens a fresh stream on connection `conn_id` dedicated to reading one
+/// blob, and replaces whatever blob stream that connection previously had
+/// open (§1/§5 of the design doc scope this to one blob stream at a time).
 #[tauri::command]
 pub async fn iroh_blob_open(
+    conn_id: ConnId,
     sha256: String,
-    control: tauri::State<'_, tokio::sync::Mutex<IrohClientState>>,
-    blob: tauri::State<'_, tokio::sync::Mutex<IrohBlobState>>,
+    clients: tauri::State<'_, IrohClients>,
 ) -> Result<IrohBlobOpenResult, String> {
-    // Briefly borrow the control connection just to clone its handle —
-    // opening the new stream and the read/write that follows must not hold
-    // this lock, or a concurrent iroh_send/iroh_disconnect would stall for
-    // the whole blob-open round trip.
-    let connection = {
-        let c = control.lock().await;
-        c.connection.clone().ok_or("Not connected to a worker over iroh")?
-    };
+    // Only clone the handles under the registry lock — opening the new
+    // stream and the read/write that follows must not hold it, or every
+    // other connection's iroh_send would stall for the whole round trip.
+    let (connection, blob) = clients
+        .with_conn(conn_id, |c| (c.connection.clone(), c.blob.clone()))
+        .await?;
     let (result, state) = open_blob_stream(connection, sha256).await?;
     *blob.lock().await = state;
     Ok(result)
@@ -437,21 +517,27 @@ async fn read_blob_range(
 /// caller is responsible for having called [`iroh_blob_open`] first.
 #[tauri::command]
 pub async fn iroh_blob_read_range(
+    conn_id: ConnId,
     offset: u64,
     length: u64,
-    blob: tauri::State<'_, tokio::sync::Mutex<IrohBlobState>>,
+    clients: tauri::State<'_, IrohClients>,
 ) -> Result<Vec<u8>, String> {
+    let blob = clients.with_conn(conn_id, |c| c.blob.clone()).await?;
     let mut b = blob.lock().await;
     read_blob_range(&mut b, offset, length).await
 }
 
-/// Ends the currently-open blob stream, if any. A no-op (not an error) if
-/// nothing was open — mirrors `dispose()`'s no-op-when-never-opened contract
-/// on the TypeScript side.
+/// Ends connection `conn_id`'s open blob stream, if any. A no-op (not an
+/// error) if nothing was open or the connection is already gone — mirrors
+/// `dispose()`'s no-op-when-never-opened contract on the TypeScript side.
 #[tauri::command]
 pub async fn iroh_blob_close(
-    blob: tauri::State<'_, tokio::sync::Mutex<IrohBlobState>>,
+    conn_id: ConnId,
+    clients: tauri::State<'_, IrohClients>,
 ) -> Result<(), String> {
+    let Ok(blob) = clients.with_conn(conn_id, |c| c.blob.clone()).await else {
+        return Ok(());
+    };
     let mut b = blob.lock().await;
     if let Some(mut send) = b.send.take() {
         let _ = send.finish();
@@ -539,6 +625,34 @@ mod tests {
 
         assert_eq!(reply, "echo:hello");
         client_endpoint.close().await;
+    }
+
+    /// Two windows (owners) each hold a connection to their own worker: each
+    /// connection's sends reach only its own worker, and closing one owner's
+    /// connections leaves the other's open — the bug this registry fixes was
+    /// a second `iroh_connect` closing the first window's connection.
+    #[tokio::test]
+    async fn connections_from_two_owners_stay_independent() {
+        let clients = IrohClients::default();
+        let (ep_a, conn_a, send_a, mut recv_a) =
+            dial(spawn_fake_worker().await, Minimal).await.expect("dial a");
+        let (ep_b, conn_b, send_b, mut recv_b) =
+            dial(spawn_fake_worker().await, Minimal).await.expect("dial b");
+        let id_a = clients.add("main".into(), ep_a, conn_a, send_a).await;
+        let id_b = clients.add("window-2".into(), ep_b, conn_b, send_b).await;
+        assert_ne!(id_a, id_b);
+
+        clients.send(id_b, "from-b").await.expect("send b");
+        clients.send(id_a, "from-a").await.expect("send a");
+        assert_eq!(read_frame(&mut recv_a).await.unwrap().unwrap(), "echo:from-a");
+        assert_eq!(read_frame(&mut recv_b).await.unwrap().unwrap(), "echo:from-b");
+
+        clients.close_owned_by("main").await;
+        assert!(clients.send(id_a, "x").await.is_err(), "main's connection should be gone");
+        assert!(clients.with_conn(id_b, |_| ()).await.is_ok(), "window-2's connection should remain");
+
+        clients.close(id_b).await;
+        assert!(clients.with_conn(id_b, |_| ()).await.is_err());
     }
 
     #[tokio::test]
