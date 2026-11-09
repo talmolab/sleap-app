@@ -119,12 +119,31 @@ is what training actually consumes.
 ## Negative frames
 
 **Labels ▸ Mark Frame as Negative** (++n++, or right-click the video) records
-that a frame genuinely contains no animals. This is real training signal, not an
-empty frame that you skipped. Marking a frame that still has instances asks
-first, then removes them (undo brings them back), and adding an instance to a
-negative frame unmarks it. A negative frame shows a red border with a "Negative
-Frame" label on the video and a red tick on the seekbar, and it counts toward
-the status bar's labeled total, e.g. "Labeled: 6 (2 negative frames)".
+that a frame genuinely contains no animals. Marking a frame that still has
+instances asks first, then removes them (undo brings them back), and adding an
+instance to a negative frame unmarks it. A negative frame shows a red border
+with a "Negative Frame" label on the video and a red tick on the seekbar, and it
+counts toward the status bar's labeled total, e.g. "Labeled: 6 (2 negative
+frames)".
+
+**Why mark them?** A model only ever trained on frames with animals can "see"
+animals in empty frames: a shadow, bedding, an empty corner. Negative frames
+are examples of what *nothing* looks like, which teaches a model not to
+detect animals there.
+
+A negative frame is not the same as an **empty** frame. An empty frame is one
+where you deleted every instance: it says nothing, and training skips it. A
+negative frame is a deliberate statement that there are no animals. That's why
+marking one asks before removing instances: marking a frame with an animal on
+it would teach the model the wrong thing.
+
+!!! note "Training doesn't use negative frames yet"
+
+    sleap-nn can train on negative frames, but only when its
+    `use_negative_frames` setting is on, and it's off by default. The Training
+    panel doesn't turn it on yet, so marking frames negative records them in
+    the project (and in the [Label Quality Check](label-qc.md)) but doesn't
+    change training today.
 
 ## Undo
 

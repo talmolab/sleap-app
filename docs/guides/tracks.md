@@ -46,6 +46,63 @@ instance's track (or transposing two instances) also swaps the identities on
 every later frame — to the end of the video, or to the end of the frame range
 selected on the seekbar. You fix a swap once rather than per frame.
 
+With it off, a change applies to the current frame only.
+
+## Common tracking mistakes
+
+Automatic tracking makes two kinds of mistakes. Both get worse the longer they
+go unfixed, because each frame's identities follow from the frame before.
+
+### Swapped identities
+
+Two animals trade tracks, usually where they cross or touch. From then on, each
+track follows the wrong animal.
+
+**Find them:** color by track (see [Seeing tracks](#seeing-tracks)) and watch
+for an animal changing color. Three ways to get to the right frames quickly:
+
+- **Where animals come close.** **Tracks ▸ Seekbar Header ▸ Min Centroid
+  Proximity** plots the distance between the two nearest animals. Swaps happen
+  at the dips.
+- **Where something jumps.** A swap looks like a sudden jump in position. In
+  the [Suggestions](suggestions.md) panel, generate **Velocity** suggestions
+  on a stable node, such as the torso rather than a paw, then step through them
+  with ++space++. A higher threshold gives fewer, more likely frames.
+- **Where trails cross.** Set **View ▸ Trail Length** to about 50 and step
+  through the video in big jumps (++cmd+right++ / ++ctrl+right++ moves 10
+  frames). Trails that cross or tangle mark a swap.
+
+With few animals, the **five+** palette (**View ▸ Color Palette**) makes later
+tracks stand out; with many, **alphabet** gives each a distinct color.
+**View ▸ Edge Style ▸ Wedge** shows which way each animal faces, which helps
+when two look alike.
+
+**Fix them:** turn on **Propagate Track Labels**, go to the first frame after
+the swap, and press ++cmd+t++ / ++ctrl+t++ to transpose the two tracks back.
+
+### Lost identities
+
+The tracker loses an animal, often when it's hidden or not detected for a few
+frames, and starts a **new track** when it reappears. One animal is now split
+across two tracks, and the project has more tracks than animals.
+
+**Find them:** ++cmd+e++ / ++ctrl+e++ jumps to the next frame where a track
+first appears. A track starting partway through the video is usually a break,
+not a new animal. The track bars on the seekbar show where one track ends and
+another begins.
+
+**Fix them:** turn on **Propagate Track Labels**, go to the frame where the new
+track starts, and assign that instance to the original track (++cmd+1++ …
+++cmd+9++ / ++ctrl+1++ … ++ctrl+9++, or **Tracks ▸ Set Instance Track**). The
+new track is reassigned on every later frame, joining the two. Then run
+**Delete Unused Tracks** to remove the leftover.
+
+!!! tip "Fewer mistakes to begin with"
+
+    Setting **Max tracks** to the number of animals when you run inference
+    keeps the tracker from creating extra tracks. See
+    [Inference](inference.md#tracking) for the tracker settings.
+
 ## Cleaning up
 
 | Action | Effect |
@@ -69,7 +126,9 @@ leave behind empty identities that clutter the legend and every analysis file.
   number, color, and name. The numbers are the ones ++cmd+1++ … ++cmd+9++ use.
   It only shows while ++ctrl++ is held (++ctrl++ on macOS too).
 - **View ▸ Apply Distinct Colors To ▸ Tracks** colors instances by identity, which
-  makes a swap visible instantly.
+  makes a swap visible instantly. Predictions are drawn yellow unless
+  **View ▸ Color Predicted Instances** is on, so turn that on too when
+  proofreading tracked predictions.
 - **View ▸ Show Track Scores** displays the tracker's confidence.
 - **Tracks ▸ Seekbar Header ▸ Tracking Score** (or **Min Centroid Proximity**)
   plots where tracking is likely to have gone wrong — see

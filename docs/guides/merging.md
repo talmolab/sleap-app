@@ -57,3 +57,22 @@ The result toast summarizes what happened. The merge is a normal command, so
 
 Run [Label Quality Check](label-qc.md) afterwards — merges are a common source of
 duplicate instances.
+
+## Corrections made in a separate predictions file
+
+Predictions don't always land in your training project. A predictions `.slp`
+made outside the app, or one you opened from a remote job with **Open
+predictions** instead of merging it, is a separate project. If you correct
+predictions there, those corrections are labels, but only in that file.
+
+Training only sees the project it trains on. Training on the predictions file
+alone would build a model from your corrections *without* your original
+labels, so bring them together first:
+
+1. Save the file you corrected.
+2. Open your training project.
+3. **File ▸ Merge into Project…** and choose the corrected file.
+4. Review any conflicts, click **Merge**, then save and train.
+
+Only accepted, corrected instances count as labels. Predictions you didn't
+accept come along in the merge but never train the model.

@@ -151,3 +151,19 @@
     columns: 1;
   }
 }
+
+/* Tutorial screenshots: a hairline border so dark UI shots stand off the page. */
+.md-typeset img[src*="assets/tutorial/"] {
+  display: block;
+  margin: 1em 0;
+  border: 1px solid var(--md-default-fg-color--lightest);
+  border-radius: 6px;
+}
+
+/* Wide shots clear the floated panel shots beside them. */
+.md-typeset img[src*="assets/tutorial/"]:not([align]) {
+  clear: both;
+}
+.md-typeset img[src*="assets/tutorial/"][align="right"] {
+  margin: 0 0 1em 1.5em;
+}

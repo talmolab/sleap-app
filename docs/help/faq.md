@@ -48,7 +48,22 @@ you; in the browser, convert first. See
 Fewer than you'd think for the *first* run — label one frame completely, train
 for 5 epochs, and see what happens end to end. Then correct predictions instead
 of labeling from scratch. See
-[Your First Labels](../getting-started/first-labels.md).
+the [Tutorial](../tutorial/index.md).
+
+For a finished model, a few hundred labeled frames (roughly 100–500) is
+typically enough to predict accurately across thousands of frames. It depends
+on your videos more than on a number: how varied the poses, lighting and
+backgrounds are, and how often animals touch or hide each other. Label frames
+that cover that variety, rather than more of the same.
+
+How good the predictions get depends on three things:
+
+- **Label quality** — consistent, accurate labels.
+  [Label Quality Check](../guides/label-qc.md) catches the common mistakes.
+- **Label quantity and variety** — enough frames, from across your videos.
+  [Suggestions](../guides/suggestions.md) pick them for you.
+- **Training settings** — the model type, crop size and augmentation suited
+  to your data. See [Training](../guides/training.md#key-ideas).
 
 ## Which model type should I use?
 

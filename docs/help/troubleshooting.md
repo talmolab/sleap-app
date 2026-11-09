@@ -26,6 +26,14 @@ H.264/HEVC — needs converting.
 
 **The file moved.** Use **File ▸ Replace Videos ▸ *(video)*** to re-point it.
 
+## Labels look shifted from the animal
+
+The labels are right, but the image under them is a different frame. This
+happens with videos that don't seek reliably: jumping straight to a frame shows
+a different image than playing up to it. Select the video in the **Videos**
+panel and click **Check Frames…**; if it finds problems, re-encode the video
+from the same dialog. See [Checking a video's frames](../guides/videos.md#checking-a-videos-frames).
+
 ## The project opens but frames are blank
 
 The `.slp` references videos that aren't where it expects. Either replace the
@@ -40,6 +48,30 @@ the file.
   [Environment setup](../installation.md#environment-setup).
 - **In the browser** — there is no local training. Connect to a
   [remote worker](../guides/remote-compute.md).
+
+## Training runs on the CPU
+
+Open the **Environment** panel and look at **Accelerator** under sleap-nn. It
+shows what sleap-nn's own PyTorch can use, not just what the machine has:
+
+| Accelerator shows | Means | Fix |
+|---|---|---|
+| **CUDA · 1 GPU** (green) | The NVIDIA GPU is in use | Nothing to fix |
+| **CUDA**, with a **Driver** row saying *needs …* (orange) | The NVIDIA driver is too old for this PyTorch; training will fail when it starts | Update the driver from [nvidia.com/drivers](https://www.nvidia.com/drivers) |
+| **CPU only (GPU not usable)** (orange) | An NVIDIA driver is installed, but sleap-nn got a CPU-only PyTorch | **Force reinstall** sleap-nn in the Environment panel, so it picks up a GPU build |
+| **MPS (Apple Silicon)** (green) | The Mac's built-in GPU is in use | Nothing to fix |
+| **CPU only** | No usable GPU: no NVIDIA driver, or a Mac without Metal support | Train on a [remote worker](../guides/remote-compute.md) with a GPU |
+
+On Linux or Windows with an NVIDIA card, `nvidia-smi` in a terminal confirms the
+driver is installed and sees the card. You don't need to install CUDA
+yourself: the PyTorch that sleap-nn installs brings its own CUDA libraries,
+and only the driver comes from your system.
+
+## Installing sleap-nn takes a long time
+
+Installing sleap-nn downloads PyTorch, which is large: several minutes is
+normal, and 15 or more on a slow connection. Let it finish. If it fails, use
+**Help ▸ Collect Diagnostics…** and attach the file to a bug report.
 
 ## Training runs out of memory
 

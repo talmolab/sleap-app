@@ -20,6 +20,26 @@ On the desktop app, the most recently trained models in the project's `models/`
 folder are picked for you. Click **Add** to choose a directory yourself, or
 **Browse Worker** for one on a [remote worker](remote-compute.md).
 
+### What's in a model folder
+
+Each trained model is a folder, named after its run (for example
+`251109_130412.centroid.n=8`). The two files inference needs are:
+
+| File | What it is |
+|---|---|
+| `training_config.yaml` | The model's settings and architecture |
+| `best.ckpt` | The weights from the epoch with the best validation score |
+
+Keep both together when you copy or share a model; neither works alone. The
+folder also holds `last.ckpt` (the final epoch, used to
+[resume training](training.md#scratch-fine-tune-or-resume)), a
+`training_log.csv` of the loss curves, and the predictions and metrics from
+evaluation.
+
+Models trained in legacy SLEAP (1.4 and earlier) use `training_config.json`
+and `best_model.h5` instead. sleap-nn can run these too (UNet models only), so
+add the folder the same way.
+
 ## What to predict on
 
 **Inference Target**:
@@ -82,24 +102,93 @@ These are much cheaper than deleting bad instances by hand afterwards.
 Check **Enable tracking** to assign identities across frames as part of the same
 run.
 
-- **Method** — **Simple** (match by similarity alone), **Optical Flow** (predict
-  motion from pixel displacement; good for fast-moving animals), or **Kalman
-  Filter** (a per-track motion model; good for a known, fixed number of animals)
-- **Similarity** — **OKS**, **IoU**, **Centroid dist.**, or **Euclidean dist.**
-- **Matching** — **Hungarian** or **Greedy**
-- **Window size**, **Max tracks**
-- **Advanced** — **Robust (quantile)**, **Connect single-frame breaks**, **Min match points**, **Min
-  new-track points**, **Scoring reduction**, **Target instance count**, **Pre-cull
-  to target** (with its own IoU threshold), and **Clean-up instance count** (with
-  its own IoU threshold)
-- With **Optical Flow**: **Image scale**, **Flow window size**, **Pyramid levels**
-- With **Kalman Filter**: **Track features** (**Centroid** or **Keypoints**),
-  **Init frame count**, **Reset gap size**, and **Tracked nodes** to restrict
-  tracking to a subset of nodes
+### How tracking works
 
-**Track only** (top of the panel) skips pose estimation entirely and just
-(re)tracks the instances already in the project — use it to retry tracking
-parameters without paying for inference again.
+Pose estimation finds the animals on each frame on its own. Tracking then links
+them across frames: for each frame, it compares every new instance with
+**candidates** from the frames before, and either adds it to the best-matching
+track or starts a new one. Each frame's identities follow from the frame
+before, which is why one mistake can carry on for the rest of the video
+([Common tracking mistakes](tracks.md#common-tracking-mistakes)).
+
+Tracking is a separate step from pose estimation, so you can redo it without
+predicting again: check **Track only** at the top of the panel. It re-tracks the
+instances already in the project, which makes it cheap to try different
+settings.
+
+### Settings
+
+**Method** decides where candidates come from:
+
+| Method | How it matches | Use it for |
+|---|---|---|
+| **Simple** | Compares instances with recent ones by similarity alone | Most videos; the place to start |
+| **Optical Flow** | Shifts the recent instances along the motion in the image first | Fast-moving animals |
+| **Kalman Filter** | Predicts each track's next position from its own velocity | A known, fixed number of animals that cross or hide behind each other |
+
+**Similarity** decides how "close" two instances are:
+
+| Similarity | Compares | Use it when |
+|---|---|---|
+| **OKS** (default) | Every keypoint, scaled by the animal's size | Most cases |
+| **IoU** | Bounding-box overlap | Animals usually stay apart |
+| **Centroid dist.** | Distance between centers | Poses are noisy but positions are reliable |
+| **Euclidean dist.** | Distance between keypoints | A simple, fast alternative to OKS |
+
+**Matching** pairs instances with tracks: **Hungarian** finds the best overall
+assignment, while **Greedy** takes the best match for each instance in turn. It's
+faster, but can make worse choices when animals are close.
+
+**Window size** is how many past frames supply candidates. A larger window
+bridges longer gaps but runs slower.
+
+**Max tracks** caps the number of identities. Set it to the number of animals
+when you know it: the tracker then keeps a separate history for each track,
+which holds up better through occlusions, and never starts more tracks than
+that.
+
+Under **Advanced**:
+
+- **Connect single-frame breaks** (with Max tracks set) joins a track that ends
+  to one that starts on the next frame, when exactly one of each happens. This
+  fixes brief detection dropouts.
+- **Robust (quantile)** makes the similarity score tolerant of a few bad
+  keypoints; 0.95 is a good start. At 1 it uses the plain maximum.
+- **Min match points** and **Min new-track points** set how many keypoints an
+  instance needs to be matched, or to start a new track.
+- **Scoring reduction** decides how several similarity scores are combined:
+  **Mean**, **Max**, or the robust quantile.
+- **Target instance count**, **Pre-cull to target** and **Clean-up instance
+  count** drop extra detections above a per-frame count, before or after
+  tracking, each with its own IoU threshold.
+
+With **Optical Flow**: **Image scale** (lower is faster but less precise),
+**Flow window size** (larger handles faster motion but is slower), and
+**Pyramid levels** (more handle larger movements).
+
+With **Kalman Filter**: **Track features** (**Centroid**, the default and most
+stable, or **Keypoints**), **Init frame count** (frames tracked normally before
+the motion model starts), **Reset gap size** (missed frames before a track's
+model resets), and **Tracked nodes** to use only a stable subset, such as the
+spine.
+
+### Starting points
+
+| Situation | Try |
+|---|---|
+| Most videos | **Simple**, **OKS**, **Hungarian**, with **Max tracks** set to the number of animals |
+| Fast-moving animals | **Optical Flow**, with a smaller **Image scale** if it's slow |
+| Crowded scenes | A larger **Window size**, plus **Max tracks** |
+| A fixed number of animals that cross often | **Kalman Filter** |
+
+### When tracking goes wrong
+
+- **Fix the poses first.** Tracking can only link what pose estimation finds:
+  missed or jumpy predictions cause most tracking errors. Label more of the
+  frames where detection fails, and retrain.
+- Set **Max tracks** if you know how many animals there are.
+- Try another **Method** or **Similarity**, or a larger **Window size**, with
+  **Track only** so you don't have to predict again.
 
 See [Tracks](tracks.md) for correcting what tracking gets wrong.
 

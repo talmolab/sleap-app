@@ -8,6 +8,8 @@ dialogs, direct access to files on disk, local GPU training and inference, or
 offline use; [Browser vs Desktop](reference/browser-vs-desktop.md) lists the
 exact differences.
 
+**From source**, see [Development setup](#development-setup).
+
 ---
 
 ## Desktop app
@@ -25,8 +27,15 @@ exact differences.
     ```
 
 That is the whole install. The script picks the right artifact for your platform
-and architecture — a universal `.dmg` on macOS, an `.AppImage` on Linux, an NSIS
-installer on Windows — and puts the app where it belongs.
+and architecture and puts the app where it belongs:
+
+- **macOS** — the universal `.dmg`, installed to `/Applications` (or
+  `~/Applications` if you can't write there)
+- **Windows** — the NSIS installer
+- **Linux** — the `.AppImage`, the one Linux build the app can update by itself.
+  On RPM-based distributions without `dpkg` (Fedora, RHEL) it installs the
+  `.rpm` instead; set `SLEAP_PREFER_DEB=1` to get the `.deb` on Debian or
+  Ubuntu.
 
 Prefer to click through a download? Every artifact is on the
 [Releases page](https://github.com/talmolab/sleap-app/releases).
@@ -36,8 +45,8 @@ Prefer to click through a download? Every artifact is on the
 ## Release channels
 
 The app is published to several URLs at once. Which one you use decides how new
-and how stable your build is — and the desktop app's in-app updater follows the
-channel it was installed from.
+and how stable your build is. For the desktop app, the channel also decides
+which updates it offers — see [Updating](#updating).
 
 | Channel | Web | Desktop installer |
 |---|---|---|
@@ -91,19 +100,17 @@ reports is always the version it actually is.
 
 ## Updating
 
-The desktop app checks its own release channel for updates. When one is
-available, the **Environment** button — in the sidebar strip, and in the corner
-of the Welcome screen — gets a pulsing orange dot and an **Update available**
-label. (The same badge also flags a newer `sleap-nn`, or reads **Install
-packages** if training isn't set up yet.) Open the Environment panel and click
-**Update**: it downloads and swaps the app in place; on Linux this works for the
-`.AppImage` payload without root.
+Open the **Environment** panel and click **Update**. The app downloads the new
+version, swaps it in, and relaunches.
 
-You are not locked into the channel you installed from. The **Environment**
-panel has a **Channel** dropdown — *Stable*, *Latest*, *Dev (main)* — and
-changing it re-points the updater. If the channel you pick is on an older
-version than the one running, the button reads **Switch** rather than
-**Update**, and takes you down to it.
+- **Channel** — the panel's dropdown (*Stable*, *Latest*, *Dev (main)*) picks
+  which builds you get. Installed from `/latest/`? Switch it to **Latest**; the
+  app starts on Stable.
+- **Update badge** — a pulsing orange dot on the **Environment** button means a
+  newer Stable release is out (or Latest, once you've picked it). Dev builds
+  don't show it.
+- **Linux `.deb` / `.rpm`** — update through your package manager. Only the
+  `.AppImage` updates in place.
 
 The browser app has nothing to update — reload the page.
 
@@ -140,8 +147,9 @@ it to use.
 
 ### GPU detection
 
-When installing `sleap-nn`, the app detects your GPU and picks the matching
-PyTorch build automatically — you do not choose a CUDA version by hand.
+When installing `sleap-nn`, the app has `uv` detect your GPU and pick the
+matching PyTorch build (`--torch-backend=auto`) — you do not choose a CUDA
+version by hand.
 
 If you plan to [export models](guides/inference.md#exporting-a-model) to ONNX or
 TensorRT, use the **Extras** field in the panel's `sleap-nn` section: tick
@@ -158,16 +166,104 @@ same place.
 !!! tip "No GPU? No problem"
 
     **Train on CPU** — fine for a tiny sanity-check run, painful for anything
-    real. Or point the app at a **remote worker** with a GPU and submit training
-    and inference jobs to it. This works from the browser too: the browser
-    connects to the worker over WebSocket, and the desktop app can also connect
-    directly over iroh. See [Remote Compute](guides/remote-compute.md).
+    real. Or pair the app with a **remote worker** that has a GPU and send
+    training and inference jobs to it — this works from the browser too. See
+    [Remote Compute](guides/remote-compute.md).
 
 ### Checking what the app sees
 
 **Help ▸ Collect Diagnostics…** gathers the runtime, versions, detected GPU,
 environment state, and recent session log into a single file you can attach to a
 bug report. Look there first when training refuses to start.
+
+---
+
+## Development setup
+
+To run the app from source, for example to work on it or try an unreleased
+change, build it yourself. To send changes back, read
+[Contributing](reference/contributing.md) next.
+
+### Prerequisites
+
+- [**bun**](https://bun.com) **1.3.14** (the version pinned in `.bun-version`).
+  bun is the package manager and the runtime; the project has no npm/Node step.
+- **git**.
+- For the **desktop** build only:
+    - a **Rust 1.95+** toolchain, from [rustup](https://rustup.rs). The dev-only
+      `tauri-pilot` plugin uses edition 2024, so older toolchains fail.
+    - the [Tauri system prerequisites](https://v2.tauri.app/start/prerequisites/)
+      for your platform. On Linux, that's the packages below.
+
+### Get the code
+
+```bash
+git clone https://github.com/talmolab/sleap-app.git
+cd sleap-app
+bun install
+```
+
+### Run it
+
+=== "Browser"
+
+    ```bash
+    bun run dev          # http://localhost:5173
+    ```
+
+=== "Desktop"
+
+    ```bash
+    bun run fetch:ffmpeg # once: download the ffmpeg/ffprobe sidecars
+    bun run tauri:dev
+    ```
+
+    The `ffmpeg`/`ffprobe` sidecars are not committed. Without them, Tauri fails
+    with `resource path binaries/ffmpeg-<triple> doesn't exist`.
+
+    If a browser `bun run dev` already holds port 5173, point the desktop app at
+    that server instead of starting a second one:
+
+    ```bash
+    bun run tauri dev --config '{"build":{"beforeDevCommand":""}}'
+    ```
+
+### Build it
+
+| Command | Produces |
+|---|---|
+| `bun run build` | Type check, then the browser build in `dist/` |
+| `bun run tauri:build:local` | Desktop installers in `src-tauri/target/release/bundle/`, from a fresh clone. It fetches the ffmpeg sidecars on first run and skips the signed updater artifacts, which need a key only CI has |
+| `bun run tauri:build` | What CI runs for releases |
+
+### Linux system dependencies
+
+```bash
+sudo apt-get install libwebkit2gtk-4.1-dev libgtk-3-dev \
+  libjavascriptcoregtk-4.1-dev librsvg2-dev patchelf \
+  libglib2.0-dev libayatana-appindicator3-dev libdbus-1-dev \
+  gstreamer1.0-plugins-base gstreamer1.0-plugins-good \
+  gstreamer1.0-plugins-bad gstreamer1.0-gl \
+  gstreamer1.0-alsa gstreamer1.0-pulseaudio
+```
+
+The GStreamer plugins are what the Linux WebView needs to open videos.
+
+### Working on sleap-io.js too
+
+The data model and SLP I/O come from
+[`@talmolab/sleap-io.js`](https://iojs.sleap.ai). To develop against unpublished
+changes, clone it next to this repo and link it:
+
+```bash
+git clone https://github.com/talmolab/sleap-io.js.git ../sleap-io.js
+bun add file:../sleap-io.js
+```
+
+Vite detects whether `node_modules/@talmolab/sleap-io.js` is a local link or a
+normal install. To go back to the published package, run
+`bun add @talmolab/sleap-io.js@<version>`. CI always uses the published package,
+so don't commit the `file:` link.
 
 ---
 
