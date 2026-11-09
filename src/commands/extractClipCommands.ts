@@ -178,6 +178,7 @@ async function encodeRawClip(
         showNonVisibleNodes: false,
         colorPredicted: false,
         showTrackScore: false,
+        poseOpacity: 1,
       },
     },
     { ...deps, renderOverlay: () => {} },

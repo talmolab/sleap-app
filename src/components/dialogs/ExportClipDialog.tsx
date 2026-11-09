@@ -289,6 +289,8 @@ export function ExportClipDialog() {
             showNonVisibleNodes,
             colorPredicted,
             showTrackScore: false,
+            // Exported clips draw poses solid; the view's opacity is a viewing aid.
+            poseOpacity: 1,
           },
         },
         deps,

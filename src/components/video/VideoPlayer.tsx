@@ -106,7 +106,7 @@ import { setLabelsAutosaveInteracting } from "@/lib/labelsAutosave";
 import { spacePanState } from "@/lib/spacePanTracking";
 import { getPlatform, isTauri } from "@/platform/index";
 import { spawnOverlayServe, killOverlayServe, detectGpu } from "@/platform/backend";
-import { Film, Frame, Hand, ImageOff, MousePointer2, Tag } from "lucide-react";
+import { Film, Frame, Hand, ImageOff, MousePointer2, Tag, ZoomIn } from "lucide-react";
 
 /**
  * First unused `node_${k}` name (k = 0, 1, 2, …) for a fresh builder node, so
@@ -154,6 +154,7 @@ export function VideoPlayer() {
   const fit = useAppStore((s) => s.fit);
   const edgeStyle = useAppStore((s) => s.edgeStyle);
   const markerSize = useAppStore((s) => s.markerSize);
+  const poseOpacity = useAppStore((s) => s.poseOpacity);
   const nodeLabelSize = useAppStore((s) => s.nodeLabelSize);
   const palette = useAppStore((s) => s.palette);
   const trackColorOverrides = useAppStore((s) =>
@@ -1481,6 +1482,7 @@ export function VideoPlayer() {
         showNonVisibleNodes: true,
         colorPredicted: false,
         showTrackScore: false,
+        poseOpacity: 1,
         zoom: baseScale * zoom,
       };
       renderInstances(ctx, [ri], bOpts);
@@ -1545,6 +1547,7 @@ export function VideoPlayer() {
 
     const renderOpts = {
       markerSize,
+      poseOpacity: poseOpacity / 100,
       nodeLabelSize,
       edgeStyle,
       showInstances,
@@ -1657,6 +1660,7 @@ export function VideoPlayer() {
     showTrackScore,
     edgeStyle,
     markerSize,
+    poseOpacity,
     nodeLabelSize,
     palette,
     trackColorOverrides,
@@ -3485,6 +3489,28 @@ export function VideoPlayer() {
               </TooltipTrigger>
               <TooltipContent side="top">
                 <p>{showLabels ? "Hide node names (T)" : "Show node names (T)"}</p>
+              </TooltipContent>
+            </Tooltip>
+            {/* Magnifier toggle. Flips `showInset` (the same View → Magnifier
+                When Moving Nodes state). Dimmed when off. */}
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Button
+                  variant="secondary"
+                  size="icon-xs"
+                  className={cn(
+                    "pointer-events-auto rounded-md bg-black/60 border-none hover:bg-black/70 hover:text-white",
+                    showInset ? "text-white" : "text-white/40",
+                  )}
+                  aria-label="Toggle magnifier"
+                  aria-pressed={showInset}
+                  onClick={() => useAppStore.getState().toggle("showInset")}
+                >
+                  <ZoomIn />
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent side="top">
+                <p>{showInset ? "Hide magnifier" : "Show magnifier"}</p>
               </TooltipContent>
             </Tooltip>
             {/* Pan vs. Select interaction-mode toggle. Sits immediately left of
