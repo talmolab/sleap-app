@@ -34,9 +34,9 @@ validation and test sets.
 "Identity" means the animals can be told apart by appearance, so these
 datasets suit the **+ ID** model types.
 
-The [skeleton templates](../guides/skeletons.md#starting-from-a-template) in
-**New Project** and the **Skeleton** panel are these datasets' skeletons, so you
-can start a similar project with the same body parts.
+The animal [skeleton templates](../guides/skeletons.md#starting-from-a-template)
+in **New Project** and the **Skeleton** panel are these datasets' skeletons, so
+you can start a similar project with the same body parts.
 
 Download links, frame rates, resolutions and credits for each dataset are on
 the SLEAP docs' [Datasets page](https://docs.sleap.ai/latest/reference/datasets/).
