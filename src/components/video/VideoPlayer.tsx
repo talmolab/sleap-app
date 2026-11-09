@@ -100,7 +100,7 @@ import { setLabelsAutosaveInteracting } from "@/lib/labelsAutosave";
 import { spacePanState } from "@/lib/spacePanTracking";
 import { getPlatform, isTauri } from "@/platform/index";
 import { spawnOverlayServe, killOverlayServe, detectGpu } from "@/platform/backend";
-import { Film, Frame, Hand, ImageOff, MousePointer2, Tag } from "lucide-react";
+import { Film, Frame, Hand, ImageOff, MousePointer2, Tag, ZoomIn } from "lucide-react";
 
 /**
  * First unused `node_${k}` name (k = 0, 1, 2, …) for a fresh builder node, so
@@ -3474,6 +3474,22 @@ export function VideoPlayer() {
             onClick={() => useAppStore.getState().toggle("showLabels")}
           >
             <Tag />
+          </Button>
+          {/* Magnifier toggle. Flips `showInset` (the same View → Magnifier
+              When Moving Nodes state). Dimmed when off. */}
+          <Button
+            variant="secondary"
+            size="icon-xs"
+            className={cn(
+              "pointer-events-auto rounded-md bg-black/60 border-none hover:bg-black/70 hover:text-white",
+              showInset ? "text-white" : "text-white/40",
+            )}
+            title={showInset ? "Hide magnifier" : "Show magnifier"}
+            aria-label="Toggle magnifier"
+            aria-pressed={showInset}
+            onClick={() => useAppStore.getState().toggle("showInset")}
+          >
+            <ZoomIn />
           </Button>
           {/* Pan vs. Select interaction-mode toggle. Sits immediately left of
               Reset view so this commonly-used control is visible on the canvas.
