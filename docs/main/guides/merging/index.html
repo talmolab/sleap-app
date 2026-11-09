@@ -1257,6 +1257,17 @@
 </li>
       
         <li class="md-nav__item">
+  <a href="#merging-several-files" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        Merging several files
+      </span>
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#conflicts" class="md-nav__link">
     <span class="md-ellipsis">
       <span class="md-typeset">
@@ -1862,6 +1873,17 @@
 </li>
       
         <li class="md-nav__item">
+  <a href="#merging-several-files" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        Merging several files
+      </span>
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#conflicts" class="md-nav__link">
     <span class="md-ellipsis">
       <span class="md-typeset">
@@ -1916,10 +1938,22 @@
 <p><strong>File ▸ Merge into Project…</strong> combines another <code>.slp</code> into the one you have open
 — for pulling together work split across people, sessions, or machines.</p>
 <h2 id="the-preview">The preview<a class="headerlink" href="#the-preview" title="Permanent link">&para;</a></h2>
-<p>Click <strong>Choose .slp…</strong> and pick the file to merge in. Before anything changes,
-the app matches the two projects and shows a preview: how many <strong>Videos</strong> and
-<strong>Tracks</strong> match or are new, and whether the <strong>Skeleton</strong> matches. Nothing is
-applied until you click <strong>Merge</strong>.</p>
+<p>Click <strong>Choose .slp files…</strong> and pick the file to merge in. Before anything
+changes, the app matches the two projects and shows a preview: how many
+<strong>Videos</strong> and <strong>Tracks</strong> match or are new, and whether the <strong>Skeleton</strong> matches.
+Nothing is applied until you click <strong>Merge</strong>.</p>
+<h2 id="merging-several-files">Merging several files<a class="headerlink" href="#merging-several-files" title="Permanent link">&para;</a></h2>
+<p>You can pick several <code>.slp</code> files at once, for example prediction files from a
+few inference runs. They're merged <strong>one at a time</strong>, in the order you picked
+them, and the dialog shows <strong>File 2 of 3</strong> and so on. Each file gets its own
+preview and conflict review:</p>
+<ul>
+<li><strong>Merge</strong> applies that file and moves on to the next.</li>
+<li><strong>Skip this file</strong> (or closing the dialog) leaves it out and moves on.</li>
+<li>After the last file, the dialog closes.</li>
+</ul>
+<p>Each merged file is its own undo step. A file that can't be read, or whose
+skeleton differs, can only be skipped; the others still merge.</p>
 <p>Videos are matched by <strong>basename</strong> and tracks by <strong>name</strong>, so two projects
 labeling the same videos line up even if the files sit at different paths.</p>
 <div class="admonition warning">
