@@ -26,14 +26,14 @@ you want native file dialogs, local GPU training, and offline use.
     - **SLEAP v1.5–1.6** — [docs.sleap.ai](https://docs.sleap.ai)
     - **SLEAP v1.4.1 or earlier** — [legacy.sleap.ai](https://legacy.sleap.ai)
 
-## 🚀 Get some SLEAP
+## Get some SLEAP
 
-=== "🌐 In the browser"
+=== "In the browser"
 
     Go to **[app.sleap.ai](https://app.sleap.ai)** and drag a `.slp` file onto
     the window. Nothing to install — that is the whole setup.
 
-=== "💻 Desktop app"
+=== "Desktop app"
 
     Native file dialogs, local GPU training, in-app updates, and offline use.
     One command installs it:
@@ -50,8 +50,7 @@ you want native file dialogs, local GPU training, and offline use.
     irm https://app.sleap.ai/install.ps1 | iex
     ```
 
-    Prefer a specific release channel? See
-    [Installation](installation.md).
+    For more details, see [Installation](installation.md).
 
 !!! tip "Try the built-in tutorial"
 
@@ -62,16 +61,25 @@ you want native file dialogs, local GPU training, and offline use.
     covers everything up to training and stops there.
 
 For a written walkthrough, follow the
-[Quick Start](getting-started/quickstart.md) — open a project, move through
-frames, and place your first instance in a few minutes.
+[Tutorial](tutorial/index.md), which takes a sample video from
+labeling through training, tracking, and export.
 
 ---
 
-## 📚 Explore the docs
+## Explore the docs
 
 <div class="grid cards" markdown>
 
--   :material-pencil:{ .lg .middle } **Labeling**
+-   :material-download:{ .middle } **Installation**
+
+    ---
+
+    Run it in the browser, or install the desktop app and its training
+    environment.
+
+    [:octicons-arrow-right-24: Install SLEAP](installation.md)
+
+-   :material-pencil:{ .middle } **Labeling**
 
     ---
 
@@ -79,7 +87,7 @@ frames, and place your first instance in a few minutes.
 
     [:octicons-arrow-right-24: Start Labeling](guides/labeling.md)
 
--   :material-keyboard:{ .lg .middle } **Keyboard Shortcuts**
+-   :material-keyboard:{ .middle } **Keyboard Shortcuts**
 
     ---
 
@@ -87,23 +95,17 @@ frames, and place your first instance in a few minutes.
 
     [:octicons-arrow-right-24: View Shortcuts](reference/shortcuts.md)
 
--   :material-brain:{ .lg .middle } **Training**
+-   :material-brain:{ .middle } **Training & Inference**
 
     ---
 
-    Run [sleap-nn](https://nn.sleap.ai) training with live loss curves.
+    Train [sleap-nn](https://nn.sleap.ai) models with live loss curves, then
+    predict locally or on a remote GPU worker.
 
-    [:octicons-arrow-right-24: Train a Model](guides/training.md)
-
--   :material-flash:{ .lg .middle } **Inference**
-
-    ---
-
-    Predict locally, or on a remote GPU worker.
-
+    [:octicons-arrow-right-24: Train a Model](guides/training.md) &nbsp;
     [:octicons-arrow-right-24: Run Inference](guides/inference.md)
 
--   :material-chart-box:{ .lg .middle } **Analysis**
+-   :material-chart-box:{ .middle } **Analysis**
 
     ---
 
@@ -111,7 +113,7 @@ frames, and place your first instance in a few minutes.
 
     [:octicons-arrow-right-24: Analyze Labels](guides/label-qc.md)
 
--   :material-swap-horizontal:{ .lg .middle } **Import & Export**
+-   :material-swap-horizontal:{ .middle } **Import & Export**
 
     ---
 
@@ -123,7 +125,7 @@ frames, and place your first instance in a few minutes.
 
 ---
 
-## 🧩 How it fits with the rest of SLEAP
+## How it fits with the rest of SLEAP
 
 | Package | What it does | Docs |
 |---|---|---|
@@ -131,7 +133,7 @@ frames, and place your first instance in a few minutes.
 | **sleap-nn** | PyTorch training and inference backend | [nn.sleap.ai](https://nn.sleap.ai) |
 | **sleap-io** | Python data model and file I/O | [io.sleap.ai](https://io.sleap.ai) |
 | **sleap-io.js** | The TypeScript port this app reads and writes SLP with | [iojs.sleap.ai](https://iojs.sleap.ai) |
-| **sleap** | The original Qt/Python GUI this app replaces | [docs.sleap.ai](https://docs.sleap.ai) |
+| **sleap** | The legacy desktop GUI, built with Python and Qt (PySide6), that this app replaces | [docs.sleap.ai](https://docs.sleap.ai) |
 
 Projects are plain `.slp` files, so you can move between the app, the legacy GUI,
 and the Python API freely.
@@ -142,15 +144,15 @@ and the Python API freely.
 
 <div class="grid cards" markdown>
 
--   :material-frequently-asked-questions:{ .lg } **FAQ**
+-   :material-frequently-asked-questions: **FAQ**
 
     Common questions answered. [View FAQ](help/faq.md)
 
--   :material-wrench:{ .lg } **Troubleshooting**
+-   :material-wrench: **Troubleshooting**
 
     Video won't play? Update stuck? [Start here](help/troubleshooting.md)
 
--   :fontawesome-brands-github:{ .lg } **Report an issue**
+-   :fontawesome-brands-github: **Report an issue**
 
     Found a bug? [Create an issue](https://github.com/talmolab/sleap-app/issues/new)
 
@@ -208,6 +210,9 @@ the Murthy and Shaevitz labs at Princeton University.
 See the
 [contributors graph](https://github.com/talmolab/sleap-app/graphs/contributors)
 for everyone who has worked on SLEAP App.
+
+Want to help? Read the [Contributing guide](reference/contributing.md) to set up
+the code and send a change.
 
 ??? note "Funding"
 

@@ -73,6 +73,53 @@ written atomically, so an interrupted transcode never leaves a half-file behind.
 
     `-pix_fmt yuv420p` matters — it is what forces 8-bit output.
 
+## Checking a video's frames
+
+Some videos play fine but don't **seek** reliably: jumping straight to frame N
+shows a different image than playing up to it. Common causes are videos from
+acquisition software, files with B-frames (frames stored out of order), and
+variable frame rates. The result is labels that look shifted from the animal,
+or that end up on the wrong image.
+
+When a video opens, the app runs a quick check from what it already knows about
+the file. If something looks off, the video gets a ⚠ in the **Videos** panel
+("May not show every frame correctly").
+
+For a full check, select the video and click **Check Frames…** in the
+**Videos** panel. It reads every frame in order, then jumps straight to 20
+frames and checks each one shows the same image. Long videos can take a few
+minutes. The result says how many frames read, and lists any that couldn't be
+read or that showed a different image when jumped to.
+
+If the check finds problems, re-encode the video:
+
+- **In the app** (desktop, and browsers that can encode the video): pick a
+  quality (**High**, **Medium** or **Low**) and re-encode. The app writes a
+  clean copy next to the original (`<name>.reencoded.mp4`) and offers to
+  switch the project to it.
+- **Otherwise** the dialog gives an ffmpeg command to run yourself, then use
+  **Replace Video**. It looks like this:
+
+    ```bash
+    ffmpeg -i "input.avi" -c:v libx264 -crf 25 -preset superfast -g 30 -bf 0 \
+      -pix_fmt yuv420p -fps_mode passthrough "input.reencoded.mp4"
+    ```
+
+    | Part | Why |
+    |---|---|
+    | `-c:v libx264` | H.264, which every reader decodes |
+    | `-crf 25` | Quality: 18 is high, 25 medium, 32 low. Lower is better and bigger |
+    | `-preset superfast` | Fast to encode |
+    | `-g 30` | A keyframe every second (30 at 30 fps), so jumping to a frame is quick |
+    | `-bf 0` | No B-frames, so frames are stored in order and seek exactly |
+    | `-pix_fmt yuv420p` | 8-bit color, which [WebCodecs](#codecs) needs |
+    | `-fps_mode passthrough` | Keeps every frame and its timing as-is |
+
+Check and re-encode before you label if you can. Labels are attached to frame
+numbers, so if the re-encoded copy has a different number of frames and the
+video already has labels, the app won't switch to it (the labels would land on
+the wrong images). The project keeps using the original.
+
 ## When videos move
 
 A `.slp` project stores paths to its videos. Move the videos, or open the project

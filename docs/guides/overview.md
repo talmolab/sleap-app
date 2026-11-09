@@ -1,7 +1,9 @@
 # Guides
 
 Task-focused walkthroughs of everything the app does. If you are new, start with
-the [Quick Start](../getting-started/quickstart.md) instead.
+the [Tutorial](../tutorial/index.md) instead. For how the pieces fit together
+(the app, sleap-nn, workers, and the project file), read
+[How SLEAP works](how-sleap-works.md).
 
 ## Labeling
 

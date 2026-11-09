@@ -35,12 +35,17 @@ Once you have a model, **Copy Predictions** turns labeling into correction.
 - **Move the whole pose**: double-click any node to select every node in the
   instance, then drag one of them.
 - **Rotate** the selected instance: hold ++alt++ and scroll.
-- **Shift-click** nodes to add them to the selection; drag on empty canvas to
-  draw a selection box.
-- **Right-click** a node or instance for its context menu — visibility, deletion,
-  track assignment, and more.
+- **Shift-click** a node to add it to the selection, or remove it; drag on empty
+  canvas to draw a selection box (hold ++shift++ to add to the selection).
+- **Right-click** an instance's body, or empty canvas, for the context menu:
+  add, copy, paste or delete instances, assign a track, and mark the frame
+  negative. Right-clicking a single node flips its visibility instead.
+- **Delete** or **Backspace** deletes the selected instance when all of its
+  visible nodes are selected.
 - **Node placement mode** (++shift+n++, or **View ▸ Node Placement Mode**) is for
   clicking nodes down one at a time rather than dragging a pre-posed template.
+  Click to place the current node, ++tab++ / ++shift+tab++ to pick another, and
+  ++escape++ to leave.
 
 ### Visibility
 
@@ -48,9 +53,11 @@ Nodes that are genuinely occluded should be marked **not visible** rather than
 parked somewhere plausible — a guessed point is training signal that says the
 part is *there*, which it isn't.
 
-- To mark a node non-visible, right-click it ▸ **Mark Node Non-Visible** (or
-  **Mark Node Visible** to undo it), or press ++v++ with the pointer over it.
-  With nodes selected, ++v++ flips all of them.
+- To mark a node non-visible, right-click it, or press ++v++ with the pointer
+  over it. Do the same again to make it visible.
+- With several nodes selected, ++v++ sets them all to the same state: visible,
+  unless more than half of them already are, in which case all become
+  non-visible.
 - ++shift+v++ toggles **View ▸ Show Non-Visible Nodes**: whether non-visible
   nodes are drawn at all.
 - **View ▸ Display** controls how much of the hidden geometry you see:
@@ -119,12 +126,31 @@ is what training actually consumes.
 ## Negative frames
 
 **Labels ▸ Mark Frame as Negative** (++n++, or right-click the video) records
-that a frame genuinely contains no animals. This is real training signal, not an
-empty frame that you skipped. Marking a frame that still has instances asks
-first, then removes them (undo brings them back), and adding an instance to a
-negative frame unmarks it. A negative frame shows a red border with a "Negative
-Frame" label on the video and a red tick on the seekbar, and it counts toward
-the status bar's labeled total, e.g. "Labeled: 6 (2 negative frames)".
+that a frame genuinely contains no animals. Marking a frame that still has
+instances asks first, then removes them (undo brings them back), and adding an
+instance to a negative frame unmarks it. A negative frame shows a red border
+with a "Negative Frame" label on the video and a red tick on the seekbar, and it
+counts toward the status bar's labeled total, e.g. "Labeled: 6 (2 negative
+frames)".
+
+**Why mark them?** A model only ever trained on frames with animals can "see"
+animals in empty frames: a shadow, bedding, an empty corner. Negative frames
+are examples of what *nothing* looks like, which teaches a model not to
+detect animals there.
+
+A negative frame is not the same as an **empty** frame. An empty frame is one
+where you deleted every instance: it says nothing, and training skips it. A
+negative frame is a deliberate statement that there are no animals. That's why
+marking one asks before removing instances: marking a frame with an animal on
+it would teach the model the wrong thing.
+
+!!! note "Training doesn't use negative frames yet"
+
+    sleap-nn can train on negative frames, but only when its
+    `use_negative_frames` setting is on, and it's off by default. The Training
+    panel doesn't turn it on yet, so marking frames negative records them in
+    the project (and in the [Label Quality Check](label-qc.md)) but doesn't
+    change training today.
 
 ## Undo
 

@@ -75,7 +75,8 @@ Declaring them is worth the thirty seconds: the
 errors**, where an instance has left and right systematically swapped. That is
 one of the most common labeling mistakes and one of the hardest to spot by eye.
 If you haven't declared symmetries, the check falls back to inferring pairs from
-node names containing left/right markers.
+node names that start or end with `left`/`right` or `L`/`R`, such as
+`left_ear` or `ear_R`.
 
 ## Loading and saving skeletons
 
@@ -92,12 +93,59 @@ When you load a skeleton into a project that already has labels, the app compare
 the two and remaps existing instance points onto the new node set by name, so
 labels survive a skeleton swap wherever the names still line up.
 
-## How many nodes?
+## Designing a skeleton
+
+A good skeleton makes labeling faster and models more accurate. Settle it before
+you label much: every change later means revisiting labeled frames.
+
+### Choose landmarks you can find every time
+
+A node should sit on a spot you can place in the same place on every frame,
+on every animal: the tip of the snout, the base of the tail, a joint. Avoid
+vague spots like "middle of the back" unless you'll place them consistently.
+
+### How many nodes?
 
 Fewer than you want. Every node is a point you must place on every instance on
 every labeled frame, forever. Three to five well-chosen, reliably visible parts
 get you a working model far faster than a 30-node rig you'll label sloppily.
+Start small: you can add nodes later.
+
+Adding a node later gives every existing instance an empty, non-visible point
+for it, so you'll need to go back and place it on your labeled frames.
 
 For [top-down models](training.md) you also need one node that is central and
 almost always visible, to serve as the **anchor part** the model crops around.
 Design the skeleton so such a node exists.
+
+### Edges
+
+What edges do depends on the model type:
+
+- **Top-Down and Single Animal:** edges are for display. They make poses easier
+  to read and help you spot mistakes, but the model doesn't use them.
+- **Bottom-Up:** edges are how the model groups detected parts into animals, so
+  every node must be connected. The Training panel disables Bottom-Up when the
+  skeleton has no edges, and warns when it isn't fully connected.
+
+For Bottom-Up, keep the tree **shallow**: connect parts to a central node rather
+than in one long chain. Grouping follows the edges, so in a chain like
+`head → neck → torso → hip → tail`, missing one node in the middle cuts off
+everything after it.
+
+### Name left and right consistently
+
+Use one pattern for paired parts, such as `left_ear` / `right_ear` or
+`ear_L` / `ear_R`, and declare them as [symmetries](#symmetries). Consistent
+names keep exported columns readable and let the
+[Label Quality Check](label-qc.md) find the pairs.
+
+### Common mistakes
+
+| Mistake | Why it hurts | Instead |
+|---|---|---|
+| Too many nodes | Slow labeling, and sloppy labels | Start with fewer; you can add nodes later |
+| Landmarks you can't place consistently | The model learns your inconsistency | Pick sharp, visible features |
+| No central, reliably visible node | Top-down crops have nothing stable to center on | Include a node like `torso` or `thorax` |
+| Long chains of edges (Bottom-Up) | One missing node breaks the animal apart | Connect parts to a central node |
+| Mixed left/right naming | Unreadable exports, and missed symmetry checks | One pattern, plus declared symmetries |

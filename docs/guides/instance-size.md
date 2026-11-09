@@ -7,7 +7,9 @@ for a [top-down model](training.md), and guessing it is a common way to waste a
 training run — too small and you cut off body parts, too large and you spend
 capacity and memory on background.
 
-This dialog measures every instance in the project and shows you the distribution.
+This dialog measures every instance in the project, predictions included, and
+shows you the distribution. To size crops from your own labels only, run it
+before you load or generate predictions.
 
 ## What is measured
 
@@ -57,6 +59,28 @@ and optional manual X-axis bounds.
     Take the **95th or 99th percentile** at the rotation setting you'll train
     with, then round up to what your model wants. Sizing at the mean truncates
     half your animals.
+
+## Choosing a crop size
+
+1. Set **Rotation augmentation** to match what you'll train with.
+2. Read the **95th percentile**: it covers 95% of instances without letting a
+   few extremes decide.
+3. Add **10–20%** for animals near the frame edge and for prediction error.
+   For example, a 95th percentile of 200 px suggests a crop of 220–240 px.
+
+Then set **Crop Size** in the training configuration. Left on **Auto**, the
+app sizes the crop from your single largest labeled instance, so check the
+scatter for outliers first: one stray point can make the crop far bigger than
+it needs to be. See [Training](training.md#key-ideas).
+
+A few situations to watch for:
+
+- **Very different sizes,** such as pups and adults: use a crop big enough for
+  the largest, or filter the training data.
+- **Several videos recorded differently:** the dialog pools every video. Click
+  the outliers to see whether they all come from one video.
+- **The largest instances:** click them to see whether they're real animals or
+  labeling mistakes before you size around them.
 
 ## Jumping to an instance
 

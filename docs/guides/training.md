@@ -5,7 +5,7 @@ training without leaving the app. Runs go to a local GPU (desktop, see
 [Environment setup](../installation.md#environment-setup)) or to a [remote worker](remote-compute.md).
 
 You need at least one user-labeled frame. Label a handful first —
-[Your First Labels](../getting-started/first-labels.md) walks the whole loop.
+the [Tutorial](../tutorial/index.md) walks the whole loop.
 
 ## Model types
 
@@ -54,6 +54,40 @@ The panel holds the settings you change most. Everything else lives in the
 - **Estimated Memory Usage** — params, weights, batch images, activations,
   confidence maps, gradients, and image cache, so you find out that a
   configuration won't fit *before* you start the run rather than at epoch 1
+
+### Key ideas
+
+A few terms that come up throughout the configuration:
+
+- **Configs.** A model's settings live in a config file (YAML), shown in its
+  slot under **Model Type & Configs**. These settings are *hyperparameters*:
+  you choose them before training. The model's *parameters*, its weights, are
+  what training learns. The app fills each slot from your last trained run, or
+  from a built-in baseline profile.
+- **Backbone.** The network the model is built on. **UNet** is the default and
+  works well for most projects. **ConvNeXt** and **Swin Transformer** can start
+  from weights pretrained on ImageNet, but they need color (RGB) input. See sleap-nn's
+  [model reference](https://nn.sleap.ai/latest/reference/models/) for details.
+- **Input scaling.** Shrinks images before the model sees them: faster and
+  lighter on memory, but less precise. The centroid model in a top-down
+  pipeline only has to find each animal, so it usually takes scaling well.
+- **Crop size** (top-down). The size of the box the second model looks at
+  around each animal. On **Auto**, the app takes your largest labeled animal,
+  adds room for the rotation and scale augmentation you've set, and rounds up
+  to fit the model. One stray point that makes an instance huge also makes
+  the crop huge, so check [Instance Size Distribution](instance-size.md)
+  before you trust it.
+- **Augmentation.** Random rotations, scaling, noise and contrast changes
+  applied to your labeled frames during training, so the model doesn't
+  memorize the exact images. Match rotation to your camera: **±180°** for
+  overhead views, small angles for side views.
+
+!!! info "Hardware"
+
+    Training is supported on NVIDIA GPUs (Linux and Windows) and on Apple
+    Silicon Macs. AMD and Intel GPUs and Intel-based Macs aren't tested and may
+    fail or run on the CPU. Without a supported GPU, train on a
+    [remote worker](remote-compute.md).
 
 ### Full Configuration...
 

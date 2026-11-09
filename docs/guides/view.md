@@ -17,7 +17,8 @@ With the mouse and trackpad:
 | Gesture | Does |
 |---|---|
 | Scroll (wheel or two-finger) | Pan |
-| ++ctrl++ + scroll, or trackpad pinch | Zoom toward the pointer (++ctrl++ on macOS too) |
+| ++ctrl++ + scroll | Zoom toward the pointer (++ctrl++ on macOS too) |
+| Trackpad pinch | Zoom, in Chrome and Edge |
 | Middle-button drag | Pan |
 | Hold ++space++ and drag | Pan |
 | Drag on empty canvas | Draw a selection box |
@@ -30,7 +31,15 @@ drag nodes in pan mode. In pan mode, ++space++-drag selects instead, ++cmd++ /
 Two aids for precision work:
 
 - **Crosshair When Zoomed** — draws crosshairs so you can line a point up exactly
-- **Magnifier When Moving Nodes** — a loupe follows the node you're dragging
+- **Magnifier When Moving Nodes** — a zoomed view in the top-right corner of the
+  video while you drag a node, while you place nodes, or while you hold
+  ++shift++. The magnifier button on the video turns it on and off too, and the
+  **View** panel sets its size and zoom.
+- **Play Neighboring Frames in Magnifier** — while the magnifier is up from
+  holding ++shift++ or placing nodes (not while dragging), it loops through the
+  frames around the current one, so you see the motion around the point you're
+  labeling. In the **View** panel, choose earlier and/or later frames and how
+  many on each side (1–10, default 2).
 
 ## What gets drawn
 
@@ -72,6 +81,7 @@ glance what still needs accepting.
 ## Sizing
 
 - **Node Marker Size** — how big the node circles are
+- **Pose Opacity** — 100%, 75%, 50% or 25%, to see the animal under the pose
 - **Node Label Size** — how big node name text is
 - **Edge Style** — **Line** or **Wedge** (wedges make direction along a chain
   readable)

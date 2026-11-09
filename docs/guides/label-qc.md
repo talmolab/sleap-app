@@ -50,8 +50,8 @@ the ones that disagree.
 
     This check needs to know which nodes are left/right pairs. Declare them as
     **symmetries** in the [skeleton](skeletons.md); failing that, the check
-    infers pairs from node names containing left/right markers. No pairs, no
-    chirality check.
+    infers pairs from node names that start or end with `left`/`right` or
+    `L`/`R`, such as `left_ear` or `ear_R`. No pairs, no chirality check.
 
 **Chain order** — nodes along a chain (a limb, a spine, a tail) labeled out of
 sequence. The check finds the longest chain in your skeleton and looks at the
@@ -81,6 +81,39 @@ button.
   Lower it to flag more.
 - **Export CSV** saves the scores for every instance, not just the flagged
   ones.
+
+### How the score works
+
+The check learns what a normal pose looks like from your own labels, then
+measures how far each labeled instance is from normal. Predictions aren't
+scored.
+
+1. For every instance it measures 18 things about the pose: edge lengths,
+   joint angles, distances between nodes, overall size, how curved and compact
+   the pose is, how symmetric the left/right pairs are, which nodes are visible,
+   and how close it is to its most similar instance.
+2. For each measurement, it works out how many standard deviations the
+   instance is from the project's typical value.
+3. The **score** comes from the most unusual of those measurements, scaled to
+   between 0 and 1. A measurement 3 standard deviations out scores 0.5, and the
+   default **threshold** of 0.7 flags instances about 4 standard deviations
+   out.
+4. **Top issue** names that most unusual measurement, such as *Unusual joint
+   angle* or *Likely L/R swap*.
+
+**Confidence** is read off the score: **high** above 0.8, **medium** above 0.5,
+**low** otherwise.
+
+!!! tip "Reading the results"
+
+    - **A flag isn't always a mistake.** Unusual poses score high too, so look
+      before you change anything.
+    - **Look for patterns.** If one **Top issue** keeps coming up, the problem
+      may be a labeling habit rather than single mistakes.
+    - **It works best with consistent labeling.** The check compares your
+      labels with each other.
+    - **Re-run it after you fix things**, and after proofreading, to confirm
+      the fixes.
 
 ## When to run it
 

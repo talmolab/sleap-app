@@ -71,7 +71,12 @@ The panel also lets you:
   first
 - **Add labeled frames** — put every frame you've already labeled into the list
 
-## A reasonable workflow
+## Prediction-assisted labeling
+
+Labeling every frame by hand is slow. Instead, label a few frames, train a
+model, and let it predict the rest. Correcting a prediction is much faster than
+placing every node yourself, and each round gives you a better model that needs
+fewer corrections.
 
 1. Generate ~20 stride or image-feature suggestions.
 2. Label them completely.
@@ -79,7 +84,41 @@ The panel also lets you:
 4. Run inference over the video ([Inference](inference.md)).
 5. Generate new suggestions by **prediction score** or **max displacement**.
 6. Correct those predictions instead of labeling from scratch.
-7. Retrain.
+7. Retrain, and repeat from step 4.
 
 Each round targets the frames the model actually finds hard, which is where your
 labeling time is worth the most.
+
+!!! warning "Predictions don't train the model until you accept them"
+
+    Training only uses your own labels. Double-click a prediction (or press
+    ++cmd+shift+a++ / ++ctrl+shift+a++ for the whole frame) to turn it into a
+    label, then fix what's wrong. An accepted node is red until you touch it,
+    then green, so you can see which ones you've checked. See
+    [Working with predictions](labeling.md#working-with-predictions).
+
+### Reading the seekbar
+
+The seekbar shows where your work stands:
+
+| Mark | Means |
+|---|---|
+| Yellow flag along the top | A suggested frame |
+| Blue tick | A frame with your labels |
+| Light-blue tick | A frame with predictions only |
+| Red tick | A [negative frame](labeling.md#negative-frames) |
+
+A yellow flag over a light-blue tick is a suggestion the model has predicted
+on, ready for you to correct.
+
+### Tips
+
+- **Generate fresh suggestions each round.** Once a model exists,
+  **Prediction score** and **Max displacement** find the frames it struggles
+  with, which are more useful to label than more evenly spaced ones.
+- **Correct the failures.** Sort the panel's **Mean Score** column and work
+  through low-scoring frames first. Check some high-scoring ones too, since a
+  model can be confidently wrong.
+- **Keep rounds small.** Correct a batch of frames, retrain, and repeat.
+- **Run [Label Quality Check](label-qc.md) before retraining.** It catches
+  mistakes, like left/right swaps, that are easy to miss while correcting.

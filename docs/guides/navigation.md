@@ -36,6 +36,7 @@ Three options in the **Go** menu restrict what ++right++ / ++left++ step through
 
 - **Navigate All Frames** — every frame in the video
 - **Navigate Labeled Frames Only** — skip everything unlabeled
+- **Navigate Suggested Frames Only** — only the frames in the Suggestions list
 - **Navigate Imaged Frames Only** — only frames whose pixels are actually present (useful
   in `.pkg.slp` projects with a sparse set of embedded images)
 
@@ -50,7 +51,10 @@ The bar under the video is more than a scrubber:
 
 - **Labeled-frame marks** show where work already exists
 - **Track occupancy bars** show which identities are present when
-- **Snap to labeled frame** while dragging
+- **Snap to labeled frame**: a click near a labeled frame lands on it
+- **Select a range**: ++shift++ + drag from the current frame. Several commands
+  act on the selected range, such as Propagate Track Labels and
+  **Labels ▸ Extract Clip and Labels…**
 - **Playback speed** from 0.25× to 8×
 
 ### Statistic graphs
