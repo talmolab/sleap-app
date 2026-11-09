@@ -7,13 +7,40 @@
         <loc>https://app.sleap.ai/docs/stable/installation/</loc>
       </url>
       <url>
-        <loc>https://app.sleap.ai/docs/stable/getting-started/quickstart/</loc>
+        <loc>https://app.sleap.ai/docs/stable/tutorial/</loc>
       </url>
       <url>
-        <loc>https://app.sleap.ai/docs/stable/getting-started/first-labels/</loc>
+        <loc>https://app.sleap.ai/docs/stable/tutorial/setup/</loc>
+      </url>
+      <url>
+        <loc>https://app.sleap.ai/docs/stable/tutorial/new-project/</loc>
+      </url>
+      <url>
+        <loc>https://app.sleap.ai/docs/stable/tutorial/initial-labeling/</loc>
+      </url>
+      <url>
+        <loc>https://app.sleap.ai/docs/stable/tutorial/training/</loc>
+      </url>
+      <url>
+        <loc>https://app.sleap.ai/docs/stable/tutorial/correcting-predictions/</loc>
+      </url>
+      <url>
+        <loc>https://app.sleap.ai/docs/stable/tutorial/tracking/</loc>
+      </url>
+      <url>
+        <loc>https://app.sleap.ai/docs/stable/tutorial/proofreading/</loc>
+      </url>
+      <url>
+        <loc>https://app.sleap.ai/docs/stable/tutorial/exporting/</loc>
+      </url>
+      <url>
+        <loc>https://app.sleap.ai/docs/stable/tutorial/next-steps/</loc>
       </url>
       <url>
         <loc>https://app.sleap.ai/docs/stable/guides/overview/</loc>
+      </url>
+      <url>
+        <loc>https://app.sleap.ai/docs/stable/guides/how-sleap-works/</loc>
       </url>
       <url>
         <loc>https://app.sleap.ai/docs/stable/guides/labeling/</loc>
@@ -73,10 +100,13 @@
         <loc>https://app.sleap.ai/docs/stable/reference/formats/</loc>
       </url>
       <url>
+        <loc>https://app.sleap.ai/docs/stable/reference/datasets/</loc>
+      </url>
+      <url>
         <loc>https://app.sleap.ai/docs/stable/reference/browser-vs-desktop/</loc>
       </url>
       <url>
-        <loc>https://app.sleap.ai/docs/stable/development/</loc>
+        <loc>https://app.sleap.ai/docs/stable/reference/contributing/</loc>
       </url>
       <url>
         <loc>https://app.sleap.ai/docs/stable/help/faq/</loc>
