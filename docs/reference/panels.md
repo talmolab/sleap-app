@@ -18,7 +18,7 @@ Left** moves the column; **Panels ▸ Reset to Defaults…** restores the layout
 | **Training** | Configure and run sleap-nn training — [guide](../guides/training.md) |
 | **Inference** | Configure and run predictions — [guide](../guides/inference.md) |
 | **Environment** | Python toolchain setup via `uv` (desktop only) — [guide](../installation.md#environment-setup) |
-| **Connect** | Log in and connect to remote GPU workers — [guide](../guides/remote-compute.md) |
+| **Connect** | Connect to remote GPU workers — [guide](../guides/remote-compute.md) |
 | **Notifications** | History of toasts and messages |
 | **Debug** | Internal state, for bug reports |
 

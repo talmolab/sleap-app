@@ -13,9 +13,7 @@ video of the same mice, and link each mouse's poses across frames into a
    browse), then click **Import**.
 3. Click `mice_new.mp4` in the list to switch to it.
 
-The model learned from `mice.mp4`, and this video was recorded the same way, so
-it should work here. A model works best on videos that look like the ones it
-was trained on.
+The model learned from `mice.mp4`; this video is from the same setup.
 
 ## Run inference with tracking
 

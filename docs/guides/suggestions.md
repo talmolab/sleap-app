@@ -119,9 +119,6 @@ on, ready for you to correct.
 - **Correct the failures.** Sort the panel's **Mean Score** column and work
   through low-scoring frames first. Check some high-scoring ones too, since a
   model can be confidently wrong.
-- **Don't over-polish.** Fix points that are clearly off. A point a pixel or
-  two from where you'd put it isn't worth the time.
-- **Keep rounds small.** Correcting 10–20 frames and retraining often beats
-  correcting 100 before you retrain.
+- **Keep rounds small.** Correct a batch of frames, retrain, and repeat.
 - **Run [Label Quality Check](label-qc.md) before retraining.** It catches
   mistakes, like left/right swaps, that are easy to miss while correcting.

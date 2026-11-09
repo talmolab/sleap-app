@@ -35,12 +35,17 @@ Once you have a model, **Copy Predictions** turns labeling into correction.
 - **Move the whole pose**: double-click any node to select every node in the
   instance, then drag one of them.
 - **Rotate** the selected instance: hold ++alt++ and scroll.
-- **Shift-click** nodes to add them to the selection; drag on empty canvas to
-  draw a selection box.
-- **Right-click** a node or instance for its context menu — visibility, deletion,
-  track assignment, and more.
+- **Shift-click** a node to add it to the selection, or remove it; drag on empty
+  canvas to draw a selection box (hold ++shift++ to add to the selection).
+- **Right-click** an instance's body, or empty canvas, for the context menu:
+  add, copy, paste or delete instances, assign a track, and mark the frame
+  negative. Right-clicking a single node flips its visibility instead.
+- **Delete** or **Backspace** deletes the selected instance when all of its
+  visible nodes are selected.
 - **Node placement mode** (++shift+n++, or **View ▸ Node Placement Mode**) is for
   clicking nodes down one at a time rather than dragging a pre-posed template.
+  Click to place the current node, ++tab++ / ++shift+tab++ to pick another, and
+  ++escape++ to leave.
 
 ### Visibility
 
@@ -48,9 +53,11 @@ Nodes that are genuinely occluded should be marked **not visible** rather than
 parked somewhere plausible — a guessed point is training signal that says the
 part is *there*, which it isn't.
 
-- To mark a node non-visible, right-click it ▸ **Mark Node Non-Visible** (or
-  **Mark Node Visible** to undo it), or press ++v++ with the pointer over it.
-  With nodes selected, ++v++ flips all of them.
+- To mark a node non-visible, right-click it, or press ++v++ with the pointer
+  over it. Do the same again to make it visible.
+- With several nodes selected, ++v++ sets them all to the same state: visible,
+  unless more than half of them already are, in which case all become
+  non-visible.
 - ++shift+v++ toggles **View ▸ Show Non-Visible Nodes**: whether non-visible
   nodes are drawn at all.
 - **View ▸ Display** controls how much of the hidden geometry you see:

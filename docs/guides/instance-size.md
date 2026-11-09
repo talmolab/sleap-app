@@ -76,11 +76,11 @@ it needs to be. See [Training](training.md#key-ideas).
 A few situations to watch for:
 
 - **Very different sizes,** such as pups and adults: use a crop big enough for
-  the largest, or train separate models.
+  the largest, or filter the training data.
 - **Several videos recorded differently:** the dialog pools every video. Click
   the outliers to see whether they all come from one video.
-- **A cluster of very large instances** is usually a labeling mistake, not big
-  animals. Check them before you size around them.
+- **The largest instances:** click them to see whether they're real animals or
+  labeling mistakes before you size around them.
 
 ## Jumping to an instance
 

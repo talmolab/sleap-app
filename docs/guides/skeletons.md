@@ -102,9 +102,7 @@ you label much: every change later means revisiting labeled frames.
 
 A node should sit on a spot you can place in the same place on every frame,
 on every animal: the tip of the snout, the base of the tail, a joint. Avoid
-vague spots like "middle of the back" unless you'll place them consistently. If
-two people would put a node in different places, the model learns that
-disagreement.
+vague spots like "middle of the back" unless you'll place them consistently.
 
 ### How many nodes?
 
@@ -146,7 +144,7 @@ names keep exported columns readable and let the
 
 | Mistake | Why it hurts | Instead |
 |---|---|---|
-| Too many nodes | Slow labeling, and sloppy labels | Start with 3–5; add more once the model works |
+| Too many nodes | Slow labeling, and sloppy labels | Start with fewer; you can add nodes later |
 | Landmarks you can't place consistently | The model learns your inconsistency | Pick sharp, visible features |
 | No central, reliably visible node | Top-down crops have nothing stable to center on | Include a node like `torso` or `thorax` |
 | Long chains of edges (Bottom-Up) | One missing node breaks the animal apart | Connect parts to a central node |

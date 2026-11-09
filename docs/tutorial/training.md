@@ -35,8 +35,8 @@ On a GPU this run takes a few minutes. On a CPU it's much slower.
 
     This camera looks down on the mice, so any orientation is natural. For
     overhead videos like this, set **Rotation Augmentation** to **±180°**: the
-    model then sees each labeled frame at random angles, which helps it
-    generalize from few labels.[^augment] For side-view cameras, keep it small
+    model then sees each labeled frame at random angles.[^augment] For
+    side-view cameras, keep it small
     (**±15°**), since an upside-down animal would look unnatural.
 
 See [Training](../guides/training.md) for every setting.

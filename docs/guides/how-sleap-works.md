@@ -9,7 +9,6 @@ where your data goes, and what you need installed for each step.
 |---|---|---|
 | **SLEAP App** (this app) | Labeling, proofreading, quality checks, and starting training and inference | In your browser, or as the desktop app |
 | **[sleap-nn](https://nn.sleap.ai)** | Trains models and runs inference and tracking | Python, on your computer or on a remote worker |
-| **[SLEAP Connect](remote-compute.md)** | Runs sleap-nn jobs on another machine for you | On the GPU machine, as a background worker |
 | **[sleap-io](https://io.sleap.ai)** | Reads, writes and converts SLEAP files | Python, for your own analysis scripts |
 
 The app reads and writes files itself, with

@@ -95,7 +95,8 @@ this page is the full list.
 | Show / hide instances | ++h++ |
 | Show / hide node names | ++t++ |
 | Show / hide edges | ++cmd+shift+tab++ |
-| Mark the node under the pointer (or the selected nodes) visible / non-visible | ++v++ |
+| Flip the node under the pointer between visible and non-visible | ++v++ |
+| Set all selected nodes visible, or all non-visible (visible unless more than half already are) | ++v++ with nodes selected |
 | Toggle non-visible nodes | ++shift+v++ |
 | Increase text size | ++cmd+shift+equal++ |
 | Decrease text size | ++cmd+minus++ |
@@ -108,7 +109,17 @@ Mouse and trackpad, on the video canvas.
 |---|---|
 | Scroll / two-finger swipe | **Pan** — not zoom |
 | ++ctrl++ + scroll | Zoom, anchored at the cursor |
-| Trackpad pinch | Zoom |
+| Trackpad pinch | Zoom (in Chrome and Edge) |
+| Middle-button drag | Pan |
+| Drag on empty canvas | Selection box; hold ++shift++ to add to the selection |
+| Click a node | Select it; ++shift++ + click adds or removes it from the selection |
+| Double-click a node | Select every node of that instance |
+| Drag a selected node | Move all selected nodes together |
+| ++alt++ + scroll | Rotate the selected instance |
+| Right-click a node | Flip it between visible and non-visible |
+| Right-click an instance's body or empty canvas | Context menu: add, copy, paste or delete instances, assign a track, mark the frame negative |
+| Double-click a prediction | Accept it as your label |
+| ++delete++ / ++backspace++ | Delete the selected instance, when all its visible nodes are selected |
 | Hold ++space++ + drag | Pan |
 | Double-tap ++space++ | Cycle zoom: free → fit instances → fit frame |
 | ++cmd++ + drag, in pan mode (++p++) | Zoom by dragging |
@@ -118,11 +129,11 @@ Scrolling **pans** by default — deliberately, so a mouse wheel and a trackpad
 two-finger swipe behave identically without the app guessing which one you have.
 Hold ++ctrl++ to zoom instead. Here ++ctrl++ means ++ctrl++ on macOS as well
 (as it does for ++ctrl++ + drag to clone): ++cmd++ with the scroll wheel does not
-zoom, though a trackpad pinch does.
+zoom. A trackpad pinch zooms in Chrome and Edge.
 
-++space++ does three things without them colliding. A **tap** jumps to the next
-suggestion — it fires on release, and is skipped entirely if you panned while
-holding it. A **hold** pans. A **double-tap** cycles the zoom modes.
+++space++ does three things. A **tap** jumps to the next suggestion — it fires on
+release, and is skipped if you clicked or dragged while holding it. A **hold**
+pans (in pan mode, it selects instead). A **double-tap** cycles the zoom modes.
 
 ## Models
 

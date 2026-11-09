@@ -132,12 +132,12 @@ settings.
 |---|---|---|
 | **OKS** (default) | Every keypoint, scaled by the animal's size | Most cases |
 | **IoU** | Bounding-box overlap | Animals usually stay apart |
-| **Centroid dist.** | Distance between centers | Poses are noisy but positions are reliable |
+| **Centroid dist.** | Distance between centers | Matching by position alone, ignoring pose |
 | **Euclidean dist.** | Distance between keypoints | A simple, fast alternative to OKS |
 
 **Matching** pairs instances with tracks: **Hungarian** finds the best overall
-assignment, while **Greedy** takes the best match for each instance in turn. It's
-faster, but can make worse choices when animals are close.
+assignment, while **Greedy** takes the best match for each instance in turn: it's
+faster, but may not find the best overall assignment.
 
 **Window size** is how many past frames supply candidates. A larger window
 bridges longer gaps but runs slower.

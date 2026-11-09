@@ -51,10 +51,7 @@ of labeling from scratch. See
 the [Tutorial](../tutorial/index.md).
 
 For a finished model, a few hundred labeled frames (roughly 100–500) is
-typically enough to predict accurately across thousands of frames. It depends
-on your videos more than on a number: how varied the poses, lighting and
-backgrounds are, and how often animals touch or hide each other. Label frames
-that cover that variety, rather than more of the same.
+typically enough to predict accurately across thousands of frames.
 
 How good the predictions get depends on three things:
 

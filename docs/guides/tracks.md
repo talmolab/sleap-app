@@ -9,13 +9,14 @@ there; tracks tell you *who*.
 | Action | How |
 |---|---|
 | Create a new track | ++cmd+0++ / ++ctrl+0++, or **Tracks ▸ New Track** |
-| Assign the selected instance to a track | **Tracks ▸ Set Instance Track ▸ …**, or right-click ▸ **Assign Track** |
+| Assign the selected instance to a track | **Tracks ▸ Set Instance Track ▸ …**, or right-click the instance's body ▸ **Assign Track** (once the project has tracks) |
 | Assign the selected instance to track 1–9 | ++cmd+1++ … ++cmd+9++ / ++ctrl+1++ … ++ctrl+9++ |
 | Copy an instance's track | ++cmd+shift+c++ / ++ctrl+shift+c++ |
 | Paste a track onto an instance | ++cmd+shift+v++ / ++ctrl+shift+v++ |
 
-++cmd+1++ … ++cmd+9++ (++ctrl+1++ … ++ctrl+9++) picks the track by its number in
-the tracks legend. If that track doesn't exist yet, the app creates `Track 1`,
+++cmd+1++ … ++cmd+9++ (++ctrl+1++ … ++ctrl+9++) picks the track by its position
+in **Tracks ▸ Set Instance Track**, which lists each track with its shortcut. If
+that track doesn't exist yet, the app creates `Track 1`,
 `Track 2`, … up to that number first, so you can start tracking with no setup.
 
 Copy/paste of tracks is the fast way to fix a run of frames: copy the correct
@@ -74,8 +75,7 @@ for an animal changing color. Three ways to get to the right frames quickly:
 
 With few animals, the **five+** palette (**View ▸ Color Palette**) makes later
 tracks stand out; with many, **alphabet** gives each a distinct color.
-**View ▸ Edge Style ▸ Wedge** shows which way each animal faces, which helps
-when two look alike.
+**View ▸ Edge Style ▸ Wedge** shows which way each animal faces.
 
 **Fix them:** turn on **Propagate Track Labels**, go to the first frame after
 the swap, and press ++cmd+t++ / ++ctrl+t++ to transpose the two tracks back.
@@ -113,7 +113,7 @@ new track is reassigned on every later frame, joining the two. Then run
 | **Delete All Tracks** | Clears every track assignment |
 
 **Delete Unused Tracks** is worth running before export — tracking passes tend to
-leave behind empty identities that clutter the legend and every analysis file.
+leave behind empty identities that clutter the track list and every analysis file.
 
 ## Seeing tracks
 
@@ -122,9 +122,6 @@ leave behind empty identities that clutter the legend and every analysis file.
 - ++cmd+e++ / ++ctrl+e++ jumps to the next **track spawn** frame — where a new
   identity first appears. New identities mid-video are usually a tracking break
   rather than a new animal, so this is a fast audit route.
-- Hold ++ctrl++ to show the **tracks legend** on the canvas: each track's
-  number, color, and name. The numbers are the ones ++cmd+1++ … ++cmd+9++ use.
-  It only shows while ++ctrl++ is held (++ctrl++ on macOS too).
 - **View ▸ Apply Distinct Colors To ▸ Tracks** colors instances by identity, which
   makes a swap visible instantly. Predictions are drawn yellow unless
   **View ▸ Color Predicted Instances** is on, so turn that on too when

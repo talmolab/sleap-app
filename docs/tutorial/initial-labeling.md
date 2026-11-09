@@ -46,7 +46,7 @@ Save with ++cmd+s++ / ++ctrl+s++, and save often as you label.
 
 !!! tip "Labeling faster"
 
-    - **Zoom:** hold ++ctrl++ and scroll, or pinch on a trackpad.
+    - **Zoom:** hold ++ctrl++ and scroll (++ctrl++ on macOS too).
     - **Move a whole instance:** double-click any of its nodes to select them
       all, then drag.
     - **Rotate an instance:** with it selected, hold ++alt++ and scroll.

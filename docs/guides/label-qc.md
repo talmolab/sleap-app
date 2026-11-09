@@ -106,12 +106,12 @@ scored.
 
 !!! tip "Reading the results"
 
-    - **A flag isn't always a mistake.** A rare but real pose, such as grooming
-      or rearing, scores high too. Look before you change anything.
+    - **A flag isn't always a mistake.** Unusual poses score high too, so look
+      before you change anything.
     - **Look for patterns.** If one **Top issue** keeps coming up, the problem
       may be a labeling habit rather than single mistakes.
-    - **It works best with more labels.** With only a few instances, "normal"
-      isn't well defined yet.
+    - **It works best with consistent labeling.** The check compares your
+      labels with each other.
     - **Re-run it after you fix things**, and after proofreading, to confirm
       the fixes.
 

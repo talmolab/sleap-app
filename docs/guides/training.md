@@ -66,8 +66,7 @@ A few terms that come up throughout the configuration:
   from a built-in baseline profile.
 - **Backbone.** The network the model is built on. **UNet** is the default and
   works well for most projects. **ConvNeXt** and **Swin Transformer** can start
-  from weights pretrained on ImageNet, which can help with little labeled data,
-  but they need color (RGB) input. See sleap-nn's
+  from weights pretrained on ImageNet, but they need color (RGB) input. See sleap-nn's
   [model reference](https://nn.sleap.ai/latest/reference/models/) for details.
 - **Input scaling.** Shrinks images before the model sees them: faster and
   lighter on memory, but less precise. The centroid model in a top-down
