@@ -261,46 +261,80 @@ export const PasteTrack: Command = {
 };
 
 /**
- * Delete the selected instance AND remove its track from labels.tracks.
- * Also removes the track from any other instances across all labeled frames.
+ * The instances {@link DeleteInstanceAndTrack} removes, besides the selected
+ * one: every instance (user or predicted) on `track` in `video`'s frames.
+ * Shared with the confirm prompt so it can say how many will go.
+ */
+export function instancesOnTrackInVideo(
+  labeledFrames: readonly LabeledFrame[],
+  video: unknown,
+  track: Track,
+): number {
+  let n = 0;
+  for (const lf of labeledFrames) {
+    if (lf.video !== video) continue;
+    for (const inst of lf.instances) if (inst.track === track) n++;
+  }
+  return n;
+}
+
+/**
+ * Delete the selected instance and every other instance on its track in the
+ * current video. Ports legacy SLEAP's `DeleteSelectedInstanceTrack`
+ * (sleap/gui/commands.py), which:
+ *   - removes the selected instance from its frame;
+ *   - if it had a track, removes every instance on that track, user and
+ *     predicted, from every frame of the CURRENT video only;
+ *   - leaves the track itself in the project (Tracks ▸ Delete Track removes
+ *     it), and leaves instances on that track in other videos alone;
+ *   - doesn't drop frames this empties (nor does DeleteSelectedInstance).
+ *
+ * This used to keep the track's other instances, strip the track from them in
+ * every video, and delete the track; its undo snapshot covered only the current
+ * frame, so undo couldn't restore the other frames' track assignments.
+ *
+ * Undo: a snapshot of every frame in the current video, the only frames this
+ * can touch. No frame is created or deleted, so the scoped snapshot is safe.
  */
 export const DeleteInstanceAndTrack: Command = {
   name: "DeleteInstanceAndTrack",
-  topics: [UpdateTopic.Tracks, UpdateTopic.Instance],
+  topics: [UpdateTopic.Labels, UpdateTopic.Frame, UpdateTopic.Instance, UpdateTopic.Tracks],
+  skipAutoSnapshot: true,
   execute(ctx: CommandContext) {
     const { labels, video, frameIdx, instance } = ctx.state;
     if (!labels || !video || !instance) return;
 
-    const track = instance.track;
+    const current = labels.find({ video, frameIdx })[0];
+    if (!current || !current.instances.includes(instance)) return;
 
-    // Remove the track from all instances across all labeled frames
+    const track = instance.track ?? null;
+    let snapshot;
+    let frames: LabeledFrame[];
     if (track) {
-      for (const lf of labels.labeledFrames) {
-        for (const inst of lf.instances) {
-          if (inst.track === track) {
-            inst.track = undefined;
-          }
+      ({ snapshot, frames } = ctx.takeVideoFramesSnapshotFrom(
+        "DeleteInstanceAndTrack",
+        video,
+        -Infinity,
+      ));
+    } else {
+      snapshot = ctx.takeSnapshot("DeleteInstanceAndTrack");
+      frames = [];
+    }
+
+    // The selected instance first, then (on a track) every instance on that
+    // track in this video, matching legacy's order of removal.
+    current.instances = current.instances.filter((inst) => inst !== instance);
+    if (track) {
+      for (const lf of frames) {
+        if (lf.instances.some((inst) => inst.track === track)) {
+          lf.instances = lf.instances.filter((inst) => inst.track !== track);
         }
       }
-      // Remove track from labels.tracks
-      const trackIdx = labels.tracks.indexOf(track);
-      if (trackIdx >= 0) {
-        labels.tracks.splice(trackIdx, 1);
-      }
     }
 
-    // Delete the selected instance from the current frame
-    const frames = labels.find({ video, frameIdx });
-    if (frames.length > 0) {
-      const lf = frames[0];
-      const instIdx = lf.instances.indexOf(instance);
-      if (instIdx >= 0) {
-        lf.instances.splice(instIdx, 1);
-      }
-    }
-
-    // Clear selection
+    ctx.pushUndoSnapshot(snapshot);
     ctx.state.setInstance(null);
+    ctx.state.setLabeledFrame(current.instances.length > 0 ? current : null);
     ctx.state.markChanged();
   },
 };

@@ -99,7 +99,6 @@ order and visibility. See [Panels](panels.md).
 | Inference / Run Prediction… | [Inference](../guides/inference.md) |
 | Export Labels Package… | A self-contained `.pkg.slp` with frame images embedded — user-labeled frames, + suggestions, or all labeled frames. For training elsewhere |
 | Export Model to ONNX/TensorRT… | Desktop only — [Inference](../guides/inference.md#exporting-a-model) |
-| Import Predictions… | Not yet implemented — it shows a notice. Load predictions with **File ▸ Open Project…** or **File ▸ Merge into Project…** |
 | Evaluation Metrics for Trained Models… | Accuracy metrics per model |
 | Set Overlay Models… | Pick the trained models whose outputs to overlay. The overlay runs `sleap-nn` locally, so it needs the desktop app |
 | Visualize Model Outputs | Checkbox — confidence maps, PAFs, class maps. Disabled until overlay models are set |

@@ -8,9 +8,17 @@
  * {@link ConflictReview}) seeded by a global default, then merges via
  * {@link MergeConflictsCommand} (undoable). A clean merge (no conflicts) just
  * combines the two. See memory `project_merge_into_project_design`.
+ *
+ * Several files at once, as legacy SLEAP's MergeProject does (its "import
+ * predictions" action, sleap/gui/commands.py): the picker takes any number of
+ * `.slp` files, and they are previewed and merged ONE AT A TIME in the order
+ * picked. Each file gets its own preview and conflict review, and each merge is
+ * its own undo step. Legacy shows a separate MergeDialog per file, and closing
+ * one moves on to the next file; here Skip (or closing the dialog) does the
+ * same, so every file is either merged or explicitly skipped.
  */
 
-import { useState, useCallback, useMemo, useEffect } from "react";
+import { useState, useCallback, useMemo, useEffect, useRef } from "react";
 import type { Labels } from "@talmolab/sleap-io.js";
 import { useAppStore } from "../../stores/appStore";
 import { commandContext } from "../../commands/CommandContext";
@@ -46,6 +54,20 @@ import {
 
 const errMsg = (e: unknown) => (e instanceof Error ? e.message : String(e));
 
+/** A file to merge: a path on desktop, a File in the browser. */
+export type MergeSource = string | File;
+
+const sourceName = (source: MergeSource) =>
+  typeof source === "string" ? source.split(/[\\/]/).pop() ?? source : source.name;
+
+/** The picker's result as a list: one file, several, or none (canceled). */
+export function pickedSources(
+  result: string | string[] | File | File[] | null | undefined
+): MergeSource[] {
+  if (!result) return [];
+  return Array.isArray(result) ? [...result] : [result];
+}
+
 export function MergeProjectDialog() {
   const open = useAppStore((s) => s.mergeProjectDialogOpen);
   const setOpen = useAppStore((s) => s.setMergeProjectDialogOpen);
@@ -59,8 +81,18 @@ export function MergeProjectDialog() {
   const [choices, setChoices] = useState<Record<string, ConflictChoice>>({});
   const [busy, setBusy] = useState<null | "loading" | "merging">(null);
   const [error, setError] = useState<string | null>(null);
+  // The files picked together, merged one at a time; `queuePos` is the one
+  // shown now. A single pick (or a dropped file) is a queue of one.
+  const [queue, setQueue] = useState<MergeSource[]>([]);
+  const [queuePos, setQueuePos] = useState(0);
+  // Bumped whenever the file shown changes or the dialog resets, so a load
+  // that finishes after you skipped past it (or closed) is ignored instead of
+  // replacing the preview of the file now shown.
+  const loadSeq = useRef(0);
 
-  const reset = useCallback(() => {
+  /** Clear everything about the file being shown (not the queue). */
+  const resetFile = useCallback(() => {
+    loadSeq.current++;
     setDonor(null);
     setDonorName("");
     setPreview(null);
@@ -71,50 +103,90 @@ export function MergeProjectDialog() {
     setError(null);
   }, []);
 
-  const handleOpenChange = useCallback(
-    (o: boolean) => {
-      if (!o) reset();
-      setOpen(o);
-    },
-    [reset, setOpen]
-  );
+  const reset = useCallback(() => {
+    resetFile();
+    setQueue([]);
+    setQueuePos(0);
+  }, [resetFile]);
 
   // Load a donor .slp (by path or File) and compute the non-mutating preview.
   // Shared by the file picker and the drop-seeded open.
   const previewDonor = useCallback(
-    async (source: string | File) => {
+    async (source: MergeSource) => {
       if (!labels) return;
-      setError(null);
+      resetFile();
+      const seq = loadSeq.current;
+      const stale = () => seq !== loadSeq.current;
+      // Name the file before reading it, so a file that fails to load still
+      // says which one it was (and can be skipped).
+      setDonorName(sourceName(source));
       setBusy("loading");
-      setDonor(null);
-      setPreview(null);
-      setConflicts([]);
-      setChoices({});
       try {
         const platform = await getPlatform();
         const donorLabels =
           typeof source === "string"
             ? await loadLabelsFromSlpPath(source, platform.readFile)
             : await loadLabelsFromSlpFile(source);
-        const name =
-          typeof source === "string" ? source.split(/[\\/]/).pop() ?? source : source.name;
         // Same matchers as the merge, so the preview reflects what will happen.
         const match = await labels.match(donorLabels, MERGE_INTO_PROJECT_MATCHERS);
+        if (stale()) return;
         const previewSummary = summarizeMatch(match);
         setDonor(donorLabels);
-        setDonorName(name);
         setPreview(previewSummary);
         // Enumerate real per-instance conflicts (only meaningful if not blocked).
         if (!previewSummary.skeletonBlocked) {
-          setConflicts(await enumerateConflicts(labels, donorLabels));
+          const found = await enumerateConflicts(labels, donorLabels);
+          if (stale()) return;
+          setConflicts(found);
         }
       } catch (e) {
-        setError(errMsg(e));
+        if (!stale()) setError(errMsg(e));
       } finally {
-        setBusy(null);
+        if (!stale()) setBusy(null);
       }
     },
-    [labels]
+    [labels, resetFile]
+  );
+
+  /** Start a new queue and show its first file. */
+  const startQueue = useCallback(
+    async (sources: MergeSource[]) => {
+      if (sources.length === 0) return;
+      setQueue(sources);
+      setQueuePos(0);
+      await previewDonor(sources[0]);
+    },
+    [previewDonor]
+  );
+
+  /**
+   * Done with the file shown (merged or skipped): show the next one, or close
+   * when it was the last, like legacy's per-file MergeDialog loop.
+   */
+  const advance = useCallback(async () => {
+    const next = queuePos + 1;
+    if (next < queue.length) {
+      setQueuePos(next);
+      await previewDonor(queue[next]);
+    } else {
+      reset();
+      setOpen(false);
+    }
+  }, [queue, queuePos, previewDonor, reset, setOpen]);
+
+  const handleOpenChange = useCallback(
+    (o: boolean) => {
+      if (o) {
+        setOpen(true);
+        return;
+      }
+      // Never abandon a merge that's being applied.
+      if (busy === "merging") return;
+      // Closing skips to the next picked file, as closing one of legacy's
+      // per-file merge dialogs did; on the last (or only) file it closes.
+      void advance();
+    },
+    [busy, advance, setOpen]
   );
 
   const pickAndPreview = useCallback(async () => {
@@ -124,15 +196,17 @@ export function MergeProjectDialog() {
     let result: string | string[] | File | File[] | null;
     try {
       result = await platform.showOpenDialog({
+        multiple: true,
         filters: [{ name: "SLEAP Labels", extensions: ["slp"] }],
       });
     } catch (e) {
       setError(errMsg(e));
       return;
     }
-    if (!result || Array.isArray(result)) return; // canceled
-    await previewDonor(result);
-  }, [labels, previewDonor]);
+    const sources = pickedSources(result);
+    if (sources.length === 0) return; // canceled: keep whatever is shown
+    await startQueue(sources);
+  }, [labels, startQueue]);
 
   // Seeded open: an .slp drop routed here with a path → auto-load + preview it.
   const seedPath = useAppStore((s) => s.mergeProjectSeedPath);
@@ -141,9 +215,9 @@ export function MergeProjectDialog() {
     if (open && seedPath) {
       const p = seedPath;
       setSeedPath(null);
-      void previewDonor(p);
+      void startQueue([p]);
     }
-  }, [open, seedPath, setSeedPath, previewDonor]);
+  }, [open, seedPath, setSeedPath, startQueue]);
 
   const handleMerge = useCallback(async () => {
     if (!donor) return;
@@ -157,14 +231,17 @@ export function MergeProjectDialog() {
         other: donor,
         resolutions,
       });
-      handleOpenChange(false);
+      setBusy(null);
+      await advance();
     } catch (e) {
       setError(errMsg(e));
       setBusy(null);
     }
-  }, [donor, conflicts, choices, defaultChoice, handleOpenChange]);
+  }, [donor, conflicts, choices, defaultChoice, advance]);
 
   const blocked = preview?.skeletonBlocked ?? false;
+  const multi = queue.length > 1;
+  const isLast = queuePos >= queue.length - 1;
   const canMerge = !!donor && !blocked && busy === null;
   const hasConflicts = conflicts.length > 0;
   const stats = useMemo(
@@ -178,8 +255,8 @@ export function MergeProjectDialog() {
         <DialogHeader>
           <DialogTitle>Merge into Project</DialogTitle>
           <DialogDescription>
-            Merge another SLEAP <code>.slp</code> into the current project. Nothing
-            changes until you click Merge.
+            Merge other SLEAP <code>.slp</code> files into the current project, one
+            at a time. Nothing changes until you click Merge.
           </DialogDescription>
         </DialogHeader>
 
@@ -191,8 +268,16 @@ export function MergeProjectDialog() {
             onClick={pickAndPreview}
             disabled={busy !== null}
           >
-            {donorName ? "Choose a different file…" : "Choose .slp…"}
+            {donorName ? "Choose different files…" : "Choose .slp files…"}
           </Button>
+          {multi && (
+            <span
+              className="shrink-0 text-sm font-medium tabular-nums"
+              data-testid="merge-queue-position"
+            >
+              File {queuePos + 1} of {queue.length}
+            </span>
+          )}
           {donorName && (
             <span
               className="min-w-0 flex-1 truncate text-sm text-muted-foreground"
@@ -207,7 +292,11 @@ export function MergeProjectDialog() {
           <p className="text-sm text-muted-foreground">Reading, matching & finding conflicts…</p>
         )}
 
-        {error && <p className="text-sm text-red-600 dark:text-red-400">{error}</p>}
+        {error && (
+          <p className="text-sm text-red-600 dark:text-red-400" data-testid="merge-load-error">
+            {error}
+          </p>
+        )}
 
         {preview && (
           <>
@@ -267,7 +356,7 @@ export function MergeProjectDialog() {
 
         <DialogFooter>
           <Button variant="ghost" onClick={() => handleOpenChange(false)} disabled={busy === "merging"}>
-            Cancel
+            {multi && !isLast ? "Skip this file" : multi ? "Skip and close" : "Cancel"}
           </Button>
           <TooltipProvider delayDuration={200}>
             <Tooltip>

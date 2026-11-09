@@ -277,7 +277,7 @@ export function useKeyboardShortcuts() {
       },
       [DEFAULT_SHORTCUTS["delete track"]]: async (e) => {
         e.preventDefault();
-        if (await confirmDeleteInstanceAndTrack()) {
+        if (await confirmDeleteInstanceAndTrack(commandContext.state)) {
           commandContext.execute(DeleteInstanceAndTrack);
         }
       },

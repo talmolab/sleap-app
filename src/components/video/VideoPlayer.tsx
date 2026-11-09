@@ -71,6 +71,12 @@ import { nodesCrossedBySegment } from "@/lib/skeletonPenChain";
 import { isValidEdgeSelection } from "@/lib/skeletonEdgeEditing";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipProvider,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
 import { toImageCoords, toSourceCoords } from "@/lib/cropTransform";
 import { shouldPrefetch, shouldDecodeAhead } from "@/lib/videoPrefetch";
@@ -3458,71 +3464,100 @@ export function VideoPlayer() {
             frame counter lives in the status bar only (was previously
             duplicated here and beside the seekbar). */}
         <div className="absolute bottom-2 left-2 z-20 flex items-center gap-1.5">
-          {/* Node-name label toggle (leftmost). Flips `showLabels` (the same
-              View → Show Labels state), so node names show/hide next to the
-              keypoints. Dimmed when off. Press T to toggle (see shortcuts). */}
-          <Button
-            variant="secondary"
-            size="icon-xs"
-            className={cn(
-              "pointer-events-auto rounded-md bg-black/60 border-none hover:bg-black/70 hover:text-white",
-              showLabels ? "text-white" : "text-white/40",
-            )}
-            title={showLabels ? "Hide node names (T)" : "Show node names (T)"}
-            aria-label="Toggle node name labels"
-            aria-pressed={showLabels}
-            onClick={() => useAppStore.getState().toggle("showLabels")}
-          >
-            <Tag />
-          </Button>
-          {/* Magnifier toggle. Flips `showInset` (the same View → Magnifier
-              When Moving Nodes state). Dimmed when off. */}
-          <Button
-            variant="secondary"
-            size="icon-xs"
-            className={cn(
-              "pointer-events-auto rounded-md bg-black/60 border-none hover:bg-black/70 hover:text-white",
-              showInset ? "text-white" : "text-white/40",
-            )}
-            title={showInset ? "Hide magnifier" : "Show magnifier"}
-            aria-label="Toggle magnifier"
-            aria-pressed={showInset}
-            onClick={() => useAppStore.getState().toggle("showInset")}
-          >
-            <ZoomIn />
-          </Button>
-          {/* Pan vs. Select interaction-mode toggle. Sits immediately left of
-              Reset view so this commonly-used control is visible on the canvas.
-              Press P to toggle (see shortcuts). */}
-          <Button
-            variant="secondary"
-            size="icon-xs"
-            className="pointer-events-auto rounded-md bg-black/60 text-white/80 border-none hover:bg-black/70 hover:text-white"
-            title={
-              defaultToPan
-                ? "Pan mode (P to switch to Select)"
-                : "Select mode (P to switch to Pan)"
-            }
-            aria-label={
-              defaultToPan
-                ? "Pan mode (P to switch to Select)"
-                : "Select mode (P to switch to Pan)"
-            }
-            aria-pressed={defaultToPan}
-            onClick={() => useAppStore.getState().toggle("defaultToPan")}
-          >
-            {defaultToPan ? <Hand /> : <MousePointer2 />}
-          </Button>
-          <Button
-            variant="secondary"
-            size="icon-xs"
-            className="pointer-events-auto rounded-md bg-black/60 text-white/80 border-none hover:bg-black/70 hover:text-white"
-            title="Reset view (R)"
-            aria-label="Reset view (R)"
-            onClick={() => useAppStore.getState().resetView()}
-          >
-            <Frame />
-          </Button>
+          {/* These use the Radix Tooltip, not a `title` attribute: native
+              title tooltips don't reliably render in the Tauri desktop
+              WebView, so the buttons showed no hint there. */}
+          <TooltipProvider delayDuration={300}>
+            {/* Node-name label toggle (leftmost). Flips `showLabels` (the same
+                View → Show Labels state), so node names show/hide next to the
+                keypoints. Dimmed when off. Press T to toggle (see shortcuts). */}
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Button
+                  variant="secondary"
+                  size="icon-xs"
+                  className={cn(
+                    "pointer-events-auto rounded-md bg-black/60 border-none hover:bg-black/70 hover:text-white",
+                    showLabels ? "text-white" : "text-white/40",
+                  )}
+                  aria-label="Toggle node name labels"
+                  aria-pressed={showLabels}
+                  onClick={() => useAppStore.getState().toggle("showLabels")}
+                >
+                  <Tag />
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent side="top">
+                <p>{showLabels ? "Hide node names (T)" : "Show node names (T)"}</p>
+              </TooltipContent>
+            </Tooltip>
+            {/* Magnifier toggle. Flips `showInset` (the same View → Magnifier
+                When Moving Nodes state). Dimmed when off. */}
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Button
+                  variant="secondary"
+                  size="icon-xs"
+                  className={cn(
+                    "pointer-events-auto rounded-md bg-black/60 border-none hover:bg-black/70 hover:text-white",
+                    showInset ? "text-white" : "text-white/40",
+                  )}
+                  aria-label="Toggle magnifier"
+                  aria-pressed={showInset}
+                  onClick={() => useAppStore.getState().toggle("showInset")}
+                >
+                  <ZoomIn />
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent side="top">
+                <p>{showInset ? "Hide magnifier" : "Show magnifier"}</p>
+              </TooltipContent>
+            </Tooltip>
+            {/* Pan vs. Select interaction-mode toggle. Sits immediately left of
+                Reset view so this commonly-used control is visible on the canvas.
+                Press P to toggle (see shortcuts). */}
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Button
+                  variant="secondary"
+                  size="icon-xs"
+                  className="pointer-events-auto rounded-md bg-black/60 text-white/80 border-none hover:bg-black/70 hover:text-white"
+                  aria-label={
+                    defaultToPan
+                      ? "Pan mode (P to switch to Select)"
+                      : "Select mode (P to switch to Pan)"
+                  }
+                  aria-pressed={defaultToPan}
+                  onClick={() => useAppStore.getState().toggle("defaultToPan")}
+                >
+                  {defaultToPan ? <Hand /> : <MousePointer2 />}
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent side="top">
+                <p>
+                  {defaultToPan
+                    ? "Pan mode: dragging moves the view. Hold Space to select points; press P to switch."
+                    : "Select mode: click and drag points. Hold Space to pan; press P to switch."}
+                </p>
+              </TooltipContent>
+            </Tooltip>
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Button
+                  variant="secondary"
+                  size="icon-xs"
+                  className="pointer-events-auto rounded-md bg-black/60 text-white/80 border-none hover:bg-black/70 hover:text-white"
+                  aria-label="Reset view (R)"
+                  onClick={() => useAppStore.getState().resetView()}
+                >
+                  <Frame />
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent side="top">
+                <p>Reset zoom and pan (R)</p>
+              </TooltipContent>
+            </Tooltip>
+          </TooltipProvider>
           {zoom !== 1 && (
             <Badge
               variant="secondary"

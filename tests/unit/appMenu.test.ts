@@ -79,6 +79,19 @@ describe("buildAppMenu", () => {
     ]);
   });
 
+  it("imports predictions through File ▸ Merge into Project, as legacy SLEAP does (no Predict item)", () => {
+    // Legacy's "import predictions" action IS File ▸ Merge into Project...
+    // (sleap/gui/app.py); its Predict menu has no import item. sleap-app used
+    // to show a Predict ▸ Import Predictions... stub that only said "not yet
+    // implemented" (audit bug B11).
+    const menu = buildAppMenu(BASE);
+    const labels = all(menu).map((n) => ("label" in n ? n.label : ""));
+    expect(labels.some((l) => /import predictions/i.test(l))).toBe(false);
+    expect(find(menu, "predict.importPredictions")).toBeUndefined();
+    expect(top(menu, "file").items.map((n) => ("id" in n ? n.id : n.kind))).toContain("file.merge");
+    expect(find(menu, "file.merge")).toMatchObject({ label: "Merge into Project..." });
+  });
+
   it("has Panels under View, the clipboard and undo under Labels, Connect under Predict", () => {
     const menu = buildAppMenu(BASE);
     expect(find(menu, "view.panels")).toMatchObject({ kind: "submenu", label: "Panels" });
