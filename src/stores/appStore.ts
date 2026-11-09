@@ -229,6 +229,8 @@ export interface AppState {
   palette: string;
   distinctlyColor: ColorTarget;
   markerSize: number;
+  /** Node and edge opacity in percent (10-100); labels stay opaque. Persisted. */
+  poseOpacity: number;
   nodeLabelSize: number;
   insetSize: number;
   insetZoom: number;
@@ -715,6 +717,7 @@ export const PERSISTED_KEYS: (keyof AppState)[] = [
   "palette",
   "edgeStyle",
   "markerSize",
+  "poseOpacity",
   "nodeLabelSize",
   "showLabels",
   "showEdges",
@@ -833,6 +836,7 @@ export const useAppStore = create<AppState>()(
       palette: "standard",
       distinctlyColor: "auto" as ColorTarget,
       markerSize: 4,
+      poseOpacity: 100,
       nodeLabelSize: 12,
       insetSize: 400,
       insetZoom: 2,

@@ -5,10 +5,24 @@
 
 ## The preview
 
-Click **Choose .slp…** and pick the file to merge in. Before anything changes,
-the app matches the two projects and shows a preview: how many **Videos** and
-**Tracks** match or are new, and whether the **Skeleton** matches. Nothing is
-applied until you click **Merge**.
+Click **Choose .slp files…** and pick the file to merge in. Before anything
+changes, the app matches the two projects and shows a preview: how many
+**Videos** and **Tracks** match or are new, and whether the **Skeleton** matches.
+Nothing is applied until you click **Merge**.
+
+## Merging several files
+
+You can pick several `.slp` files at once, for example prediction files from a
+few inference runs. They're merged **one at a time**, in the order you picked
+them, and the dialog shows **File 2 of 3** and so on. Each file gets its own
+preview and conflict review:
+
+- **Merge** applies that file and moves on to the next.
+- **Skip this file** (or closing the dialog) leaves it out and moves on.
+- After the last file, the dialog closes.
+
+Each merged file is its own undo step. A file that can't be read, or whose
+skeleton differs, can only be skipped; the others still merge.
 
 Videos are matched by **basename** and tracks by **name**, so two projects
 labeling the same videos line up even if the files sit at different paths.

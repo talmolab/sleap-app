@@ -42,7 +42,7 @@ describe("skeletonTemplates", () => {
     }
   });
 
-  it("offers legacy SLEAP's templates, each with an image, then a blank one", () => {
+  it("offers legacy SLEAP's templates, then the human one, each with an image, then a blank one", () => {
     expect([...TEMPLATE_ORDER]).toEqual([
       "bees",
       "flies13",
@@ -50,6 +50,7 @@ describe("skeletonTemplates", () => {
       "gerbils",
       "mice_hc",
       "mice_of",
+      "human_coco",
       "custom",
     ]);
     for (const id of TEMPLATE_ORDER) {
@@ -83,6 +84,32 @@ describe("skeletonTemplates", () => {
       expect(SKELETON_TEMPLATES.custom.edges.length).toBe(0);
     });
 
+    it("human template is COCO's 17 keypoints and 19 limbs, in COCO's order", () => {
+      const human = SKELETON_TEMPLATES.human_coco;
+      expect(human.nodes).toEqual([
+        "nose", "left_eye", "right_eye", "left_ear", "right_ear",
+        "left_shoulder", "right_shoulder", "left_elbow", "right_elbow",
+        "left_wrist", "right_wrist", "left_hip", "right_hip",
+        "left_knee", "right_knee", "left_ankle", "right_ankle",
+      ]);
+      // COCO's skeleton, 1-indexed as in its annotation files. Same limbs,
+      // regardless of the direction each edge points.
+      const coco = [
+        [16, 14], [14, 12], [17, 15], [15, 13], [12, 13], [6, 12], [7, 13],
+        [6, 7], [6, 8], [7, 9], [8, 10], [9, 11], [2, 3], [1, 2], [1, 3],
+        [2, 4], [3, 5], [4, 6], [5, 7],
+      ];
+      const key = (a: number, b: number) => `${Math.min(a, b)}-${Math.max(a, b)}`;
+      expect(new Set(human.edges.map(([a, b]) => key(a, b)))).toEqual(
+        new Set(coco.map(([a, b]) => key(a - 1, b - 1)))
+      );
+      expect(human.edges).toHaveLength(19);
+      // Every left/right pair, and each pairs a left_ node with its right_ twin.
+      expect(human.symmetries).toHaveLength(8);
+      for (const [l, r] of human.symmetries!) {
+        expect(human.nodes[r]).toBe(human.nodes[l].replace("left_", "right_"));
+      }
+    });
   });
 
   it("edges are valid index pairs", () => {
@@ -142,7 +169,7 @@ describe("skeletonTemplates", () => {
   it("every preview image a template names is in public/skeleton-templates", () => {
     const dir = join(import.meta.dir, "../../public/skeleton-templates");
     const named = Object.values(SKELETON_TEMPLATES).filter((t) => t.previewImage);
-    expect(named.length).toBe(6);
+    expect(named.length).toBe(7);
     for (const t of named) {
       expect(existsSync(join(dir, t.previewImage!))).toBe(true);
     }
@@ -151,10 +178,11 @@ describe("skeletonTemplates", () => {
   it("every reference-dataset template has its example figure and a description", () => {
     const dir = join(import.meta.dir, "../../public/skeleton-templates");
     const withDataset = Object.values(SKELETON_TEMPLATES).filter((t) => t.dataset);
-    // The same six that carry legacy SLEAP's preview images.
+    // The six legacy SLEAP reference-dataset templates; the human one has a
+    // preview but no reference dataset.
     expect(withDataset.map((t) => t.name)).toEqual(
       Object.values(SKELETON_TEMPLATES)
-        .filter((t) => t.previewImage)
+        .filter((t) => t.previewImage && t !== SKELETON_TEMPLATES.human_coco)
         .map((t) => t.name)
     );
     for (const t of withDataset) {

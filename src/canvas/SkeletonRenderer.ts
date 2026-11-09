@@ -72,6 +72,8 @@ export interface RenderOptions {
   colorPredicted: boolean;
   /** Append the ` (0.81)` prediction score to track labels. Default off (#316). */
   showTrackScore: boolean;
+  /** Opacity (0-1) of nodes and edges, on top of their own styling; labels stay opaque (#278). Default 1. */
+  poseOpacity?: number;
   zoom: number;
 }
 
@@ -85,6 +87,7 @@ const DEFAULT_OPTIONS: RenderOptions = {
   showNonVisibleNodes: true,
   colorPredicted: false,
   showTrackScore: false,
+  poseOpacity: 1,
   zoom: 1,
 };
 
@@ -145,6 +148,11 @@ function renderInstance(
 ): void {
   const { nodes, edges, color, isPredicted, isSelected } = instance;
 
+  // Edges and nodes take the user's pose opacity; labels and the selection
+  // box are drawn after the restore, so they stay readable.
+  ctx.save();
+  ctx.globalAlpha *= opts.poseOpacity ?? 1;
+
   // Draw edges first (behind nodes)
   if (opts.showEdges) {
     edges.forEach((edge, edgeIdx) => {
@@ -170,6 +178,7 @@ function renderInstance(
     const nodeColor = instance.nodeColors?.[nIdx] ?? color;
     renderNode(ctx, node, nodeColor, isPredicted, opts);
   });
+  ctx.restore();
 
   // Draw node labels (skip for predicted unless colorPredicted is on)
   if (opts.showLabels && (!isPredicted || opts.colorPredicted)) {

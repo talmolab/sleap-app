@@ -72,6 +72,7 @@ const FRAME_LEVEL_COMMANDS: ReadonlySet<string> = new Set([
   "ToggleNegativeFrame",
   "RotateInstance",
   "BeginEdit",
+  "ToggleNodeVisibility",
   "AddInstancesFromAllPredictions",
   // Track REASSIGNMENT (not track-set changes): these only rewrite `.track` on
   // existing instances in one frame / one scoped range — captured in the frame

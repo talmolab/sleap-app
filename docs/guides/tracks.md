@@ -107,7 +107,7 @@ new track is reassigned on every later frame, joining the two. Then run
 
 | Action | Effect |
 |---|---|
-| **Delete Instance and Track** (++cmd+shift+backspace++) | Removes the instance and its track |
+| **Delete Instance and Track** (++cmd+shift+backspace++) | Removes the selected instance and every other instance on its track in the current video. The track stays in the project, and other videos are untouched. |
 | **Delete Track ▸ …** | Removes one track from the project |
 | **Delete Unused Tracks** | Removes tracks with no instances left on them |
 | **Delete All Tracks** | Clears every track assignment |

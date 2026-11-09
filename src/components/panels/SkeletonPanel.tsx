@@ -132,10 +132,7 @@ function TemplatePreview({
           {template.description}
         </div>
         {template.nodes.length > 0 && (
-          <div
-            className="line-clamp-3 text-[10px] leading-snug text-muted-foreground"
-            title={template.nodes.join(", ")}
-          >
+          <div className="text-[10px] leading-snug text-muted-foreground">
             <span className="font-medium text-foreground">
               {template.nodes.length} nodes, {template.edges.length} edges:
             </span>{" "}

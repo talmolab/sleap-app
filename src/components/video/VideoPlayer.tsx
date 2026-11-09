@@ -56,6 +56,7 @@ import {
   commandContext,
   ConvertPredictionToInstance,
   BeginEdit,
+  ToggleNodeVisibility,
   DeletePredictionsByArea,
   DuplicateInstance,
   AddNodeCommand,
@@ -70,6 +71,12 @@ import { nodesCrossedBySegment } from "@/lib/skeletonPenChain";
 import { isValidEdgeSelection } from "@/lib/skeletonEdgeEditing";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipProvider,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
 import { toImageCoords, toSourceCoords } from "@/lib/cropTransform";
 import { shouldPrefetch, shouldDecodeAhead } from "@/lib/videoPrefetch";
@@ -99,7 +106,7 @@ import { setLabelsAutosaveInteracting } from "@/lib/labelsAutosave";
 import { spacePanState } from "@/lib/spacePanTracking";
 import { getPlatform, isTauri } from "@/platform/index";
 import { spawnOverlayServe, killOverlayServe, detectGpu } from "@/platform/backend";
-import { Film, Frame, Hand, ImageOff, MousePointer2, Tag } from "lucide-react";
+import { Film, Frame, Hand, ImageOff, MousePointer2, Tag, ZoomIn } from "lucide-react";
 
 /**
  * First unused `node_${k}` name (k = 0, 1, 2, …) for a fresh builder node, so
@@ -147,6 +154,7 @@ export function VideoPlayer() {
   const fit = useAppStore((s) => s.fit);
   const edgeStyle = useAppStore((s) => s.edgeStyle);
   const markerSize = useAppStore((s) => s.markerSize);
+  const poseOpacity = useAppStore((s) => s.poseOpacity);
   const nodeLabelSize = useAppStore((s) => s.nodeLabelSize);
   const palette = useAppStore((s) => s.palette);
   const trackColorOverrides = useAppStore((s) =>
@@ -543,33 +551,15 @@ export function VideoPlayer() {
       if (selectedNodes.size > 0) {
         // Toggle selected nodes
         e.preventDefault();
-        commandContext.execute(BeginEdit);
-        let visibleCount = 0;
-        for (const key of selectedNodes) {
-          const { instanceIdx, nodeIdx } = parseNodeKey(key);
-          const point = lf.instances[instanceIdx]?.points[nodeIdx];
-          if (point?.visible) visibleCount++;
-        }
-        const makeVisible = visibleCount <= selectedNodes.size / 2;
-        for (const key of selectedNodes) {
-          const { instanceIdx, nodeIdx } = parseNodeKey(key);
-          const point = lf.instances[instanceIdx]?.points[nodeIdx];
-          if (point) point.visible = makeVisible;
-        }
-        useAppStore.getState().markChanged();
-        useAppStore.getState().touchFrame();
-        useAppStore.getState().bumpOverlayVersion();
+        commandContext.execute(ToggleNodeVisibility, {
+          nodes: [...selectedNodes].map(parseNodeKey),
+        });
       } else if (hoveredNode) {
         // Toggle hovered node
         e.preventDefault();
-        commandContext.execute(BeginEdit);
-        const point = lf.instances[hoveredNode.instanceIdx]?.points[hoveredNode.nodeIdx];
-        if (point) {
-          point.visible = !point.visible;
-          useAppStore.getState().markChanged();
-          useAppStore.getState().touchFrame();
-          useAppStore.getState().bumpOverlayVersion();
-        }
+        commandContext.execute(ToggleNodeVisibility, {
+          nodes: [{ instanceIdx: hoveredNode.instanceIdx, nodeIdx: hoveredNode.nodeIdx }],
+        });
       }
     };
     window.addEventListener("keydown", handler);
@@ -1492,6 +1482,7 @@ export function VideoPlayer() {
         showNonVisibleNodes: true,
         colorPredicted: false,
         showTrackScore: false,
+        poseOpacity: 1,
         zoom: baseScale * zoom,
       };
       renderInstances(ctx, [ri], bOpts);
@@ -1556,6 +1547,7 @@ export function VideoPlayer() {
 
     const renderOpts = {
       markerSize,
+      poseOpacity: poseOpacity / 100,
       nodeLabelSize,
       edgeStyle,
       showInstances,
@@ -1668,6 +1660,7 @@ export function VideoPlayer() {
     showTrackScore,
     edgeStyle,
     markerSize,
+    poseOpacity,
     nodeLabelSize,
     palette,
     trackColorOverrides,
@@ -3170,13 +3163,10 @@ export function VideoPlayer() {
         const nodeKey = makeNodeKey(nodeHit.instanceIdx, nodeHit.nodeIdx);
         const isMultiSelected = selectedNodes.size > 1 && selectedNodes.has(nodeKey);
         if (inst && !(inst instanceof PredictedInstance) && !isMultiSelected) {
-          const point = inst.points[nodeHit.nodeIdx];
-          if (point) {
-            commandContext.execute(BeginEdit);
-            point.visible = !point.visible;
-            useAppStore.getState().markChanged();
-            useAppStore.getState().touchFrame();
-            useAppStore.getState().bumpOverlayVersion();
+          if (inst.points[nodeHit.nodeIdx]) {
+            commandContext.execute(ToggleNodeVisibility, {
+              nodes: [{ instanceIdx: nodeHit.instanceIdx, nodeIdx: nodeHit.nodeIdx }],
+            });
           }
           return;
         }
@@ -3474,55 +3464,100 @@ export function VideoPlayer() {
             frame counter lives in the status bar only (was previously
             duplicated here and beside the seekbar). */}
         <div className="absolute bottom-2 left-2 z-20 flex items-center gap-1.5">
-          {/* Node-name label toggle (leftmost). Flips `showLabels` (the same
-              View → Show Labels state), so node names show/hide next to the
-              keypoints. Dimmed when off. Press T to toggle (see shortcuts). */}
-          <Button
-            variant="secondary"
-            size="icon-xs"
-            className={cn(
-              "pointer-events-auto rounded-md bg-black/60 border-none hover:bg-black/70 hover:text-white",
-              showLabels ? "text-white" : "text-white/40",
-            )}
-            title={showLabels ? "Hide node names (T)" : "Show node names (T)"}
-            aria-label="Toggle node name labels"
-            aria-pressed={showLabels}
-            onClick={() => useAppStore.getState().toggle("showLabels")}
-          >
-            <Tag />
-          </Button>
-          {/* Pan vs. Select interaction-mode toggle. Sits immediately left of
-              Reset view so this commonly-used control is visible on the canvas.
-              Press P to toggle (see shortcuts). */}
-          <Button
-            variant="secondary"
-            size="icon-xs"
-            className="pointer-events-auto rounded-md bg-black/60 text-white/80 border-none hover:bg-black/70 hover:text-white"
-            title={
-              defaultToPan
-                ? "Pan mode (P to switch to Select)"
-                : "Select mode (P to switch to Pan)"
-            }
-            aria-label={
-              defaultToPan
-                ? "Pan mode (P to switch to Select)"
-                : "Select mode (P to switch to Pan)"
-            }
-            aria-pressed={defaultToPan}
-            onClick={() => useAppStore.getState().toggle("defaultToPan")}
-          >
-            {defaultToPan ? <Hand /> : <MousePointer2 />}
-          </Button>
-          <Button
-            variant="secondary"
-            size="icon-xs"
-            className="pointer-events-auto rounded-md bg-black/60 text-white/80 border-none hover:bg-black/70 hover:text-white"
-            title="Reset view (R)"
-            aria-label="Reset view (R)"
-            onClick={() => useAppStore.getState().resetView()}
-          >
-            <Frame />
-          </Button>
+          {/* These use the Radix Tooltip, not a `title` attribute: native
+              title tooltips don't reliably render in the Tauri desktop
+              WebView, so the buttons showed no hint there. */}
+          <TooltipProvider delayDuration={300}>
+            {/* Node-name label toggle (leftmost). Flips `showLabels` (the same
+                View → Show Labels state), so node names show/hide next to the
+                keypoints. Dimmed when off. Press T to toggle (see shortcuts). */}
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Button
+                  variant="secondary"
+                  size="icon-xs"
+                  className={cn(
+                    "pointer-events-auto rounded-md bg-black/60 border-none hover:bg-black/70 hover:text-white",
+                    showLabels ? "text-white" : "text-white/40",
+                  )}
+                  aria-label="Toggle node name labels"
+                  aria-pressed={showLabels}
+                  onClick={() => useAppStore.getState().toggle("showLabels")}
+                >
+                  <Tag />
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent side="top">
+                <p>{showLabels ? "Hide node names (T)" : "Show node names (T)"}</p>
+              </TooltipContent>
+            </Tooltip>
+            {/* Magnifier toggle. Flips `showInset` (the same View → Magnifier
+                When Moving Nodes state). Dimmed when off. */}
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Button
+                  variant="secondary"
+                  size="icon-xs"
+                  className={cn(
+                    "pointer-events-auto rounded-md bg-black/60 border-none hover:bg-black/70 hover:text-white",
+                    showInset ? "text-white" : "text-white/40",
+                  )}
+                  aria-label="Toggle magnifier"
+                  aria-pressed={showInset}
+                  onClick={() => useAppStore.getState().toggle("showInset")}
+                >
+                  <ZoomIn />
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent side="top">
+                <p>{showInset ? "Hide magnifier" : "Show magnifier"}</p>
+              </TooltipContent>
+            </Tooltip>
+            {/* Pan vs. Select interaction-mode toggle. Sits immediately left of
+                Reset view so this commonly-used control is visible on the canvas.
+                Press P to toggle (see shortcuts). */}
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Button
+                  variant="secondary"
+                  size="icon-xs"
+                  className="pointer-events-auto rounded-md bg-black/60 text-white/80 border-none hover:bg-black/70 hover:text-white"
+                  aria-label={
+                    defaultToPan
+                      ? "Pan mode (P to switch to Select)"
+                      : "Select mode (P to switch to Pan)"
+                  }
+                  aria-pressed={defaultToPan}
+                  onClick={() => useAppStore.getState().toggle("defaultToPan")}
+                >
+                  {defaultToPan ? <Hand /> : <MousePointer2 />}
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent side="top">
+                <p>
+                  {defaultToPan
+                    ? "Pan mode: dragging moves the view. Hold Space to select points; press P to switch."
+                    : "Select mode: click and drag points. Hold Space to pan; press P to switch."}
+                </p>
+              </TooltipContent>
+            </Tooltip>
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Button
+                  variant="secondary"
+                  size="icon-xs"
+                  className="pointer-events-auto rounded-md bg-black/60 text-white/80 border-none hover:bg-black/70 hover:text-white"
+                  aria-label="Reset view (R)"
+                  onClick={() => useAppStore.getState().resetView()}
+                >
+                  <Frame />
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent side="top">
+                <p>Reset zoom and pan (R)</p>
+              </TooltipContent>
+            </Tooltip>
+          </TooltipProvider>
           {zoom !== 1 && (
             <Badge
               variant="secondary"
@@ -3743,25 +3778,10 @@ export function VideoPlayer() {
           nodeIdx={contextMenu.nodeIdx}
           selectedNodes={selectedNodes}
           onToggleSelectedNodesVisibility={() => {
-            const lf = useAppStore.getState().labeledFrame;
-            if (!lf) return;
-            commandContext.execute(BeginEdit);
-            // Determine majority visibility to decide toggle direction
-            let visibleCount = 0;
-            for (const key of selectedNodes) {
-              const { instanceIdx, nodeIdx } = parseNodeKey(key);
-              const point = lf.instances[instanceIdx]?.points[nodeIdx];
-              if (point?.visible) visibleCount++;
-            }
-            const makeVisible = visibleCount <= selectedNodes.size / 2;
-            for (const key of selectedNodes) {
-              const { instanceIdx, nodeIdx } = parseNodeKey(key);
-              const point = lf.instances[instanceIdx]?.points[nodeIdx];
-              if (point) point.visible = makeVisible;
-            }
-            useAppStore.getState().markChanged();
-            useAppStore.getState().touchFrame();
-            useAppStore.getState().bumpOverlayVersion();
+            if (!useAppStore.getState().labeledFrame) return;
+            commandContext.execute(ToggleNodeVisibility, {
+              nodes: [...selectedNodes].map(parseNodeKey),
+            });
           }}
           onClose={() => setContextMenu(null)}
         />
