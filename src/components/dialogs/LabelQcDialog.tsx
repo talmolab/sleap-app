@@ -100,8 +100,9 @@ export function LabelQcDialog({ open, onOpenChange }: LabelQcDialogProps) {
   const [anomThreshold, setAnomThreshold] = useState(ANOMALY_THRESHOLD);
   const anomAbort = useRef<AbortController | null>(null);
 
-  // Reset when the dialog closes or the project changes (stale results must not
-  // linger); abort any in-flight anomaly run on close/unmount.
+  // Reset only when the project changes (stale results must not linger). Results
+  // survive closing the dialog, since clicking a row closes it to show the frame
+  // and the user comes back for the next one.
   useEffect(() => {
     setRulesState("idle");
     setFindings([]);
@@ -114,7 +115,13 @@ export function LabelQcDialog({ open, onOpenChange }: LabelQcDialogProps) {
       anomAbort.current?.abort();
       anomAbort.current = null;
     };
-  }, [open, labels]);
+  }, [labels]);
+
+  // Closing the dialog still cancels an in-flight anomaly run (runAnomalies'
+  // AbortError path puts it back to idle).
+  useEffect(() => {
+    if (!open) anomAbort.current?.abort();
+  }, [open]);
 
   // Flagged by either statistical check (anomaly ≥ the slider, or GMM ≥ its
   // fixed least-typical-5% threshold), worst first.
