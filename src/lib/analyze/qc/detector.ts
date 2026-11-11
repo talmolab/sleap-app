@@ -6,12 +6,12 @@
  * (`src/lib/qc/checks/detector.js`, itself a port of `sleap/qc/detector.py`), a
  * lab JS port of Python `sleap.qc` intended for integration into sleap-app.
  *
- * Phase 1 ports the ZScore anomaly path: {@link ZScoreDetector},
- * {@link cleanFeatureRow}, and {@link LabelQCDetector}'s feature assembly
- * (`fitFeatures`/`extractFeatures`/`scoreInstance`/`attributeCurvature`). The
- * GMM branch, frame-level checks (instance count / negative / duplicates),
- * chirality, chain-ordering, pose-split, and the io-coupled orchestrators
- * (`fitAndScoreLabels`/`buildContext`/units) are Phase 2. The profiling
+ * Ports the ZScore anomaly path ({@link ZScoreDetector}, {@link cleanFeatureRow},
+ * {@link LabelQCDetector}'s feature assembly: `fitFeatures`/`extractFeatures`/
+ * `scoreInstance`/`attributeCurvature`) and the GMM branch (`fitGmm`, with the
+ * mixture itself in gmm.ts, and `gmmWorstNode`). Frame-level checks, chirality,
+ * chain-ordering and pose-split are rule-based in labelQc.ts; the reference's
+ * io-coupled orchestrators are replaced by anomaly.ts. The profiling
  * instrumentation in the original `fitFeatures` is omitted (non-behavioral).
  */
 import { mean, std, visibilityMask, type Pose } from "./util";
@@ -25,6 +25,7 @@ import { computeCurvature, computeConvexHull, worstCurvatureVertex } from "./str
 import { VisibilityModel } from "./visibility";
 import { NearestNeighborScorer } from "./reference";
 import { SkeletonAnalyzer } from "./skeleton";
+import { GMMDetector } from "./gmm";
 
 /** The 6 V3 feature names, appended after the 12 baseline features. */
 export const V3_FEATURE_NAMES = [
@@ -113,6 +114,8 @@ export class LabelQCDetector {
   cleanMatrix!: number[][];
   fitRows!: number[];
   detector: ZScoreDetector | null;
+  /** Fitted when the GMM applies (see {@link gmmApplies}); scored alongside the ZScore. */
+  gmm: GMMDetector | null = null;
   private _hullStats!: { mean: number; std: number };
   /** node->neighbors adjacency; reused by the Phase-2 pose_split feature. */
   private _adjacency!: number[][];
@@ -124,9 +127,8 @@ export class LabelQCDetector {
   }
 
   /**
-   * Phase-1 fit: build the feature matrix, then fit the ZScore detector on the
-   * reference (fit) subset. (Phase 2 adds the GMM branch + frame-level count
-   * checker that the original `fit()` also wired up.)
+   * Build the feature matrix, then fit the ZScore detector and (with 50+
+   * reference poses) the GMM on the reference (fit) subset.
    */
   fit({
     instances,
@@ -138,7 +140,7 @@ export class LabelQCDetector {
     fitMask?: boolean[] | null;
   }): this {
     this.fitFeatures(instances, analyzer, fitMask);
-    return this.fitZScore();
+    return this.fitZScore().fitGmm();
   }
 
   /** Fit the ZScore detector on the reference (fit) rows. Requires a prior
@@ -147,6 +149,77 @@ export class LabelQCDetector {
     this.detector = new ZScoreDetector(3.0).fit(this.fitRawMatrix);
     this.usedGmm = false;
     return this;
+  }
+
+  /**
+   * Whether the GMM runs: enabled, and enough reference poses for a mixture to
+   * mean something (sleap.qc's `gmm_min_samples`, 50). Below that, ZScore only.
+   */
+  get gmmApplies(): boolean {
+    return this.config.useGmm && (this.fitRows?.length ?? 0) >= this.config.gmmMinSamples;
+  }
+
+  private _newGmm(): GMMDetector {
+    return new GMMDetector({
+      nComponents: this.config.gmmNComponents,
+      percentileThreshold: this.config.gmmPercentileThreshold,
+    });
+  }
+
+  /** Fit the GMM on the cleaned reference rows when it applies. Requires a prior fitFeatures. */
+  fitGmm(): this {
+    this.gmm = null;
+    this.usedGmm = false;
+    if (!this.gmmApplies) return this;
+    this.gmm = this._newGmm().fit(this.fitCleanMatrix);
+    this.usedGmm = true;
+    return this;
+  }
+
+  /**
+   * Async twin of {@link fitGmm}: yields to the event loop after every EM round
+   * (an 18-D full-covariance fit over thousands of poses can take seconds) and
+   * honors an AbortSignal. Gives the same fit as fitGmm.
+   */
+  async fitGmmAsync({ signal, onProgress }: AsyncComputeOptions = {}): Promise<this> {
+    this.gmm = null;
+    this.usedGmm = false;
+    if (!this.gmmApplies) return this;
+    const gmm = this._newGmm();
+    const steps = gmm.fitSteps(this.fitCleanMatrix);
+    let round = 0;
+    while (!steps.next().done) {
+      if (signal?.aborted) throw new DOMException("QC analysis cancelled", "AbortError");
+      onProgress?.(Math.min(1, ++round / 100)); // EM runs at most 100 rounds
+      await yieldToEvent();
+    }
+    this.gmm = gmm;
+    this.usedGmm = true;
+    onProgress?.(1);
+    return this;
+  }
+
+  /**
+   * The node the GMM blames: the visible node whose removal (marking it not
+   * visible) most raises the pose's likelihood. `nnDistance` is reused for every
+   * masked copy, since it isn't node-specific and is the costly feature. -1 when
+   * no node's removal helps, or the GMM didn't run.
+   */
+  gmmWorstNode(pose: Pose, nnDistance: number | null = null): number {
+    if (!this.gmm) return -1;
+    const ll = (p: Pose) => this.gmm!.logLikelihoodOne(cleanFeatureRow(this.extractFeatures(p, nnDistance)));
+    const base = ll(pose);
+    let worst = -1;
+    let bestGain = 1e-6; // require a meaningful improvement to blame a node
+    pose.forEach((pt, k) => {
+      if (Number.isNaN(pt[0])) return; // already not visible
+      const gain = ll(pose.map((p, i) => (i === k ? [Number.NaN, Number.NaN] : p))) - base;
+      if (gain > bestGain) {
+        bestGain = gain;
+        worst = k;
+      }
+    });
+    return worst;
   }
 
   /**
@@ -265,6 +338,10 @@ export class LabelQCDetector {
 
   get fitRawMatrix(): number[][] {
     return this.fitRows.map((r) => this.rawMatrix[r]);
+  }
+
+  get fitCleanMatrix(): number[][] {
+    return this.fitRows.map((r) => this.cleanMatrix[r]);
   }
 
   /** 18-dim geometric feature vector for one pose. */

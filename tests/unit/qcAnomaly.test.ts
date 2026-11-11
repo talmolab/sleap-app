@@ -18,8 +18,10 @@ import {
   Labels as IoLabels,
 } from "@talmolab/sleap-io.js";
 import {
+  anomalyVerdict,
   scoreLabelsAnomaly,
   scoreLabelsAnomalyAsync,
+  type AnomalyInstance,
 } from "@/lib/analyze/qc/anomaly";
 import { makeQCConfig } from "@/lib/analyze/qc/config";
 import type { Labels } from "@/types";
@@ -138,7 +140,10 @@ describe("scoreLabelsAnomalyAsync", () => {
       expect(async.instances[i].score).toBe(sync.instances[i].score);
       expect(async.instances[i].topIssue).toBe(sync.instances[i].topIssue);
       expect(async.instances[i].frameIdx).toBe(sync.instances[i].frameIdx);
+      expect(async.instances[i].gmmScore).toBe(sync.instances[i].gmmScore);
+      expect(async.instances[i].gmmNode).toBe(sync.instances[i].gmmNode);
     }
+    expect(async.gmmThreshold).toBe(sync.gmmThreshold);
   });
 
   it("reports monotonic progress ending at 1", async () => {
@@ -165,5 +170,88 @@ describe("scoreLabelsAnomalyAsync", () => {
       expect((e as Error).name).toBe("AbortError");
     }
     expect(threw).toBe(true);
+  });
+});
+
+describe("GMM score", () => {
+  it("runs with 50+ labels and flags about the least typical 5%", async () => {
+    const r = scoreLabelsAnomaly(await loadFixture()); // 140 user instances
+    expect(r.gmmThreshold).toBeCloseTo(0.95, 12);
+    for (const inst of r.instances) {
+      expect(inst.gmmScore).not.toBeNull();
+      expect(inst.gmmScore as number).toBeGreaterThanOrEqual(0);
+      expect(inst.gmmScore as number).toBeLessThanOrEqual(1);
+    }
+    const flagged = r.instances.filter((i) => (i.gmmScore as number) >= 0.95);
+    // A percentile score: by construction ~5% of the 140 reference poses.
+    expect(flagged.length).toBeGreaterThanOrEqual(5);
+    expect(flagged.length).toBeLessThanOrEqual(9);
+    for (const f of flagged) {
+      expect(f.gmmIssue?.startsWith("Improbable pose")).toBe(true);
+      expect(f.gmmNode).not.toBeNull();
+      expect(f.gmmNode as number).toBeGreaterThanOrEqual(-1);
+      expect(f.gmmNode as number).toBeLessThan(24);
+    }
+    for (const i of r.instances.filter((x) => (x.gmmScore as number) < 0.95)) {
+      expect(i.gmmIssue).toBeNull();
+      expect(i.gmmNode).toBeNull();
+    }
+  });
+
+  it("is skipped below 50 labels: ZScore only", () => {
+    const r = scoreLabelsAnomaly(mixedUserPredictedLabels(6)); // 6 user instances
+    expect(r.gmmThreshold).toBeNull();
+    for (const i of r.instances) expect(i.gmmScore).toBeNull();
+  });
+
+  it("is skipped when disabled in the config", async () => {
+    const r = scoreLabelsAnomaly(await loadFixture(), { config: makeQCConfig({ useGmm: false }) });
+    expect(r.gmmThreshold).toBeNull();
+    expect(r.instances.every((i) => i.gmmScore === null)).toBe(true);
+  });
+
+  it("is deterministic across runs", async () => {
+    const labels = await loadFixture();
+    const a = scoreLabelsAnomaly(labels).instances.map((i) => i.gmmScore);
+    const b = scoreLabelsAnomaly(labels).instances.map((i) => i.gmmScore);
+    expect(a).toEqual(b);
+  });
+});
+
+describe("anomalyVerdict", () => {
+  const inst = (score: number, gmmScore: number | null): AnomalyInstance => ({
+    videoIdx: 0,
+    frameIdx: 0,
+    instIdx: 0,
+    score,
+    confidence: "low",
+    topIssue: "Unusual edge length",
+    contributions: {},
+    gmmScore,
+    gmmIssue: gmmScore != null && gmmScore >= 0.95 ? "Improbable pose · Unusual pose structure" : null,
+    gmmNode: null,
+  });
+
+  it("flags on the anomaly score alone, with the anomaly explanation", () => {
+    const v = anomalyVerdict(inst(0.8, 0.5), 0.7, 0.95);
+    expect(v).toMatchObject({ flagged: true, by: "anomaly", issue: "Unusual edge length" });
+    expect(v.score).toBe(0.8);
+  });
+
+  it("flags on the GMM alone, with the GMM explanation (the frame-4 fly case)", () => {
+    const v = anomalyVerdict(inst(0.38, 0.96), 0.7, 0.95);
+    expect(v).toMatchObject({ flagged: true, by: "gmm", issue: "Improbable pose · Unusual pose structure" });
+    expect(v.score).toBe(0.96);
+    expect(v.confidence).toBe("high");
+  });
+
+  it("uses the higher score when both flag, and the anomaly explanation", () => {
+    const v = anomalyVerdict(inst(0.75, 0.99), 0.7, 0.95);
+    expect(v).toMatchObject({ flagged: true, by: "both", score: 0.99, issue: "Unusual edge length" });
+  });
+
+  it("does not flag when neither clears its threshold, or when the GMM didn't run", () => {
+    expect(anomalyVerdict(inst(0.5, 0.9), 0.7, 0.95)).toMatchObject({ flagged: false, by: null, score: 0.5 });
+    expect(anomalyVerdict(inst(0.5, null), 0.7, null).flagged).toBe(false);
   });
 });
