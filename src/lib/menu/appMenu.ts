@@ -56,6 +56,7 @@ import {
   GoNextTrackSpawnFrame,
   AddInstance,
   DeleteSelectedInstance,
+  MergeInstance,
   CopyInstance,
   PasteInstance,
   DeleteFramePredictions,
@@ -574,6 +575,16 @@ function labelsMenu(s: MenuSnapshot): TopMenu {
           commandContext.execute(DeleteSelectedInstance);
           toast.info("Instance deleted");
         },
+      },
+      {
+        kind: "item",
+        id: "labels.mergeInstance",
+        label: "Merge Instance",
+        shortcut: DEFAULT_SHORTCUTS["merge instance"],
+        // Enabled with any selection: the command explains what's missing
+        // (a second user instance, or which one to merge in).
+        enabled: s.hasInstance,
+        run: exec(MergeInstance),
       },
       ...clipboardItems(s),
       {

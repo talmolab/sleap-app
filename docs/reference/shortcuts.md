@@ -64,6 +64,8 @@ this page is the full list.
 |---|---|
 | Add instance | ++cmd+i++ |
 | Delete instance | ++cmd+backspace++ |
+| Merge instance — fill the selected instance's missing nodes from another user instance on the frame, then remove that one | ++shift+m++ |
+| Select every node of the selected instance | ++shift+a++ |
 | Accept all predictions on frame | ++cmd+shift+a++ |
 | Mark frame as negative | ++n++ |
 | Delete predictions in area | ++cmd+k++ |
@@ -112,13 +114,17 @@ Mouse and trackpad, on the video canvas.
 | Trackpad pinch | Zoom (in Chrome and Edge) |
 | Middle-button drag | Pan |
 | Drag on empty canvas | Selection box; hold ++shift++ to add to the selection |
-| Click a node | Select it; ++shift++ + click adds or removes it from the selection |
-| Double-click a node | Select every node of that instance |
+| Click a node | Select it |
+| ++shift++ + click a node | Mark every node of that instance complete, as in SLEAP |
+| ++alt+shift++ + click a node | Add it to the selection, or remove it |
+| Double-click a user instance | Add the nodes it's missing, as non-visible nodes to drag into place (as in SLEAP) |
 | Drag a selected node | Move all selected nodes together |
+| ++alt++ + drag a node | Move the whole instance |
 | ++alt++ + scroll | Rotate the selected instance |
 | Right-click a node | Flip it between visible and non-visible |
-| Right-click an instance's body or empty canvas | Context menu: add, copy, paste or delete instances, assign a track, mark the frame negative |
+| Right-click an instance's body or empty canvas | Context menu: add, copy, paste, delete or merge instances, assign a track, mark the frame negative |
 | Double-click a prediction | Accept it as your label |
+| ++shift++ + double-click a prediction | Accept it with every node marked complete |
 | ++delete++ / ++backspace++ | Delete the selected instance, when all its visible nodes are selected |
 | Hold ++space++ + drag | Pan |
 | Double-tap ++space++ | Cycle zoom: free → fit instances → fit frame |

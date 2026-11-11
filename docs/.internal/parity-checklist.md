@@ -214,12 +214,14 @@ Use this to track which PyQt features have been ported to sleap-app.
 - [x] Alt+drag move entire instance
 - [x] Alt+scroll rotate instance
 - [x] Double-click prediction → user instance
-- [ ] Double-click user instance → complete missing nodes
+- [x] Double-click user instance → complete missing nodes
+- [x] Shift+double-click prediction → user instance, all nodes complete
 - [x] Right-click context menu
 - [x] Scroll zoom
 - [x] Pan (Space+drag / middle-click)
 - [ ] Alt+drag zoom box
-- [ ] Shift+click mark all nodes complete
+- [x] Shift+click mark all nodes complete
+- [x] Merge Instance (Labels menu, context menu, Instances panel 2-row pick)
 - [x] Ctrl+K area delete (draw rectangle)
 - [ ] Drag-and-drop video files (SLP only currently)
 

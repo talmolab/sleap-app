@@ -7,10 +7,11 @@
  * - Assign to track
  * - Add new instance
  * - Mark frame as negative (background)
+ * - Merge another user instance into the selected one
  */
 
 import { useEffect, useRef, useState } from "react";
-import { PredictedInstance } from "@talmolab/sleap-io.js";
+import { Instance, PredictedInstance } from "@talmolab/sleap-io.js";
 import { useAppStore } from "../../stores/appStore";
 import {
   commandContext,
@@ -22,9 +23,11 @@ import {
   AddTrack,
   SetInstanceTrack,
   ToggleNodeVisibility,
+  MergeInstance,
 } from "../../commands";
 import { cn } from "@/lib/utils";
 import { formatShortcut } from "@/lib/formatShortcut";
+import { DEFAULT_SHORTCUTS } from "@/lib/shortcuts";
 import { requestToggleNegativeFrame } from "@/lib/negativeFrame";
 import type { InstancePlacementMethod } from "../../types";
 
@@ -51,6 +54,7 @@ export function ContextMenu({
 }: ContextMenuProps) {
   const labels = useAppStore((s) => s.labels);
   const instance = useAppStore((s) => s.instance);
+  const labeledFrame = useAppStore((s) => s.labeledFrame);
   const frameIsNegative = useAppStore((s) => s.labeledFrame?.isNegative ?? false);
   const clipboardInstance = useAppStore((s) => s.clipboardInstance);
   // Instances need a skeleton with at least one node, else placement produces a
@@ -114,6 +118,16 @@ export function ContextMenu({
   const hasNode = hasInstance && nodeIdx !== null;
   const isPredicted = instance instanceof PredictedInstance;
   const tracks = labels?.tracks ?? [];
+  // "Merge Instance with ▸": the other user instances on this frame, as in
+  // PyQt SLEAP's canvas context menu (labelled by track, else by index).
+  const frameInstances = labeledFrame?.instances ?? [];
+  const mergeDonors =
+    hasInstance && !isPredicted
+      ? frameInstances.filter(
+          (inst): inst is Instance =>
+            inst !== instance && !(inst instanceof PredictedInstance)
+        )
+      : [];
 
   return (
     <div
@@ -171,6 +185,24 @@ export function ContextMenu({
             shortcut={formatShortcut("$mod+Backspace")}
             onClick={() => exec(DeleteSelectedInstance)}
           />
+          {mergeDonors.length > 0 && (
+            <ContextMenuSubmenu
+              label="Merge Instance with"
+              shortcut={formatShortcut(DEFAULT_SHORTCUTS["merge instance"])}
+            >
+              {mergeDonors.map((donor) => (
+                <ContextMenuItem
+                  key={frameInstances.indexOf(donor)}
+                  label={
+                    donor.track
+                      ? `Track: ${donor.track.name}`
+                      : `Instance ${frameInstances.indexOf(donor)}`
+                  }
+                  onClick={() => exec(MergeInstance, { donor })}
+                />
+              ))}
+            </ContextMenuSubmenu>
+          )}
           <ContextMenuSeparator />
         </>
       )}

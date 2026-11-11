@@ -37,6 +37,7 @@ import {
   AddInstance,
   AddInstancesFromAllPredictions,
   DeleteSelectedInstance,
+  MergeInstance,
   CopyInstance,
   PasteInstance,
   requestTranspose,
@@ -216,6 +217,14 @@ export function useKeyboardShortcuts() {
         if (isTextInput(e)) return;
         e.preventDefault();
         void requestToggleNegativeFrame();
+      },
+
+      // Merge Instance (Shift+M): merge another user instance into the selected one.
+      [DEFAULT_SHORTCUTS["merge instance"]]: (e) => {
+        if (isTextInput(e)) return;
+        if (!store().instance) return;
+        e.preventDefault();
+        commandContext.execute(MergeInstance);
       },
 
       // Toggle place mode (Shift+N)

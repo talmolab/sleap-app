@@ -195,4 +195,14 @@ describe("searchableCommands", () => {
     expect(cmds.find((c) => c.id === "help.searchMenus")).toBeUndefined();
     expect(new Set(cmds.map((c) => c.id)).size).toBe(cmds.length);
   });
+
+  it("has Labels ▸ Merge Instance after Delete Instance, on Shift+M (#merge-instance)", () => {
+    const labels = top(buildAppMenu(BASE), "labels");
+    const ids = labels.items.flatMap((n) => ("id" in n ? [n.id] : []));
+    expect(ids.indexOf("labels.mergeInstance")).toBe(ids.indexOf("labels.deleteInstance") + 1);
+    const item = find(buildAppMenu(BASE), "labels.mergeInstance");
+    expect(item && "shortcut" in item ? item.shortcut : null).toBe("Shift+KeyM");
+    const off = find(buildAppMenu({ ...BASE, hasInstance: false }), "labels.mergeInstance");
+    expect(off && "enabled" in off ? off.enabled : null).toBe(false);
+  });
 });

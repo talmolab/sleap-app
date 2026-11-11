@@ -1,11 +1,13 @@
 /**
  * Keyboard Shortcuts Dialog.
  *
- * Displays all keyboard shortcuts grouped by category in a table format.
+ * Displays all keyboard shortcuts grouped by category in a table format,
+ * followed by the canvas's mouse gestures.
  */
 
 import { DEFAULT_SHORTCUTS } from "../../lib/shortcuts";
 import { formatShortcut } from "@/lib/formatShortcut";
+import { CANVAS_GESTURES } from "@/lib/canvasGestures";
 import {
   Dialog,
   DialogContent,
@@ -44,6 +46,8 @@ const CATEGORIES: Record<string, string[]> = {
   Editing: [
     "add instance",
     "delete instance",
+    "merge instance",
+    "select instance nodes",
     "accept all predictions",
     "mark negative",
     "copy instance",
@@ -96,6 +100,32 @@ export function ShortcutsDialog({ open, onOpenChange }: ShortcutsDialogProps) {
               </table>
             </div>
           ))}
+
+          <div>
+            <h3 className="text-sm font-semibold mb-1 text-muted-foreground">
+              Canvas gestures
+            </h3>
+            <table className="w-full text-sm">
+              <tbody>
+                {CANVAS_GESTURES.map((g) => (
+                  <tr
+                    key={`${g.modifiers}|${g.gesture}`}
+                    className="border-b border-border/50 last:border-0"
+                  >
+                    <td className="py-1">{g.action}</td>
+                    <td className="py-1 text-right whitespace-nowrap">
+                      {g.modifiers && (
+                        <kbd className="px-1.5 py-0.5 mr-1 text-xs bg-muted rounded font-mono">
+                          {formatShortcut(g.modifiers)}
+                        </kbd>
+                      )}
+                      <span className="text-xs text-muted-foreground">{g.gesture}</span>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
         </div>
       </DialogContent>
     </Dialog>

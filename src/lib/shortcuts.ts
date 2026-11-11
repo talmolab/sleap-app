@@ -48,6 +48,11 @@ export const DEFAULT_SHORTCUTS: Record<string, string> = {
   "add instance": "$mod+KeyI",
   "delete instance": "$mod+Backspace",
   "accept all predictions": "$mod+Shift+KeyA",
+  // Legacy SLEAP's Merge Instance has no key; Shift+M is new in sleap-app.
+  "merge instance": "Shift+KeyM",
+  // Selects every node of the selected instance, so they drag together. This
+  // was double-click, which went back to legacy SLEAP's "add missing nodes".
+  "select instance nodes": "Shift+KeyA",
   // SLEAP's key. Node placement mode moved to Shift+N to make room for it.
   "mark negative": "KeyN",
 

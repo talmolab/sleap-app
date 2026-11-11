@@ -121,8 +121,10 @@ export function LabelingTipsDialog({ open, onOpenChange }: LabelingTipsDialogPro
             </li>
             <li>
               To move a <em>whole</em> instance at once instead of
-              repositioning each node individually, double-click any node to
-              select all of them, then drag any one.
+              repositioning each node individually, hold{" "}
+              <Kbd>{formatShortcut("Alt")}</Kbd> and drag any node, or press{" "}
+              <Kbd>{formatShortcut("Shift+KeyA")}</Kbd> to select all of its
+              nodes, then drag any one.
             </li>
             <li>
               With an instance selected, hold <Kbd>{formatShortcut("Alt")}</Kbd>{" "}
@@ -141,6 +143,24 @@ export function LabelingTipsDialog({ open, onOpenChange }: LabelingTipsDialogPro
               Double-click a predicted (yellow) instance to convert it into an
               editable user instance — its nodes clone the prediction's
               positions and can then be dragged.
+            </li>
+            <li>
+              Hold <Kbd>{formatShortcut("Shift")}</Kbd> while double-clicking
+              a prediction to accept it with every node already marked
+              complete (green). <Kbd>{formatShortcut("Shift")}</Kbd>+click any
+              node of a user instance does the same for an instance you've
+              checked.
+            </li>
+            <li>
+              Double-click a user instance to add the nodes it's missing (for
+              example after adding a node to the skeleton): they appear as
+              hollow, not-visible nodes for you to drag into place.
+            </li>
+            <li>
+              Model split one animal into two instances? Accept both, then
+              select one and use <strong>Labels ▸ Merge Instance</strong>{" "}
+              (<Kbd>{formatShortcut("Shift+KeyM")}</Kbd>) to fill its missing
+              nodes from the other.
             </li>
             <li>
               To accept everything on the current frame at once:{" "}

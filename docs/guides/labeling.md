@@ -31,15 +31,29 @@ Once you have a model, **Copy Predictions** turns labeling into correction.
 
 ## Editing
 
-- **Drag a node** to move it.
-- **Move the whole pose**: double-click any node to select every node in the
-  instance, then drag one of them.
+- **Drag a node** to move it. Clicking or dragging a node marks it complete
+  (green).
+- **Mark a whole instance complete**: ++shift++-click any of its nodes, as in
+  SLEAP.
+- **Move the whole pose**: hold ++alt++ and drag any node, or press ++shift+a++
+  to select every node of the selected instance, then drag one of them.
 - **Rotate** the selected instance: hold ++alt++ and scroll.
-- **Shift-click** a node to add it to the selection, or remove it; drag on empty
-  canvas to draw a selection box (hold ++shift++ to add to the selection).
+- **Select several nodes**: ++alt+shift++-click a node to add it to the
+  selection, or remove it; drag on empty canvas to draw a selection box (hold
+  ++shift++ to add to the selection).
+- **Add missing nodes**: double-click a user instance to give the nodes it's
+  missing a position (for example after adding a node to the skeleton). They're
+  placed from your other labeled instances, as non-visible nodes to drag into
+  place, as in SLEAP.
+- **Merge two instances**: when one animal ended up as two partial instances,
+  select the one to keep and choose **Labels ▸ Merge Instance** (++shift+m++).
+  It takes the other instance's nodes for any the selected one is missing, then
+  removes the other. With more than two user instances on the frame, pick the
+  one to merge in: right-click ▸ **Merge Instance with**, or ++cmd++/++ctrl++-click
+  a second row in the **Instances** panel (the first row picked is kept).
 - **Right-click** an instance's body, or empty canvas, for the context menu:
-  add, copy, paste or delete instances, assign a track, and mark the frame
-  negative. Right-clicking a single node flips its visibility instead.
+  add, copy, paste, delete or merge instances, assign a track, and mark the
+  frame negative. Right-clicking a single node flips its visibility instead.
 - **Delete** or **Backspace** deletes the selected instance when all of its
   visible nodes are selected.
 - **Node placement mode** (++shift+n++, or **View ▸ Node Placement Mode**) is for
@@ -116,7 +130,7 @@ Predicted Instances** changes how). They are suggestions until you accept them.
 
 | Action | How |
 |---|---|
-| Accept one prediction | Double-click it |
+| Accept one prediction | Double-click it; hold ++shift++ to mark every node complete too |
 | Accept all on this frame | ++cmd+shift+a++ / ++ctrl+shift+a++, or **Labels ▸ Accept All Predictions on Current Frame** |
 | Accept all in the project | **Labels ▸ Accept All Predictions** |
 
