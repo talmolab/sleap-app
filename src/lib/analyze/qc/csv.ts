@@ -57,6 +57,7 @@ export const QC_CSV_HEADER: string[] = [
   ...FEATURE_COLS,
   ...ORDERING_COLS,
   "frame_flagged", // whether the instance's frame was ultimately flagged
+  "gmm_score", // GMM score (share of reference poses more typical); empty when the GMM didn't run
 ];
 
 /** One scored-instance record. */
@@ -69,6 +70,8 @@ export interface QcCsvRecord {
   orderInversion?: number;
   chainIntersection?: number;
   frameFlagged?: boolean;
+  /** null/undefined when the GMM didn't run (written as an empty cell). */
+  gmmScore?: number | null;
 }
 
 /** RFC-4180 minimal quoting: quote (and double internal quotes) only when needed. */
@@ -109,6 +112,7 @@ export function qcResultsCsv(records: QcCsvRecord[]): string {
         fnum(r.orderInversion),
         fnum(r.chainIntersection),
         r.frameFlagged ? "True" : "False",
+        r.gmmScore == null ? "" : fnum(r.gmmScore),
       ].join(","),
     );
   }

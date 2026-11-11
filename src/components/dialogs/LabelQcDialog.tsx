@@ -39,9 +39,11 @@ import { useAppStore } from "@/stores/appStore";
 import { dirtyFrameTracker } from "@/lib/autosaveDirty";
 import { runLabelQc, type QcFinding, type QcIssueKind } from "@/lib/analyze/labelQc";
 import {
+  anomalyVerdict,
   scoreLabelsAnomalyAsync,
   type AnomalyInstance,
   type AnomalyResult,
+  type AnomalyVerdict,
 } from "@/lib/analyze/qc/anomaly";
 import { yieldToEvent } from "@/lib/analyze/qc/detector";
 import { makeQCConfig } from "@/lib/analyze/qc/config";
@@ -98,8 +100,9 @@ export function LabelQcDialog({ open, onOpenChange }: LabelQcDialogProps) {
   const [anomThreshold, setAnomThreshold] = useState(ANOMALY_THRESHOLD);
   const anomAbort = useRef<AbortController | null>(null);
 
-  // Reset when the dialog closes or the project changes (stale results must not
-  // linger); abort any in-flight anomaly run on close/unmount.
+  // Reset only when the project changes (stale results must not linger). Results
+  // survive closing the dialog, since clicking a row closes it to show the frame
+  // and the user comes back for the next one.
   useEffect(() => {
     setRulesState("idle");
     setFindings([]);
@@ -112,13 +115,25 @@ export function LabelQcDialog({ open, onOpenChange }: LabelQcDialogProps) {
       anomAbort.current?.abort();
       anomAbort.current = null;
     };
-  }, [open, labels]);
+  }, [labels]);
 
+  // Closing the dialog still cancels an in-flight anomaly run (runAnomalies'
+  // AbortError path puts it back to idle).
+  useEffect(() => {
+    if (!open) anomAbort.current?.abort();
+  }, [open]);
+
+  // Flagged by either statistical check (anomaly ≥ the slider, or GMM ≥ its
+  // fixed least-typical-5% threshold), worst first.
   const flagged = useMemo(
     () =>
       (anomResult?.instances ?? [])
-        .filter((i) => i.score >= anomThreshold)
-        .sort((a, b) => b.score - a.score),
+        .map((a): [AnomalyInstance, AnomalyVerdict] => [
+          a,
+          anomalyVerdict(a, anomThreshold, anomResult?.gmmThreshold ?? null),
+        ])
+        .filter(([, v]) => v.flagged)
+        .sort(([, x], [, y]) => y.score - x.score),
     [anomResult, anomThreshold],
   );
 
@@ -153,7 +168,7 @@ export function LabelQcDialog({ open, onOpenChange }: LabelQcDialogProps) {
       if ((e as Error).name === "AbortError") {
         setAnomState("idle"); // cancelled → back to the Run button
       } else {
-        setAnomResult({ instances: [], featureNames: [] });
+        setAnomResult({ instances: [], featureNames: [], gmmThreshold: null });
         setAnomState("done");
       }
     } finally {
@@ -214,6 +229,7 @@ export function LabelQcDialog({ open, onOpenChange }: LabelQcDialogProps) {
         frameIdx: i.frameIdx,
         instIdx: i.instIdx,
         score: i.score,
+        gmmScore: i.gmmScore,
         contributions: i.contributions,
       })),
     );
@@ -341,6 +357,13 @@ export function LabelQcDialog({ open, onOpenChange }: LabelQcDialogProps) {
                     </span>
                   </div>
                 )}
+                {(anomResult?.instances.length ?? 0) > 0 && (
+                  <p className="px-1 text-[11px] text-muted-foreground">
+                    {anomResult?.gmmThreshold != null
+                      ? `GMM: also flags the least typical ${Math.round((1 - anomResult.gmmThreshold) * 100)}% of poses (score ≥ ${anomResult.gmmThreshold.toFixed(2)}), whatever the threshold above.`
+                      : `GMM: needs at least ${makeQCConfig().gmmMinSamples} labeled instances, so only the anomaly score is used.`}
+                  </p>
+                )}
                 {flagged.length === 0 ? (
                   <p className="py-8 text-center text-sm text-muted-foreground">
                     {(anomResult?.instances.length ?? 0) > 0
@@ -353,27 +376,35 @@ export function LabelQcDialog({ open, onOpenChange }: LabelQcDialogProps) {
                       <TableHeader>
                         <TableRow>
                           <TableHead className="text-[11px]">Score</TableHead>
+                          <TableHead className="text-[11px]">GMM</TableHead>
                           <TableHead className="text-[11px]">Confidence</TableHead>
                           <TableHead className="text-[11px]">Top issue</TableHead>
                           <TableHead className="text-[11px]">Frame</TableHead>
                         </TableRow>
                       </TableHeader>
                       <TableBody>
-                        {flagged.map((a) => (
+                        {flagged.map(([a, v]) => (
                           <TableRow
                             key={`${a.videoIdx}:${a.frameIdx}:${a.instIdx}`}
                             className="cursor-pointer text-[11px]"
                             onClick={() => navigateAnomaly(a)}
                           >
-                            <TableCell className="whitespace-nowrap font-mono tabular-nums font-medium">
+                            <TableCell
+                              className={`whitespace-nowrap font-mono tabular-nums ${v.by === "gmm" ? "text-muted-foreground" : "font-medium"}`}
+                            >
                               {a.score.toFixed(2)}
                             </TableCell>
                             <TableCell
-                              className={`whitespace-nowrap font-medium ${CONF_CLASS[a.confidence]}`}
+                              className={`whitespace-nowrap font-mono tabular-nums ${v.by === "anomaly" ? "text-muted-foreground" : "font-medium"}`}
                             >
-                              {a.confidence}
+                              {a.gmmScore != null ? a.gmmScore.toFixed(2) : "—"}
                             </TableCell>
-                            <TableCell className="text-muted-foreground">{a.topIssue}</TableCell>
+                            <TableCell
+                              className={`whitespace-nowrap font-medium ${CONF_CLASS[v.confidence]}`}
+                            >
+                              {v.confidence}
+                            </TableCell>
+                            <TableCell className="text-muted-foreground">{v.issue}</TableCell>
                             <TableCell className="whitespace-nowrap font-mono tabular-nums">
                               {frameCell(a.videoIdx, a.frameIdx, a.instIdx)}
                             </TableCell>

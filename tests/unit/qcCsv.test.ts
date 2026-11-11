@@ -43,12 +43,13 @@ describe("qcResultsCsv", () => {
     ]);
     expect(QC_CSV_HEADER).toContain("hull_area");
     expect(QC_CSV_HEADER).not.toContain("hull_area_zscore");
-    expect(QC_CSV_HEADER.slice(-3)).toEqual([
+    expect(QC_CSV_HEADER.slice(-4)).toEqual([
       "order_inversion_rate",
       "chain_intersection_count",
       "frame_flagged",
+      "gmm_score",
     ]);
-    expect(QC_CSV_HEADER).toHaveLength(27);
+    expect(QC_CSV_HEADER).toHaveLength(28);
   });
 
   it("writes one row per record: identity + score/confidence/top_issue + 18 features + 2 ordering + frame_flagged", () => {
@@ -75,7 +76,17 @@ describe("qcResultsCsv", () => {
     expect(cells[QC_CSV_HEADER.indexOf("order_inversion_rate")]).toBe("0.5");
     expect(cells[QC_CSV_HEADER.indexOf("chain_intersection_count")]).toBe("2.0");
     expect(cells[QC_CSV_HEADER.indexOf("frame_flagged")]).toBe("True");
-    expect(cells).toHaveLength(27);
+    expect(cells[QC_CSV_HEADER.indexOf("gmm_score")]).toBe(""); // GMM didn't run
+    expect(cells).toHaveLength(28);
+  });
+
+  it("writes the GMM score when there is one", () => {
+    const cells = qcResultsCsv([
+      { videoIdx: 0, frameIdx: 0, instIdx: 0, score: 0.5, gmmScore: 0.96, contributions: contrib },
+    ])
+      .split("\n")[1]
+      .split(",");
+    expect(cells[QC_CSV_HEADER.indexOf("gmm_score")]).toBe("0.96");
   });
 
   it("coalesces non-finite feature values to 0.0", () => {

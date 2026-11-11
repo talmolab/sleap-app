@@ -12,8 +12,11 @@
  * `instance.numpy({ invisibleAsNaN: true })` — the engine's NaN=invisible
  * contract, which is also io 0.5.13's default.
  *
- * Frame-level checks (count/negative/duplicates), GMM, chirality, ordering and
- * pose-split are Phase 2.
+ * Two statistical scores per instance, each with its own flag threshold (as in
+ * the reference): the ZScore anomaly score (flag ≥ 0.7), and, once there are at
+ * least 50 reference poses, the GMM score (flag ≥ 0.95, the least typical 5%).
+ * {@link anomalyVerdict} combines them. Frame-level checks, chirality, ordering
+ * and pose-split live in the rule-based labelQc.ts, not here.
  */
 import type { Labels, LabeledFrame, Instance } from "@/types";
 import {
@@ -23,7 +26,7 @@ import {
 } from "./detector";
 import { analyzerFromSkeleton } from "./skeletonIo";
 import { makeQCConfig, type QcConfig } from "./config";
-import { topIssue, confidence } from "./explain";
+import { topIssue, confidence, issueForFeature } from "./explain";
 import type { Pose } from "./util";
 
 /** One scored instance, keyed by (videoIdx, frameIdx, instIdx). */
@@ -38,11 +41,56 @@ export interface AnomalyInstance {
   topIssue: string;
   /** Raw per-feature values, keyed by feature name (18 entries). */
   contributions: Record<string, number>;
+  /**
+   * GMM score in [0,1]: the share of reference poses more typical than this one.
+   * null when the GMM didn't run (fewer than 50 reference poses, or disabled).
+   */
+  gmmScore: number | null;
+  /** "Improbable pose · <issue>" when the GMM flags this instance, else null. */
+  gmmIssue: string | null;
+  /** Skeleton node index the GMM blames when it flags this instance; -1 if none; null otherwise. */
+  gmmNode: number | null;
 }
 
 export interface AnomalyResult {
   instances: AnomalyInstance[];
   featureNames: string[];
+  /** GMM flag threshold (e.g. 0.95); null when the GMM didn't run. */
+  gmmThreshold: number | null;
+}
+
+/** How one instance reads once both scores are combined. */
+export interface AnomalyVerdict {
+  flagged: boolean;
+  /** Which check(s) flagged it. */
+  by: "anomaly" | "gmm" | "both" | null;
+  /** The higher of the scores that cleared their thresholds (else the anomaly score). */
+  score: number;
+  confidence: "high" | "medium" | "low";
+  issue: string;
+}
+
+/**
+ * Combine the anomaly and GMM scores, as the reference's sidebar does: an
+ * instance is flagged if either clears its own threshold. The issue comes from
+ * the anomaly explanation when the anomaly check fired, otherwise from the GMM.
+ */
+export function anomalyVerdict(
+  a: AnomalyInstance,
+  anomalyThreshold: number,
+  gmmThreshold: number | null,
+): AnomalyVerdict {
+  const aFlag = a.score >= anomalyThreshold;
+  const gFlag = gmmThreshold != null && a.gmmScore != null && a.gmmScore >= gmmThreshold;
+  const by = aFlag && gFlag ? "both" : aFlag ? "anomaly" : gFlag ? "gmm" : null;
+  const score = Math.max(aFlag ? a.score : 0, gFlag ? (a.gmmScore as number) : 0) || a.score;
+  return {
+    flagged: aFlag || gFlag,
+    by,
+    score,
+    confidence: confidence(score),
+    issue: !aFlag && gFlag ? (a.gmmIssue ?? "Improbable pose") : a.topIssue,
+  };
 }
 
 export interface AnomalyOptions {
@@ -87,10 +135,34 @@ function gather(
   return { frames, allPoses };
 }
 
+/** GMM score, issue and blamed node for one matrix row. */
+function scoreGmmRow(
+  det: LabelQCDetector,
+  row: number,
+  pose: Pose,
+): Pick<AnomalyInstance, "gmmScore" | "gmmIssue" | "gmmNode"> {
+  const gmm = det.gmm;
+  if (!gmm) return { gmmScore: null, gmmIssue: null, gmmNode: null };
+  const clean = det.cleanMatrix[row];
+  const s = gmm.scoreOne(clean);
+  const gmmScore = Number.isFinite(s) ? s : 0;
+  if (gmmScore < gmm.flagThreshold) return { gmmScore, gmmIssue: null, gmmNode: null };
+  // Flagged: name the feature it finds most off, and the node whose removal helps most.
+  const feature = det.featureNames[gmm.worstFeature(clean).index] ?? null;
+  const sub = issueForFeature(feature);
+  const nn = det.rawMatrix[row][det.featureNames.indexOf("nn_distance")] ?? null;
+  return {
+    gmmScore,
+    gmmIssue: sub ? `Improbable pose · ${sub}` : "Improbable pose",
+    gmmNode: det.gmmWorstNode(pose, nn),
+  };
+}
+
 /** Turn one matrix row into a scored instance. Pure over a fitted detector. */
 function scoreRow(
   det: LabelQCDetector,
   row: number,
+  pose: Pose,
   videoIdx: number,
   frameIdx: number,
   instIdx: number,
@@ -109,6 +181,7 @@ function scoreRow(
     confidence: confidence(score),
     topIssue: topIssue(contributions).issue,
     contributions,
+    ...scoreGmmRow(det, row, pose),
   };
 }
 
@@ -140,9 +213,9 @@ export function scoreLabelsAnomaly(
   const instances: AnomalyInstance[] = [];
   let row = 0;
   for (const f of frames)
-    for (let instIdx = 0; instIdx < f.count; instIdx++)
-      instances.push(scoreRow(det, row++, f.videoIdx, f.frameIdx, instIdx));
-  return { instances, featureNames: det.featureNames };
+    for (let instIdx = 0; instIdx < f.count; instIdx++, row++)
+      instances.push(scoreRow(det, row, allPoses[row], f.videoIdx, f.frameIdx, instIdx));
+  return { instances, featureNames: det.featureNames, gmmThreshold: det.gmm?.flagThreshold ?? null };
 }
 
 /**
@@ -152,7 +225,8 @@ export function scoreLabelsAnomaly(
  * same instances/scores as the sync version.
  *
  * Phases (progress): pose gather is a short up-front pass (≈0–5%), the expensive
- * feature matrix (≈5–90%), then scoring (≈90–100%).
+ * feature matrix (≈5–80%), the GMM fit (≈80–90%, only with 50+ reference poses),
+ * then scoring (≈90–100%).
  */
 export async function scoreLabelsAnomalyAsync(
   labels: Labels,
@@ -175,9 +249,10 @@ export async function scoreLabelsAnomalyAsync(
   await det.fitFeaturesAsync(allPoses, analyzer, fitMaskFor(config, allPoses.length), {
     signal,
     batchSize,
-    onProgress: (f) => onProgress?.(0.05 + f * 0.85),
+    onProgress: (f) => onProgress?.(0.05 + f * 0.75),
   });
   det.fitZScore();
+  await det.fitGmmAsync({ signal, onProgress: (f) => onProgress?.(0.8 + f * 0.1) });
 
   const instances: AnomalyInstance[] = [];
   const n = allPoses.length || 1;
@@ -186,7 +261,8 @@ export async function scoreLabelsAnomalyAsync(
     for (let instIdx = 0; instIdx < f.count; instIdx++) {
       if (signal?.aborted)
         throw new DOMException("QC analysis cancelled", "AbortError");
-      instances.push(scoreRow(det, row++, f.videoIdx, f.frameIdx, instIdx));
+      instances.push(scoreRow(det, row, allPoses[row], f.videoIdx, f.frameIdx, instIdx));
+      row++;
       if (row % (batchSize * 8) === 0) {
         onProgress?.(0.9 + (row / n) * 0.1);
         await yieldToEvent();
@@ -194,5 +270,5 @@ export async function scoreLabelsAnomalyAsync(
     }
   }
   onProgress?.(1);
-  return { instances, featureNames: det.featureNames };
+  return { instances, featureNames: det.featureNames, gmmThreshold: det.gmm?.flagThreshold ?? null };
 }
