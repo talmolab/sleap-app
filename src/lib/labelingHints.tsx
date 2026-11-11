@@ -91,8 +91,10 @@ const HINT_BODY: Record<LabelingHintId, React.ReactNode> = {
   ),
   "move-rotate-whole-instance": (
     <>
-      To move the whole instance at once instead of node-by-node,
-      double-click any node to select all of them, then drag any one. Hold{" "}
+      To move the whole instance at once instead of node-by-node, hold{" "}
+      <strong>{formatShortcut("Alt")}</strong> and drag any node (or press{" "}
+      <strong>{formatShortcut("Shift+KeyA")}</strong> to select all of its
+      nodes, then drag any one). Hold{" "}
       <strong>{formatShortcut("Alt")}</strong> while scrolling to rotate the
       selected instance.
     </>

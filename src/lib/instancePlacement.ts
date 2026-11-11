@@ -535,3 +535,138 @@ export function placeInstance(
       return placeBest(skeleton, video, existingInstances, templateLayout);
   }
 }
+
+/** Max reference instances {@link fillMissingUserNodes} aligns per call. */
+const MAX_TEMPLATE_REFERENCES = 50;
+
+const isPlaced = (p: { xy: [number, number] }) =>
+  Number.isFinite(p.xy[0]) && Number.isFinite(p.xy[1]);
+
+/**
+ * Give a user instance's missing (NaN) nodes a position, as non-visible and
+ * not complete, so they show as hollow markers you can drag into place.
+ * Returns how many nodes it filled (0 = nothing was missing).
+ *
+ * Ports PyQt SLEAP's `AddMissingInstanceNodes` (double-click a user instance;
+ * ../sleap/sleap/gui/commands.py), which aligns a "template" of the project's
+ * other user instances onto the instance's labeled nodes and reads the
+ * missing nodes off it, then falls back to random placement for anything the
+ * template can't supply. Here each reference instance is aligned on its own
+ * (rotation + scale + translation, least squares, on the nodes both have
+ * labeled) and the missing node's aligned positions are averaged — same
+ * idea, no project-wide template to build first. References nearest in time
+ * (same video, closest frame) are used first.
+ *
+ * Nodes no reference can supply land near the instance's own labeled nodes
+ * (as {@link fillMissingPredictedNodes} does). An instance with no labeled
+ * node at all is centered on `fallbackCenter` when given, otherwise left as is.
+ */
+export function fillMissingUserNodes(
+  instance: Instance,
+  labels: Labels | null,
+  currentVideo: Video | null,
+  currentFrameIdx: number,
+  fallbackCenter: [number, number] | null = null
+): number {
+  const pts = instance.points;
+  const missing: number[] = [];
+  const labeled: number[] = [];
+  pts.forEach((p, i) => (isPlaced(p) ? labeled : missing).push(i));
+  if (missing.length === 0) return 0;
+
+  const place = (idx: number, xy: [number, number]) => {
+    pts[idx].xy = xy;
+    pts[idx].visible = false;
+    pts[idx].complete = false;
+  };
+
+  if (labeled.length === 0) {
+    if (!fallbackCenter) return 0;
+    const n = missing.length;
+    const r = Math.max(10, 4 * n);
+    missing.forEach((idx, k) => {
+      const a = (2 * Math.PI * k) / n;
+      place(idx, [fallbackCenter[0] + r * Math.cos(a), fallbackCenter[1] + r * Math.sin(a)]);
+    });
+    return n;
+  }
+
+  // Reference instances: user instances (not this one) with the same node
+  // count, nearest in time first.
+  type Ref = { inst: Instance; dist: number };
+  const refs: Ref[] = [];
+  for (const lf of labels?.labeledFrames ?? []) {
+    const sameVideo = lf.video === currentVideo;
+    const dist = sameVideo ? Math.abs(lf.frameIdx - currentFrameIdx) : Number.MAX_SAFE_INTEGER;
+    for (const inst of lf.instances) {
+      if (inst === instance || inst instanceof PredictedInstance) continue;
+      if (inst.points.length !== pts.length) continue;
+      if (!missing.some((i) => isPlaced(inst.points[i]))) continue;
+      if (!labeled.some((i) => isPlaced(inst.points[i]))) continue;
+      refs.push({ inst, dist });
+    }
+  }
+  refs.sort((a, b) => a.dist - b.dist);
+
+  const sums = new Map<number, { x: number; y: number; n: number }>();
+  for (const { inst } of refs.slice(0, MAX_TEMPLATE_REFERENCES)) {
+    const shared = labeled.filter((i) => isPlaced(inst.points[i]));
+    // Similarity transform ref → target in complex form: w ≈ a·(z − z̄) + w̄.
+    let zx = 0, zy = 0, wx = 0, wy = 0;
+    for (const i of shared) {
+      zx += inst.points[i].xy[0];
+      zy += inst.points[i].xy[1];
+      wx += pts[i].xy[0];
+      wy += pts[i].xy[1];
+    }
+    zx /= shared.length; zy /= shared.length; wx /= shared.length; wy /= shared.length;
+    let ar = 1, ai = 0;
+    if (shared.length >= 2) {
+      let num_r = 0, num_i = 0, den = 0;
+      for (const i of shared) {
+        const z = [inst.points[i].xy[0] - zx, inst.points[i].xy[1] - zy];
+        const w = [pts[i].xy[0] - wx, pts[i].xy[1] - wy];
+        // conj(z) · w
+        num_r += z[0] * w[0] + z[1] * w[1];
+        num_i += z[0] * w[1] - z[1] * w[0];
+        den += z[0] * z[0] + z[1] * z[1];
+      }
+      if (den > 1e-9) {
+        ar = num_r / den;
+        ai = num_i / den;
+      }
+    }
+    for (const idx of missing) {
+      const p = inst.points[idx];
+      if (!isPlaced(p)) continue;
+      const dx = p.xy[0] - zx;
+      const dy = p.xy[1] - zy;
+      const x = ar * dx - ai * dy + wx;
+      const y = ai * dx + ar * dy + wy;
+      const s = sums.get(idx) ?? { x: 0, y: 0, n: 0 };
+      s.x += x; s.y += y; s.n += 1;
+      sums.set(idx, s);
+    }
+  }
+
+  // Anything no reference had: near this instance's own labeled nodes.
+  const cx = labeled.reduce((s, i) => s + pts[i].xy[0], 0) / labeled.length;
+  const cy = labeled.reduce((s, i) => s + pts[i].xy[1], 0) / labeled.length;
+  const xs = labeled.map((i) => pts[i].xy[0]);
+  const ys = labeled.map((i) => pts[i].xy[1]);
+  const radius = Math.max(
+    Math.hypot(Math.max(...xs) - Math.min(...xs), Math.max(...ys) - Math.min(...ys)) / 2,
+    5
+  );
+  for (const idx of missing) {
+    const s = sums.get(idx);
+    if (s) {
+      place(idx, [s.x / s.n, s.y / s.n]);
+    } else {
+      const a = Math.random() * 2 * Math.PI;
+      const r = Math.random() * radius;
+      place(idx, [cx + r * Math.cos(a), cy + r * Math.sin(a)]);
+    }
+  }
+  return missing.length;
+}

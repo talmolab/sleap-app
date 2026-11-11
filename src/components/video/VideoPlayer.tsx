@@ -55,6 +55,8 @@ import { renderTrails } from "../../canvas/TrailRenderer";
 import {
   commandContext,
   ConvertPredictionToInstance,
+  AddMissingInstanceNodes,
+  MarkInstanceComplete,
   BeginEdit,
   ToggleNodeVisibility,
   DeletePredictionsByArea,
@@ -63,6 +65,7 @@ import {
   AddEdgeCommand,
   RenameNodeCommand,
 } from "../../commands";
+import { nodeClickAction, instanceDoubleClickAction } from "@/lib/canvasGestures";
 import {
   buildBuilderRenderedInstance,
   renderPenStroke,
@@ -535,6 +538,35 @@ export function VideoPlayer() {
       window.removeEventListener("keydown", handleKeyDown);
       window.removeEventListener("keyup", handleKeyUp);
     };
+  }, []);
+
+  // Shift+A: select every node of the selected instance, so dragging any one
+  // moves them all (this was double-click, which now adds missing nodes, as in
+  // legacy SLEAP). Honors the instance's own show-non-visible state (#2782), so
+  // the selection matches what the canvas draws.
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      if (e.code !== "KeyA" || !e.shiftKey || e.ctrlKey || e.metaKey || e.altKey) return;
+      const tag = (e.target as HTMLElement)?.tagName;
+      if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") return;
+      if ((e.target as HTMLElement)?.isContentEditable) return;
+
+      const { instance, labeledFrame } = useAppStore.getState();
+      if (!instance || !labeledFrame) return;
+      const instanceIdx = labeledFrame.instances.indexOf(instance);
+      const rendered = renderedInstancesRef.current[instanceIdx];
+      if (instanceIdx < 0 || !rendered || rendered.isPredicted) return;
+
+      e.preventDefault();
+      const keys = new Set<string>();
+      rendered.nodes.forEach((n, nIdx) => {
+        if (n.visible || rendered.showNonVisible) keys.add(makeNodeKey(instanceIdx, nIdx));
+      });
+      setSelectedNodes(keys);
+      useAppStore.getState().bumpOverlayVersion();
+    };
+    window.addEventListener("keydown", handler);
+    return () => window.removeEventListener("keydown", handler);
   }, []);
 
   // Toggle node visibility with 'v' key
@@ -2480,8 +2512,10 @@ export function VideoPlayer() {
         const key = makeNodeKey(nodeHit.instanceIdx, nodeHit.nodeIdx);
         const lf = useAppStore.getState().labeledFrame;
 
-        if (e.shiftKey) {
-          // Shift+click: toggle node in selection
+        const clickAction = nodeClickAction(e);
+        if (clickAction === "toggle-selection") {
+          // Alt+Shift+click: toggle node in selection (was Shift+click, which
+          // went back to legacy SLEAP's "mark instance complete" below).
           setSelectedNodes((prev) => {
             const next = new Set(prev);
             if (next.has(key)) next.delete(key);
@@ -2489,6 +2523,19 @@ export function VideoPlayer() {
             return next;
           });
           if (lf) useAppStore.getState().setInstance(lf.instances[nodeHit.instanceIdx]);
+          return;
+        }
+
+        if (clickAction === "mark-instance-complete") {
+          // Shift+click: mark every node of the instance complete, as legacy
+          // SLEAP does (QtNode.mousePressEvent with Shift). No drag.
+          const clicked = lf?.instances[nodeHit.instanceIdx];
+          if (clicked) {
+            useAppStore.getState().setInstance(clicked);
+            if (!instances[nodeHit.instanceIdx]?.isPredicted) {
+              commandContext.execute(MarkInstanceComplete, { instance: clicked });
+            }
+          }
           return;
         }
 
@@ -2507,7 +2554,7 @@ export function VideoPlayer() {
           // Clicking a node marks it "complete" (confirmed by the user), same
           // as PyQt SLEAP's QtNode.mousePressEvent -- turns its label green.
           // When this click is the start of a GROUP drag (e.g. after
-          // double-clicking to select every node in the instance), every
+          // Shift+A selected every node in the instance), every
           // selected node moves together via handleMouseMove's group-drag
           // branch -- mark all of them confirmed, not just the one clicked,
           // or the others would keep moving while staying red. `selectedNodes`
@@ -3079,39 +3126,44 @@ export function VideoPlayer() {
       );
       if (nodeHit) {
         const inst = instances[nodeHit.instanceIdx];
-        // Predicted: convert to user instance
-        if (inst?.isPredicted) {
+        // Predicted: convert to user instance; Shift+double-click also marks
+        // every node complete (legacy SLEAP).
+        const dblAction = instanceDoubleClickAction(!!inst?.isPredicted, e);
+        if (dblAction !== "add-missing-nodes") {
           commandContext.execute(ConvertPredictionToInstance, {
             instanceIdx: nodeHit.instanceIdx,
+            markComplete: dblAction === "accept-prediction-complete",
           });
           useAppStore.getState().bumpOverlayVersion();
           return;
         }
-        // User instance: select all nodes in this instance. Honor THIS
-        // instance's occluded-node flag (#2782) so double-select matches what
-        // the canvas actually draws, not the global default.
-        const keys = new Set<string>();
-        inst.nodes.forEach((n, nIdx) => {
-          if (n.visible || inst.showNonVisible) keys.add(makeNodeKey(nodeHit.instanceIdx, nIdx));
-        });
-        if (e.shiftKey) {
-          setSelectedNodes((prev) => new Set([...prev, ...keys]));
-        } else {
-          setSelectedNodes(keys);
-        }
+        // User instance: add its missing nodes, as legacy SLEAP does. (Selecting
+        // every node of the instance moved to Shift+A.)
         const lf = useAppStore.getState().labeledFrame;
-        if (lf) useAppStore.getState().setInstance(lf.instances[nodeHit.instanceIdx]);
-        useAppStore.getState().bumpOverlayVersion();
+        const userInstance = lf?.instances[nodeHit.instanceIdx];
+        if (userInstance) {
+          commandContext.execute(AddMissingInstanceNodes, { instance: userInstance });
+        }
         return;
       }
 
-      // Check if double-clicking on a predicted instance (by centroid)
+      // Double-clicking an instance's body (by centroid): same as its nodes.
       const instHit = hitTestInstance(instances, x, y, instanceThreshold);
-      if (instHit !== null && instances[instHit]?.isPredicted) {
+      const bodyAction =
+        instHit !== null ? instanceDoubleClickAction(!!instances[instHit]?.isPredicted, e) : null;
+      if (instHit !== null && bodyAction !== "add-missing-nodes") {
         commandContext.execute(ConvertPredictionToInstance, {
           instanceIdx: instHit,
+          markComplete: bodyAction === "accept-prediction-complete",
         });
         useAppStore.getState().bumpOverlayVersion();
+        return;
+      }
+      if (instHit !== null) {
+        const userInstance = useAppStore.getState().labeledFrame?.instances[instHit];
+        if (userInstance) {
+          commandContext.execute(AddMissingInstanceNodes, { instance: userInstance });
+        }
         return;
       }
 

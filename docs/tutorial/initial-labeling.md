@@ -47,8 +47,8 @@ Save with ++cmd+s++ / ++ctrl+s++, and save often as you label.
 !!! tip "Labeling faster"
 
     - **Zoom:** hold ++ctrl++ and scroll (++ctrl++ on macOS too).
-    - **Move a whole instance:** double-click any of its nodes to select them
-      all, then drag.
+    - **Move a whole instance:** hold ++alt++ and drag any of its nodes, or
+      press ++shift+a++ to select them all, then drag.
     - **Rotate an instance:** with it selected, hold ++alt++ and scroll.
     - **See nodes better:** **View ▸ Node Marker Size** makes nodes bigger, and
       **View ▸ Edge Style ▸ Wedge** shows which way each edge points.

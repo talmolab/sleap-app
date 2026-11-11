@@ -85,6 +85,7 @@ Every menu and what its items do, in the order they appear in the menu bar.
 | **Instance Placement Method ▸** Best / Template / Force Directed / Random / Copy Prior Frame / Copy Predictions | [Labeling](../guides/labeling.md#placement-methods) |
 | Show Hints During Labeling | |
 | Delete Instance | ++cmd+backspace++ |
+| Merge Instance | ++shift+m++ — fills the selected instance's missing nodes from another user instance on the frame, then removes that one. [Labeling](../guides/labeling.md#editing) |
 | Copy Instance / Paste Instance | ++cmd+c++ / ++cmd+v++ |
 | Mark Frame as Negative | ++n++ — [Negative frames](../guides/labeling.md#negative-frames) |
 | Accept All Predictions on Current Frame | ++cmd+shift+a++ |

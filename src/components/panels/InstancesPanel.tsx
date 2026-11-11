@@ -6,6 +6,8 @@
  * When an instance is selected, shows a detail panel with metadata
  * and copyable Python points.
  * Supports multi-select via Shift+click (range) and Cmd/Ctrl+click (toggle).
+ * The first row picked stays the selected instance; the second is the donor
+ * for Labels ▸ Merge Instance (as in PyQt SLEAP).
  */
 
 import { useState, useRef, useCallback, useEffect, useMemo } from "react";
@@ -516,6 +518,11 @@ export function InstancesPanel() {
     new Set(),
   );
   const lastClickedRef = useRef<number | null>(null);
+  // Rows in the order they were picked. The first is the selected instance and
+  // the second is Merge Instance's donor (PyQt SLEAP's InstancesTableView:
+  // first pick survives, second is merged in).
+  const pickOrderRef = useRef<number[]>([]);
+  const setMergePartner = useAppStore((s) => s.setMergePartner);
 
   // Track-name filter (#278). Most useful on many-track / multi-animal frames;
   // the input is hidden for frames with 0-1 instances where it adds nothing.
@@ -547,67 +554,83 @@ export function InstancesPanel() {
 
   // Sync local selection when store's instance changes externally
   // (e.g. from canvas click or keyboard shortcut)
+  // A multi-row pick survives as long as the selected instance is one of its
+  // rows; anything else collapses it to the selected row (and drops the donor).
   useEffect(() => {
     if (currentIndex >= 0) {
       setSelectedIndices((prev) => {
-        if (prev.size === 1 && prev.has(currentIndex)) return prev;
+        if (prev.has(currentIndex)) return prev;
+        pickOrderRef.current = [currentIndex];
+        setMergePartner(null);
         return new Set([currentIndex]);
       });
     } else {
       setSelectedIndices((prev) => {
         if (prev.size === 0) return prev;
+        pickOrderRef.current = [];
+        setMergePartner(null);
         return new Set();
       });
     }
-  }, [currentIndex]);
+  }, [currentIndex, setMergePartner]);
 
   // Clear selection on frame change
   useEffect(() => {
     setSelectedIndices(new Set());
     lastClickedRef.current = null;
-  }, [frameIdx, video]);
+    pickOrderRef.current = [];
+    setMergePartner(null);
+  }, [frameIdx, video, setMergePartner]);
 
   const handleSelect = useCallback(
     (index: number, e: React.MouseEvent) => {
       const instance = instances[index];
       if (!instance) return;
 
+      let newIndices: Set<number>;
       if (e.shiftKey && lastClickedRef.current !== null) {
         // Shift+click: select range from last clicked to current
         const start = Math.min(lastClickedRef.current, index);
         const end = Math.max(lastClickedRef.current, index);
-        const newIndices = new Set(selectedIndices);
-        for (let i = start; i <= end; i++) newIndices.add(i);
-        setSelectedIndices(newIndices);
-        setInstance(instance);
+        newIndices = new Set(selectedIndices);
+        const step = index >= lastClickedRef.current ? 1 : -1;
+        for (let i = lastClickedRef.current; i !== index + step; i += step) {
+          if (i >= start && i <= end) newIndices.add(i);
+        }
       } else if (e.metaKey || e.ctrlKey) {
         // Cmd/Ctrl+click: toggle individual instance
-        const newIndices = new Set(selectedIndices);
-        if (newIndices.has(index)) {
-          newIndices.delete(index);
-          if (newIndices.size > 0) {
-            const last = [...newIndices].pop()!;
-            setInstance(instances[last]);
-          } else {
-            setInstance(null);
-          }
-        } else {
-          newIndices.add(index);
-          setInstance(instance);
-        }
-        setSelectedIndices(newIndices);
+        newIndices = new Set(selectedIndices);
+        if (newIndices.has(index)) newIndices.delete(index);
+        else newIndices.add(index);
       } else {
         // Plain click: single select
-        setSelectedIndices(new Set([index]));
-        setInstance(instance);
+        newIndices = new Set([index]);
       }
+
+      // Keep the pick order (drop unpicked rows, append new ones in the order
+      // they were added), then: first pick = selected instance, second = donor.
+      const order = pickOrderRef.current.filter((i) => newIndices.has(i));
+      if (e.shiftKey && lastClickedRef.current !== null) {
+        const step = index >= lastClickedRef.current ? 1 : -1;
+        for (let i = lastClickedRef.current; i !== index + step; i += step) {
+          if (newIndices.has(i) && !order.includes(i)) order.push(i);
+        }
+      } else if (newIndices.has(index) && !order.includes(index)) {
+        order.push(index);
+      }
+      for (const i of newIndices) if (!order.includes(i)) order.push(i);
+      pickOrderRef.current = order;
+
+      setSelectedIndices(newIndices);
+      setInstance(order.length > 0 ? (instances[order[0]] ?? null) : null);
+      setMergePartner(order.length >= 2 ? (instances[order[1]] ?? null) : null);
       lastClickedRef.current = index;
       // Zoom/pan the canvas viewport to fit the clicked instance. No-op in
       // VideoPlayer if the current selection has no visible points; harmless
       // when a Cmd/Ctrl+click cleared the selection.
       useAppStore.getState().set("fitSelection", true);
     },
-    [instances, selectedIndices, setInstance],
+    [instances, selectedIndices, setInstance, setMergePartner],
   );
 
   return (

@@ -69,6 +69,11 @@ const FRAME_LEVEL_COMMANDS: ReadonlySet<string> = new Set([
   "DuplicateInstance",
   "DeleteFramePredictions",
   "ConvertPredictionToInstance",
+  // Merge removes the donor from the same frame; the survivor keeps its own
+  // track (no track-set change). The other two only edit one instance's points.
+  "MergeInstance",
+  "AddMissingInstanceNodes",
+  "MarkInstanceComplete",
   "ToggleNegativeFrame",
   "RotateInstance",
   "BeginEdit",

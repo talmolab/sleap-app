@@ -132,6 +132,13 @@ export interface AppState {
   video: Video | null;
   frameIdx: number;
   instance: Instance | null;
+  /**
+   * Merge Instance's donor: the second instance picked in the Instances panel
+   * (Cmd/Ctrl- or Shift-click), merged into `instance` by Labels ▸ Merge
+   * Instance. PyQt SLEAP's `state["merge_partner"]`. Null when one or no rows
+   * are picked.
+   */
+  mergePartner: Instance | null;
   labeledFrame: LabeledFrame | null;
   skeleton: Skeleton | null;
   lastInteractedFrame: number | null;
@@ -593,6 +600,7 @@ export interface AppState {
   addVideoPrefixSwap: (swap: VideoPrefixSwap) => void;
   resetInstanceVisibility: () => void;
   setInstance: (instance: Instance | null) => void;
+  setMergePartner: (instance: Instance | null) => void;
   setLabeledFrame: (frame: LabeledFrame | null) => void;
   setMarkedFrame: (marked: { video: Video; frameIdx: number } | null) => void;
   resetView: () => void;
@@ -799,6 +807,7 @@ export const useAppStore = create<AppState>()(
       video: null,
       frameIdx: 0,
       instance: null,
+      mergePartner: null,
       labeledFrame: null,
       skeleton: null,
       lastInteractedFrame: null,
@@ -1232,6 +1241,11 @@ export const useAppStore = create<AppState>()(
       setInstance: (instance) =>
         set((state) => {
           state.instance = instance;
+        }),
+
+      setMergePartner: (instance) =>
+        set((state) => {
+          state.mergePartner = instance;
         }),
 
       setLabeledFrame: (frame) =>

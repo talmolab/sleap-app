@@ -23,6 +23,7 @@ import {
   placeInstance,
   findNearestPriorFrame,
   fillMissingPredictedNodes,
+  fillMissingUserNodes,
   centerInstanceAt,
 } from "@/lib/instancePlacement";
 
@@ -394,6 +395,7 @@ export const DeleteFramePredictions: Command = {
  *
  * Params:
  *   instanceIdx: number - index of the predicted instance in the labeled frame
+ *   markComplete?: boolean - mark every predicted node complete (Shift+double-click)
  *
  * Clones the predicted instance's points into a new user Instance,
  * replaces the predicted one in the frame, and selects the new instance.
@@ -427,6 +429,14 @@ export const ConvertPredictionToInstance: Command = {
     const hadMissingNodes = userInstance.points.some(
       (p) => isNaN(p.xy[0]) || isNaN(p.xy[1])
     );
+    // Shift+double-click: accept with every predicted node already marked
+    // complete, as PyQt SLEAP does (`newInstance(mark_complete=True)`).
+    // Nodes the model didn't place stay incomplete.
+    if (params?.markComplete === true) {
+      for (const p of userInstance.points) {
+        if (!isNaN(p.xy[0]) && !isNaN(p.xy[1])) p.complete = true;
+      }
+    }
     fillMissingPredictedNodes(userInstance);
 
     // Replace the predicted instance with the user instance
@@ -445,6 +455,173 @@ export const ConvertPredictionToInstance: Command = {
     if (!hintIfFirstInstance(labels) && !hintIfFirstPredictionConversion() && hadMissingNodes) {
       showLabelingHint("missing-nodes-right-click");
     }
+  },
+};
+
+const isUserInstance = (inst: unknown): inst is Instance =>
+  inst instanceof Instance && !(inst instanceof PredictedInstance);
+
+const hasPoint = (p: { xy: [number, number] }) =>
+  Number.isFinite(p.xy[0]) && Number.isFinite(p.xy[1]);
+
+/**
+ * Merge another user instance on the current frame into the selected one
+ * (Labels ▸ Merge Instance, Shift+M; right-click ▸ Merge Instance with ▸;
+ * or pick two rows in the Instances panel). Ports PyQt SLEAP's
+ * `MergeInstances` (../sleap/sleap/gui/commands.py), e.g. to combine a
+ * "front half" and a "back half" instance of one animal.
+ *
+ * The survivor (the selected instance, or `params.survivor`) is kept with its
+ * own track. For every node the survivor is missing (no position, or not
+ * visible) and the donor has visible, the donor's position, visibility and
+ * completeness are copied over. Where both have the node, the survivor's wins.
+ * The donor is then removed. Predicted instances never take part.
+ *
+ * The donor is `params.donor`, else the Instances panel's second pick
+ * (`mergePartner`), else — when the frame has exactly two user instances —
+ * the other one. One undo step.
+ *
+ * Params:
+ *   survivor?: Instance
+ *   donor?: Instance
+ */
+export const MergeInstance: Command = {
+  name: "MergeInstance",
+  topics: [UpdateTopic.Frame, UpdateTopic.Instance],
+  skipAutoSnapshot: true,
+  execute(ctx: CommandContext, params?: Record<string, unknown>) {
+    const { labels, video, frameIdx } = ctx.state;
+    if (!labels || !video) return;
+    const lf = labels.find({ video, frameIdx })[0];
+    if (!lf) return;
+
+    const survivor = (params?.survivor as Instance | undefined) ?? ctx.state.instance;
+    if (!survivor || !isUserInstance(survivor) || !lf.instances.includes(survivor)) {
+      toast.info("Merge Instance: select a user instance first.");
+      return;
+    }
+
+    const userInstances = lf.instances.filter(isUserInstance);
+    if (userInstances.length < 2) {
+      toast.info("Merge Instance: need at least two user instances on the frame.");
+      return;
+    }
+
+    let donor = (params?.donor as Instance | undefined) ?? ctx.state.mergePartner ?? undefined;
+    if (donor && (donor === survivor || !lf.instances.includes(donor))) donor = undefined;
+    if (!donor && userInstances.length === 2) {
+      donor = userInstances.find((inst) => inst !== survivor);
+    }
+    if (!donor || !isUserInstance(donor)) {
+      toast.info(
+        "Merge Instance: pick the instance to merge in — right-click ▸ Merge Instance with, " +
+          "or Cmd/Ctrl+click a second row in the Instances panel."
+      );
+      return;
+    }
+
+    const sNodes = survivor.skeleton.nodes.map((n) => n.name);
+    const dNodes = donor.skeleton.nodes.map((n) => n.name);
+    if (sNodes.length !== dNodes.length || sNodes.some((name, i) => name !== dNodes[i])) {
+      toast.info("Merge Instance: the instances have different skeletons.");
+      return;
+    }
+
+    ctx.pushUndoSnapshot(ctx.takeSnapshot("MergeInstance"));
+
+    survivor.points.forEach((s, i) => {
+      const d = donor.points[i];
+      if (!d) return;
+      const survivorMissing = !hasPoint(s) || !s.visible;
+      const donorLabeled = hasPoint(d) && d.visible;
+      if (survivorMissing && donorLabeled) {
+        s.xy = [d.xy[0], d.xy[1]];
+        s.visible = d.visible;
+        s.complete = d.complete;
+      }
+    });
+
+    // Remove the donor by identity (never by pose: after the merge the two
+    // can be identical).
+    lf.instances = lf.instances.filter((inst) => inst !== donor);
+
+    ctx.state.setLabeledFrame(lf);
+    ctx.state.setInstance(survivor);
+    ctx.state.setMergePartner(null);
+    ctx.state.markChanged();
+    ctx.state.touchFrame();
+    ctx.state.bumpOverlayVersion();
+  },
+};
+
+/**
+ * Give the user instance's missing nodes a position (double-click a user
+ * instance), as PyQt SLEAP's `AddMissingInstanceNodes` does — e.g. after a
+ * node was added to the skeleton, or for nodes left unplaced. They're placed
+ * from the project's other user instances (see `fillMissingUserNodes`) as
+ * non-visible, incomplete nodes to drag into place. No-op (and no undo step)
+ * when nothing is missing.
+ *
+ * Params:
+ *   instance?: Instance - defaults to the selected instance
+ */
+export const AddMissingInstanceNodes: Command = {
+  name: "AddMissingInstanceNodes",
+  topics: [UpdateTopic.Frame, UpdateTopic.Instance],
+  skipAutoSnapshot: true,
+  execute(ctx: CommandContext, params?: Record<string, unknown>) {
+    const { labels, video, frameIdx } = ctx.state;
+    const instance = (params?.instance as Instance | undefined) ?? ctx.state.instance;
+    if (!labels || !video || !instance || !isUserInstance(instance)) return;
+    if (instance.points.every(hasPoint)) return;
+
+    ctx.pushUndoSnapshot(ctx.takeSnapshot("AddMissingInstanceNodes"));
+
+    const rect = useAppStore.getState().visibleSceneRect;
+    const center: [number, number] | null = rect
+      ? [(rect[0] + rect[2]) / 2, (rect[1] + rect[3]) / 2]
+      : null;
+    const added = fillMissingUserNodes(instance, labels, video, frameIdx, center);
+    if (added === 0) return;
+
+    ctx.state.setInstance(instance);
+    ctx.state.markChanged();
+    ctx.state.touchFrame();
+    ctx.state.bumpOverlayVersion();
+
+    if (!useAppStore.getState().showNonVisibleNodes) {
+      toast.info(
+        `Added ${added} missing node${added > 1 ? "s" : ""} as non-visible. ` +
+          "Turn on View ▸ Show Non-Visible Nodes (Shift+V) to see and drag them."
+      );
+    }
+  },
+};
+
+/**
+ * Mark every placed node of a user instance complete (Shift+click a node), as
+ * PyQt SLEAP's `QtNode.mousePressEvent` does with Shift held. Positions and
+ * visibility are unchanged. No undo step when all are already complete.
+ *
+ * Params:
+ *   instance?: Instance - defaults to the selected instance
+ */
+export const MarkInstanceComplete: Command = {
+  name: "MarkInstanceComplete",
+  topics: [UpdateTopic.Frame, UpdateTopic.Instance],
+  skipAutoSnapshot: true,
+  execute(ctx: CommandContext, params?: Record<string, unknown>) {
+    const instance = (params?.instance as Instance | undefined) ?? ctx.state.instance;
+    if (!instance || !isUserInstance(instance)) return;
+    const pending = instance.points.filter((p) => hasPoint(p) && !p.complete);
+    if (pending.length === 0) return;
+
+    ctx.pushUndoSnapshot(ctx.takeSnapshot("MarkInstanceComplete"));
+    for (const p of pending) p.complete = true;
+
+    ctx.state.markChanged();
+    ctx.state.touchFrame();
+    ctx.state.bumpOverlayVersion();
   },
 };
 
