@@ -75,11 +75,11 @@ visibility pattern, a likely L/R swap, and the like.
 Click **Run analysis**; on a large project it shows progress and a **Cancel**
 button.
 
-- The table lists **Score**, **Confidence**, **Top issue**, and **Frame**,
-  worst first.
-- The **Threshold** slider sets the score at which an instance is flagged.
-  Lower it to flag more.
-- **Export CSV** saves the scores for every instance, not just the flagged
+- The table lists **Score**, **GMM**, **Confidence**, **Top issue**, and
+  **Frame**, worst first. An instance is listed if either score flags it.
+- The **Threshold** slider sets the **Score** at which an instance is flagged.
+  Lower it to flag more. The **GMM** column has its own fixed threshold (below).
+- **Export CSV** saves both scores for every instance, not just the flagged
   ones.
 
 ### How the score works
@@ -103,6 +103,26 @@ scored.
 
 **Confidence** is read off the score: **high** above 0.8, **medium** above 0.5,
 **low** otherwise.
+
+### The GMM score
+
+The **Score** looks at each measurement on its own, so it misses a pose whose
+measurements are each normal but whose *combination* is rare, such as one leg
+tucked in while the others are spread. The **GMM** column catches those.
+
+1. It treats each instance's 18 measurements as one point and groups your
+   labels into a few clusters of typical poses (up to 5).
+2. It scores each instance by how far it falls from every cluster: the **GMM**
+   score is the share of your labels that look more typical than this one.
+3. Instances in the least typical 5% (GMM score 0.95 or more) are flagged,
+   whatever the **Threshold** slider says. Their **Top issue** reads
+   *Improbable pose*, followed by the measurement that stands out most.
+
+The GMM needs at least 50 labeled instances; with fewer, the column shows a
+dash and only the **Score** is used. Because it always flags about 5% of your
+labels, treat its flags as poses worth a look, not as likely mistakes. The same
+labels always give the same GMM scores, but after you add or fix labels the
+borderline ones can change.
 
 !!! tip "Reading the results"
 
