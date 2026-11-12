@@ -1687,6 +1687,17 @@
   
 </li>
         
+          <li class="md-nav__item">
+  <a href="#the-gmm-score" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        The GMM score
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
       </ul>
     </nav>
   
@@ -2234,6 +2245,17 @@
   
 </li>
         
+          <li class="md-nav__item">
+  <a href="#the-gmm-score" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        The GMM score
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
       </ul>
     </nav>
   
@@ -2366,11 +2388,11 @@ visibility pattern, a likely L/R swap, and the like.
 Click <strong>Run analysis</strong>; on a large project it shows progress and a <strong>Cancel</strong>
 button.</p>
 <ul>
-<li>The table lists <strong>Score</strong>, <strong>Confidence</strong>, <strong>Top issue</strong>, and <strong>Frame</strong>,
-  worst first.</li>
-<li>The <strong>Threshold</strong> slider sets the score at which an instance is flagged.
-  Lower it to flag more.</li>
-<li><strong>Export CSV</strong> saves the scores for every instance, not just the flagged
+<li>The table lists <strong>Score</strong>, <strong>GMM</strong>, <strong>Confidence</strong>, <strong>Top issue</strong>, and
+  <strong>Frame</strong>, worst first. An instance is listed if either score flags it.</li>
+<li>The <strong>Threshold</strong> slider sets the <strong>Score</strong> at which an instance is flagged.
+  Lower it to flag more. The <strong>GMM</strong> column has its own fixed threshold (below).</li>
+<li><strong>Export CSV</strong> saves both scores for every instance, not just the flagged
   ones.</li>
 </ul>
 <h3 id="how-the-score-works">How the score works<a class="headerlink" href="#how-the-score-works" title="Permanent link">&para;</a></h3>
@@ -2393,6 +2415,24 @@ scored.</p>
 </ol>
 <p><strong>Confidence</strong> is read off the score: <strong>high</strong> above 0.8, <strong>medium</strong> above 0.5,
 <strong>low</strong> otherwise.</p>
+<h3 id="the-gmm-score">The GMM score<a class="headerlink" href="#the-gmm-score" title="Permanent link">&para;</a></h3>
+<p>The <strong>Score</strong> looks at each measurement on its own, so it misses a pose whose
+measurements are each normal but whose <em>combination</em> is rare, such as one leg
+tucked in while the others are spread. The <strong>GMM</strong> column catches those.</p>
+<ol>
+<li>It treats each instance's 18 measurements as one point and groups your
+   labels into a few clusters of typical poses (up to 5).</li>
+<li>It scores each instance by how far it falls from every cluster: the <strong>GMM</strong>
+   score is the share of your labels that look more typical than this one.</li>
+<li>Instances in the least typical 5% (GMM score 0.95 or more) are flagged,
+   whatever the <strong>Threshold</strong> slider says. Their <strong>Top issue</strong> reads
+   <em>Improbable pose</em>, followed by the measurement that stands out most.</li>
+</ol>
+<p>The GMM needs at least 50 labeled instances; with fewer, the column shows a
+dash and only the <strong>Score</strong> is used. Because it always flags about 5% of your
+labels, treat its flags as poses worth a look, not as likely mistakes. The same
+labels always give the same GMM scores, but after you add or fix labels the
+borderline ones can change.</p>
 <div class="admonition tip">
 <p class="admonition-title">Reading the results</p>
 <ul>

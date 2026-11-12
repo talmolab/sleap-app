@@ -2416,15 +2416,29 @@ instance. Getting this right saves a lot of dragging.</p>
 <p>Once you have a model, <strong>Copy Predictions</strong> turns labeling into correction.</p>
 <h2 id="editing">Editing<a class="headerlink" href="#editing" title="Permanent link">&para;</a></h2>
 <ul>
-<li><strong>Drag a node</strong> to move it.</li>
-<li><strong>Move the whole pose</strong>: double-click any node to select every node in the
-  instance, then drag one of them.</li>
+<li><strong>Drag a node</strong> to move it. Clicking or dragging a node marks it complete
+  (green).</li>
+<li><strong>Mark a whole instance complete</strong>: <span class="keys"><kbd class="key-shift">Shift</kbd></span>-click any of its nodes, as in
+  SLEAP.</li>
+<li><strong>Move the whole pose</strong>: hold <span class="keys"><kbd class="key-alt">Alt</kbd></span> and drag any node, or press <span class="keys"><kbd class="key-shift">Shift</kbd><span>+</span><kbd class="key-a">A</kbd></span>
+  to select every node of the selected instance, then drag one of them.</li>
 <li><strong>Rotate</strong> the selected instance: hold <span class="keys"><kbd class="key-alt">Alt</kbd></span> and scroll.</li>
-<li><strong>Shift-click</strong> a node to add it to the selection, or remove it; drag on empty
-  canvas to draw a selection box (hold <span class="keys"><kbd class="key-shift">Shift</kbd></span> to add to the selection).</li>
+<li><strong>Select several nodes</strong>: <span class="keys"><kbd class="key-alt">Alt</kbd><span>+</span><kbd class="key-shift">Shift</kbd></span>-click a node to add it to the
+  selection, or remove it; drag on empty canvas to draw a selection box (hold
+  <span class="keys"><kbd class="key-shift">Shift</kbd></span> to add to the selection).</li>
+<li><strong>Add missing nodes</strong>: double-click a user instance to give the nodes it's
+  missing a position (for example after adding a node to the skeleton). They're
+  placed from your other labeled instances, as non-visible nodes to drag into
+  place, as in SLEAP.</li>
+<li><strong>Merge two instances</strong>: when one animal ended up as two partial instances,
+  select the one to keep and choose <strong>Labels ▸ Merge Instance</strong> (<span class="keys"><kbd class="key-shift">Shift</kbd><span>+</span><kbd class="key-m">M</kbd></span>).
+  It takes the other instance's nodes for any the selected one is missing, then
+  removes the other. With more than two user instances on the frame, pick the
+  one to merge in: right-click ▸ <strong>Merge Instance with</strong>, or <span class="keys"><kbd class="key-command">Cmd</kbd></span>/<span class="keys"><kbd class="key-control">Ctrl</kbd></span>-click
+  a second row in the <strong>Instances</strong> panel (the first row picked is kept).</li>
 <li><strong>Right-click</strong> an instance's body, or empty canvas, for the context menu:
-  add, copy, paste or delete instances, assign a track, and mark the frame
-  negative. Right-clicking a single node flips its visibility instead.</li>
+  add, copy, paste, delete or merge instances, assign a track, and mark the
+  frame negative. Right-clicking a single node flips its visibility instead.</li>
 <li><strong>Delete</strong> or <strong>Backspace</strong> deletes the selected instance when all of its
   visible nodes are selected.</li>
 <li><strong>Node placement mode</strong> (<span class="keys"><kbd class="key-shift">Shift</kbd><span>+</span><kbd class="key-n">N</kbd></span>, or <strong>View ▸ Node Placement Mode</strong>) is for
@@ -2591,7 +2605,7 @@ Predicted Instances</strong> changes how). They are suggestions until you accept
 <tbody>
 <tr>
 <td>Accept one prediction</td>
-<td>Double-click it</td>
+<td>Double-click it; hold <span class="keys"><kbd class="key-shift">Shift</kbd></span> to mark every node complete too</td>
 </tr>
 <tr>
 <td>Accept all on this frame</td>

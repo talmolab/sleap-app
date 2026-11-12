@@ -2483,6 +2483,14 @@ this page is the full list.</p>
 <td><span class="keys"><kbd class="key-command">Cmd</kbd><span>+</span><kbd class="key-backspace">Backspace</kbd></span></td>
 </tr>
 <tr>
+<td>Merge instance — fill the selected instance's missing nodes from another user instance on the frame, then remove that one</td>
+<td><span class="keys"><kbd class="key-shift">Shift</kbd><span>+</span><kbd class="key-m">M</kbd></span></td>
+</tr>
+<tr>
+<td>Select every node of the selected instance</td>
+<td><span class="keys"><kbd class="key-shift">Shift</kbd><span>+</span><kbd class="key-a">A</kbd></span></td>
+</tr>
+<tr>
 <td>Accept all predictions on frame</td>
 <td><span class="keys"><kbd class="key-command">Cmd</kbd><span>+</span><kbd class="key-shift">Shift</kbd><span>+</span><kbd class="key-a">A</kbd></span></td>
 </tr>
@@ -2642,15 +2650,27 @@ this page is the full list.</p>
 </tr>
 <tr>
 <td>Click a node</td>
-<td>Select it; <span class="keys"><kbd class="key-shift">Shift</kbd></span> + click adds or removes it from the selection</td>
+<td>Select it</td>
 </tr>
 <tr>
-<td>Double-click a node</td>
-<td>Select every node of that instance</td>
+<td><span class="keys"><kbd class="key-shift">Shift</kbd></span> + click a node</td>
+<td>Mark every node of that instance complete, as in SLEAP</td>
+</tr>
+<tr>
+<td><span class="keys"><kbd class="key-alt">Alt</kbd><span>+</span><kbd class="key-shift">Shift</kbd></span> + click a node</td>
+<td>Add it to the selection, or remove it</td>
+</tr>
+<tr>
+<td>Double-click a user instance</td>
+<td>Add the nodes it's missing, as non-visible nodes to drag into place (as in SLEAP)</td>
 </tr>
 <tr>
 <td>Drag a selected node</td>
 <td>Move all selected nodes together</td>
+</tr>
+<tr>
+<td><span class="keys"><kbd class="key-alt">Alt</kbd></span> + drag a node</td>
+<td>Move the whole instance</td>
 </tr>
 <tr>
 <td><span class="keys"><kbd class="key-alt">Alt</kbd></span> + scroll</td>
@@ -2662,11 +2682,15 @@ this page is the full list.</p>
 </tr>
 <tr>
 <td>Right-click an instance's body or empty canvas</td>
-<td>Context menu: add, copy, paste or delete instances, assign a track, mark the frame negative</td>
+<td>Context menu: add, copy, paste, delete or merge instances, assign a track, mark the frame negative</td>
 </tr>
 <tr>
 <td>Double-click a prediction</td>
 <td>Accept it as your label</td>
+</tr>
+<tr>
+<td><span class="keys"><kbd class="key-shift">Shift</kbd></span> + double-click a prediction</td>
+<td>Accept it with every node marked complete</td>
 </tr>
 <tr>
 <td><span class="keys"><kbd class="key-delete">Del</kbd></span> / <span class="keys"><kbd class="key-backspace">Backspace</kbd></span></td>
