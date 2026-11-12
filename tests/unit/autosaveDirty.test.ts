@@ -261,3 +261,35 @@ describe("dirtyFrameTracker singleton (G1 — non-reactive)", () => {
     dirtyFrameTracker.clear();
   });
 });
+
+describe("DirtyFrameTracker.onFrameEdit", () => {
+  it("reports each frame marked, but not structural marks", () => {
+    const t = new DirtyFrameTracker();
+    const seen: number[] = [];
+    const off = t.onFrameEdit((f) => seen.push(f.frameIdx));
+    const v = fakeVideo("a");
+    t.markFrame(v, 4);
+    t.markStructural();
+    t.markFromSnapshot({
+      commandName: "NotAFrameLevelCommand",
+      frame: null,
+      scopedFrames: null,
+      allFrames: [],
+      activeVideo: null,
+      activeFrameIdx: -1,
+    });
+    off();
+    t.markFrame(v, 5);
+    expect(seen).toEqual([4]);
+  });
+
+  it("never lets a throwing listener break the edit", () => {
+    const t = new DirtyFrameTracker();
+    t.onFrameEdit(() => {
+      throw new Error("boom");
+    });
+    const v = fakeVideo("a");
+    expect(() => t.markFrame(v, 1)).not.toThrow();
+    expect(t.peekFrames()).toHaveLength(1);
+  });
+});

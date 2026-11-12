@@ -16,6 +16,7 @@ import {
   cachedTrackSpawnFrames,
 } from "@/lib/navigationDomainCache";
 import { promptDialog } from "@/stores/promptStore";
+import { stepQcQueue } from "@/stores/qcStore";
 
 /** Navigate to the next frame that has labels (any instance). */
 export const GoNextLabeledFrame: Command = {
@@ -259,5 +260,23 @@ export const GoNextTrackSpawnFrame: Command = {
     const domain = cachedTrackSpawnFrames(labels, video, editSeq);
     const target = stepLabeled(domain, frameIdx, 1);
     if (target !== null) ctx.state.setFrameIdx(target);
+  },
+};
+
+/** Navigate to the next frame flagged by Label QC, worst first (F). */
+export const GoNextQcFlag: Command = {
+  name: "GoNextQcFlag",
+  topics: [UpdateTopic.Frame],
+  execute() {
+    stepQcQueue(1);
+  },
+};
+
+/** Navigate to the previous frame flagged by Label QC (Shift+F). */
+export const GoPrevQcFlag: Command = {
+  name: "GoPrevQcFlag",
+  topics: [UpdateTopic.Frame],
+  execute() {
+    stepQcQueue(-1);
   },
 };
