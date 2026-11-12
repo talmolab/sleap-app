@@ -3,7 +3,7 @@ import {
   turningAngle,
   segmentsProperlyIntersect,
   chainOrderStats,
-  longestSkeletonChain,
+  unbranchedSkeletonChains,
 } from "@/lib/analyze/labelQcGeometry";
 
 describe("turningAngle", () => {
@@ -60,17 +60,21 @@ describe("chainOrderStats", () => {
   });
 });
 
-describe("longestSkeletonChain", () => {
-  it("returns the path through a linear skeleton", () => {
-    const chain = longestSkeletonChain([[0, 1], [1, 2], [2, 3]], 4);
-    expect(chain).toEqual([0, 1, 2, 3]);
+describe("unbranchedSkeletonChains", () => {
+  it("returns a linear skeleton as one chain", () => {
+    expect(unbranchedSkeletonChains([[0, 1], [1, 2], [2, 3]], 4)).toEqual([[0, 1, 2, 3]]);
   });
-  it("returns the diameter of a star (through the hub)", () => {
-    const chain = longestSkeletonChain([[0, 1], [0, 2], [0, 3]], 4);
-    expect(chain).toHaveLength(3); // leaf - hub - leaf
-    expect(chain).toContain(0); // hub is in the middle
+  it("finds none in a star-shaped skeleton (a fly: everything hangs off the thorax)", () => {
+    // thorax 0; head 1 -> eyes 2,3; abdomen 4; wings 5,6; six leg tips 7-12
+    const fly = [[0, 1], [1, 2], [1, 3], [0, 4], [0, 5], [0, 6], [0, 7], [0, 8], [0, 9], [0, 10], [0, 11], [0, 12]];
+    expect(unbranchedSkeletonChains(fly, 13)).toEqual([]);
+  });
+  it("keeps a mouse's tail but not the branchy head", () => {
+    // nose 0 - head 1 (ears 2,3) - neck 4 - spine 5 - tail base 6 - tail mid 7 - tail tip 8
+    const mouse = [[0, 1], [1, 2], [1, 3], [1, 4], [4, 5], [5, 6], [6, 7], [7, 8]];
+    expect(unbranchedSkeletonChains(mouse, 9)).toEqual([[1, 4, 5, 6, 7, 8]]);
   });
   it("returns [] when there are no edges", () => {
-    expect(longestSkeletonChain([], 3)).toEqual([]);
+    expect(unbranchedSkeletonChains([], 3)).toEqual([]);
   });
 });

@@ -92,48 +92,48 @@ export function chainOrderStats(
 
 // ── Skeleton chain derivation ────────────────────────────────────────────────
 
-function bfsFarthest(
-  adj: Map<number, number[]>,
-  start: number,
-): { far: number; parent: Map<number, number> } {
-  const parent = new Map<number, number>([[start, -1]]);
-  const queue = [start];
-  let far = start;
-  for (let head = 0; head < queue.length; head++) {
-    const u = queue[head];
-    for (const w of adj.get(u) ?? []) {
-      if (!parent.has(w)) {
-        parent.set(w, u);
-        queue.push(w);
-        far = w;
+/**
+ * The skeleton's unbranched runs, as ordered lists of node indices — the
+ * "chains" for chain-order checks (a mouse's tail, a worm's body). A run goes
+ * from an end or branch node, through nodes with exactly two neighbors, to the
+ * next end or branch node, as sleap.qc's chains do. Only runs of at least
+ * `minLength` nodes are returned, so a star-shaped skeleton (a fly: legs, wings
+ * and head all hang off the thorax) has none and is never chain-checked.
+ * Taking the graph's longest path instead zigzags through such hubs
+ * (leg → thorax → leg), and "out of order" along it is true of nearly every pose.
+ */
+export function unbranchedSkeletonChains(
+  edgeIndices: number[][],
+  nNodes: number,
+  minLength = 4,
+): number[][] {
+  const adj: number[][] = Array.from({ length: nNodes }, () => []);
+  for (const [a, b] of edgeIndices) {
+    if (a === b || !adj[a] || !adj[b] || adj[a].includes(b)) continue;
+    adj[a].push(b);
+    adj[b].push(a);
+  }
+  const isTerminal = (n: number) => adj[n].length !== 2;
+  const seen = new Set<string>();
+  const key = (a: number, b: number) => (a < b ? `${a},${b}` : `${b},${a}`);
+  const chains: number[][] = [];
+  for (let start = 0; start < nNodes; start++) {
+    if (!isTerminal(start)) continue;
+    for (const first of adj[start]) {
+      if (seen.has(key(start, first))) continue;
+      seen.add(key(start, first));
+      const chain = [start, first];
+      let prev = start;
+      let cur = first;
+      while (!isTerminal(cur)) {
+        const next = adj[cur][0] === prev ? adj[cur][1] : adj[cur][0];
+        seen.add(key(cur, next));
+        chain.push(next);
+        prev = cur;
+        cur = next;
       }
+      if (chain.length >= minLength) chains.push(chain);
     }
   }
-  return { far, parent };
-}
-
-/**
- * The longest simple path (diameter) through the skeleton graph, as an ordered
- * list of node indices — the default "chain" for chain-order checks when no
- * chain is configured. Double-BFS (exact for trees, which skeletons usually are).
- * Returns `[]` when there are no edges.
- */
-export function longestSkeletonChain(edgeIndices: number[][], nNodes: number): number[] {
-  void nNodes;
-  if (edgeIndices.length === 0) return [];
-  const adj = new Map<number, number[]>();
-  const link = (a: number, b: number) => {
-    const l = adj.get(a);
-    if (l) l.push(b);
-    else adj.set(a, [b]);
-  };
-  for (const [a, b] of edgeIndices) {
-    link(a, b);
-    link(b, a);
-  }
-  const { far: u } = bfsFarthest(adj, edgeIndices[0][0]);
-  const { far: v, parent } = bfsFarthest(adj, u);
-  const path: number[] = [];
-  for (let cur = v; cur !== -1; cur = parent.get(cur) ?? -1) path.push(cur);
-  return path;
+  return chains;
 }
