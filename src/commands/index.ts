@@ -79,6 +79,8 @@ export {
   GoPrevUserFrame,
   GoToMarkedFrame,
   GoNextTrackSpawnFrame,
+  GoNextQcFlag,
+  GoPrevQcFlag,
   SelectToFrame,
 } from "./navCommands";
 

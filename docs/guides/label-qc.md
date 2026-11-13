@@ -7,14 +7,15 @@ wrong. Running it before a training run is a much better use of ten seconds than
 almost anything else you could do with them — training on a systematically
 mislabeled set teaches the model to be systematically wrong.
 
-Nothing runs when the dialog opens. It has two tabs, and each has its own run
-button:
+Nothing runs when the dialog opens. Click **Run QC** to run both kinds of check
+at once, then look at the results on the dialog's two tabs:
 
-- **Rules** — click **Run checks** for the rule-based checks below.
-- **Anomalies** — click **Run analysis** for a statistical score per instance.
+- **Rules** — the rule-based checks below.
+- **Anomalies** — a statistical score per instance.
 
 Click any result row to jump to that frame and instance. After you fix things,
-click **Re-run** to check again.
+click **Re-run** to check again. To review the results frame by frame instead,
+use the [Label QC panel](#the-label-qc-panel).
 
 ## What it checks
 
@@ -54,9 +55,16 @@ the ones that disagree.
     `L`/`R`, such as `left_ear` or `ear_R`. No pairs, no chirality check.
 
 **Chain order** — nodes along a chain (a limb, a spine, a tail) labeled out of
-sequence. The check finds the longest chain in your skeleton and looks at the
-turning angles along it; a correctly ordered chain turns smoothly, a
-transposed one doubles back on itself.
+sequence. The check looks at the turning angles along each chain of four or
+more nodes in your skeleton; a correctly ordered chain turns smoothly, a
+transposed one doubles back on itself. A chain here is a run of nodes with no
+side branches, such as a tail. A skeleton where everything hangs off one hub,
+such as a fly's (legs, wings and head all attached to the thorax), has none,
+so the check doesn't run on it.
+
+Chain order and chirality are heuristics: an unusual but correct pose can
+trip them. The Label QC panel lists them as **possible** errors and doesn't
+put them ahead of the anomaly flags.
 
 ## Working through the results
 
@@ -67,12 +75,35 @@ On the **Rules** tab, results are a table of **Issue**, **Frame**, and
 [Suggestions](suggestions.md) list, so you can work through them with ++space++
 like any other labeling pass.
 
+## The Label QC panel
+
+The **Label QC** panel in the right sidebar (the shield icon) is for working
+through the flags one frame at a time. It shares its results with the dialog:
+a run started in either shows up in both.
+
+- **Run QC** runs both kinds of check, as in the dialog.
+- The **list** at the top has one row per flagged frame. Frames with a definite
+  error (a duplicate, a point outside the image, an empty instance…) come
+  first, then everything else by its worst anomaly score. Click a row to go
+  there.
+- The **card** below shows everything QC found on the frame you're on: definite
+  errors in red, possible errors (chain order, chirality) in amber, and each
+  flagged instance with its issue, the node to blame and its anomaly and GMM
+  scores. Click an instance to select it.
+- Press ++f++ for the next flagged frame and ++shift+f++ for the previous one,
+  from anywhere in the app (also **Go ▸ Next Label QC Flag**). They select the
+  worst flagged instance and open the panel.
+- The **threshold** slider works as it does in the dialog.
+
+When you edit a flagged frame, its row and card dim and say **Edited since the
+run**: its flags may already be fixed. Click **Rerun** to re-check everything.
+
 ## Anomalies
 
 The **Anomalies** tab scores every instance by how unusual its pose is compared
 with the rest of your labels — an unusual joint angle, edge length, or
 visibility pattern, a likely L/R swap, and the like.
-Click **Run analysis**; on a large project it shows progress and a **Cancel**
+Click **Run QC**; on a large project it shows progress and a **Cancel**
 button.
 
 - The table lists **Score**, **GMM**, **Confidence**, **Top issue**, and

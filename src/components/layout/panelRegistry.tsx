@@ -21,6 +21,7 @@ import {
   Globe,
   GraduationCap,
   TableProperties,
+  ShieldCheck,
 } from "lucide-react";
 
 import { VideosPanel } from "../panels/VideosPanel";
@@ -35,6 +36,7 @@ import { InferencePanel } from "../panels/InferencePanel";
 import { ConnectPanel } from "../panels/ConnectPanel";
 import { FramesPanel } from "../panels/FramesPanel";
 import { TrainingPanel } from "../panels/TrainingPanel";
+import { LabelQcPanel } from "../panels/LabelQcPanel";
 
 /** Panel definitions with icons. Render order comes from the store's panelOrder. */
 export const PANELS = [
@@ -44,6 +46,7 @@ export const PANELS = [
   { id: "view", label: "View", icon: Eye, component: ViewPanel },
   { id: "suggestions", label: "Suggestions", icon: Lightbulb, component: SuggestionsPanel },
   { id: "frames", label: "Frames", icon: TableProperties, component: FramesPanel },
+  { id: "qc", label: "Label QC", icon: ShieldCheck, component: LabelQcPanel },
   { id: "inference", label: "Inference", icon: Zap, component: InferencePanel },
   { id: "training", label: "Training", icon: GraduationCap, component: TrainingPanel },
   { id: "environment", label: "Environment", icon: Cpu, component: EnvironmentPanel },

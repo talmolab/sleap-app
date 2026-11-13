@@ -32,6 +32,8 @@ import {
   GoPrevUserFrame,
   GoToMarkedFrame,
   GoNextTrackSpawnFrame,
+  GoNextQcFlag,
+  GoPrevQcFlag,
   GoToStartFrame,
   GoToEndFrame,
   AddInstance,
@@ -213,6 +215,18 @@ export function useKeyboardShortcuts() {
       },
 
       // Mark Frame as Negative (N, as in SLEAP) — asks first if it would remove instances.
+      // Label QC review queue (F / Shift+F).
+      [DEFAULT_SHORTCUTS["goto next qc flag"]]: (e) => {
+        if (isTextInput(e)) return;
+        e.preventDefault();
+        commandContext.execute(GoNextQcFlag);
+      },
+      [DEFAULT_SHORTCUTS["goto prev qc flag"]]: (e) => {
+        if (isTextInput(e)) return;
+        e.preventDefault();
+        commandContext.execute(GoPrevQcFlag);
+      },
+
       [DEFAULT_SHORTCUTS["mark negative"]]: (e) => {
         if (isTextInput(e)) return;
         e.preventDefault();

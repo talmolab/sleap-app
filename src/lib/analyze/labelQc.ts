@@ -15,7 +15,7 @@ import {
   visibleNodeCount,
   hasOutOfRangePoints,
 } from "@/lib/analyze/labelQcRules";
-import { longestSkeletonChain, chainOrderStats } from "@/lib/analyze/labelQcGeometry";
+import { unbranchedSkeletonChains, chainOrderStats } from "@/lib/analyze/labelQcGeometry";
 import {
   buildChiralityModel,
   chiralityWrongFraction,
@@ -32,6 +32,26 @@ export type QcIssueKind =
   | "out_of_range"
   | "chain_order"
   | "chirality";
+
+/**
+ * Rule findings that are only *possible* errors: geometric heuristics that can
+ * fire on a correct but unusual pose. They show in the results but don't jump
+ * the Label QC review queue the way definite errors (duplicates, out-of-range
+ * points, empty instances) do.
+ */
+/** Display names for each rule. */
+export const QC_KIND_LABEL: Record<QcIssueKind, string> = {
+  duplicate: "Duplicate",
+  incomplete_frame: "Incomplete frame",
+  negative_frame: "Negative frame",
+  sparse_instance: "Sparse instance",
+  empty_instance: "Empty instance",
+  out_of_range: "Out of range",
+  chain_order: "Chain order",
+  chirality: "Chirality (L/R)",
+};
+
+export const SOFT_QC_KINDS: ReadonlySet<QcIssueKind> = new Set(["chain_order", "chirality"]);
 
 export interface QcFinding {
   kind: QcIssueKind;
@@ -76,16 +96,16 @@ export function runLabelQc(labels: Labels, opts: QcOptions = {}): QcFinding[] {
   const findings: QcFinding[] = [];
   const videos = labels.videos;
 
-  // The ordered "chain" for chain-order is derived once per skeleton (the graph
-  // diameter); auto-enabled only when the chain is long enough to be meaningful.
-  const chainCache = new Map<object, number[]>();
-  const chainFor = (
+  // The ordered chains for chain-order are derived once per skeleton: its
+  // unbranched runs of 4+ nodes. Skeletons without one (star-shaped) skip it.
+  const chainCache = new Map<object, number[][]>();
+  const chainsFor = (
     skel: { edgeIndices?: number[][]; nodes?: unknown[] } | undefined,
-  ): number[] => {
+  ): number[][] => {
     if (!skel) return [];
     let c = chainCache.get(skel);
     if (!c) {
-      c = longestSkeletonChain(skel.edgeIndices ?? [], skel.nodes?.length ?? 0);
+      c = unbranchedSkeletonChains(skel.edgeIndices ?? [], skel.nodes?.length ?? 0);
       chainCache.set(skel, c);
     }
     return c;
@@ -211,8 +231,7 @@ export function runLabelQc(labels: Labels, opts: QcOptions = {}): QcFinding[] {
         const skel = (insts[i] as unknown as {
           skeleton?: { edgeIndices?: number[][]; nodes?: unknown[] };
         }).skeleton;
-        const chain = chainFor(skel);
-        if (chain.length >= 4) {
+        for (const chain of chainsFor(skel)) {
           const co = chainOrderStats(p, chain);
           if (co.inversionRate >= 0.3 || co.intersectionCount >= 1) {
             findings.push({
@@ -226,6 +245,7 @@ export function runLabelQc(labels: Labels, opts: QcOptions = {}): QcFinding[] {
               frameIdx: lf.frameIdx,
               instanceIdx: i,
             });
+            break; // one finding per instance
           }
         }
 

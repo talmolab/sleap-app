@@ -24,6 +24,7 @@ export const DEFAULT_PANEL_ORDER = [
   "view",
   "suggestions",
   "frames",
+  "qc",
   "training",
   "inference",
   "environment",
@@ -34,15 +35,24 @@ export const DEFAULT_PANEL_ORDER = [
 
 /**
  * Reconcile a persisted `panelOrder` against the current panel set: drop ids
- * that no longer exist and append any panels added since the blob was written.
+ * that no longer exist and add any panels added since the blob was written.
  * Without this, a stored order from an older build silently hides newly-added
  * panels (the default zustand merge replaces the array wholesale).
+ *
+ * A new panel goes where it sits by default: right after the panel it follows
+ * in `DEFAULT_PANEL_ORDER` (or first, if it leads). Appending instead put e.g.
+ * Label QC below Debug for every existing user, though it belongs before
+ * Training.
  */
 export function reconcilePanelOrder(stored?: readonly string[] | null): string[] {
   const known = new Set<string>(DEFAULT_PANEL_ORDER);
-  const kept = (stored ?? []).filter((id) => known.has(id));
-  const missing = DEFAULT_PANEL_ORDER.filter((id) => !kept.includes(id));
-  return [...kept, ...missing];
+  const result = [...new Set((stored ?? []).filter((id) => known.has(id)))];
+  DEFAULT_PANEL_ORDER.forEach((id, i) => {
+    if (result.includes(id)) return;
+    const prev = i > 0 ? result.indexOf(DEFAULT_PANEL_ORDER[i - 1]) : -1;
+    result.splice(prev + 1, 0, id);
+  });
+  return result;
 }
 
 /** Drop unknown/duplicate ids from a persisted hidden-panels set. */

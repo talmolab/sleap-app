@@ -145,6 +145,29 @@ export function classifyDirty(snapshot: DirtySnapshotView): DirtyClassification 
 export class DirtyFrameTracker {
   private dirty = new Map<Video, Set<number>>();
   private needsFull = false;
+  private listeners = new Set<(frame: FrameKey) => void>();
+
+  /**
+   * Hear about each frame an edit touches, as it is marked (Label QC uses this
+   * to mark its results stale). Structural marks aren't reported: navigation
+   * commands are classified structural too (they carry an update topic, so
+   * they snapshot like edits), so they can't tell a listener anything. Listeners
+   * must be cheap: they run inside every edit. Returns an unsubscribe.
+   */
+  onFrameEdit(fn: (frame: FrameKey) => void): () => void {
+    this.listeners.add(fn);
+    return () => this.listeners.delete(fn);
+  }
+
+  private emit(frame: FrameKey): void {
+    for (const fn of this.listeners) {
+      try {
+        fn(frame);
+      } catch {
+        // A listener must never break the edit that triggered it.
+      }
+    }
+  }
 
   /** Whether the next autosave must rewrite the whole base snapshot. */
   get needsFullSnapshot(): boolean {
@@ -166,6 +189,7 @@ export class DirtyFrameTracker {
       this.dirty.set(video, set);
     }
     set.add(frameIdx);
+    if (this.listeners.size) this.emit({ video, frameIdx });
   }
 
   /** Flag the change as structural — the next autosave rewrites the base. */

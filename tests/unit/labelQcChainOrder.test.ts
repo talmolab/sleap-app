@@ -17,4 +17,10 @@ describe("runLabelQc chain-order (Tier 3)", () => {
     const fs = runLabelQc(mockLabels([frame(0, [instS([[0, 0], [1, 0], [2, 0], [3, 0]])])]));
     expect(fs.find((f) => f.kind === "chain_order")).toBeUndefined();
   });
+  it("skips star-shaped skeletons, which have no unbranched chain", () => {
+    const star = { edgeIndices: [[0, 1], [0, 2], [0, 3], [0, 4]], nodes: [{}, {}, {}, {}, {}] };
+    const inst = { numpy: () => [[0, 0], [2, 2], [2, 0], [0, 2], [1, 3]], skeleton: star };
+    const fs = runLabelQc(mockLabels([frame(0, [inst])]));
+    expect(fs.find((f) => f.kind === "chain_order")).toBeUndefined();
+  });
 });
