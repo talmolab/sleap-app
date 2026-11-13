@@ -1665,6 +1665,17 @@
 </li>
       
         <li class="md-nav__item">
+  <a href="#the-label-qc-panel" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        The Label QC panel
+      </span>
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#anomalies" class="md-nav__link">
     <span class="md-ellipsis">
       <span class="md-typeset">
@@ -2223,6 +2234,17 @@
 </li>
       
         <li class="md-nav__item">
+  <a href="#the-label-qc-panel" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        The Label QC panel
+      </span>
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#anomalies" class="md-nav__link">
     <span class="md-ellipsis">
       <span class="md-typeset">
@@ -2307,14 +2329,15 @@
 wrong. Running it before a training run is a much better use of ten seconds than
 almost anything else you could do with them — training on a systematically
 mislabeled set teaches the model to be systematically wrong.</p>
-<p>Nothing runs when the dialog opens. It has two tabs, and each has its own run
-button:</p>
+<p>Nothing runs when the dialog opens. Click <strong>Run QC</strong> to run both kinds of check
+at once, then look at the results on the dialog's two tabs:</p>
 <ul>
-<li><strong>Rules</strong> — click <strong>Run checks</strong> for the rule-based checks below.</li>
-<li><strong>Anomalies</strong> — click <strong>Run analysis</strong> for a statistical score per instance.</li>
+<li><strong>Rules</strong> — the rule-based checks below.</li>
+<li><strong>Anomalies</strong> — a statistical score per instance.</li>
 </ul>
 <p>Click any result row to jump to that frame and instance. After you fix things,
-click <strong>Re-run</strong> to check again.</p>
+click <strong>Re-run</strong> to check again. To review the results frame by frame instead,
+use the <a href="#the-label-qc-panel">Label QC panel</a>.</p>
 <h2 id="what-it-checks">What it checks<a class="headerlink" href="#what-it-checks" title="Permanent link">&para;</a></h2>
 <h3 id="structural-checks">Structural checks<a class="headerlink" href="#structural-checks" title="Permanent link">&para;</a></h3>
 <table>
@@ -2372,20 +2395,47 @@ infers pairs from node names that start or end with <code>left</code>/<code>righ
 <code>L</code>/<code>R</code>, such as <code>left_ear</code> or <code>ear_R</code>. No pairs, no chirality check.</p>
 </div>
 <p><strong>Chain order</strong> — nodes along a chain (a limb, a spine, a tail) labeled out of
-sequence. The check finds the longest chain in your skeleton and looks at the
-turning angles along it; a correctly ordered chain turns smoothly, a
-transposed one doubles back on itself.</p>
+sequence. The check looks at the turning angles along each chain of four or
+more nodes in your skeleton; a correctly ordered chain turns smoothly, a
+transposed one doubles back on itself. A chain here is a run of nodes with no
+side branches, such as a tail. A skeleton where everything hangs off one hub,
+such as a fly's (legs, wings and head all attached to the thorax), has none,
+so the check doesn't run on it.</p>
+<p>Chain order and chirality are heuristics: an unusual but correct pose can
+trip them. The Label QC panel lists them as <strong>possible</strong> errors and doesn't
+put them ahead of the anomaly flags.</p>
 <h2 id="working-through-the-results">Working through the results<a class="headerlink" href="#working-through-the-results" title="Permanent link">&para;</a></h2>
 <p>On the <strong>Rules</strong> tab, results are a table of <strong>Issue</strong>, <strong>Frame</strong>, and
 <strong>Details</strong>. Click a row to jump to it and fix it.</p>
 <p><strong>Add flagged frames to Suggestions</strong> pushes every flagged frame into the
 <a href="../suggestions/">Suggestions</a> list, so you can work through them with <span class="keys"><kbd class="key-space">Space</kbd></span>
 like any other labeling pass.</p>
+<h2 id="the-label-qc-panel">The Label QC panel<a class="headerlink" href="#the-label-qc-panel" title="Permanent link">&para;</a></h2>
+<p>The <strong>Label QC</strong> panel in the right sidebar (the shield icon) is for working
+through the flags one frame at a time. It shares its results with the dialog:
+a run started in either shows up in both.</p>
+<ul>
+<li><strong>Run QC</strong> runs both kinds of check, as in the dialog.</li>
+<li>The <strong>list</strong> at the top has one row per flagged frame. Frames with a definite
+  error (a duplicate, a point outside the image, an empty instance…) come
+  first, then everything else by its worst anomaly score. Click a row to go
+  there.</li>
+<li>The <strong>card</strong> below shows everything QC found on the frame you're on: definite
+  errors in red, possible errors (chain order, chirality) in amber, and each
+  flagged instance with its issue, the node to blame and its anomaly and GMM
+  scores. Click an instance to select it.</li>
+<li>Press <span class="keys"><kbd class="key-f">F</kbd></span> for the next flagged frame and <span class="keys"><kbd class="key-shift">Shift</kbd><span>+</span><kbd class="key-f">F</kbd></span> for the previous one,
+  from anywhere in the app (also <strong>Go ▸ Next Label QC Flag</strong>). They select the
+  worst flagged instance and open the panel.</li>
+<li>The <strong>threshold</strong> slider works as it does in the dialog.</li>
+</ul>
+<p>When you edit a flagged frame, its row and card dim and say <strong>Edited since the
+run</strong>: its flags may already be fixed. Click <strong>Rerun</strong> to re-check everything.</p>
 <h2 id="anomalies">Anomalies<a class="headerlink" href="#anomalies" title="Permanent link">&para;</a></h2>
 <p>The <strong>Anomalies</strong> tab scores every instance by how unusual its pose is compared
 with the rest of your labels — an unusual joint angle, edge length, or
 visibility pattern, a likely L/R swap, and the like.
-Click <strong>Run analysis</strong>; on a large project it shows progress and a <strong>Cancel</strong>
+Click <strong>Run QC</strong>; on a large project it shows progress and a <strong>Cancel</strong>
 button.</p>
 <ul>
 <li>The table lists <strong>Score</strong>, <strong>GMM</strong>, <strong>Confidence</strong>, <strong>Top issue</strong>, and
