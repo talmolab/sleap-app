@@ -30,6 +30,7 @@ const BASE: MenuSnapshot = {
   qcDisplayMode: "all",
   showLabels: true,
   showEdges: true,
+  showQcFlags: true,
   showCrosshair: true,
   showInset: true,
   temporalLoupe: false,

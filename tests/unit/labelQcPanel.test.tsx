@@ -40,6 +40,7 @@ const odd: AnomalyInstance = {
   score: 0.9,
   confidence: "high",
   topIssue: "Unusual joint angle",
+  issueNodes: [],
   contributions: {},
   gmmScore: 0.2,
   gmmIssue: null,

@@ -39,6 +39,13 @@ export interface AnomalyInstance {
   confidence: "high" | "medium" | "low";
   /** Readable dominant issue (e.g. "Unusual joint angle"). */
   topIssue: string;
+  /**
+   * Skeleton node indices behind `topIssue` (an edge's two ends, a joint and
+   * its two neighbors, a swapped L/R pair, an isolated node…), for the canvas
+   * to circle. Empty when the dominant feature isn't about particular nodes
+   * (visibility rate, bounding-box size, distance to the nearest pose).
+   */
+  issueNodes: number[];
   /** Raw per-feature values, keyed by feature name (18 entries). */
   contributions: Record<string, number>;
   /**
@@ -158,6 +165,18 @@ function scoreGmmRow(
   };
 }
 
+/** The nodes behind the dominant feature of a pose, or [] if it has none. */
+function issueNodesFor(det: LabelQCDetector, pose: Pose, feature: string | null): number[] {
+  if (!feature) return [];
+  try {
+    if (feature === "max_curvature") return det.attributeCurvature(pose)?.nodes ?? [];
+    const map = det.baseline.attribute(pose) as Record<string, { nodes: number[] } | undefined>;
+    return map[feature]?.nodes ?? [];
+  } catch {
+    return [];
+  }
+}
+
 /** Turn one matrix row into a scored instance. Pure over a fitted detector. */
 function scoreRow(
   det: LabelQCDetector,
@@ -173,13 +192,15 @@ function scoreRow(
   det.featureNames.forEach(
     (n, j) => (contributions[n] = det.rawMatrix[row][j] ?? 0),
   );
+  const top = topIssue(contributions);
   return {
     videoIdx,
     frameIdx,
     instIdx,
     score,
     confidence: confidence(score),
-    topIssue: topIssue(contributions).issue,
+    topIssue: top.issue,
+    issueNodes: issueNodesFor(det, pose, top.feature),
     contributions,
     ...scoreGmmRow(det, row, pose),
   };

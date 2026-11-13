@@ -178,6 +178,8 @@ export interface AppState {
   showLabels: boolean;
   showEdges: boolean;
   showNonVisibleNodes: boolean;
+  /** Draw Label QC flags (dashed boxes and node circles) on the canvas. */
+  showQcFlags: boolean;
   /**
    * Currently-visible portion of the video frame, in frame/scene pixel
    * coordinates: `[x1, y1, x2, y2]`. Kept in sync by VideoPlayer on every
@@ -730,6 +732,7 @@ export const PERSISTED_KEYS: (keyof AppState)[] = [
   "showLabels",
   "showEdges",
   "showNonVisibleNodes",
+  "showQcFlags",
   "showCrosshair",
   "colorPredicted",
   "showTrackScore",
@@ -829,6 +832,7 @@ export const useAppStore = create<AppState>()(
       showLabels: true,
       showEdges: true,
       showNonVisibleNodes: true,
+      showQcFlags: true,
       visibleSceneRect: null,
       showCrosshair: false,
       edgeStyle: "Line" as EdgeStyle,

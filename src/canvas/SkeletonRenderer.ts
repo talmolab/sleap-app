@@ -639,6 +639,72 @@ export function renderHoveredNodeHighlight(
   ctx.stroke();
 }
 
+/** One instance Label QC flagged on the current frame, for {@link renderQcFlags}. */
+export interface QcCanvasFlag {
+  /** Index into the rendered instances (= the frame's `instances`). */
+  instanceIdx: number;
+  /** Node indices behind the flag, to circle. May be empty. */
+  nodes: number[];
+  /** Edited since the QC run: drawn faded, since it may already be fixed. */
+  stale?: boolean;
+}
+
+const QC_FLAG_COLOR = "rgba(255, 45, 85, 0.95)";
+
+/**
+ * Label QC overlay: a red dashed box around each flagged instance, and a red
+ * dashed circle around each node behind the flag. Dashed, like the web QC
+ * app's, to read as "the checker's guess" rather than part of the label.
+ */
+export function renderQcFlags(
+  ctx: CanvasRenderingContext2D,
+  instances: RenderedInstance[],
+  flags: QcCanvasFlag[],
+  opts: RenderOptions
+): void {
+  const z = opts.zoom;
+  for (const flag of flags) {
+    const inst = instances[flag.instanceIdx];
+    if (!inst || !inst.visible) continue;
+    const visibleNodes = inst.nodes.filter((n) => n.visible && !isNaN(n.x));
+    if (visibleNodes.length === 0) continue;
+    const xs = visibleNodes.map((n) => n.x);
+    const ys = visibleNodes.map((n) => n.y);
+    const pad = (opts.markerSize + 10) / z;
+    const minX = Math.min(...xs) - pad;
+    const minY = Math.min(...ys) - pad;
+    const maxX = Math.max(...xs) + pad;
+    const maxY = Math.max(...ys) + pad;
+
+    ctx.save();
+    ctx.globalAlpha = flag.stale ? 0.35 : 1;
+    ctx.strokeStyle = QC_FLAG_COLOR;
+    ctx.lineWidth = 1.5 / z;
+    ctx.setLineDash([6 / z, 4 / z]);
+    ctx.strokeRect(minX, minY, maxX - minX, maxY - minY);
+
+    const radius = (opts.markerSize + 6) / z;
+    for (const idx of flag.nodes) {
+      const node = inst.nodes[idx];
+      if (!node || isNaN(node.x)) continue;
+      // A dark casing under the red dashes keeps the ring visible on light fur.
+      ctx.setLineDash([]);
+      ctx.strokeStyle = "rgba(0, 0, 0, 0.6)";
+      ctx.lineWidth = 3.5 / z;
+      ctx.beginPath();
+      ctx.arc(node.x, node.y, radius, 0, Math.PI * 2);
+      ctx.stroke();
+      ctx.strokeStyle = QC_FLAG_COLOR;
+      ctx.lineWidth = 2 / z;
+      ctx.setLineDash([4 / z, 3 / z]);
+      ctx.beginPath();
+      ctx.arc(node.x, node.y, radius, 0, Math.PI * 2);
+      ctx.stroke();
+    }
+    ctx.restore();
+  }
+}
+
 /**
  * Render a faint dashed bounding box around a hovered instance.
  */

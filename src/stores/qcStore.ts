@@ -180,7 +180,7 @@ export function buildQcQueue(
   );
 }
 
-/** Jump to a flagged frame and select its worst flagged instance. */
+/** Jump to a flagged frame, select its worst flagged instance and zoom to it. */
 export function goToQcEntry(labels: Labels, e: QcQueueEntry): void {
   const app = useAppStore.getState();
   const video = labels.videos[e.videoIdx];
@@ -191,7 +191,10 @@ export function goToQcEntry(labels: Labels, e: QcQueueEntry): void {
   // Indices are relative to userInstances (QC scores labels, not predictions).
   const instIdx =
     e.anomalies[0]?.a.instIdx ?? e.rules.find((r) => r.instanceIdx !== undefined)?.instanceIdx;
-  app.setInstance(instIdx !== undefined ? (lf?.userInstances[instIdx] ?? null) : null);
+  const inst = instIdx !== undefined ? (lf?.userInstances[instIdx] ?? null) : null;
+  app.setInstance(inst);
+  // Zoom to it (the canvas waits for the new frame to render first).
+  if (inst) app.set("fitSelection", true);
 }
 
 /**

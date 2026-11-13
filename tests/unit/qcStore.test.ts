@@ -35,6 +35,7 @@ const scored = (frameIdx: number, score: number, gmmScore: number | null = null)
   score,
   confidence: "high",
   topIssue: "Unusual joint angle",
+  issueNodes: [],
   contributions: {},
   gmmScore,
   gmmIssue: gmmScore != null ? "Improbable pose" : null,

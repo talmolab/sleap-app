@@ -25,6 +25,7 @@ import {
   renderSelectedNodeHighlights,
   renderHoveredNodeHighlight,
   renderHoverInstanceBBox,
+  renderQcFlags,
   renderAnchorCropPreview,
   instanceBBoxCropSize,
   findNodeIdxByName,
@@ -42,6 +43,7 @@ import {
 import { instanceVisible, instanceShowsNonVisible } from "@/lib/instanceVisibility";
 import { formatShortcut } from "@/lib/formatShortcut";
 import { useQcVisibility } from "@/hooks/useQcVisibility";
+import { useQcFrameFlags } from "@/hooks/useQcFrameFlags";
 import {
   getPaletteColor,
   getInstanceColor,
@@ -183,6 +185,7 @@ export function VideoPlayer() {
   const overlayModelPaths = useAppStore((s) => s.overlayModelPaths);
   const defaultToPan = useAppStore((s) => s.defaultToPan);
   const fitSelection = useAppStore((s) => s.fitSelection);
+  const qcFlags = useQcFrameFlags();
   const resetViewNonce = useAppStore((s) => s.resetViewNonce);
   const areaDeleteMode = useAppStore((s) => s.areaDeleteMode);
   const showCrosshair = useAppStore((s) => s.showCrosshair);
@@ -1593,6 +1596,9 @@ export function VideoPlayer() {
 
     renderInstances(ctx, instances, renderOpts);
 
+    // Label QC: dashed boxes around flagged instances, circles on their nodes.
+    if (qcFlags.length > 0) renderQcFlags(ctx, instances, qcFlags, renderOpts);
+
     // Compute effective selection (includes live marquee preview)
     let effectiveSelection = selectedNodes;
     if (marqueeStart && marqueeEnd) {
@@ -1731,6 +1737,7 @@ export function VideoPlayer() {
     skeletonBuildStage,
     builderPositions,
     skeleton,
+    qcFlags,
   ]);
 
   // Check if we're in explicit placement mode
@@ -2126,6 +2133,9 @@ export function VideoPlayer() {
   // Instances panel.
   useEffect(() => {
     if (!fitSelection || !selectedInstance) return;
+    // Jumping to another frame and selecting there (Label QC's F) sets this
+    // before the new frame's instances render: wait for them, then fit.
+    if (!labeledFrame?.instances.includes(selectedInstance)) return;
     // Reset the flag immediately so this is a one-shot action
     useAppStore.getState().set("fitSelection", false);
 
@@ -2133,8 +2143,7 @@ export function VideoPlayer() {
     if (cw === 0 || ch === 0) return;
 
     // Find the rendered instance matching the selected instance
-    const instances = renderedInstancesRef.current;
-    const selectedRendered = instances.find((ri) => ri.isSelected);
+    const selectedRendered = renderedInstances.find((ri) => ri.isSelected);
     if (!selectedRendered) return;
 
     const visibleNodes = selectedRendered.nodes.filter((n) => n.visible);
@@ -2164,7 +2173,7 @@ export function VideoPlayer() {
     setPanX(newPanX);
     setPanY(newPanY);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [fitSelection]);
+  }, [fitSelection, renderedInstances]);
 
   // Reset the view to default (zoom=1, no pan, fit-frame) on demand. Driven by a
   // one-shot nonce bumped from the toolbar button / 'R' hotkey — mirrors the
