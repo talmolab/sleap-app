@@ -29,7 +29,7 @@ describe("reconcilePanelOrder", () => {
     expect(reconcilePanelOrder(stored)).toEqual(stored);
   });
 
-  it("appends panels missing from a stale stored order (no silent drop)", () => {
+  it("adds panels missing from a stale stored order (no silent drop)", () => {
     // A blob written before "debug" + "connect" existed.
     const stale = DEFAULT_PANEL_ORDER.filter(
       (id) => id !== "debug" && id !== "connect"
@@ -38,8 +38,19 @@ describe("reconcilePanelOrder", () => {
     expect(result).toContain("debug");
     expect(result).toContain("connect");
     expect(result.length).toBe(DEFAULT_PANEL_ORDER.length);
-    // Missing panels are appended after the kept ones.
-    expect(result.slice(0, stale.length)).toEqual(stale);
+  });
+
+  it("puts a new panel after the panel it follows by default, not at the end", () => {
+    // A user's saved order from before Label QC existed, with their own tweaks.
+    const stored = DEFAULT_PANEL_ORDER.filter((id) => id !== "qc").reverse();
+    const result = reconcilePanelOrder(stored);
+    expect(result.indexOf("qc")).toBe(result.indexOf("frames") + 1);
+    expect(result.filter((id) => id !== "qc")).toEqual(stored);
+  });
+
+  it("puts a new leading panel first", () => {
+    const result = reconcilePanelOrder(DEFAULT_PANEL_ORDER.slice(1));
+    expect(result[0]).toBe(DEFAULT_PANEL_ORDER[0]);
   });
 
   it("drops unknown ids from a stored order", () => {

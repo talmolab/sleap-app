@@ -7,9 +7,15 @@
  * F / Shift+F step through the list from anywhere (navCommands).
  */
 import { useEffect, useMemo, useRef } from "react";
-import { ChevronLeft, ChevronRight } from "lucide-react";
+import { ChevronLeft, ChevronRight, CircleHelp } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Slider } from "@/components/ui/slider";
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipProvider,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
 import { useAppStore } from "@/stores/appStore";
 import {
@@ -144,6 +150,26 @@ export function LabelQcPanel() {
     e.rules.length > 0 && (e.definite || e.anomalies.length === 0)
       ? QC_KIND_LABEL[e.rules[0].kind]
       : (e.anomalies[0]?.v.issue ?? "");
+  /** Every issue on the frame, one per line (the row's hover text). */
+  const allIssues = (e: QcQueueEntry) =>
+    [
+      ...e.rules.map((r) => QC_KIND_LABEL[r.kind]),
+      ...e.anomalies.map(({ a, v }) => `${v.issue} (inst ${a.instIdx + 1})`),
+    ].join("\n");
+  const maxOf = (xs: (number | null)[]) => {
+    const n = xs.filter((x): x is number => x != null);
+    return n.length ? Math.max(...n) : null;
+  };
+  const scoreCell = (score: number | null, cut: number | null) => (
+    <span
+      className={cn(
+        "w-9 shrink-0 text-right font-mono tabular-nums",
+        score != null && cut != null && score >= cut ? "text-red-500" : "text-muted-foreground",
+      )}
+    >
+      {score != null ? score.toFixed(2) : "—"}
+    </span>
+  );
 
   // ── Body by state ──
 
@@ -198,13 +224,20 @@ export function LabelQcPanel() {
           ref={listRef}
           className="max-h-64 min-h-0 shrink-0 overflow-auto border-y border-border/40"
         >
+          <div className="sticky top-0 z-10 flex items-center gap-2 border-b border-border/40 bg-background px-2 py-1 text-[10px] font-medium text-muted-foreground">
+            <span className="w-12 shrink-0">Frame</span>
+            <span className="min-w-0 flex-1">Issue</span>
+            <span className="w-9 shrink-0 text-right">Anomaly</span>
+            <span className="w-9 shrink-0 text-right">GMM</span>
+          </div>
           {queue.map((e, i) => {
-            const count = e.rules.length + e.anomalies.length;
+            const more = e.rules.length + e.anomalies.length - 1;
             return (
               <button
                 key={qcFrameKey(e.videoIdx, e.frameIdx)}
                 data-current={i === pos}
                 onClick={() => goToQcEntry(labels, e)}
+                title={allIssues(e)}
                 className={cn(
                   "flex w-full items-center gap-2 px-2 py-1 text-left text-[11px] hover:bg-muted/40",
                   i === pos && "bg-primary/10",
@@ -212,18 +245,24 @@ export function LabelQcPanel() {
                 )}
               >
                 <span className="w-12 shrink-0 font-mono tabular-nums">{frameLabel(e)}</span>
-                <span
-                  className={cn(
-                    "min-w-0 flex-1 truncate",
-                    e.definite ? "text-red-500" : "text-muted-foreground",
+                <span className="flex min-w-0 flex-1 gap-1">
+                  <span
+                    className={cn(
+                      "min-w-0 truncate",
+                      e.definite ? "text-red-500" : "text-muted-foreground",
+                    )}
+                  >
+                    {summary(e)}
+                  </span>
+                  {more > 0 && (
+                    <span className="shrink-0 text-muted-foreground/70">+{more} more</span>
                   )}
-                >
-                  {summary(e)}
-                  {count > 1 && <span className="text-muted-foreground"> +{count - 1}</span>}
                 </span>
-                <span className="w-8 shrink-0 text-right font-mono tabular-nums text-muted-foreground">
-                  {e.worst > 0 ? e.worst.toFixed(2) : ""}
-                </span>
+                {scoreCell(maxOf(e.anomalies.map(({ a }) => a.score)), threshold)}
+                {scoreCell(
+                  maxOf(e.anomalies.map(({ a }) => a.gmmScore)),
+                  anomaly?.gmmThreshold ?? null,
+                )}
               </button>
             );
           })}
@@ -285,7 +324,25 @@ export function LabelQcPanel() {
         )}
         {state === "done" && (anomaly?.instances.length ?? 0) > 0 && (
           <div className="flex items-center gap-2">
-            <span className="text-[11px] text-muted-foreground">Threshold</span>
+            <span className="flex items-center gap-1 text-[11px] text-muted-foreground">
+              Anomaly cutoff
+              <TooltipProvider delayDuration={150}>
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <button aria-label="What is the anomaly cutoff?">
+                      <CircleHelp className="h-3 w-3" />
+                    </button>
+                  </TooltipTrigger>
+                  <TooltipContent side="bottom" className="max-w-64 text-[11px]">
+                    Instances whose anomaly score (how unusual their pose measurements
+                    are, 0–1) is at or above this are flagged. Lower it to flag more.
+                    It doesn&apos;t change the GMM, which always flags the least typical{" "}
+                    {Math.round((1 - (anomaly?.gmmThreshold ?? 0.95)) * 100)}% of poses, or
+                    the rule checks.
+                  </TooltipContent>
+                </Tooltip>
+              </TooltipProvider>
+            </span>
             <Slider
               min={0}
               max={1}
@@ -293,7 +350,7 @@ export function LabelQcPanel() {
               value={[threshold]}
               onValueChange={([v]) => setThreshold(v)}
               className="flex-1"
-              aria-label="Anomaly flag threshold"
+              aria-label="Anomaly cutoff"
             />
             <span className="font-mono text-[11px] tabular-nums text-muted-foreground">
               {threshold.toFixed(2)}
