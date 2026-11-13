@@ -21,8 +21,10 @@ vi.mock("sonner", () => ({
   toast: Object.assign(vi.fn(), { success: vi.fn(), error: vi.fn(), info: vi.fn(), warning: vi.fn() }),
 }));
 
-const { qcCanvasFlags } = await import("@/hooks/useQcFrameFlags");
-const { renderQcFlags } = await import("@/canvas/SkeletonRenderer");
+const { qcCanvasFlags, useQcFrameFlags } = await import("@/hooks/useQcFrameFlags");
+const { renderQcFlags, renderInstances, FOCUS_DIM_OPACITY } = await import("@/canvas/SkeletonRenderer");
+const { useQcStore } = await import("@/stores/qcStore");
+const { renderHook } = await import("@testing-library/react");
 const { useAppStore } = await import("@/stores/appStore");
 const { goToQcEntry } = await import("@/stores/qcStore");
 
@@ -121,6 +123,99 @@ describe("renderQcFlags", () => {
     const { ctx, calls } = fakeCtx();
     renderQcFlags(ctx, [rendered(false)], [{ instanceIdx: 0, nodes: [0] }, { instanceIdx: 5, nodes: [] }], opts);
     expect(calls).toEqual([]);
+  });
+});
+
+describe("focus dimming", () => {
+  const inst = (x: number): RenderedInstance => ({
+    nodes: [{ x, y: 0, visible: true, complete: true, name: "a" }],
+    edges: [],
+    color: [255, 0, 0],
+    isPredicted: false,
+    isSelected: false,
+    trackName: null,
+    visible: true,
+    showNonVisible: true,
+  });
+  /** globalAlpha in effect at each node's arc, keyed by its x. */
+  const alphaPerInstance = (focus: RenderedInstance | null, instances: RenderedInstance[]) => {
+    const seen = new Map<number, number>();
+    const stack: number[] = [];
+    let alpha = 1;
+    const ctx = new Proxy(
+      {},
+      {
+        get: (_t, k) => {
+          if (k === "globalAlpha") return alpha;
+          if (k === "save") return () => stack.push(alpha);
+          if (k === "restore") return () => (alpha = stack.pop() ?? 1);
+          if (k === "arc") return (x: number) => seen.set(x, alpha);
+          return () => {};
+        },
+        set: (_t, k, v) => {
+          if (k === "globalAlpha") alpha = v as number;
+          return true;
+        },
+      },
+    ) as unknown as CanvasRenderingContext2D;
+    renderInstances(ctx, instances, { zoom: 1, poseOpacity: 1, showLabels: false, focusInstance: focus });
+    return seen;
+  };
+
+  it("fades every pose but the focused one", () => {
+    const [a, b, c] = [inst(1), inst(2), inst(3)];
+    const seen = alphaPerInstance(b, [a, b, c]);
+    expect(seen.get(2)).toBe(1);
+    expect(seen.get(1)).toBeCloseTo(FOCUS_DIM_OPACITY);
+    expect(seen.get(3)).toBeCloseTo(FOCUS_DIM_OPACITY);
+  });
+
+  it("fades nothing without a focus", () => {
+    const seen = alphaPerInstance(null, [inst(1), inst(2)]);
+    expect([...seen.values()]).toEqual([1, 1]);
+  });
+});
+
+describe("useQcFrameFlags", () => {
+  const labels = new Labels({ videos: [video], skeletons: [skeleton], labeledFrames: [lf] });
+  const seed = (panelOpen: boolean) => {
+    useAppStore.setState({
+      labels,
+      video,
+      frameIdx: 2,
+      labeledFrame: lf,
+      instance: user0,
+      sidebarCollapsed: false,
+      sidebarOpenPanels: panelOpen ? ["videos", "qc"] : ["videos"],
+    });
+    useQcStore.setState({
+      labels,
+      state: "done",
+      findings: [],
+      anomaly: { instances: [anomalyOn(0, "anomaly", [1], null).a], featureNames: [], gmmThreshold: 0.95 },
+      threshold: 0.7,
+      editedFrames: new Set(),
+    });
+  };
+
+  it("shows the flags, focused on the selected flagged instance, while the panel is open", () => {
+    seed(true);
+    const { result } = renderHook(() => useQcFrameFlags());
+    expect(result.current.flags).toEqual([{ instanceIdx: 1, nodes: [1], stale: false }]);
+    expect(result.current.focusIdx).toBe(1);
+  });
+
+  it("shows nothing while the panel is closed", () => {
+    seed(false);
+    const { result } = renderHook(() => useQcFrameFlags());
+    expect(result.current).toEqual({ flags: [], focusIdx: null });
+  });
+
+  it("doesn't focus an unflagged selection", () => {
+    seed(true);
+    useAppStore.setState({ instance: user1 });
+    const { result } = renderHook(() => useQcFrameFlags());
+    expect(result.current.focusIdx).toBeNull();
   });
 });
 

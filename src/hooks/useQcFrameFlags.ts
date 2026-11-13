@@ -1,6 +1,8 @@
 /**
- * The Label QC flags to draw on the current frame: which instances are flagged
- * and which of their nodes are behind each flag (see renderQcFlags).
+ * The Label QC overlay for the current frame: which instances are flagged and
+ * which of their nodes are behind each flag (see renderQcFlags), and which
+ * instance to keep at full opacity while the rest dim. Shown only while the
+ * Label QC panel is open, so it never clutters ordinary labeling.
  */
 import { useMemo } from "react";
 import { useAppStore } from "@/stores/appStore";
@@ -43,12 +45,24 @@ export function qcCanvasFlags(
   }));
 }
 
-/** QC flags for the frame on screen, or [] when QC hasn't run or is hidden. */
-export function useQcFrameFlags(): QcCanvasFlag[] {
+export interface QcFrameOverlay {
+  flags: QcCanvasFlag[];
+  /**
+   * The selected instance's index when it is one of the flagged ones (e.g.
+   * after F): the canvas dims every other pose around it. Else null.
+   */
+  focusIdx: number | null;
+}
+
+const NONE: QcFrameOverlay = { flags: [], focusIdx: null };
+
+/** The QC overlay for the frame on screen; empty when QC hasn't run or the panel is closed. */
+export function useQcFrameFlags(): QcFrameOverlay {
   const labels = useAppStore((s) => s.labels);
   const video = useAppStore((s) => s.video);
   const labeledFrame = useAppStore((s) => s.labeledFrame);
-  const show = useAppStore((s) => s.showQcFlags);
+  const selected = useAppStore((s) => s.instance);
+  const show = useAppStore((s) => !s.sidebarCollapsed && s.sidebarOpenPanels.includes("qc"));
   const qcLabels = useQcStore((s) => s.labels);
   const state = useQcStore((s) => s.state);
   const findings = useQcStore((s) => s.findings);
@@ -65,9 +79,13 @@ export function useQcFrameFlags(): QcCanvasFlag[] {
 
   return useMemo(() => {
     if (!show || state !== "done" || !labels || qcLabels !== labels || !video || !labeledFrame)
-      return [];
+      return NONE;
     const key = qcFrameKey(labels.videos.indexOf(video), labeledFrame.frameIdx);
     const entry = byFrame.get(key);
-    return entry ? qcCanvasFlags(entry, labeledFrame, editedFrames.has(key)) : [];
-  }, [show, state, labels, qcLabels, video, labeledFrame, byFrame, editedFrames]);
+    if (!entry) return NONE;
+    const flags = qcCanvasFlags(entry, labeledFrame, editedFrames.has(key));
+    const sel = selected ? labeledFrame.instances.indexOf(selected) : -1;
+    const focusIdx = flags.some((f) => f.instanceIdx === sel) ? sel : null;
+    return { flags, focusIdx };
+  }, [show, state, labels, qcLabels, video, labeledFrame, selected, byFrame, editedFrames]);
 }

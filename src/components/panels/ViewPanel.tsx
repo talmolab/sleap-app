@@ -65,7 +65,6 @@ function Toggle({
     | "showLabels"
     | "showEdges"
     | "showNonVisibleNodes"
-    | "showQcFlags"
     | "colorPredicted"
     | "showInset"
     | "temporalLoupe"
@@ -426,7 +425,6 @@ export function ViewPanel() {
         <Toggle label="Show labels" storeKey="showLabels" />
         <Toggle label="Show edges" storeKey="showEdges" />
         <Toggle label="Show non-visible nodes" storeKey="showNonVisibleNodes" />
-        <Toggle label="Show Label QC flags" storeKey="showQcFlags" />
         <DisplayModeSelect />
       </Section>
 

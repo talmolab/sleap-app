@@ -115,7 +115,6 @@ export interface MenuSnapshot {
   qcDisplayMode: string;
   showLabels: boolean;
   showEdges: boolean;
-  showQcFlags: boolean;
   showCrosshair: boolean;
   showInset: boolean;
   temporalLoupe: boolean;
@@ -417,7 +416,6 @@ function viewMenu(s: MenuSnapshot): TopMenu {
       ),
       { kind: "check", id: "view.showLabels", label: "Show Node Names", checked: s.showLabels, run: toggle("showLabels") },
       { kind: "check", id: "view.showEdges", label: "Show Edges", checked: s.showEdges, run: toggle("showEdges") },
-      { kind: "check", id: "view.showQcFlags", label: "Show Label QC Flags", checked: s.showQcFlags, run: toggle("showQcFlags") },
       { kind: "check", id: "view.crosshair", label: "Crosshair When Zoomed", checked: s.showCrosshair, run: toggle("showCrosshair") },
       { kind: "check", id: "view.magnifier", label: "Magnifier When Moving Nodes", checked: s.showInset, run: toggle("showInset") },
       { kind: "check", id: "view.temporalLoupe", label: "Play Neighboring Frames in Magnifier", checked: s.temporalLoupe, run: toggle("temporalLoupe") },

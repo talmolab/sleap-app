@@ -74,6 +74,12 @@ export interface RenderOptions {
   showTrackScore: boolean;
   /** Opacity (0-1) of nodes and edges, on top of their own styling; labels stay opaque (#278). Default 1. */
   poseOpacity?: number;
+  /**
+   * When set, every OTHER instance's nodes and edges drop to
+   * {@link FOCUS_DIM_OPACITY} of `poseOpacity`, so this one stands out from
+   * poses overlapping it (Label QC, going to a flagged instance).
+   */
+  focusInstance?: RenderedInstance | null;
   zoom: number;
 }
 
@@ -90,6 +96,9 @@ const DEFAULT_OPTIONS: RenderOptions = {
   poseOpacity: 1,
   zoom: 1,
 };
+
+/** Pose opacity of the instances around a focused one (see `focusInstance`). */
+export const FOCUS_DIM_OPACITY = 0.25;
 
 /**
  * Render all skeleton instances onto a canvas context.
@@ -110,11 +119,15 @@ export function renderInstances(
     return 0;
   });
 
+  const focus = opts.focusInstance;
   for (const instance of sorted) {
     if (!instance.visible) continue; // #2755 per-instance hide
     renderInstance(ctx, instance, {
       ...opts,
       showNonVisibleNodes: instance.showNonVisible, // #2782 per-instance occluded
+      ...(focus && instance !== focus
+        ? { poseOpacity: (opts.poseOpacity ?? 1) * FOCUS_DIM_OPACITY }
+        : {}),
     });
   }
 

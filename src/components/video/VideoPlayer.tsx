@@ -185,7 +185,7 @@ export function VideoPlayer() {
   const overlayModelPaths = useAppStore((s) => s.overlayModelPaths);
   const defaultToPan = useAppStore((s) => s.defaultToPan);
   const fitSelection = useAppStore((s) => s.fitSelection);
-  const qcFlags = useQcFrameFlags();
+  const qcOverlay = useQcFrameFlags();
   const resetViewNonce = useAppStore((s) => s.resetViewNonce);
   const areaDeleteMode = useAppStore((s) => s.areaDeleteMode);
   const showCrosshair = useAppStore((s) => s.showCrosshair);
@@ -1594,10 +1594,12 @@ export function VideoPlayer() {
       zoom: baseScale * zoom,
     };
 
-    renderInstances(ctx, instances, renderOpts);
+    // Label QC: with a flagged instance selected, dim the poses around it.
+    const qcFocus = qcOverlay.focusIdx !== null ? instances[qcOverlay.focusIdx] : null;
+    renderInstances(ctx, instances, { ...renderOpts, focusInstance: qcFocus });
 
     // Label QC: dashed boxes around flagged instances, circles on their nodes.
-    if (qcFlags.length > 0) renderQcFlags(ctx, instances, qcFlags, renderOpts);
+    if (qcOverlay.flags.length > 0) renderQcFlags(ctx, instances, qcOverlay.flags, renderOpts);
 
     // Compute effective selection (includes live marquee preview)
     let effectiveSelection = selectedNodes;
@@ -1737,7 +1739,7 @@ export function VideoPlayer() {
     skeletonBuildStage,
     builderPositions,
     skeleton,
-    qcFlags,
+    qcOverlay,
   ]);
 
   // Check if we're in explicit placement mode
