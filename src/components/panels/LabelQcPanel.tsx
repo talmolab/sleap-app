@@ -325,20 +325,20 @@ export function LabelQcPanel() {
         {state === "done" && (anomaly?.instances.length ?? 0) > 0 && (
           <div className="flex items-center gap-2">
             <span className="flex items-center gap-1 text-[11px] text-muted-foreground">
-              Anomaly cutoff
+              Threshold
               <TooltipProvider delayDuration={150}>
                 <Tooltip>
                   <TooltipTrigger asChild>
-                    <button aria-label="What is the anomaly cutoff?">
+                    <button aria-label="What does the threshold do?">
                       <CircleHelp className="h-3 w-3" />
                     </button>
                   </TooltipTrigger>
                   <TooltipContent side="bottom" className="max-w-64 text-[11px]">
-                    Instances whose anomaly score (how unusual their pose measurements
-                    are, 0–1) is at or above this are flagged. Lower it to flag more.
-                    It doesn&apos;t change the GMM, which always flags the least typical{" "}
-                    {Math.round((1 - (anomaly?.gmmThreshold ?? 0.95)) * 100)}% of poses, or
-                    the rule checks.
+                    Threshold for the instance anomaly score (how unusual its most unusual
+                    pose measurement is, from 0 to 1). Doesn&apos;t filter GMM (Gaussian
+                    Mixture Model) scores, which always flag about{" "}
+                    {Math.round((1 - (anomaly?.gmmThreshold ?? 0.95)) * 100)}% of poses, the
+                    least typical ones.
                   </TooltipContent>
                 </Tooltip>
               </TooltipProvider>
@@ -350,7 +350,7 @@ export function LabelQcPanel() {
               value={[threshold]}
               onValueChange={([v]) => setThreshold(v)}
               className="flex-1"
-              aria-label="Anomaly cutoff"
+              aria-label="Anomaly score threshold"
             />
             <span className="font-mono text-[11px] tabular-nums text-muted-foreground">
               {threshold.toFixed(2)}
