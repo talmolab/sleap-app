@@ -53,7 +53,10 @@ export function QcReviewFrame({ children }: { children: ReactNode }) {
       <div
         className={cn(
           "flex min-h-0 flex-1 flex-col",
-          open && "relative z-50 m-3 overflow-hidden rounded-lg border border-border bg-background shadow-2xl",
+          // Centered on the screen, not the video area: the canvas moves with the
+          // frame (VideoPlayer re-measures on resize) and its old slot sits under the scrim.
+          open &&
+            "fixed inset-6 z-50 m-auto max-h-[920px] max-w-[1280px] overflow-hidden rounded-lg border border-border bg-background shadow-2xl",
         )}
         role={open ? "dialog" : undefined}
         aria-label={open ? "Label QC Review" : undefined}
