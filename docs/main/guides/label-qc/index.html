@@ -1677,6 +1677,17 @@
       <ul class="md-nav__list">
         
           <li class="md-nav__item">
+  <a href="#the-review-window" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        The Review window
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
   <a href="#ignoring-a-flag" class="md-nav__link">
     <span class="md-ellipsis">
       <span class="md-typeset">
@@ -2263,6 +2274,17 @@
       <ul class="md-nav__list">
         
           <li class="md-nav__item">
+  <a href="#the-review-window" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        The Review window
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
   <a href="#ignoring-a-flag" class="md-nav__link">
     <span class="md-ellipsis">
       <span class="md-typeset">
@@ -2452,8 +2474,8 @@ a run started in either shows up in both.</p>
 <li><strong>Run QC</strong> runs both kinds of check, as in the dialog.</li>
 <li>The <strong>list</strong> at the top has one row per flagged frame. Frames with a definite
   error (a duplicate, a point outside the image, an empty instance…) come
-  first, then everything else by its worst anomaly score. Click a row to go
-  there.</li>
+  first, then everything else by its worst anomaly score (or in the order
+  picked in the <a href="#the-review-window">Review window</a>). Click a row to go there.</li>
 <li>The <strong>card</strong> below shows everything QC found on the frame you're on: definite
   errors in red, possible errors (chain order, chirality) in amber, and each
   flagged instance with its issue, the node to blame and its anomaly and GMM
@@ -2463,17 +2485,90 @@ a run started in either shows up in both.</p>
   worst flagged instance, zoom to it and open the panel.</li>
 <li>The <strong>threshold</strong> slider works as it does in the dialog.</li>
 </ul>
-<p>On the video, each flagged instance gets a red dashed box, and the nodes behind
-its flag get red dashed circles: an edge's two ends, a joint and the two nodes
-on either side of it, an isolated node, or the node the GMM blames. A few
-anomalies aren't about particular nodes (an unusual share of visible nodes,
-bounding-box size, or distance to the nearest similar pose); those get only
-the box. Going to a flag zooms to its instance, and while a flagged instance
-is selected, the poses around it fade to 25% so it stands out from animals
-overlapping it. All of this shows only while the Label QC panel is open: close
-the panel to label without it.</p>
+<p>On the video, each flagged instance gets a red dashed box, and on it the
+thing that looks wrong, drawn in red dashes over a dark outline:</p>
+<ul>
+<li>an <strong>edge</strong> whose length is unusual (or two nodes unusually far apart or
+  close together, or a likely L/R swapped pair): a dashed line between the two
+  nodes;</li>
+<li>an unusual <strong>joint angle</strong> (or bend along the body): both arms of the angle
+  dashed, with an arc at the joint between them;</li>
+<li>an isolated node, or the node the GMM blames: a dashed circle around it.</li>
+</ul>
+<p>A few anomalies aren't about particular nodes (an unusual share of visible
+nodes, bounding-box size, or distance to the nearest similar pose); those get
+only the box. Going to a flag zooms to its instance, and while a flagged
+instance is selected, the poses around it fade to 25% so it stands out from
+animals overlapping it. All of this shows only while the Label QC panel or the
+<a href="#the-review-window">Review window</a> is open: close them to label without it.</p>
 <p>When you edit a flagged frame, its row and card dim and say <strong>Edited since the
 run</strong>: its flags may already be fixed. Click <strong>Rerun</strong> to re-check everything.</p>
+<h3 id="the-review-window">The Review window<a class="headerlink" href="#the-review-window" title="Permanent link">&para;</a></h3>
+<p>Click the blue <strong>Review</strong> button at the top of the panel (next to <strong>Rerun</strong>)
+to go through the flags one at a time. The video area turns into a window
+over the rest of the app, which dims, and zooms to the flagged instance on
+each flag. It is the same video view as always, so you fix things the usual
+way: drag a point to move it, <span class="keys"><kbd class="key-v">V</kbd></span> to hide a node, <span class="keys"><kbd class="key-command">Cmd</kbd><span>+</span><kbd class="key-z">Z</kbd></span> to undo, scroll
+to zoom.</p>
+<ul>
+<li>The <strong>header</strong> shows where you are (<strong>Review 4 / 31</strong>), the worst score on
+  the frame (red when it is over the threshold, or <strong>Error</strong> for a definite
+  error), how many flags the frame has, and the frame number.</li>
+<li>Under the video, the selected instance's issue and the node(s) it is about,
+  e.g. <em>Unusual joint angle (decreased) · thorax</em>, with its <strong>Anomaly</strong> and
+  <strong>GMM</strong> scores (red when over their thresholds) and any errors QC found on
+  it.</li>
+<li>Each flag selects its instance and the node behind it: the joint of an
+  unusual angle, the first node of an edge or pair, or the node QC blames. So
+  you can drag it straight away, or press <span class="keys"><kbd class="key-v">V</kbd></span> to hide it.</li>
+<li>If that node isn't placed, a note at the bottom of the video says so
+  (<strong>wingL</strong> isn't placed (click to place it)) and a click on the image
+  places it (<span class="keys"><kbd class="key-command">Cmd</kbd><span>+</span><kbd class="key-z">Z</kbd></span> undoes it). In the Review window only a quick click
+  places it: dragging pans the view, and a press held longer than about a
+  third of a second does nothing. (Placing nodes outside Review works as
+  before: a press places the node.)</li>
+<li><span class="keys"><kbd class="key-arrow-left">Left</kbd></span> / <span class="keys"><kbd class="key-arrow-right">Right</kbd></span> (or <strong>‹ Prev</strong> / <strong>Next ›</strong>) go to the previous / next
+  flagged frame instead of the previous / next frame.</li>
+<li><span class="keys"><kbd class="key-0">0</kbd></span> zooms back to the flagged instance.</li>
+<li><span class="keys"><kbd class="key-3">3</kbd></span> (or <strong>Ignore</strong>) ignores the selected instance's flags and goes to the
+  next one, as <a href="#ignoring-a-flag">below</a>.</li>
+<li><strong>Delete instance</strong> deletes the selected instance, for a duplicate. <span class="keys"><kbd class="key-command">Cmd</kbd><span>+</span><kbd class="key-z">Z</kbd></span>
+  brings it back.</li>
+<li><span class="keys"><kbd class="key-escape">Esc</kbd></span>, the <strong>×</strong> button, or a click on the dimmed area closes the window.</li>
+</ul>
+<p>When you edit a flagged instance in the Review window (drag a node, place
+one, <span class="keys"><kbd class="key-v">V</kbd></span>, undo or redo), QC scores it again right away and the header, the
+issue line and the panel's card show the new scores, tagged <strong>re-scored</strong>.
+This scores it against the last run (what it learned from all your labels
+then) and doesn't learn again, so it's an estimate: <strong>Rerun</strong> checks it
+against all your labels. If the new scores no longer flag it, the issue line
+says <strong>Looks OK now</strong> and its box on the video fades. It keeps its place in
+the list until you <strong>Rerun</strong>, so <span class="keys"><kbd class="key-arrow-left">Left</kbd></span> / <span class="keys"><kbd class="key-arrow-right">Right</kbd></span> don't skip around.</p>
+<p>The tabs at the top right choose the order of the flagged frames:</p>
+<table>
+<thead>
+<tr>
+<th>Tab</th>
+<th>Order</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Severity</strong></td>
+<td>Definite errors first, then by the worst score (the panel's usual order)</td>
+</tr>
+<tr>
+<td><strong>Detectors</strong></td>
+<td>Frames where the most checks agree first: how many of the anomaly score, the GMM score and the rule checks flag the frame's worst instance. Ties go by the worst score</td>
+</tr>
+<tr>
+<td><strong>Frame</strong></td>
+<td>In frame order (by video, then frame)</td>
+</tr>
+</tbody>
+</table>
+<p>The order you pick also orders the panel's list and <span class="keys"><kbd class="key-f">F</kbd></span> / <span class="keys"><kbd class="key-shift">Shift</kbd><span>+</span><kbd class="key-f">F</kbd></span>.
+Switching keeps you on the frame you're on.</p>
 <h3 id="ignoring-a-flag">Ignoring a flag<a class="headerlink" href="#ignoring-a-flag" title="Permanent link">&para;</a></h3>
 <p>Some flags are false alarms: an animal really was curled up, or two really
 were touching. To ignore one, select the instance (<span class="keys"><kbd class="key-f">F</kbd></span> already does) and
