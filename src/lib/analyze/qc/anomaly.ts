@@ -20,6 +20,7 @@
  */
 import type { Labels, LabeledFrame, Instance } from "@/types";
 import {
+  cleanFeatureRow,
   LabelQCDetector,
   yieldToEvent,
   type AsyncComputeOptions,
@@ -69,6 +70,11 @@ export interface AnomalyInstance {
   gmmIssue: string | null;
   /** Skeleton node index the GMM blames when it flags this instance; -1 if none; null otherwise. */
   gmmNode: number | null;
+  /**
+   * Re-scored after an edit against the run's fitted model ({@link
+   * AnomalyResult.rescore}), not by a full run: approximate.
+   */
+  rescored?: boolean;
 }
 
 export interface AnomalyResult {
@@ -76,6 +82,12 @@ export interface AnomalyResult {
   featureNames: string[];
   /** GMM flag threshold (e.g. 0.95); null when the GMM didn't run. */
   gmmThreshold: number | null;
+  /**
+   * Score one instance's current pose against this run's fitted model, without
+   * refitting (marked `rescored`). null when the pose is as it was at the run
+   * or the instance wasn't scored. Absent on results not computed here.
+   */
+  rescore?: (videoIdx: number, frameIdx: number, instIdx: number, pose: Pose) => AnomalyInstance | null;
 }
 
 /** How one instance reads once both scores are combined. */
@@ -154,22 +166,22 @@ function gather(
   return { frames, allPoses };
 }
 
-/** GMM score, issue and blamed node for one matrix row. */
+/** GMM score, issue and blamed node for one feature row (raw + cleaned). */
 function scoreGmmRow(
   det: LabelQCDetector,
-  row: number,
+  raw: number[],
+  clean: number[],
   pose: Pose,
 ): Pick<AnomalyInstance, "gmmScore" | "gmmIssue" | "gmmNode"> {
   const gmm = det.gmm;
   if (!gmm) return { gmmScore: null, gmmIssue: null, gmmNode: null };
-  const clean = det.cleanMatrix[row];
   const s = gmm.scoreOne(clean);
   const gmmScore = Number.isFinite(s) ? s : 0;
   if (gmmScore < gmm.flagThreshold) return { gmmScore, gmmIssue: null, gmmNode: null };
   // Flagged: name the feature it finds most off, and the node whose removal helps most.
   const feature = det.featureNames[gmm.worstFeature(clean).index] ?? null;
   const sub = issueForFeature(feature);
-  const nn = det.rawMatrix[row][det.featureNames.indexOf("nn_distance")] ?? null;
+  const nn = raw[det.featureNames.indexOf("nn_distance")] ?? null;
   return {
     gmmScore,
     gmmIssue: sub ? `Improbable pose · ${sub}` : "Improbable pose",
@@ -206,21 +218,20 @@ function issueFor(
   };
 }
 
-/** Turn one matrix row into a scored instance. Pure over a fitted detector. */
+/** Turn one feature row (raw + cleaned) into a scored instance. Pure over a fitted detector. */
 function scoreRow(
   det: LabelQCDetector,
-  row: number,
+  raw: number[],
+  clean: number[],
   pose: Pose,
   videoIdx: number,
   frameIdx: number,
   instIdx: number,
 ): AnomalyInstance {
-  const s = det.detector ? det.detector.scoreOne(det.cleanMatrix[row]) : 0;
+  const s = det.detector ? det.detector.scoreOne(clean) : 0;
   const score = Number.isFinite(s) ? s : 0;
   const contributions: Record<string, number> = {};
-  det.featureNames.forEach(
-    (n, j) => (contributions[n] = det.rawMatrix[row][j] ?? 0),
-  );
+  det.featureNames.forEach((n, j) => (contributions[n] = raw[j] ?? 0));
   const top = topIssue(contributions);
   return {
     videoIdx,
@@ -231,7 +242,34 @@ function scoreRow(
     topIssue: top.issue,
     ...issueFor(det, pose, top.feature, contributions),
     contributions,
-    ...scoreGmmRow(det, row, pose),
+    ...scoreGmmRow(det, raw, clean, pose),
+  };
+}
+
+const samePose = (a: Pose, b: Pose) =>
+  a.length === b.length &&
+  a.every((p, i) => p.every((v, j) => v === b[i][j] || (Number.isNaN(v) && Number.isNaN(b[i][j]))));
+
+/**
+ * {@link AnomalyResult.rescore} over a fitted detector: an edited pose gets
+ * fresh features and the run's z-score and GMM scoring. Its nearest-pose
+ * distance leaves out its own pose from the run, as the run's did (else a
+ * small fix would look like a near-duplicate).
+ */
+function makeRescore(det: LabelQCDetector, frames: FrameRef[], allPoses: Pose[]): AnomalyResult["rescore"] {
+  const rows = new Map<string, number>();
+  let row = 0;
+  for (const f of frames)
+    for (let instIdx = 0; instIdx < f.count; instIdx++, row++)
+      rows.set(`${f.videoIdx}:${f.frameIdx}:${instIdx}`, row);
+  const fitIdx = new Map(det.fitRows.map((r, i) => [r, i]));
+  return (videoIdx, frameIdx, instIdx, pose) => {
+    const r = rows.get(`${videoIdx}:${frameIdx}:${instIdx}`);
+    if (r === undefined || samePose(pose, allPoses[r])) return null;
+    const nn = det.nn.score(pose, fitIdx.get(r) ?? -1).nnDistance;
+    const raw = det.extractFeatures(pose, Number.isFinite(nn) ? nn : 0);
+    const a = scoreRow(det, raw, cleanFeatureRow(raw), pose, videoIdx, frameIdx, instIdx);
+    return { ...a, rescored: true };
   };
 }
 
@@ -264,8 +302,15 @@ export function scoreLabelsAnomaly(
   let row = 0;
   for (const f of frames)
     for (let instIdx = 0; instIdx < f.count; instIdx++, row++)
-      instances.push(scoreRow(det, row, allPoses[row], f.videoIdx, f.frameIdx, instIdx));
-  return { instances, featureNames: det.featureNames, gmmThreshold: det.gmm?.flagThreshold ?? null };
+      instances.push(
+        scoreRow(det, det.rawMatrix[row], det.cleanMatrix[row], allPoses[row], f.videoIdx, f.frameIdx, instIdx),
+      );
+  return {
+    instances,
+    featureNames: det.featureNames,
+    gmmThreshold: det.gmm?.flagThreshold ?? null,
+    rescore: makeRescore(det, frames, allPoses),
+  };
 }
 
 /**
@@ -311,7 +356,9 @@ export async function scoreLabelsAnomalyAsync(
     for (let instIdx = 0; instIdx < f.count; instIdx++) {
       if (signal?.aborted)
         throw new DOMException("QC analysis cancelled", "AbortError");
-      instances.push(scoreRow(det, row, allPoses[row], f.videoIdx, f.frameIdx, instIdx));
+      instances.push(
+        scoreRow(det, det.rawMatrix[row], det.cleanMatrix[row], allPoses[row], f.videoIdx, f.frameIdx, instIdx),
+      );
       row++;
       if (row % (batchSize * 8) === 0) {
         onProgress?.(0.9 + (row / n) * 0.1);
@@ -320,5 +367,10 @@ export async function scoreLabelsAnomalyAsync(
     }
   }
   onProgress?.(1);
-  return { instances, featureNames: det.featureNames, gmmThreshold: det.gmm?.flagThreshold ?? null };
+  return {
+    instances,
+    featureNames: det.featureNames,
+    gmmThreshold: det.gmm?.flagThreshold ?? null,
+    rescore: makeRescore(det, frames, allPoses),
+  };
 }

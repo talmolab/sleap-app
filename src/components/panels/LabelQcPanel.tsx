@@ -25,6 +25,7 @@ import {
   goToQcEntry,
   hasOpenFlags,
   hideOkFlags,
+  liveQcEntry,
   markQcOkAndAdvance,
   openQcReview,
   qcFrameKey,
@@ -53,6 +54,7 @@ export function LabelQcPanel() {
     dismissed,
     showDismissed,
     reviewOrder,
+    rescored,
     run,
     cancel,
     setThreshold,
@@ -74,7 +76,9 @@ export function LabelQcPanel() {
   const okCount = useMemo(() => full.reduce((n, e) => n + e.ok.length, 0), [full]);
   const videoIdx = labels && video ? labels.videos.indexOf(video) : -1;
   const pos = queue.findIndex((e) => e.videoIdx === videoIdx && e.frameIdx === frameIdx);
-  const current = pos >= 0 ? queue[pos] : null;
+  // The current frame's card shows instances re-scored in Review with their new scores.
+  const current =
+    pos >= 0 ? liveQcEntry(queue[pos], rescored, threshold, anomaly?.gmmThreshold ?? null) : null;
   const multiVideo = (labels?.videos.length ?? 0) > 1;
   const nodeNames = skeleton?.nodeNames ?? [];
 
@@ -185,7 +189,9 @@ export function LabelQcPanel() {
       })}
       {e.anomalies.map(({ a, v }) => {
         const node = a.gmmNode != null && a.gmmNode >= 0 ? nodeNames[a.gmmNode] : null;
-        const ok = e.ok.includes(a.instIdx);
+        // Re-scored in Review and no longer flagged: greyed like an ignored one.
+        const fixed = !!a.rescored && !v.flagged;
+        const ok = e.ok.includes(a.instIdx) || fixed;
         return (
           // Not a <button>: it holds the Mark OK / Undo buttons.
           <div
@@ -211,14 +217,24 @@ export function LabelQcPanel() {
                   ok ? "bg-muted text-muted-foreground" : "bg-amber-500/15 text-amber-600",
                 )}
               >
-                {v.by === "gmm" ? "GMM" : v.by === "both" ? "Anomaly + GMM" : "Anomaly"}
+                {v.by === "gmm" ? "GMM" : v.by === "both" ? "Anomaly + GMM" : v.by ? "Anomaly" : "OK now"}
               </span>
               inst {a.instIdx + 1}
               {node && <span className="truncate text-muted-foreground">· {node}</span>}
+              {a.rescored && (
+                <span
+                  className="rounded bg-sky-500/15 px-1 text-[10px] text-sky-400"
+                  title="Scored against the last run; Rerun to re-check against all labels."
+                >
+                  re-scored
+                </span>
+              )}
               {okControl(e, a.instIdx)}
             </div>
             <div className={cn(ok && "opacity-60")}>
-              <p className="mt-0.5 mb-1 text-[11px] text-muted-foreground">{v.issue}</p>
+              <p className="mt-0.5 mb-1 text-[11px] text-muted-foreground">
+                {fixed ? "Looks OK now" : v.issue}
+              </p>
               {scoreBar("Anomaly", a.score, threshold)}
               {scoreBar("GMM", a.gmmScore, anomaly?.gmmThreshold ?? null)}
             </div>

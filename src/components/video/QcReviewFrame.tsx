@@ -6,6 +6,8 @@
  * frame, which only adds a header (position, score, ordering tabs) and a
  * footer (issue, Prev / Delete instance / Ignore / Next) while
  * `qcStore.reviewOpen`. So dragging nodes, V, ⌘Z and zoom all work as usual.
+ * Scores shown are live: an instance edited here shows its re-score
+ * (`qcStore.rescored`) in place of the run's, marked "re-scored".
  * The element tree stays the same open or closed, so the canvas never remounts.
  */
 import { useMemo, type ReactNode } from "react";
@@ -16,8 +18,11 @@ import { useAppStore } from "@/stores/appStore";
 import {
   buildQcQueue,
   hideOkFlags,
+  liveQcEntry,
   qcFrameKey,
   qcIsOk,
+  qcUnplacedProblemNode,
+  refocusQcReview,
   sortQcQueue,
   stepQcQueue,
   useQcStore,
@@ -27,6 +32,15 @@ import { commandContext, DeleteSelectedInstance, MarkQcFlagOk } from "@/commands
 import { QC_KIND_LABEL, SOFT_QC_KINDS } from "@/lib/analyze/labelQc";
 import { qcIssueText } from "@/lib/qcReview";
 import { formatShortcut } from "@/lib/formatShortcut";
+
+const RESCORED_TITLE = "Scored against the last run; Rerun to re-check against all labels.";
+
+/** Marks scores re-computed after an edit, against the last run. */
+const RescoredTag = () => (
+  <span className="rounded bg-sky-500/15 px-1 text-[10px] text-sky-400" title={RESCORED_TITLE}>
+    re-scored
+  </span>
+);
 
 const ORDERS: { order: QcReviewOrder; label: string; title: string }[] = [
   { order: "severity", label: "Severity", title: "Definite errors first, then the worst score" },
@@ -62,7 +76,11 @@ export function QcReviewFrame({ children }: { children: ReactNode }) {
         aria-label={open ? "Label QC Review" : undefined}
       >
         {open && <ReviewHeader />}
-        {children}
+        {/* Always rendered, so the canvas's parent never changes. */}
+        <div className="relative flex min-h-0 flex-1 flex-col">
+          {children}
+          {open && <UnplacedHint />}
+        </div>
         {open && <ReviewFooter />}
       </div>
     </>
@@ -88,15 +106,22 @@ function useReviewQueue() {
   }, [findings, anomaly, threshold, labels, dismissed, showDismissed, order, editSeq]);
 }
 
-/** The flagged frame on screen and its position in the queue (-1 when not flagged). */
+/**
+ * The flagged frame on screen and its position in the queue (-1 when not
+ * flagged), with re-scored instances' current scores swapped in.
+ */
 function useCurrentEntry() {
   const queue = useReviewQueue();
   const labels = useAppStore((s) => s.labels);
   const video = useAppStore((s) => s.video);
   const frameIdx = useAppStore((s) => s.frameIdx);
+  const rescored = useQcStore((s) => s.rescored);
+  const threshold = useQcStore((s) => s.threshold);
+  const gmmThreshold = useQcStore((s) => s.anomaly?.gmmThreshold ?? null);
   const videoIdx = labels && video ? labels.videos.indexOf(video) : -1;
   const pos = queue.findIndex((e) => e.videoIdx === videoIdx && e.frameIdx === frameIdx);
-  return { queue, pos, entry: pos >= 0 ? queue[pos] : null, videoIdx, frameIdx };
+  const entry = pos >= 0 ? liveQcEntry(queue[pos], rescored, threshold, gmmThreshold) : null;
+  return { queue, pos, entry, videoIdx, frameIdx };
 }
 
 function ReviewHeader() {
@@ -106,10 +131,14 @@ function ReviewHeader() {
   const order = useQcStore((s) => s.reviewOrder);
   const setOrder = useQcStore((s) => s.setReviewOrder);
   const edited = useQcStore((s) => s.editedFrames.has(qcFrameKey(videoIdx, frameIdx)));
-  const flags = entry
-    ? entry.rules.filter((r) => r.instanceIdx === undefined || !entry.ok.includes(r.instanceIdx))
-        .length + entry.anomalies.filter(({ a }) => !entry.ok.includes(a.instIdx)).length
-    : 0;
+  // Live: a re-scored instance counts with its new scores (or not, once fixed).
+  const open = entry?.anomalies.filter(({ a, v }) => !entry.ok.includes(a.instIdx) && v.flagged) ?? [];
+  const openRules = entry?.rules.filter(
+    (r) => r.instanceIdx === undefined || !entry.ok.includes(r.instanceIdx),
+  ) ?? [];
+  const flags = openRules.length + open.length;
+  const worst = Math.max(0, ...open.map(({ v }) => v.score));
+  const rescored = !!entry?.anomalies.some(({ a }) => a.rescored);
 
   return (
     <div className="flex shrink-0 items-center gap-2 border-b border-border px-3 py-1.5 text-xs">
@@ -121,13 +150,21 @@ function ReviewHeader() {
         <span
           className={cn(
             "rounded px-1.5 font-mono text-[11px] tabular-nums",
-            entry.definite || entry.worst >= threshold
-              ? "bg-red-500/20 text-red-400"
-              : "bg-amber-500/15 text-amber-500",
+            flags === 0
+              ? "bg-muted text-muted-foreground"
+              : entry.definite || worst >= threshold
+                ? "bg-red-500/20 text-red-400"
+                : "bg-amber-500/15 text-amber-500",
           )}
-          title={entry.definite ? "A definite error" : "Worst score on this frame"}
+          title={
+            flags === 0
+              ? "Nothing on this frame flags any more"
+              : entry.definite
+                ? "A definite error"
+                : "Worst score on this frame"
+          }
         >
-          {entry.definite ? "Error" : entry.worst.toFixed(2)}
+          {flags === 0 ? "OK" : entry.definite ? "Error" : worst.toFixed(2)}
         </span>
       )}
       {entry && (
@@ -142,7 +179,9 @@ function ReviewHeader() {
       <span className="font-mono tabular-nums text-muted-foreground">
         {multiVideo && `video ${videoIdx + 1} · `}frame {frameIdx}
       </span>
-      {edited && (
+      {rescored ? (
+        <RescoredTag />
+      ) : edited && (
         <span
           className="rounded bg-amber-500/15 px-1 text-[10px] text-amber-600"
           title="Edited since the QC run. Rerun to re-check."
@@ -161,7 +200,10 @@ function ReviewHeader() {
             role="tab"
             aria-selected={order === o.order}
             title={o.title}
-            onClick={() => setOrder(o.order)}
+            onClick={() => {
+              setOrder(o.order);
+              refocusQcReview();
+            }}
             className={cn(
               "rounded px-2 py-0.5 text-[11px]",
               order === o.order
@@ -187,6 +229,26 @@ function ReviewHeader() {
   );
 }
 
+/**
+ * Over the canvas (not a row of its own, so the canvas keeps its size and
+ * view): the flag's node has no position yet, and a click places it.
+ */
+function UnplacedHint() {
+  const { entry } = useCurrentEntry();
+  const lf = useAppStore((s) => s.labeledFrame);
+  const selected = useAppStore((s) => s.instance);
+  const skeleton = useAppStore((s) => s.skeleton);
+  // Placing a node edits the pose in place: re-read it after each edit.
+  useAppStore((s) => s.editSeq);
+  const node = qcUnplacedProblemNode(entry, lf, selected);
+  if (node === null) return null;
+  return (
+    <div className="pointer-events-none absolute bottom-2 left-1/2 z-30 -translate-x-1/2 rounded-md bg-black/75 px-2.5 py-1 text-xs text-amber-400">
+      <b>{skeleton?.nodeNames[node] ?? `node ${node + 1}`}</b> isn&apos;t placed (click to place it)
+    </div>
+  );
+}
+
 function ReviewFooter() {
   const { entry } = useCurrentEntry();
   const lf = useAppStore((s) => s.labeledFrame);
@@ -200,20 +262,24 @@ function ReviewFooter() {
   const flagged = entry?.anomalies.find(({ a }) => a.instIdx === instIdx);
   const rules = entry?.rules.filter((r) => r.instanceIdx === instIdx) ?? [];
   const ignorable = !!entry && instIdx >= 0 && !entry.ok.includes(instIdx) && (!!flagged || rules.length > 0);
-  const issue = flagged
-    ? qcIssueText(flagged.a, flagged.v, skeleton?.nodeNames ?? [])
-    : rules[0]
-      ? rules[0].message
-      : entry
-        ? "Select a flagged instance (outlined in red)."
-        : "No flags on this frame.";
+  // Re-scored after an edit and no longer flagged (rules aren't re-checked).
+  const looksOk = !!flagged?.a.rescored && !flagged.v.flagged && rules.length === 0;
+  const issue = looksOk
+    ? "Looks OK now"
+    : flagged
+      ? qcIssueText(flagged.a, flagged.v, skeleton?.nodeNames ?? [])
+      : rules[0]
+        ? rules[0].message
+        : entry
+          ? "Select a flagged instance (outlined in red)."
+          : "No flags on this frame.";
 
   const chip = (label: string, score: number | null, cut: number | null) =>
     score != null && (
       <span
         className={cn(
           "rounded border px-1.5 py-px text-[11px]",
-          cut != null && score >= cut
+          !looksOk && cut != null && score >= cut
             ? "border-red-500/40 text-red-400"
             : "border-border text-muted-foreground",
         )}
@@ -228,16 +294,24 @@ function ReviewFooter() {
         <span
           className={cn(
             "flex min-w-0 items-center gap-1.5 truncate",
-            flagged || rules.length > 0 ? "text-foreground" : "text-muted-foreground",
+            looksOk
+              ? "text-green-500"
+              : flagged || rules.length > 0
+                ? "text-foreground"
+                : "text-muted-foreground",
           )}
-          title={issue}
+          title={looksOk ? `${issue}. ${RESCORED_TITLE}` : issue}
         >
           {(flagged || rules.length > 0) && (
-            <span className="h-2 w-2 shrink-0 rounded-full bg-red-500" aria-hidden />
+            <span
+              className={cn("h-2 w-2 shrink-0 rounded-full", looksOk ? "bg-green-500" : "bg-red-500")}
+              aria-hidden
+            />
           )}
           <span className="truncate">{issue}</span>
         </span>
         <span className="ml-auto flex shrink-0 items-center gap-1">
+          {flagged?.a.rescored && <RescoredTag />}
           {rules.map((r, i) => (
             <span
               key={i}
@@ -289,7 +363,7 @@ function ReviewFooter() {
             </Button>
           </div>
           <span className="text-[10px] text-muted-foreground">
-            drag a point to fix it · scroll to zoom · V hide node ·{" "}
+            drag a point to fix it · scroll to zoom · 0 refit · V hide node ·{" "}
             {formatShortcut("$mod+KeyZ")} undo · Esc close
           </span>
         </div>

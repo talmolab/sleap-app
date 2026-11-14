@@ -131,13 +131,31 @@ to zoom.
   e.g. *Unusual joint angle (decreased) · thorax*, with its **Anomaly** and
   **GMM** scores (red when over their thresholds) and any errors QC found on
   it.
+- Each flag selects its instance and the node behind it: the joint of an
+  unusual angle, the first node of an edge or pair, or the node QC blames. So
+  you can drag it straight away, or press ++v++ to hide it.
+- If that node isn't placed, a line above the issue says so (**wingL** isn't
+  placed (click to place it)) and a click on the image places it (++cmd+z++
+  undoes it). Only a click places it: dragging pans the view, and a press
+  held longer than about a third of a second does nothing. (This now applies
+  to placing nodes outside Review too.)
 - ++left++ / ++right++ (or **‹ Prev** / **Next ›**) go to the previous / next
   flagged frame instead of the previous / next frame.
+- ++0++ zooms back to the flagged instance.
 - ++3++ (or **Ignore**) ignores the selected instance's flags and goes to the
   next one, as [below](#ignoring-a-flag).
 - **Delete instance** deletes the selected instance, for a duplicate. ++cmd+z++
   brings it back.
 - ++esc++, the **×** button, or a click on the dimmed area closes the window.
+
+When you edit a flagged instance in the Review window (drag a node, place
+one, ++v++, undo or redo), QC scores it again right away and the header, the
+issue line and the panel's card show the new scores, tagged **re-scored**.
+This scores it against the last run (what it learned from all your labels
+then) and doesn't learn again, so it's an estimate: **Rerun** checks it
+against all your labels. If the new scores no longer flag it, the issue line
+says **Looks OK now** and its box on the video fades. It keeps its place in
+the list until you **Rerun**, so ++left++ / ++right++ don't skip around.
 
 The tabs at the top right choose the order of the flagged frames:
 

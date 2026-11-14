@@ -235,6 +235,11 @@ export function useKeyboardShortcuts() {
         e.preventDefault();
         commandContext.execute(MarkQcFlagOk);
       },
+      // Label QC Review only: 0 zooms back to the flagged instance.
+      Digit0: (e) => {
+        if (isTextInput(e)) return;
+        if (handleQcReviewKey("refit")) e.preventDefault();
+      },
 
       // Mark Frame as Negative (N, as in SLEAP) — asks first if it would remove instances.
       [DEFAULT_SHORTCUTS["mark negative"]]: (e) => {

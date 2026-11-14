@@ -31,5 +31,6 @@ export function qcIssueText(a: AnomalyInstance, v: AnomalyVerdict, nodeNames: st
 export const QC_REVIEW_KEYS: { action: string; keys: string }[] = [
   { action: "Previous / next flag", keys: "← / →" },
   { action: "Ignore the flag and go to the next", keys: "3" },
+  { action: "Zoom back to the flagged instance", keys: "0" },
   { action: "Close the Review window", keys: "Esc" },
 ];

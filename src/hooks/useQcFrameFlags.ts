@@ -11,6 +11,7 @@ import { useAppStore } from "@/stores/appStore";
 import {
   buildQcQueue,
   hideOkFlags,
+  liveQcEntry,
   qcFrameKey,
   qcIsOk,
   useQcStore,
@@ -24,7 +25,9 @@ import type { LabeledFrame } from "@/types";
  * `userInstances`; the canvas draws `instances` (user + predicted), so map
  * through the instance object. An anomaly is drawn the way its issue reads
  * (an edge, a joint angle, or nodes), a GMM flag rings the node it blames.
- * Instances marked OK (`entry.ok`) draw faded, like a stale frame.
+ * Instances marked OK (`entry.ok`) draw faded, like a stale frame. A
+ * re-scored instance (Review) is current even on an edited frame, and fades
+ * once its new scores no longer flag it.
  */
 export function qcCanvasFlags(
   entry: QcQueueEntry,
@@ -36,6 +39,9 @@ export function qcCanvasFlags(
     edges: [number, number][];
     angles: [number, number, number][];
     ok: boolean;
+    rescored: boolean;
+    /** Re-scored, no longer flagged, and no rule finding on it. */
+    fixed: boolean;
   }
   const byIdx = new Map<number, Marks>();
   const flag = (userIdx: number | undefined) => {
@@ -45,7 +51,14 @@ export function qcCanvasFlags(
     if (idx < 0) return null;
     let f = byIdx.get(idx);
     if (!f) {
-      f = { nodes: new Set(), edges: [], angles: [], ok: entry.ok.includes(userIdx) };
+      f = {
+        nodes: new Set(),
+        edges: [],
+        angles: [],
+        ok: entry.ok.includes(userIdx),
+        rescored: false,
+        fixed: false,
+      };
       byIdx.set(idx, f);
     }
     return f;
@@ -54,6 +67,10 @@ export function qcCanvasFlags(
   for (const { a, v } of entry.anomalies) {
     const f = flag(a.instIdx);
     if (!f) continue;
+    if (a.rescored) {
+      f.rescored = true;
+      f.fixed = !v.flagged && !entry.rules.some((r) => r.instanceIdx === a.instIdx);
+    }
     if (v.by === "anomaly" || v.by === "both") {
       const n = a.issueNodes;
       if (a.issueKind === "edge" && n.length === 2) f.edges.push([n[0], n[1]]);
@@ -63,12 +80,12 @@ export function qcCanvasFlags(
     if ((v.by === "gmm" || v.by === "both") && a.gmmNode != null && a.gmmNode >= 0)
       f.nodes.add(a.gmmNode);
   }
-  return [...byIdx].map(([instanceIdx, { nodes, edges, angles, ok }]) => ({
+  return [...byIdx].map(([instanceIdx, { nodes, edges, angles, ok, rescored, fixed }]) => ({
     instanceIdx,
     nodes: [...nodes],
     edges,
     angles,
-    stale: stale || ok,
+    stale: (stale && !rescored) || ok || fixed,
   }));
 }
 
@@ -100,6 +117,7 @@ export function useQcFrameFlags(): QcFrameOverlay {
   const editedFrames = useQcStore((s) => s.editedFrames);
   const dismissed = useQcStore((s) => s.dismissed);
   const showDismissed = useQcStore((s) => s.showDismissed);
+  const rescored = useQcStore((s) => s.rescored);
   // Edits change pose fingerprints, so OK marks are re-matched after each.
   const editSeq = useAppStore((s) => s.editSeq);
 
@@ -119,11 +137,12 @@ export function useQcFrameFlags(): QcFrameOverlay {
     if (!show || state !== "done" || !labels || qcLabels !== labels || !video || !labeledFrame)
       return NONE;
     const key = qcFrameKey(labels.videos.indexOf(video), labeledFrame.frameIdx);
-    const entry = byFrame.get(key);
-    if (!entry) return NONE;
+    const run = byFrame.get(key);
+    if (!run) return NONE;
+    const entry = liveQcEntry(run, rescored, threshold, anomaly?.gmmThreshold ?? null);
     const flags = qcCanvasFlags(entry, labeledFrame, editedFrames.has(key));
     const sel = selected ? labeledFrame.instances.indexOf(selected) : -1;
     const focusIdx = flags.some((f) => f.instanceIdx === sel) ? sel : null;
     return { flags, focusIdx };
-  }, [show, state, labels, qcLabels, video, labeledFrame, selected, byFrame, editedFrames]);
+  }, [show, state, labels, qcLabels, video, labeledFrame, selected, byFrame, editedFrames, rescored, threshold, anomaly]);
 }

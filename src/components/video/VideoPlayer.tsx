@@ -69,7 +69,12 @@ import {
   AddEdgeCommand,
   RenameNodeCommand,
 } from "../../commands";
-import { nodeClickAction, instanceDoubleClickAction } from "@/lib/canvasGestures";
+import {
+  nodeClickAction,
+  instanceDoubleClickAction,
+  isPlacementClick,
+  PLACE_CLICK_MAX_MOVE_PX,
+} from "@/lib/canvasGestures";
 import {
   buildBuilderRenderedInstance,
   renderPenStroke,
@@ -128,6 +133,47 @@ export function nextBuilderNodeName(nodes: { name: string }[]): string {
   let k = 0;
   while (names.has(`node_${k}`)) k++;
   return `node_${k}`;
+}
+
+/**
+ * Place the selected user instance's placement target at scene (x, y), with an
+ * undo snapshot, then move on to its next unplaced node (or leave placement
+ * mode). In the Label QC Review window only the flag's own node is placed.
+ */
+export function placeTargetNode(x: number, y: number): void {
+  const store = useAppStore.getState();
+  const inst = store.instance;
+  const targetIdx = store.placementNodeIdx;
+  if (store.labelingMode !== "place" || !inst || "score" in inst) return;
+  if (targetIdx === null || targetIdx < 0 || targetIdx >= inst.points.length) return;
+  commandContext.execute(BeginEdit);
+  // Click is in crop-local image space; store back in source coords.
+  inst.points[targetIdx].xy = toSourceCoords(store.video, x, y);
+  inst.points[targetIdx].visible = true;
+  hintIfFirstNodeConfirm(inst.points[targetIdx].complete);
+  inst.points[targetIdx].complete = true;
+  store.markChanged();
+  store.touchFrame();
+
+  // Auto-advance to next unplaced node (search forward, then wrap)
+  const pts = inst.points;
+  const count = pts.length;
+  let nextUnplaced = -1;
+  for (let offset = 1; offset < count; offset++) {
+    const i = (targetIdx + offset) % count;
+    if (isNaN(pts[i].xy[0]) || isNaN(pts[i].xy[1])) {
+      nextUnplaced = i;
+      break;
+    }
+  }
+  if (nextUnplaced !== -1 && !useQcStore.getState().reviewOpen) {
+    store.set("placementNodeIdx", nextUnplaced);
+  } else {
+    // All nodes placed (or Review's one node) — exit placement mode.
+    store.exitPlacementMode();
+  }
+
+  store.bumpOverlayVersion();
 }
 
 export function VideoPlayer() {
@@ -331,6 +377,16 @@ export function VideoPlayer() {
 
   // Track drag-start screen position for anchoring tooltip + inset
   const dragStartClient = useRef<{ clientX: number; clientY: number } | null>(null);
+  // A press in placement mode: places the node on release if it was a click
+  // (not a drag, which pans, or a long press). `moved` = farthest it went (px).
+  const pendingPlace = useRef<{
+    clientX: number;
+    clientY: number;
+    t: number;
+    x: number;
+    y: number;
+    moved: number;
+  } | null>(null);
 
   // Track cursor scene position for placement-mode inset
   const cursorScene = useRef<{ x: number; y: number } | null>(null);
@@ -1272,6 +1328,18 @@ export function VideoPlayer() {
     setMarqueeStart(null);
     setMarqueeEnd(null);
   }, [frameIdx, labeledFrame]);
+
+  // Label QC Review: select the node behind the flag once its instance is on
+  // screen (after the frame-change clear above, which runs first).
+  const qcNodeFocus = useQcStore((s) => s.nodeFocus);
+  useEffect(() => {
+    if (!qcNodeFocus || !labeledFrame) return;
+    const instanceIdx = labeledFrame.instances.indexOf(qcNodeFocus.instance);
+    if (instanceIdx < 0) return;
+    useQcStore.setState({ nodeFocus: null });
+    setSelectedNodes(new Set([makeNodeKey(instanceIdx, qcNodeFocus.node)]));
+    useAppStore.getState().bumpOverlayVersion();
+  }, [qcNodeFocus, labeledFrame]);
 
   // Keep the scratch `builderPositions` index-aligned with the skeleton node
   // list while building. AddNode also syncs inline, but this catches node-count
@@ -2282,7 +2350,11 @@ export function VideoPlayer() {
       useAppStore.getState().exitPlacementMode();
       return;
     }
-    // Reset placement target to first unplaced node of new instance
+    // Keep a target that is still unplaced (Label QC Review picks its node);
+    // otherwise reset to the first unplaced node of the new instance.
+    const target = useAppStore.getState().placementNodeIdx;
+    const targetXy = target !== null ? selectedInstance.points[target]?.xy : undefined;
+    if (targetXy && (isNaN(targetXy[0]) || isNaN(targetXy[1]))) return;
     const firstNaN = selectedInstance.points.findIndex(
       (p) => isNaN(p.xy[0]) || isNaN(p.xy[1])
     );
@@ -2435,43 +2507,16 @@ export function VideoPlayer() {
       const currentInstance = useAppStore.getState().instance;
       shiftHeldOnMouseDown.current = e.shiftKey;
 
-      // Node placement mode: place the target node (with undo snapshot)
+      // Node placement mode: a click places the target node (on release, with
+      // an undo snapshot); a drag pans instead, and a long press does nothing.
       const store = useAppStore.getState();
       if (store.labelingMode === "place" && currentInstance && !("score" in currentInstance)) {
         const targetIdx = store.placementNodeIdx;
         if (targetIdx !== null && targetIdx >= 0 && targetIdx < currentInstance.points.length) {
-          commandContext.execute(BeginEdit);
-          // Click is in crop-local image space; store back in source coords.
-          currentInstance.points[targetIdx].xy = toSourceCoords(
-            useAppStore.getState().video,
-            x,
-            y
-          );
-          currentInstance.points[targetIdx].visible = true;
-          hintIfFirstNodeConfirm(currentInstance.points[targetIdx].complete);
-          currentInstance.points[targetIdx].complete = true;
-          store.markChanged();
-          store.touchFrame();
-
-          // Auto-advance to next unplaced node (search forward, then wrap)
-          const pts = currentInstance.points;
-          const count = pts.length;
-          let nextUnplaced = -1;
-          for (let offset = 1; offset < count; offset++) {
-            const i = (targetIdx + offset) % count;
-            if (isNaN(pts[i].xy[0]) || isNaN(pts[i].xy[1])) {
-              nextUnplaced = i;
-              break;
-            }
-          }
-          if (nextUnplaced !== -1) {
-            store.set("placementNodeIdx", nextUnplaced);
-          } else {
-            // All nodes placed — exit placement mode.
-            store.exitPlacementMode();
-          }
-
-          store.bumpOverlayVersion();
+          e.preventDefault();
+          pendingPlace.current = { clientX: e.clientX, clientY: e.clientY, t: performance.now(), x, y, moved: 0 };
+          setIsPanning(true);
+          setPanStart({ x: e.clientX - panX, y: e.clientY - panY });
           return;
         }
       }
@@ -2737,6 +2782,12 @@ export function VideoPlayer() {
 
       // Handle panning
       if (isPanning) {
+        // A placement press only pans once it moves past the click threshold.
+        const pend = pendingPlace.current;
+        if (pend) {
+          pend.moved = Math.max(pend.moved, Math.hypot(e.clientX - pend.clientX, e.clientY - pend.clientY));
+          if (pend.moved <= PLACE_CLICK_MAX_MOVE_PX) return;
+        }
         const rawPx = e.clientX - panStart.x;
         const rawPy = e.clientY - panStart.y;
         const constrained = constrainPan(rawPx, rawPy, zoom);
@@ -2907,6 +2958,11 @@ export function VideoPlayer() {
       useAppStore.getState().bumpOverlayVersion();
       return;
     }
+
+    // Placement mode: a click (not a drag or long press) places the node.
+    const pend = pendingPlace.current;
+    pendingPlace.current = null;
+    if (pend && isPlacementClick(pend.moved, performance.now() - pend.t)) placeTargetNode(pend.x, pend.y);
 
     // Area-delete mode: execute the delete command
     if (isAreaDeleting && areaDeleteStart && areaDeleteEnd) {
@@ -3334,7 +3390,7 @@ export function VideoPlayer() {
           onMouseDown={handleMouseDown}
           onMouseMove={handleMouseMove}
           onMouseUp={handleMouseUp}
-          onMouseLeave={() => { handleMouseUp(); setHoveredNode(null); setHoveredInstanceIdx(null); cursorScene.current = null; }}
+          onMouseLeave={() => { pendingPlace.current = null; handleMouseUp(); setHoveredNode(null); setHoveredInstanceIdx(null); cursorScene.current = null; }}
           onDoubleClick={handleDoubleClick}
           onContextMenu={handleContextMenu}
         />

@@ -271,10 +271,13 @@ export class NearestNeighborScorer {
     return this;
   }
 
-  /** Nearest-neighbor distance of a pose against the reference set. */
-  score(pose: Pose): NnResult {
+  /**
+   * Nearest-neighbor distance of a pose against the reference set, leaving out
+   * reference `exclude` (e.g. the same instance's pose before an edit).
+   */
+  score(pose: Pose, exclude = -1): NnResult {
     const q = flat(this.normalize ? normalizePose(pose) : pose);
-    return (this._tree as KdTree).nearest(q, -1);
+    return (this._tree as KdTree).nearest(q, exclude);
   }
 
   /** Leave-one-out NN distance for every reference pose. */
