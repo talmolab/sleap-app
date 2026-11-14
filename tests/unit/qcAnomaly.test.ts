@@ -8,6 +8,7 @@
  * github.com/alexwu-z/sleap-qc-webapp, a lab JS port of Python `sleap.qc`.
  */
 import { describe, it, expect } from "../bun-test";
+import { topIssue } from "@/lib/analyze/qc/explain";
 import {
   loadSlp,
   Skeleton,
@@ -75,6 +76,33 @@ describe("scoreLabelsAnomaly", () => {
       expect(inst.frameIdx).toBeGreaterThanOrEqual(0);
       expect(inst.instIdx).toBeGreaterThanOrEqual(0);
     }
+  });
+
+  it("names the nodes behind each instance's top issue", async () => {
+    const r = scoreLabelsAnomaly(await loadFixture());
+    const nNodes = 24;
+    for (const i of r.instances) {
+      const feature = topIssue(i.contributions).feature;
+      // Node-localizable features always name nodes; visibility/bbox/NN never do.
+      const localizable = [
+        "max_edge_zscore",
+        "max_angle_zscore",
+        "max_pairwise_zscore",
+        "has_isolated_invisible",
+        "max_centroid_distance",
+      ].includes(feature ?? "");
+      if (localizable) expect(i.issueNodes.length).toBeGreaterThan(0);
+      if (feature === "visibility_rate") expect(i.issueNodes).toEqual([]);
+      if (feature === "max_edge_zscore" || feature === "max_pairwise_zscore")
+        expect(i.issueNodes).toHaveLength(2);
+      if (feature === "max_angle_zscore") expect(i.issueNodes).toHaveLength(3);
+      for (const n of i.issueNodes) {
+        expect(Number.isInteger(n)).toBe(true);
+        expect(n).toBeGreaterThanOrEqual(0);
+        expect(n).toBeLessThan(nNodes);
+      }
+    }
+    expect(r.instances.some((i) => i.issueNodes.length > 0)).toBe(true);
   });
 
   it("is deterministic across runs", async () => {
@@ -226,6 +254,7 @@ describe("anomalyVerdict", () => {
     score,
     confidence: "low",
     topIssue: "Unusual edge length",
+    issueNodes: [],
     contributions: {},
     gmmScore,
     gmmIssue: gmmScore != null && gmmScore >= 0.95 ? "Improbable pose · Unusual pose structure" : null,

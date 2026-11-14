@@ -92,8 +92,18 @@ a run started in either shows up in both.
   scores. Click an instance to select it.
 - Press ++f++ for the next flagged frame and ++shift+f++ for the previous one,
   from anywhere in the app (also **Go ▸ Next Label QC Flag**). They select the
-  worst flagged instance and open the panel.
+  worst flagged instance, zoom to it and open the panel.
 - The **threshold** slider works as it does in the dialog.
+
+On the video, each flagged instance gets a red dashed box, and the nodes behind
+its flag get red dashed circles: an edge's two ends, a joint and the two nodes
+on either side of it, an isolated node, or the node the GMM blames. A few
+anomalies aren't about particular nodes (an unusual share of visible nodes,
+bounding-box size, or distance to the nearest similar pose); those get only
+the box. Going to a flag zooms to its instance, and while a flagged instance
+is selected, the poses around it fade to 25% so it stands out from animals
+overlapping it. All of this shows only while the Label QC panel is open: close
+the panel to label without it.
 
 When you edit a flagged frame, its row and card dim and say **Edited since the
 run**: its flags may already be fixed. Click **Rerun** to re-check everything.
