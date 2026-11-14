@@ -134,11 +134,12 @@ to zoom.
 - Each flag selects its instance and the node behind it: the joint of an
   unusual angle, the first node of an edge or pair, or the node QC blames. So
   you can drag it straight away, or press ++v++ to hide it.
-- If that node isn't placed, a line above the issue says so (**wingL** isn't
-  placed (click to place it)) and a click on the image places it (++cmd+z++
-  undoes it). Only a click places it: dragging pans the view, and a press
-  held longer than about a third of a second does nothing. (This now applies
-  to placing nodes outside Review too.)
+- If that node isn't placed, a note at the bottom of the video says so
+  (**wingL** isn't placed (click to place it)) and a click on the image
+  places it (++cmd+z++ undoes it). In the Review window only a quick click
+  places it: dragging pans the view, and a press held longer than about a
+  third of a second does nothing. (Placing nodes outside Review works as
+  before: a press places the node.)
 - ++left++ / ++right++ (or **‹ Prev** / **Next ›**) go to the previous / next
   flagged frame instead of the previous / next frame.
 - ++0++ zooms back to the flagged instance.

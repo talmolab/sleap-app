@@ -31,7 +31,7 @@ const {
 } = await import("@/stores/qcStore");
 const { anomalyVerdict } = await import("@/lib/analyze/qc/anomaly");
 const { isPlacementClick } = await import("@/lib/canvasGestures");
-const { placeTargetNode } = await import("@/components/video/VideoPlayer");
+const { placeQcReviewNode, VideoPlayer } = await import("@/components/video/VideoPlayer");
 const { qcCanvasFlags, useQcFrameFlags } = await import("@/hooks/useQcFrameFlags");
 const { renderQcFlags } = await import("@/canvas/SkeletonRenderer");
 const { scoreLabelsAnomaly } = await import("@/lib/analyze/qc/anomaly");
@@ -472,7 +472,7 @@ describe("placing an unplaced problem node", () => {
     );
     expect(container.textContent).toContain("thorax isn't placed (click to place it)");
 
-    act(() => placeTargetNode(42, 24));
+    act(() => placeQcReviewNode(42, 24));
     expect(lfAt(3).userInstances[0].points[1].xy).toEqual([42, 24]);
     expect(useAppStore.getState().labelingMode).toBe("select");
     expect(container.textContent).not.toContain("isn't placed");
@@ -489,14 +489,58 @@ describe("placing an unplaced problem node", () => {
     expect(useAppStore.getState().labelingMode).toBe("select");
   });
 
-  it("outside Review, a placement moves on to the next unplaced node as before", () => {
-    const inst = lfAt(3).userInstances[0];
-    inst.points[0].xy = [NaN, NaN];
-    inst.points[2].xy = [NaN, NaN];
-    useAppStore.setState({ frameIdx: 3, labeledFrame: lfAt(3), instance: inst, labelingMode: "place", placementNodeIdx: 0 });
-    placeTargetNode(1, 2);
-    expect(useAppStore.getState().placementNodeIdx).toBe(2);
-    expect(useAppStore.getState().labelingMode).toBe("place");
+  describe("on the canvas", () => {
+    /** The canvas that takes the mouse (the skeleton overlay). */
+    const overlay = (container: HTMLElement) => container.querySelectorAll("canvas")[2] as HTMLCanvasElement;
+    const setupPlacement = (review: boolean) => {
+      const inst = lfAt(3).userInstances[0];
+      inst.points[0].xy = [NaN, NaN];
+      inst.points[2].xy = [NaN, NaN];
+      if (review) {
+        // Review aims at the flag's node (thorax, 1 here).
+        inst.points[1].xy = [NaN, NaN];
+        useAppStore.setState({ frameIdx: 3, labeledFrame: lfAt(3) });
+        openQcReview();
+        expect(useAppStore.getState().placementNodeIdx).toBe(1);
+      } else {
+        useAppStore.setState({
+          frameIdx: 3,
+          labeledFrame: lfAt(3),
+          instance: inst,
+          labelingMode: "place",
+          placementNodeIdx: 0,
+        });
+      }
+      const { container } = render(<VideoPlayer />);
+      return { canvas: overlay(container), editSeq: useAppStore.getState().editSeq };
+    };
+
+    it("outside Review, placement places on press and moves on to the next unplaced node, as before", () => {
+      const { canvas, editSeq } = setupPlacement(false);
+      fireEvent.mouseDown(canvas, { button: 0, clientX: 30, clientY: 40 });
+      expect(useAppStore.getState().editSeq).toBe(editSeq + 1); // placed on press
+      expect(useAppStore.getState().placementNodeIdx).toBe(2);
+      expect(useAppStore.getState().labelingMode).toBe("place");
+    });
+
+    it("in Review, a press places nothing until it is released as a click", () => {
+      const { canvas, editSeq } = setupPlacement(true);
+      fireEvent.mouseDown(canvas, { button: 0, clientX: 30, clientY: 40 });
+      expect(useAppStore.getState().editSeq).toBe(editSeq);
+      fireEvent.mouseUp(canvas, { button: 0, clientX: 30, clientY: 40 });
+      expect(useAppStore.getState().editSeq).toBe(editSeq + 1);
+      expect(Number.isNaN(lfAt(3).userInstances[0].points[1].xy[0])).toBe(false);
+      expect(useAppStore.getState().labelingMode).toBe("select"); // only the flag's node
+    });
+
+    it("in Review, a drag places nothing", () => {
+      const { canvas, editSeq } = setupPlacement(true);
+      fireEvent.mouseDown(canvas, { button: 0, clientX: 30, clientY: 40 });
+      fireEvent.mouseMove(canvas, { button: 0, clientX: 60, clientY: 70 });
+      fireEvent.mouseUp(canvas, { button: 0, clientX: 60, clientY: 70 });
+      expect(useAppStore.getState().editSeq).toBe(editSeq);
+      expect(useAppStore.getState().labelingMode).toBe("place");
+    });
   });
 });
 
@@ -529,7 +573,7 @@ describe("two flagged instances on one frame", () => {
     expect(mode()).toEqual(["place", 1]);
     // The node you clicked stays selected (no forced node selection mid-drag).
     expect(useQcStore.getState().nodeFocus?.instance).not.toBe(lfAt(3).userInstances[1]);
-    placeTargetNode(7, 8);
+    placeQcReviewNode(7, 8);
     expect(lfAt(3).userInstances[1].points[1].xy).toEqual([7, 8]);
     expect(useAppStore.getState().labelingMode).toBe("select");
   });
@@ -544,7 +588,7 @@ describe("two flagged instances on one frame", () => {
     });
     expect(useAppStore.getState().instance).toBe(lfAt(3).userInstances[1]);
     expect(mode()).toEqual(["place", 1]);
-    placeTargetNode(9, 9);
+    placeQcReviewNode(9, 9);
     expect(lfAt(3).userInstances[1].points[1].xy).toEqual([9, 9]);
   });
 
@@ -566,7 +610,7 @@ describe("two flagged instances on one frame", () => {
     act(() => useAppStore.getState().setInstance(lfAt(3).userInstances[0]));
     expect(mode()).toEqual(["place", 1]);
     act(() => useAppStore.getState().setInstance(lfAt(3).userInstances[1]));
-    placeTargetNode(5, 5);
+    placeQcReviewNode(5, 5);
     expect(lfAt(3).userInstances[1].points[2].xy).toEqual([5, 5]);
     expect(Number.isNaN(lfAt(3).userInstances[1].points[0].xy[0])).toBe(true); // only the problem node
     expect(useAppStore.getState().labelingMode).toBe("select");

@@ -136,11 +136,12 @@ export function nextBuilderNodeName(nodes: { name: string }[]): string {
 }
 
 /**
- * Place the selected user instance's placement target at scene (x, y), with an
- * undo snapshot, then move on to its next unplaced node (or leave placement
- * mode). In the Label QC Review window only the flag's own node is placed.
+ * Label QC Review: place the selected instance's problem node (the placement
+ * target) at scene (x, y), with an undo snapshot, then leave placement mode.
+ * Review places on a click's release (see handleMouseUp); ordinary placement
+ * places on press, in handleMouseDown, and moves on to the next unplaced node.
  */
-export function placeTargetNode(x: number, y: number): void {
+export function placeQcReviewNode(x: number, y: number): void {
   const store = useAppStore.getState();
   const inst = store.instance;
   const targetIdx = store.placementNodeIdx;
@@ -154,25 +155,8 @@ export function placeTargetNode(x: number, y: number): void {
   inst.points[targetIdx].complete = true;
   store.markChanged();
   store.touchFrame();
-
-  // Auto-advance to next unplaced node (search forward, then wrap)
-  const pts = inst.points;
-  const count = pts.length;
-  let nextUnplaced = -1;
-  for (let offset = 1; offset < count; offset++) {
-    const i = (targetIdx + offset) % count;
-    if (isNaN(pts[i].xy[0]) || isNaN(pts[i].xy[1])) {
-      nextUnplaced = i;
-      break;
-    }
-  }
-  if (nextUnplaced !== -1 && !useQcStore.getState().reviewOpen) {
-    store.set("placementNodeIdx", nextUnplaced);
-  } else {
-    // All nodes placed (or Review's one node) — exit placement mode.
-    store.exitPlacementMode();
-  }
-
+  // Only the flag's own node: the hint said which one.
+  store.exitPlacementMode();
   store.bumpOverlayVersion();
 }
 
@@ -377,8 +361,9 @@ export function VideoPlayer() {
 
   // Track drag-start screen position for anchoring tooltip + inset
   const dragStartClient = useRef<{ clientX: number; clientY: number } | null>(null);
-  // A press in placement mode: places the node on release if it was a click
-  // (not a drag, which pans, or a long press). `moved` = farthest it went (px).
+  // A press in Label QC Review's placement mode: places the node on release if
+  // it was a click (not a drag, which pans, or a long press). `moved` =
+  // farthest it went (px).
   const pendingPlace = useRef<{
     clientX: number;
     clientY: number;
@@ -2350,11 +2335,15 @@ export function VideoPlayer() {
       useAppStore.getState().exitPlacementMode();
       return;
     }
-    // Keep a target that is still unplaced (Label QC Review picks its node);
-    // otherwise reset to the first unplaced node of the new instance.
-    const target = useAppStore.getState().placementNodeIdx;
-    const targetXy = target !== null ? selectedInstance.points[target]?.xy : undefined;
-    if (targetXy && (isNaN(targetXy[0]) || isNaN(targetXy[1]))) return;
+    // Label QC Review picks its own target (the flag's node): keep it while
+    // it is unplaced. Otherwise reset to the first unplaced node of the new
+    // instance.
+    if (useQcStore.getState().reviewOpen) {
+      const target = useAppStore.getState().placementNodeIdx;
+      const targetXy = target !== null ? selectedInstance.points[target]?.xy : undefined;
+      if (targetXy && (isNaN(targetXy[0]) || isNaN(targetXy[1]))) return;
+    }
+    // Reset placement target to first unplaced node of new instance
     const firstNaN = selectedInstance.points.findIndex(
       (p) => isNaN(p.xy[0]) || isNaN(p.xy[1])
     );
@@ -2507,16 +2496,52 @@ export function VideoPlayer() {
       const currentInstance = useAppStore.getState().instance;
       shiftHeldOnMouseDown.current = e.shiftKey;
 
-      // Node placement mode: a click places the target node (on release, with
-      // an undo snapshot); a drag pans instead, and a long press does nothing.
+      // Node placement mode: place the target node (with undo snapshot)
       const store = useAppStore.getState();
       if (store.labelingMode === "place" && currentInstance && !("score" in currentInstance)) {
         const targetIdx = store.placementNodeIdx;
         if (targetIdx !== null && targetIdx >= 0 && targetIdx < currentInstance.points.length) {
-          e.preventDefault();
-          pendingPlace.current = { clientX: e.clientX, clientY: e.clientY, t: performance.now(), x, y, moved: 0 };
-          setIsPanning(true);
-          setPanStart({ x: e.clientX - panX, y: e.clientY - panY });
+          // Label QC Review places on a click's release (placeQcReviewNode): a
+          // drag pans instead, and a long press does nothing.
+          if (useQcStore.getState().reviewOpen) {
+            e.preventDefault();
+            pendingPlace.current = { clientX: e.clientX, clientY: e.clientY, t: performance.now(), x, y, moved: 0 };
+            setIsPanning(true);
+            setPanStart({ x: e.clientX - panX, y: e.clientY - panY });
+            return;
+          }
+          commandContext.execute(BeginEdit);
+          // Click is in crop-local image space; store back in source coords.
+          currentInstance.points[targetIdx].xy = toSourceCoords(
+            useAppStore.getState().video,
+            x,
+            y
+          );
+          currentInstance.points[targetIdx].visible = true;
+          hintIfFirstNodeConfirm(currentInstance.points[targetIdx].complete);
+          currentInstance.points[targetIdx].complete = true;
+          store.markChanged();
+          store.touchFrame();
+
+          // Auto-advance to next unplaced node (search forward, then wrap)
+          const pts = currentInstance.points;
+          const count = pts.length;
+          let nextUnplaced = -1;
+          for (let offset = 1; offset < count; offset++) {
+            const i = (targetIdx + offset) % count;
+            if (isNaN(pts[i].xy[0]) || isNaN(pts[i].xy[1])) {
+              nextUnplaced = i;
+              break;
+            }
+          }
+          if (nextUnplaced !== -1) {
+            store.set("placementNodeIdx", nextUnplaced);
+          } else {
+            // All nodes placed — exit placement mode.
+            store.exitPlacementMode();
+          }
+
+          store.bumpOverlayVersion();
           return;
         }
       }
@@ -2959,10 +2984,10 @@ export function VideoPlayer() {
       return;
     }
 
-    // Placement mode: a click (not a drag or long press) places the node.
+    // Label QC Review placement: a click (not a drag or long press) places the node.
     const pend = pendingPlace.current;
     pendingPlace.current = null;
-    if (pend && isPlacementClick(pend.moved, performance.now() - pend.t)) placeTargetNode(pend.x, pend.y);
+    if (pend && isPlacementClick(pend.moved, performance.now() - pend.t)) placeQcReviewNode(pend.x, pend.y);
 
     // Area-delete mode: execute the delete command
     if (isAreaDeleting && areaDeleteStart && areaDeleteEnd) {

@@ -52,8 +52,9 @@ export const PLACE_CLICK_MAX_MOVE_PX = 4;
 export const PLACE_CLICK_MAX_MS = 300;
 
 /**
- * Whether a press in node-placement mode was a click, which places the node.
- * A drag (it pans the view) or a long press places nothing.
+ * Whether a press in the Label QC Review window's node placement was a click,
+ * which places the node. A drag (it pans the view) or a long press places
+ * nothing. (Ordinary placement places on press.)
  */
 export function isPlacementClick(movedPx: number, heldMs: number): boolean {
   return movedPx <= PLACE_CLICK_MAX_MOVE_PX && heldMs <= PLACE_CLICK_MAX_MS;
