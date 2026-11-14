@@ -500,6 +500,87 @@ describe("placing an unplaced problem node", () => {
   });
 });
 
+describe("two flagged instances on one frame", () => {
+  // Frame 3: inst 0 (0.9) and inst 1 (0.85), both an angle at thorax (node 1).
+  const twoOnFrame3 = () =>
+    useQcStore.setState({
+      findings: [],
+      anomaly: { ...RESULT, instances: [scored(3, 0, 0.9), scored(3, 1, 0.85)] },
+    });
+  const unplaced = (inst: number, node: number) => {
+    lfAt(3).userInstances[inst].points[node].xy = [NaN, NaN];
+  };
+  const mode = () => {
+    const s = useAppStore.getState();
+    return [s.labelingMode, s.placementNodeIdx];
+  };
+
+  beforeEach(() => {
+    twoOnFrame3();
+    useAppStore.setState({ frameIdx: 3, labeledFrame: lfAt(3) });
+  });
+
+  it("clicking the second instance (its node unplaced) aims placement at it, and a click places it", () => {
+    unplaced(1, 1);
+    openQcReview(); // the first instance, whose node is placed
+    expect(useAppStore.getState().instance).toBe(lfAt(3).userInstances[0]);
+    expect(mode()).toEqual(["select", null]);
+    act(() => useAppStore.getState().setInstance(lfAt(3).userInstances[1])); // as a canvas click does
+    expect(mode()).toEqual(["place", 1]);
+    // The node you clicked stays selected (no forced node selection mid-drag).
+    expect(useQcStore.getState().nodeFocus?.instance).not.toBe(lfAt(3).userInstances[1]);
+    placeTargetNode(7, 8);
+    expect(lfAt(3).userInstances[1].points[1].xy).toEqual([7, 8]);
+    expect(useAppStore.getState().labelingMode).toBe("select");
+  });
+
+  it("3 on the first instance moves on to the second and aims placement at its node", () => {
+    unplaced(1, 1);
+    renderHook(() => useKeyboardShortcuts());
+    openQcReview();
+    expect(useAppStore.getState().instance).toBe(lfAt(3).userInstances[0]);
+    act(() => {
+      window.dispatchEvent(new KeyboardEvent("keydown", { key: "3", code: "Digit3", bubbles: true }));
+    });
+    expect(useAppStore.getState().instance).toBe(lfAt(3).userInstances[1]);
+    expect(mode()).toEqual(["place", 1]);
+    placeTargetNode(9, 9);
+    expect(lfAt(3).userInstances[1].points[1].xy).toEqual([9, 9]);
+  });
+
+  it("switching between two instances with different unplaced nodes retargets each time", () => {
+    unplaced(0, 1);
+    unplaced(1, 1);
+    lfAt(3).userInstances[1].points[0].xy = [NaN, NaN]; // a non-problem node, unplaced too
+    useQcStore.setState({
+      anomaly: {
+        ...RESULT,
+        instances: [scored(3, 0, 0.9), { ...scored(3, 1, 0.85), issueKind: "node", issueNodes: [2] }],
+      },
+    });
+    lfAt(3).userInstances[1].points[2].xy = [NaN, NaN];
+    openQcReview();
+    expect(mode()).toEqual(["place", 1]);
+    act(() => useAppStore.getState().setInstance(lfAt(3).userInstances[1]));
+    expect(mode()).toEqual(["place", 2]);
+    act(() => useAppStore.getState().setInstance(lfAt(3).userInstances[0]));
+    expect(mode()).toEqual(["place", 1]);
+    act(() => useAppStore.getState().setInstance(lfAt(3).userInstances[1]));
+    placeTargetNode(5, 5);
+    expect(lfAt(3).userInstances[1].points[2].xy).toEqual([5, 5]);
+    expect(Number.isNaN(lfAt(3).userInstances[1].points[0].xy[0])).toBe(true); // only the problem node
+    expect(useAppStore.getState().labelingMode).toBe("select");
+  });
+
+  it("selecting an instance with nothing to place leaves placement mode", () => {
+    unplaced(0, 1);
+    openQcReview();
+    expect(mode()).toEqual(["place", 1]);
+    act(() => useAppStore.getState().setInstance(lfAt(3).userInstances[1]));
+    expect(mode()).toEqual(["select", null]);
+  });
+});
+
 describe("0 in Review", () => {
   const press0 = () =>
     act(() => {

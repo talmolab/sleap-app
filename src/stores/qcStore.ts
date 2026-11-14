@@ -463,15 +463,25 @@ export function goToQcEntry(labels: Labels, e: QcQueueEntry): void {
 }
 
 /**
- * Review: select the node behind the instance's flag, and when it isn't
- * placed, switch the canvas to placement for that node (a click places it).
+ * Review: select the node behind the instance's flag, and aim placement at it
+ * (see aimQcPlacement).
  */
 function focusProblemNode(e: QcQueueEntry, instIdx: number | undefined, inst: Instance | null): void {
-  const app = useAppStore.getState();
   const qc = useQcStore.getState();
   const live = liveQcEntry(e, qc.rescored, qc.threshold, qc.anomaly?.gmmThreshold ?? null);
   const node = inst && instIdx !== undefined ? qcProblemNode(live, instIdx) : null;
   useQcStore.setState({ nodeFocus: inst && node !== null ? { instance: inst, node } : null });
+  aimQcPlacement(inst && node !== null ? inst : null, node);
+}
+
+/**
+ * Review: when the selected instance's problem node isn't placed, switch the
+ * canvas to placement for that node (a click places it); otherwise leave
+ * placement mode. Follows the selection however it changes (a step, 3, a
+ * click on another instance), so the hint and the click always agree.
+ */
+function aimQcPlacement(inst: Instance | null, node: number | null): void {
+  const app = useAppStore.getState();
   const xy = inst && node !== null ? inst.points[node]?.xy : undefined;
   if (xy && (Number.isNaN(xy[0]) || Number.isNaN(xy[1]))) {
     app.set("labelingMode", "place");
@@ -479,6 +489,24 @@ function focusProblemNode(e: QcQueueEntry, instIdx: number | undefined, inst: In
   } else if (app.labelingMode === "place") {
     app.exitPlacementMode();
   }
+}
+
+/** aimQcPlacement for the instance now selected, on the frame on screen. */
+function aimQcPlacementAtSelection(): void {
+  const app = useAppStore.getState();
+  const qc = useQcStore.getState();
+  const labels = app.labels;
+  const inst = app.instance;
+  if (!labels || !app.video || !inst || qc.state !== "done" || qc.labels !== labels) return;
+  const videoIdx = labels.videos.indexOf(app.video);
+  const e = liveQcQueue().find((x) => x.videoIdx === videoIdx && x.frameIdx === app.frameIdx);
+  const lf = labels.find({ video: app.video, frameIdx: app.frameIdx })[0];
+  const instIdx = lf ? lf.userInstances.indexOf(inst) : -1;
+  const node =
+    e && instIdx >= 0
+      ? qcProblemNode(liveQcEntry(e, qc.rescored, qc.threshold, qc.anomaly?.gmmThreshold ?? null), instIdx)
+      : null;
+  aimQcPlacement(node !== null ? inst : null, node);
 }
 
 /**
@@ -698,9 +726,12 @@ useAppStore.subscribe((s, prev) => {
 });
 
 // In Review, an edit re-scores the frame's flagged instances (drag, place, V,
-// undo/redo all bump editSeq).
+// undo/redo all bump editSeq), and selecting another instance (a click on it,
+// not only a step) aims placement at its problem node.
 useAppStore.subscribe((s, prev) => {
-  if (s.editSeq !== prev.editSeq && useQcStore.getState().reviewOpen) rescoreQcFrame();
+  if (!useQcStore.getState().reviewOpen) return;
+  if (s.editSeq !== prev.editSeq) rescoreQcFrame();
+  if (s.instance !== prev.instance) aimQcPlacementAtSelection();
 });
 
 // A frame edited since the run is stale: its flags may already be fixed.
