@@ -226,7 +226,7 @@ export function useKeyboardShortcuts() {
         e.preventDefault();
         commandContext.execute(GoPrevQcFlag);
       },
-      [DEFAULT_SHORTCUTS["mark qc flag ok"]]: (e) => {
+      [DEFAULT_SHORTCUTS["ignore qc flag"]]: (e) => {
         if (isTextInput(e)) return;
         e.preventDefault();
         commandContext.execute(MarkQcFlagOk);

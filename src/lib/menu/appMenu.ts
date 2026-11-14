@@ -323,7 +323,7 @@ function goMenu(s: MenuSnapshot): TopMenu {
       go("nextTrackSpawn", "Next Track Spawn Frame", exec(GoNextTrackSpawnFrame), "$mod+KeyE"),
       go("nextQcFlag", "Next Label QC Flag", exec(GoNextQcFlag), "KeyF"),
       go("prevQcFlag", "Previous Label QC Flag", exec(GoPrevQcFlag), "Shift+KeyF"),
-      go("qcMarkOk", "Mark Label QC Flag as OK", exec(MarkQcFlagOk), "Digit3"),
+      go("qcMarkOk", "Ignore Label QC Flag", exec(MarkQcFlagOk), "Digit3"),
       SEP,
       go("markFrame", "Mark Frame", markFrame, "$mod+KeyM"),
       go("toMarkedFrame", "Go to Marked Frame", exec(GoToMarkedFrame), "$mod+Shift+KeyM"),

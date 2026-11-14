@@ -87,7 +87,7 @@ export function LabelQcPanel() {
   const okControl = (e: QcQueueEntry, instIdx: number) =>
     e.ok.includes(instIdx) ? (
       <span className="ml-auto flex shrink-0 items-center gap-1">
-        <span className="rounded bg-emerald-500/15 px-1 text-[10px] text-emerald-600">OK</span>
+        <span className="rounded bg-green-500/15 px-1 text-[10px] text-green-500">Ignored</span>
         <Button
           size="sm"
           variant="ghost"
@@ -102,11 +102,11 @@ export function LabelQcPanel() {
       <Button
         size="sm"
         variant="outline"
-        className="ml-auto h-5 shrink-0 px-1.5 text-[10px]"
+        className="ml-auto h-5 shrink-0 border-green-500/50 px-1.5 text-[10px] text-green-400 hover:bg-green-500/10"
         onClick={() => markQcOkAndAdvance(e.videoIdx, e.frameIdx, instIdx)}
         title="This instance is fine: hide its flags and go to the next one (3)"
       >
-        Mark OK (3)
+        Ignore (3)
       </Button>
     );
 
@@ -258,7 +258,7 @@ export function LabelQcPanel() {
       <p className="px-2 text-[11px] text-muted-foreground">
         Checks your labeled instances for definite errors (duplicates, points outside the
         frame…) and unusual poses, then lists the flagged frames worst first. Press F /
-        Shift+F to step through them, and 3 to mark a false alarm OK.
+        Shift+F to step through them, and 3 to ignore a false alarm.
       </p>
     );
   } else if (state === "running") {
@@ -267,7 +267,7 @@ export function LabelQcPanel() {
     body = (
       <p className="px-2 text-[11px] text-muted-foreground">
         {okCount > 0
-          ? "Every flag is dismissed (marked OK)."
+          ? "Every flag is ignored."
           : "Nothing flagged. Lower the threshold to flag more."}
       </p>
     );
@@ -337,8 +337,8 @@ export function LabelQcPanel() {
                     <span className="shrink-0 text-muted-foreground/70">+{more} more</span>
                   )}
                   {allOk(e) && (
-                    <span className="shrink-0 rounded bg-emerald-500/15 px-1 text-[10px] text-emerald-600">
-                      OK
+                    <span className="shrink-0 rounded bg-green-500/15 px-1 text-[10px] text-green-500">
+                      Ignored
                     </span>
                   )}
                 </span>
@@ -402,7 +402,7 @@ export function LabelQcPanel() {
             {state === "done" && (
               <span className="min-w-0 truncate text-[11px] text-muted-foreground">
                 {openCount} flagged frame{openCount === 1 ? "" : "s"}
-                {okCount > 0 && <> · {okCount} dismissed</>}
+                {okCount > 0 && <> · {okCount} ignored</>}
               </span>
             )}
             {state === "done" && okCount > 0 && (
@@ -411,12 +411,12 @@ export function LabelQcPanel() {
                 variant="ghost"
                 className="ml-auto h-6 shrink-0 px-1.5"
                 onClick={() => setShowDismissed(!showDismissed)}
-                aria-label={showDismissed ? "Hide dismissed" : "Show dismissed"}
+                aria-label={showDismissed ? "Hide ignored" : "Show ignored"}
                 aria-pressed={showDismissed}
                 title={
                   showDismissed
-                    ? "Hide the instances marked OK"
-                    : "Show the instances marked OK, to undo a mark"
+                    ? "Hide the ignored instances"
+                    : "Show the ignored instances, to undo"
                 }
               >
                 {showDismissed ? <EyeOff className="h-3.5 w-3.5" /> : <Eye className="h-3.5 w-3.5" />}

@@ -109,19 +109,19 @@ describe("LabelQcPanel", () => {
     expect(screen.getByText(/Edited since the run/)).toBeTruthy();
   });
 
-  it("marks an instance OK, counts it as dismissed, and shows it again with Undo", () => {
+  it("ignores an instance, counts it, and shows it again with Undo", () => {
     withResults();
     useAppStore.setState({ frameIdx: 3 });
     render(<LabelQcPanel />);
-    fireEvent.click(screen.getByRole("button", { name: "Mark OK (3)" }));
-    expect(screen.getByText("1 flagged frame · 1 dismissed")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Ignore (3)" }));
+    expect(screen.getByText("1 flagged frame · 1 ignored")).toBeTruthy();
     expect(screen.queryByText("Unusual joint angle")).toBeNull();
 
     expect(useAppStore.getState().frameIdx).toBe(7); // moved on to the next flag
 
-    fireEvent.click(screen.getByRole("button", { name: "Show dismissed" }));
+    fireEvent.click(screen.getByRole("button", { name: "Show ignored" }));
     act(() => useAppStore.setState({ frameIdx: 3 }));
-    expect(screen.getAllByText("OK").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("Ignored").length).toBeGreaterThan(0);
     fireEvent.click(screen.getByRole("button", { name: "Undo" }));
     expect(screen.getByText("2 flagged frames")).toBeTruthy();
   });

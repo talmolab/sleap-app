@@ -429,7 +429,7 @@ export function markSelectedQcOk(): void {
     (e.anomalies.some(({ a }) => a.instIdx === instIdx) ||
       e.rules.some((r) => r.instanceIdx === instIdx));
   if (!flagged) {
-    toast.info("Select a flagged instance on this frame to mark it OK.");
+    toast.info("Select a flagged instance on this frame to ignore it.");
     return;
   }
   markQcOkAndAdvance(videoIdx, app.frameIdx, instIdx);

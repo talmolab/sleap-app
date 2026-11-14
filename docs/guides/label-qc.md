@@ -108,27 +108,27 @@ the panel to label without it.
 When you edit a flagged frame, its row and card dim and say **Edited since the
 run**: its flags may already be fixed. Click **Rerun** to re-check everything.
 
-### Marking a flag as OK
+### Ignoring a flag
 
 Some flags are false alarms: an animal really was curled up, or two really
-were touching. To dismiss one, select the instance (++f++ already does) and
-press ++3++, or click **Mark OK (3)** on its card. That hides every flag on
+were touching. To ignore one, select the instance (++f++ already does) and
+press ++3++, or click **Ignore (3)** on its card. That hides every flag on
 that instance (its anomaly and GMM flag and any error QC found on it) and
 moves on: to the next flagged instance on the same frame, else to the next
-flagged frame (also **Go ▸ Mark Label QC Flag as OK**). Flags on the frame as
-a whole, such as an incomplete frame, can't be dismissed this way.
+flagged frame (also **Go ▸ Ignore Label QC Flag**). Flags on the frame as a
+whole, such as an incomplete frame, can't be ignored this way.
 
-Dismissed instances leave the list, ++f++ / ++shift+f++ and the boxes on the
-video, and a frame whose flags are all dismissed leaves the list. The top of
-the panel counts them (**12 flagged frames · 3 dismissed**). Click **Show
-dismissed** to list them again, greyed with an **OK** tag (their boxes on the
-video faded), and click **Undo** on one to flag it again.
+Ignored instances leave the list, ++f++ / ++shift+f++ and the boxes on the
+video, and a frame whose flags are all ignored leaves the list. The top of the
+panel counts them (**12 flagged frames · 3 ignored**). Click the eye button
+(**Show ignored**) to list them again, greyed with an **Ignored** tag (their
+boxes on the video faded), and click **Undo** on one to flag it again.
 
-A mark applies to that instance's pose as it is now. If you edit the pose
-later, the mark no longer applies: the instance shows up flagged again until
-you mark it OK again or a **Rerun** no longer flags it.
+Ignoring applies to that instance's pose as it is now. If you edit the pose
+later, it no longer applies: the instance shows up flagged again until you
+ignore it again or a **Rerun** no longer flags it.
 
-Marks are kept on this computer (in the desktop app) or in this browser (on
+Ignored flags are kept on this computer (in the desktop app) or in this browser (on
 the web), per project: by the project's file path in the desktop app, by its
 file name in the browser. They are not saved in the `.slp` file, so they don't
 travel with it to another computer or to someone else, and in the browser

@@ -205,7 +205,7 @@ describe("key 3 (MarkQcFlagOk)", () => {
     stepQcQueue(1);
     useAppStore.setState({ instance: lfAt(3).userInstances[1] });
     await commandContext.execute(MarkQcFlagOk);
-    expect(toastInfo).toHaveBeenCalledWith("Select a flagged instance on this frame to mark it OK.", expect.anything());
+    expect(toastInfo).toHaveBeenCalledWith("Select a flagged instance on this frame to ignore it.", expect.anything());
     expect(useQcStore.getState().dismissed.size).toBe(0);
   });
 
