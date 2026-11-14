@@ -2,7 +2,8 @@
  * The Label QC overlay for the current frame: which instances are flagged and
  * which of their nodes are behind each flag (see renderQcFlags), and which
  * instance to keep at full opacity while the rest dim. Shown only while the
- * Label QC panel is open, so it never clutters ordinary labeling. Instances
+ * Label QC panel or the Review window is open, so it never clutters ordinary
+ * labeling. Instances
  * marked OK are left out, or drawn faded while the panel shows them.
  */
 import { useMemo } from "react";
@@ -21,35 +22,52 @@ import type { LabeledFrame } from "@/types";
 /**
  * Canvas flags for one frame's QC entry. QC indices are into the frame's
  * `userInstances`; the canvas draws `instances` (user + predicted), so map
- * through the instance object. Instances marked OK (`entry.ok`) draw faded,
- * like a stale frame.
+ * through the instance object. An anomaly is drawn the way its issue reads
+ * (an edge, a joint angle, or nodes), a GMM flag rings the node it blames.
+ * Instances marked OK (`entry.ok`) draw faded, like a stale frame.
  */
 export function qcCanvasFlags(
   entry: QcQueueEntry,
   lf: LabeledFrame,
   stale: boolean,
 ): QcCanvasFlag[] {
-  const byIdx = new Map<number, { nodes: Set<number>; ok: boolean }>();
+  interface Marks {
+    nodes: Set<number>;
+    edges: [number, number][];
+    angles: [number, number, number][];
+    ok: boolean;
+  }
+  const byIdx = new Map<number, Marks>();
   const flag = (userIdx: number | undefined) => {
     if (userIdx === undefined) return null;
     const inst = lf.userInstances[userIdx];
     const idx = inst ? lf.instances.indexOf(inst) : -1;
     if (idx < 0) return null;
     let f = byIdx.get(idx);
-    if (!f) byIdx.set(idx, (f = { nodes: new Set(), ok: entry.ok.includes(userIdx) }));
-    return f.nodes;
+    if (!f) {
+      f = { nodes: new Set(), edges: [], angles: [], ok: entry.ok.includes(userIdx) };
+      byIdx.set(idx, f);
+    }
+    return f;
   };
   for (const r of entry.rules) flag(r.instanceIdx);
   for (const { a, v } of entry.anomalies) {
-    const nodes = flag(a.instIdx);
-    if (!nodes) continue;
-    if (v.by === "anomaly" || v.by === "both") for (const n of a.issueNodes) nodes.add(n);
+    const f = flag(a.instIdx);
+    if (!f) continue;
+    if (v.by === "anomaly" || v.by === "both") {
+      const n = a.issueNodes;
+      if (a.issueKind === "edge" && n.length === 2) f.edges.push([n[0], n[1]]);
+      else if (a.issueKind === "angle" && n.length === 3) f.angles.push([n[0], n[1], n[2]]);
+      else for (const i of n) f.nodes.add(i);
+    }
     if ((v.by === "gmm" || v.by === "both") && a.gmmNode != null && a.gmmNode >= 0)
-      nodes.add(a.gmmNode);
+      f.nodes.add(a.gmmNode);
   }
-  return [...byIdx].map(([instanceIdx, { nodes, ok }]) => ({
+  return [...byIdx].map(([instanceIdx, { nodes, edges, angles, ok }]) => ({
     instanceIdx,
     nodes: [...nodes],
+    edges,
+    angles,
     stale: stale || ok,
   }));
 }
@@ -65,13 +83,15 @@ export interface QcFrameOverlay {
 
 const NONE: QcFrameOverlay = { flags: [], focusIdx: null };
 
-/** The QC overlay for the frame on screen; empty when QC hasn't run or the panel is closed. */
+/** The QC overlay for the frame on screen; empty when QC hasn't run or neither the panel nor Review is open. */
 export function useQcFrameFlags(): QcFrameOverlay {
   const labels = useAppStore((s) => s.labels);
   const video = useAppStore((s) => s.video);
   const labeledFrame = useAppStore((s) => s.labeledFrame);
   const selected = useAppStore((s) => s.instance);
-  const show = useAppStore((s) => !s.sidebarCollapsed && s.sidebarOpenPanels.includes("qc"));
+  const panelOpen = useAppStore((s) => !s.sidebarCollapsed && s.sidebarOpenPanels.includes("qc"));
+  const reviewOpen = useQcStore((s) => s.reviewOpen);
+  const show = panelOpen || reviewOpen;
   const qcLabels = useQcStore((s) => s.labels);
   const state = useQcStore((s) => s.state);
   const findings = useQcStore((s) => s.findings);

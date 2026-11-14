@@ -26,7 +26,8 @@ import {
 } from "./detector";
 import { analyzerFromSkeleton } from "./skeletonIo";
 import { makeQCConfig, type QcConfig } from "./config";
-import { topIssue, confidence, issueForFeature } from "./explain";
+import { topIssue, confidence, issueForFeature, DIRECTIONAL_FEATURES } from "./explain";
+import type { AttributionEntry } from "./baseline";
 import type { Pose } from "./util";
 
 /** One scored instance, keyed by (videoIdx, frameIdx, instIdx). */
@@ -46,6 +47,17 @@ export interface AnomalyInstance {
    * (visibility rate, bounding-box size, distance to the nearest pose).
    */
   issueNodes: number[];
+  /**
+   * How to draw `issueNodes`: "edge" = the two nodes' connecting line,
+   * "angle" = the joint `issueNodes[0]` and its arms to `[1]` and `[2]`,
+   * "node" = ring each node. null when `issueNodes` is empty.
+   */
+  issueKind: "edge" | "angle" | "node" | null;
+  /**
+   * Whether the measurement behind `topIssue` is larger (+1) or smaller (-1)
+   * than in the other labels; 0 when unknown or not meaningful.
+   */
+  issueDir: number;
   /** Raw per-feature values, keyed by feature name (18 entries). */
   contributions: Record<string, number>;
   /**
@@ -165,16 +177,33 @@ function scoreGmmRow(
   };
 }
 
-/** The nodes behind the dominant feature of a pose, or [] if it has none. */
-function issueNodesFor(det: LabelQCDetector, pose: Pose, feature: string | null): number[] {
-  if (!feature) return [];
+/** The nodes behind the dominant feature of a pose, how to draw them, and the direction. */
+function issueFor(
+  det: LabelQCDetector,
+  pose: Pose,
+  feature: string | null,
+  contributions: Record<string, number>,
+): Pick<AnomalyInstance, "issueNodes" | "issueKind" | "issueDir"> {
+  if (!feature) return { issueNodes: [], issueKind: null, issueDir: 0 };
+  let entry: AttributionEntry | null | undefined;
   try {
-    if (feature === "max_curvature") return det.attributeCurvature(pose)?.nodes ?? [];
-    const map = det.baseline.attribute(pose) as Record<string, { nodes: number[] } | undefined>;
-    return map[feature]?.nodes ?? [];
+    entry =
+      feature === "max_curvature"
+        ? det.attributeCurvature(pose)
+        : (det.baseline.attribute(pose) as Record<string, AttributionEntry | undefined>)[feature];
   } catch {
-    return [];
+    entry = null;
   }
+  const nodes = entry?.nodes ?? [];
+  return {
+    issueNodes: nodes,
+    issueKind: nodes.length === 0 ? null : (entry?.kind ?? "node"),
+    // The max_* features carry their sign on the attribution, the area ones in
+    // `contributions`. (A curvature's sign is which way it bends: not here.)
+    issueDir: DIRECTIONAL_FEATURES.has(feature)
+      ? Math.sign(entry?.dir ?? contributions[feature] ?? 0) || 0
+      : 0,
+  };
 }
 
 /** Turn one matrix row into a scored instance. Pure over a fitted detector. */
@@ -200,7 +229,7 @@ function scoreRow(
     score,
     confidence: confidence(score),
     topIssue: top.issue,
-    issueNodes: issueNodesFor(det, pose, top.feature),
+    ...issueFor(det, pose, top.feature, contributions),
     contributions,
     ...scoreGmmRow(det, row, pose),
   };

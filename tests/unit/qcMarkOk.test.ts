@@ -51,6 +51,8 @@ const scored = (frameIdx: number, instIdx: number, score: number): AnomalyInstan
   confidence: "high",
   topIssue: "Unusual joint angle",
   issueNodes: [],
+  issueKind: null,
+  issueDir: 0,
   contributions: {},
   gmmScore: null,
   gmmIssue: null,
@@ -169,7 +171,7 @@ describe("Mark as OK", () => {
   it("qcCanvasFlags fades OK instances", async () => {
     await seed([], null);
     const entry = { videoIdx: 0, frameIdx: 3, rules: [rule(3, "duplicate", 1)], definite: false, anomalies: [], worst: 0, ok: [1] };
-    expect(qcCanvasFlags(entry, lfAt(3), false)).toEqual([{ instanceIdx: 1, nodes: [], stale: true }]);
+    expect(qcCanvasFlags(entry, lfAt(3), false)).toEqual([{ instanceIdx: 1, nodes: [], edges: [], angles: [], stale: true }]);
   });
 });
 

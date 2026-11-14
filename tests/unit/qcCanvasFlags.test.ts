@@ -46,6 +46,8 @@ const anomalyOn = (instIdx: number, by: AnomalyVerdict["by"], issueNodes: number
     confidence: "high",
     topIssue: "Unusual edge length",
     issueNodes,
+    issueKind: issueNodes.length ? "node" : null,
+    issueDir: 0,
     contributions: {},
     gmmScore: 0.97,
     gmmIssue: null,
@@ -68,7 +70,7 @@ const entry = (over: Partial<QcQueueEntry>): QcQueueEntry => ({
 describe("qcCanvasFlags", () => {
   it("maps QC's userInstances index to the frame's instance index", () => {
     const flags = qcCanvasFlags(entry({ anomalies: [anomalyOn(1, "anomaly", [0, 1], null)] }), lf, false);
-    expect(flags).toEqual([{ instanceIdx: 2, nodes: [0, 1], stale: false }]);
+    expect(flags).toEqual([{ instanceIdx: 2, nodes: [0, 1], edges: [], angles: [], stale: false }]);
   });
 
   it("circles the anomaly's nodes and the GMM's node only for the checks that flagged", () => {
@@ -80,7 +82,7 @@ describe("qcCanvasFlags", () => {
   it("boxes instances with a rule finding, merged with their anomaly flag", () => {
     const rule: QcFinding = { kind: "duplicate", message: "", video, videoIdx: 0, frameIdx: 2, instanceIdx: 0 };
     const flags = qcCanvasFlags(entry({ rules: [rule], anomalies: [anomalyOn(0, "anomaly", [1], null)] }), lf, true);
-    expect(flags).toEqual([{ instanceIdx: 1, nodes: [1], stale: true }]);
+    expect(flags).toEqual([{ instanceIdx: 1, nodes: [1], edges: [], angles: [], stale: true }]);
   });
 
   it("skips frame-level findings, which name no instance", () => {
@@ -202,7 +204,7 @@ describe("useQcFrameFlags", () => {
   it("shows the flags, focused on the selected flagged instance, while the panel is open", () => {
     seed(true);
     const { result } = renderHook(() => useQcFrameFlags());
-    expect(result.current.flags).toEqual([{ instanceIdx: 1, nodes: [1], stale: false }]);
+    expect(result.current.flags).toEqual([{ instanceIdx: 1, nodes: [1], edges: [], angles: [], stale: false }]);
     expect(result.current.focusIdx).toBe(1);
   });
 

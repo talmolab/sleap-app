@@ -52,6 +52,7 @@ import {
 } from "../commands";
 import { requestToggleNegativeFrame } from "@/lib/negativeFrame";
 import { isNativeMenuShortcut } from "@/lib/menu/nativeMenuOwnership";
+import { handleQcReviewKey } from "@/stores/qcStore";
 
 type Bindings = Record<string, (e: KeyboardEvent) => void>;
 
@@ -80,13 +81,16 @@ export function useKeyboardShortcuts() {
     // On macOS desktop the native menu owns its ⌘ shortcuts: leave those to
     // it (not preventDefault-ed, so the menu still gets the keystroke).
     const unsubscribe = tinykeys(window, leaveNativeMenuShortcuts({
-      // Frame navigation (direct store for responsiveness)
+      // Frame navigation (direct store for responsiveness). In the Label QC
+      // Review window ← / → step through the flags instead.
       [DEFAULT_SHORTCUTS["frame next"]]: (e) => {
         e.preventDefault();
+        if (handleQcReviewKey("frame next")) return;
         store().incrementFrameIdx(STEP_SIZES.small);
       },
       [DEFAULT_SHORTCUTS["frame prev"]]: (e) => {
         e.preventDefault();
+        if (handleQcReviewKey("frame prev")) return;
         store().incrementFrameIdx(-STEP_SIZES.small);
       },
       [DEFAULT_SHORTCUTS["frame next medium step"]]: (e) => {
@@ -427,6 +431,8 @@ export function useKeyboardShortcuts() {
           s.set("areaDeleteMode", false);
         } else if (s.labelingMode === "place") {
           s.exitPlacementMode();
+        } else if (handleQcReviewKey("clear selection")) {
+          // Closed the Label QC Review window.
         } else {
           hintIfPredictionsRemain(s.instance, s.labeledFrame);
           s.setInstance(null);

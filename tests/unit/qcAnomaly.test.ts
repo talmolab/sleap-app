@@ -255,6 +255,8 @@ describe("anomalyVerdict", () => {
     confidence: "low",
     topIssue: "Unusual edge length",
     issueNodes: [],
+    issueKind: null,
+    issueDir: 0,
     contributions: {},
     gmmScore,
     gmmIssue: gmmScore != null && gmmScore >= 0.95 ? "Improbable pose · Unusual pose structure" : null,

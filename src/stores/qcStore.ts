@@ -9,6 +9,10 @@
  *
  * Instances marked OK (key 3, qcReviewed.ts) hide their flags. Those marks
  * belong to the project, not the run: they survive Rerun and reopening it.
+ *
+ * The Review window (QcReviewFrame) is a mode, not a second canvas: it frames
+ * the main canvas while `reviewOpen`, and ← / → step through the flags in
+ * `reviewOrder`, which also orders the panel's list and F / Shift+F.
  */
 import { create } from "zustand";
 import type { LabeledFrame, Labels } from "@/types";
@@ -53,6 +57,13 @@ export interface QcQueueEntry {
   ok: number[];
 }
 
+/**
+ * How flagged frames are ordered: "severity" = definite rule errors first,
+ * then worst single score; "detectors" = most checks agreeing on the worst
+ * instance first; "frame" = by video, then frame.
+ */
+export type QcReviewOrder = "severity" | "detectors" | "frame";
+
 /** Whether a user instance is marked OK with its current pose. */
 export type QcIsOk = (videoIdx: number, frameIdx: number, userInstIdx: number) => boolean;
 
@@ -71,10 +82,15 @@ interface QcState {
   dismissedProject: string | null;
   /** Show instances marked OK (greyed, with Undo) instead of hiding them. */
   showDismissed: boolean;
+  /** The Review window is open (the main canvas, framed, over the dimmed app). */
+  reviewOpen: boolean;
+  reviewOrder: QcReviewOrder;
   run: (labels: Labels) => Promise<void>;
   cancel: () => void;
   setThreshold: (t: number) => void;
   setShowDismissed: (show: boolean) => void;
+  setReviewOpen: (open: boolean) => void;
+  setReviewOrder: (order: QcReviewOrder) => void;
   /** Mark a user instance OK with its current pose, or take that back. */
   markOk: (videoIdx: number, frameIdx: number, userInstIdx: number) => void;
   unmarkOk: (videoIdx: number, frameIdx: number, userInstIdx: number) => void;
@@ -106,6 +122,8 @@ export const useQcStore = create<QcState>((set, get) => ({
   dismissed: new Set(),
   dismissedProject: null,
   showDismissed: false,
+  reviewOpen: false,
+  reviewOrder: "severity",
 
   run: async (labels) => {
     abort?.abort();
@@ -155,6 +173,10 @@ export const useQcStore = create<QcState>((set, get) => ({
 
   setShowDismissed: (showDismissed) => set({ showDismissed }),
 
+  setReviewOpen: (reviewOpen) => set({ reviewOpen }),
+
+  setReviewOrder: (reviewOrder) => set({ reviewOrder }),
+
   markOk: (videoIdx, frameIdx, userInstIdx) => {
     const inst = userInstanceAt(videoIdx, frameIdx, userInstIdx);
     const project = get().dismissedProject;
@@ -190,8 +212,9 @@ export const useQcStore = create<QcState>((set, get) => ({
   reset: () => {
     abort?.abort();
     abort = null;
-    if (get().labels === null && get().state === "idle") return;
+    if (get().labels === null && get().state === "idle" && !get().reviewOpen) return;
     set({
+      reviewOpen: false,
       labels: null,
       state: "idle",
       progress: 0,
@@ -286,6 +309,49 @@ export function hideOkFlags(queue: QcQueueEntry[]): QcQueueEntry[] {
 }
 
 /**
+ * The user instance a frame's flags are mostly about: its worst open
+ * instance flag, else its worst flag. OK instances' flags sort last.
+ */
+export function qcFocusInstance(e: QcQueueEntry): number | undefined {
+  return (
+    e.anomalies.find(({ a }) => !e.ok.includes(a.instIdx))?.a.instIdx ??
+    e.rules.find((r) => r.instanceIdx !== undefined && !e.ok.includes(r.instanceIdx))
+      ?.instanceIdx ??
+    e.anomalies[0]?.a.instIdx ??
+    e.rules.find((r) => r.instanceIdx !== undefined)?.instanceIdx
+  );
+}
+
+/**
+ * How many checks flag the frame's worst instance: the anomaly score, the
+ * GMM score, and each kind of rule finding on it (or on the whole frame).
+ */
+export function qcDetectorCount(e: QcQueueEntry): number {
+  const inst = qcFocusInstance(e);
+  const v = e.anomalies.find(({ a }) => a.instIdx === inst)?.v;
+  const rules = new Set(
+    e.rules.filter((r) => r.instanceIdx === undefined || r.instanceIdx === inst).map((r) => r.kind),
+  );
+  return (
+    Number(v?.by === "anomaly" || v?.by === "both") +
+    Number(v?.by === "gmm" || v?.by === "both") +
+    rules.size
+  );
+}
+
+/** A queue (as buildQcQueue orders it, by severity) in `order`. */
+export function sortQcQueue(queue: QcQueueEntry[], order: QcReviewOrder): QcQueueEntry[] {
+  if (order === "severity") return queue;
+  const byFrame = (x: QcQueueEntry, y: QcQueueEntry) =>
+    x.videoIdx - y.videoIdx || x.frameIdx - y.frameIdx;
+  if (order === "frame") return [...queue].sort(byFrame);
+  const count = new Map(queue.map((e) => [e, qcDetectorCount(e)]));
+  return [...queue].sort(
+    (x, y) => count.get(y)! - count.get(x)! || y.worst - x.worst || byFrame(x, y),
+  );
+}
+
+/**
  * `isOk` for buildQcQueue: an instance is OK when a mark matches its position
  * and current pose (so an edited pose is flagged again). Undefined when there
  * are no marks. Fingerprints only instances at a marked position.
@@ -310,7 +376,8 @@ export function qcIsOk(labels: Labels | null, dismissed: ReadonlySet<string>): Q
 
 /**
  * The review queue as the panel shows it: OK instances' flags hidden unless
- * "show dismissed" is on. Edits change fingerprints, so rebuild after them.
+ * "show dismissed" is on, in the review order. Edits change fingerprints, so
+ * rebuild after them.
  */
 export function liveQcQueue(): QcQueueEntry[] {
   const qc = useQcStore.getState();
@@ -320,7 +387,7 @@ export function liveQcQueue(): QcQueueEntry[] {
     qc.threshold,
     qcIsOk(useAppStore.getState().labels, qc.dismissed),
   );
-  return qc.showDismissed ? full : hideOkFlags(full);
+  return sortQcQueue(qc.showDismissed ? full : hideOkFlags(full), qc.reviewOrder);
 }
 
 /** Jump to a flagged frame, select its worst flagged instance and zoom to it. */
@@ -332,13 +399,7 @@ export function goToQcEntry(labels: Labels, e: QcQueueEntry): void {
   app.setFrameIdx(e.frameIdx);
   const lf = labels.find({ video }).find((x) => x.frameIdx === e.frameIdx);
   // Indices are relative to userInstances (QC scores labels, not predictions).
-  // OK instances sort last, so this is the worst open one when there is one.
-  const instIdx =
-    e.anomalies.find(({ a }) => !e.ok.includes(a.instIdx))?.a.instIdx ??
-    e.rules.find((r) => r.instanceIdx !== undefined && !e.ok.includes(r.instanceIdx))
-      ?.instanceIdx ??
-    e.anomalies[0]?.a.instIdx ??
-    e.rules.find((r) => r.instanceIdx !== undefined)?.instanceIdx;
+  const instIdx = qcFocusInstance(e);
   const inst = instIdx !== undefined ? (lf?.userInstances[instIdx] ?? null) : null;
   app.setInstance(inst);
   // Zoom to it (the canvas waits for the new frame to render first).
@@ -347,8 +408,9 @@ export function goToQcEntry(labels: Labels, e: QcQueueEntry): void {
 
 /**
  * Go to the next (dir 1) or previous (-1) flagged frame and show the Label QC
- * panel (F / Shift+F). From a flagged frame this is its neighbor in the queue;
- * from any other frame, the start (or end) of the queue.
+ * panel (F / Shift+F, and ← / → in the Review window, which needs no panel).
+ * From a flagged frame this is its neighbor in the queue; from any other
+ * frame, the start (or end) of the queue.
  */
 export function stepQcQueue(dir: 1 | -1): void {
   const app = useAppStore.getState();
@@ -369,7 +431,44 @@ export function stepQcQueue(dir: 1 | -1): void {
   const i =
     pos < 0 ? (dir === 1 ? 0 : queue.length - 1) : (pos + dir + queue.length) % queue.length;
   goToQcEntry(labels, queue[i]);
-  if (!app.sidebarOpenPanels.includes("qc")) app.openPanel("qc");
+  if (!qc.reviewOpen && !app.sidebarOpenPanels.includes("qc")) app.openPanel("qc");
+}
+
+/**
+ * Open the Review window at the current flagged frame, or the first one.
+ * Returns false (with a hint) when there is nothing to review.
+ */
+export function openQcReview(): boolean {
+  const app = useAppStore.getState();
+  const qc = useQcStore.getState();
+  const labels = app.labels;
+  if (!labels || qc.state !== "done" || qc.labels !== labels) {
+    toast.info("Run Label QC first (Analyze → Label Quality Check, or the Label QC panel).");
+    return false;
+  }
+  const queue = liveQcQueue();
+  if (queue.length === 0) {
+    toast.info("Label QC flagged no frames.");
+    return false;
+  }
+  const videoIdx = app.video ? labels.videos.indexOf(app.video) : -1;
+  const here = queue.find((e) => e.videoIdx === videoIdx && e.frameIdx === app.frameIdx);
+  useQcStore.getState().setReviewOpen(true);
+  goToQcEntry(labels, here ?? queue[0]);
+  return true;
+}
+
+/**
+ * Keys the Review window takes over while it is open: ← / → step through the
+ * flags instead of frames, Esc closes it. Returns whether it took the key.
+ */
+export function handleQcReviewKey(
+  shortcut: "frame next" | "frame prev" | "clear selection",
+): boolean {
+  if (!useQcStore.getState().reviewOpen) return false;
+  if (shortcut === "clear selection") useQcStore.getState().setReviewOpen(false);
+  else stepQcQueue(shortcut === "frame next" ? 1 : -1);
+  return true;
 }
 
 /**

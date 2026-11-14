@@ -5,7 +5,8 @@
  * started in either shows up in both. The flagged frames are listed on top,
  * worst first; the card below shows everything QC found on the current frame.
  * F / Shift+F step through the list from anywhere (navCommands), and 3 (or a
- * card's Mark OK) marks a flagged instance OK so its flags go away.
+ * card's Mark OK) marks a flagged instance OK so its flags go away. Review
+ * opens the Review window (QcReviewFrame) to step through them one by one.
  */
 import { useEffect, useMemo, useRef } from "react";
 import { ChevronLeft, ChevronRight, CircleHelp, Eye, EyeOff } from "lucide-react";
@@ -25,8 +26,10 @@ import {
   hasOpenFlags,
   hideOkFlags,
   markQcOkAndAdvance,
+  openQcReview,
   qcFrameKey,
   qcIsOk,
+  sortQcQueue,
   stepQcQueue,
   useQcStore,
   type QcQueueEntry,
@@ -49,6 +52,7 @@ export function LabelQcPanel() {
     editedFrames,
     dismissed,
     showDismissed,
+    reviewOrder,
     run,
     cancel,
     setThreshold,
@@ -62,7 +66,10 @@ export function LabelQcPanel() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [findings, anomaly, threshold, labels, dismissed, editSeq],
   );
-  const queue = useMemo(() => (showDismissed ? full : hideOkFlags(full)), [full, showDismissed]);
+  const queue = useMemo(
+    () => sortQcQueue(showDismissed ? full : hideOkFlags(full), reviewOrder),
+    [full, showDismissed, reviewOrder],
+  );
   const openCount = useMemo(() => full.filter(hasOpenFlags).length, [full]);
   const okCount = useMemo(() => full.reduce((n, e) => n + e.ok.length, 0), [full]);
   const videoIdx = labels && video ? labels.videos.indexOf(video) : -1;
@@ -390,6 +397,17 @@ export function LabelQcPanel() {
           </div>
         ) : (
           <div className="flex items-center gap-2">
+            {state === "done" && (
+              <Button
+                size="sm"
+                className="h-6 bg-blue-600 text-[11px] text-white hover:bg-blue-500"
+                disabled={openCount === 0}
+                onClick={() => openQcReview()}
+                title="Step through the flags one by one, zoomed in (← / →)"
+              >
+                Review
+              </Button>
+            )}
             <Button
               size="sm"
               variant={state === "done" ? "outline" : "default"}

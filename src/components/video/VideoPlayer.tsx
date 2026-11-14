@@ -44,6 +44,8 @@ import { instanceVisible, instanceShowsNonVisible } from "@/lib/instanceVisibili
 import { formatShortcut } from "@/lib/formatShortcut";
 import { useQcVisibility } from "@/hooks/useQcVisibility";
 import { useQcFrameFlags } from "@/hooks/useQcFrameFlags";
+import { useQcStore } from "@/stores/qcStore";
+import { QcReviewFrame } from "./QcReviewFrame";
 import {
   getPaletteColor,
   getInstanceColor,
@@ -2177,6 +2179,13 @@ export function VideoPlayer() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [fitSelection, renderedInstances]);
 
+  // Opening or closing the Label QC Review window resizes the canvas: zoom
+  // back to the instance under review.
+  useEffect(() => {
+    if (useQcStore.getState().reviewOpen && useAppStore.getState().instance)
+      useAppStore.getState().set("fitSelection", true);
+  }, [containerSize]);
+
   // Reset the view to default (zoom=1, no pan, fit-frame) on demand. Driven by a
   // one-shot nonce bumped from the toolbar button / 'R' hotkey — mirrors the
   // `fit`/`fitSelection` store-signal pattern (the toolbar/hotkey live
@@ -3289,7 +3298,8 @@ export function VideoPlayer() {
 
   return (
     <div className="flex flex-col flex-1 min-h-0">
-      {/* Canvas container */}
+      {/* Canvas container, framed as a window while Label QC Review is open */}
+      <QcReviewFrame>
       <div
         ref={containerRef}
         className={cn(
@@ -3827,6 +3837,7 @@ export function VideoPlayer() {
         {/* Multi-instance transpose picker prompt (self-guards to pick mode). */}
         <TransposePickBar />
       </div>
+      </QcReviewFrame>
 
       {/* Seekbar */}
       <Seekbar />

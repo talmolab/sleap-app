@@ -84,8 +84,8 @@ a run started in either shows up in both.
 - **Run QC** runs both kinds of check, as in the dialog.
 - The **list** at the top has one row per flagged frame. Frames with a definite
   error (a duplicate, a point outside the image, an empty instance…) come
-  first, then everything else by its worst anomaly score. Click a row to go
-  there.
+  first, then everything else by its worst anomaly score (or in the order
+  picked in the [Review window](#the-review-window)). Click a row to go there.
 - The **card** below shows everything QC found on the frame you're on: definite
   errors in red, possible errors (chain order, chirality) in amber, and each
   flagged instance with its issue, the node to blame and its anomaly and GMM
@@ -95,18 +95,60 @@ a run started in either shows up in both.
   worst flagged instance, zoom to it and open the panel.
 - The **threshold** slider works as it does in the dialog.
 
-On the video, each flagged instance gets a red dashed box, and the nodes behind
-its flag get red dashed circles: an edge's two ends, a joint and the two nodes
-on either side of it, an isolated node, or the node the GMM blames. A few
-anomalies aren't about particular nodes (an unusual share of visible nodes,
-bounding-box size, or distance to the nearest similar pose); those get only
-the box. Going to a flag zooms to its instance, and while a flagged instance
-is selected, the poses around it fade to 25% so it stands out from animals
-overlapping it. All of this shows only while the Label QC panel is open: close
-the panel to label without it.
+On the video, each flagged instance gets a red dashed box, and on it the
+thing that looks wrong, drawn in red dashes over a dark outline:
+
+- an **edge** whose length is unusual (or two nodes unusually far apart or
+  close together, or a likely L/R swapped pair): a dashed line between the two
+  nodes;
+- an unusual **joint angle** (or bend along the body): both arms of the angle
+  dashed, with an arc at the joint between them;
+- an isolated node, or the node the GMM blames: a dashed circle around it.
+
+A few anomalies aren't about particular nodes (an unusual share of visible
+nodes, bounding-box size, or distance to the nearest similar pose); those get
+only the box. Going to a flag zooms to its instance, and while a flagged
+instance is selected, the poses around it fade to 25% so it stands out from
+animals overlapping it. All of this shows only while the Label QC panel or the
+[Review window](#the-review-window) is open: close them to label without it.
 
 When you edit a flagged frame, its row and card dim and say **Edited since the
 run**: its flags may already be fixed. Click **Rerun** to re-check everything.
+
+### The Review window
+
+Click the blue **Review** button at the top of the panel (next to **Rerun**)
+to go through the flags one at a time. The video area turns into a window
+over the rest of the app, which dims, and zooms to the flagged instance on
+each flag. It is the same video view as always, so you fix things the usual
+way: drag a point to move it, ++v++ to hide a node, ++cmd+z++ to undo, scroll
+to zoom.
+
+- The **header** shows where you are (**Review 4 / 31**), the worst score on
+  the frame (red when it is over the threshold, or **Error** for a definite
+  error), how many flags the frame has, and the frame number.
+- Under the video, the selected instance's issue and the node(s) it is about,
+  e.g. *Unusual joint angle (decreased) · thorax*, with its **Anomaly** and
+  **GMM** scores (red when over their thresholds) and any errors QC found on
+  it.
+- ++left++ / ++right++ (or **‹ Prev** / **Next ›**) go to the previous / next
+  flagged frame instead of the previous / next frame.
+- ++3++ (or **Ignore**) ignores the selected instance's flags and goes to the
+  next one, as [below](#ignoring-a-flag).
+- **Delete instance** deletes the selected instance, for a duplicate. ++cmd+z++
+  brings it back.
+- ++esc++, the **×** button, or a click on the dimmed area closes the window.
+
+The tabs at the top right choose the order of the flagged frames:
+
+| Tab | Order |
+|---|---|
+| **Severity** | Definite errors first, then by the worst score (the panel's usual order) |
+| **Detectors** | Frames where the most checks agree first: how many of the anomaly score, the GMM score and the rule checks flag the frame's worst instance. Ties go by the worst score |
+| **Frame** | In frame order (by video, then frame) |
+
+The order you pick also orders the panel's list and ++f++ / ++shift+f++.
+Switching keeps you on the frame you're on.
 
 ### Ignoring a flag
 

@@ -2,12 +2,13 @@
  * Keyboard Shortcuts Dialog.
  *
  * Displays all keyboard shortcuts grouped by category in a table format,
- * followed by the canvas's mouse gestures.
+ * followed by the Label QC Review window's keys and the canvas's mouse gestures.
  */
 
 import { DEFAULT_SHORTCUTS } from "../../lib/shortcuts";
 import { formatShortcut } from "@/lib/formatShortcut";
 import { CANVAS_GESTURES } from "@/lib/canvasGestures";
+import { QC_REVIEW_KEYS } from "@/lib/qcReview";
 import {
   Dialog,
   DialogContent,
@@ -103,6 +104,26 @@ export function ShortcutsDialog({ open, onOpenChange }: ShortcutsDialogProps) {
               </table>
             </div>
           ))}
+
+          <div>
+            <h3 className="text-sm font-semibold mb-1 text-muted-foreground">
+              Label QC Review window
+            </h3>
+            <table className="w-full text-sm">
+              <tbody>
+                {QC_REVIEW_KEYS.map((k) => (
+                  <tr key={k.action} className="border-b border-border/50 last:border-0">
+                    <td className="py-1">{k.action}</td>
+                    <td className="py-1 text-right">
+                      <kbd className="px-1.5 py-0.5 text-xs bg-muted rounded font-mono">
+                        {k.keys}
+                      </kbd>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
 
           <div>
             <h3 className="text-sm font-semibold mb-1 text-muted-foreground">
