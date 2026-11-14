@@ -280,7 +280,7 @@ function ReviewFooter() {
             <Button
               size="sm"
               variant="outline"
-              className="h-7 border-green-500/50 text-green-400 hover:bg-green-500/10 hover:text-green-400"
+              className="h-7 border-blue-500/50 text-blue-400 hover:bg-blue-500/10 hover:text-blue-400"
               disabled={!ignorable}
               onClick={() => commandContext.execute(MarkQcFlagOk)}
               title="This instance is fine: hide its flags and go to the next one (3)"

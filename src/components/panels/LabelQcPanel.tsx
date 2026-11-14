@@ -109,7 +109,7 @@ export function LabelQcPanel() {
       <Button
         size="sm"
         variant="outline"
-        className="ml-auto h-5 shrink-0 border-green-500/50 px-1.5 text-[10px] text-green-400 hover:bg-green-500/10"
+        className="ml-auto h-5 shrink-0 border-blue-500/50 px-1.5 text-[10px] text-blue-400 hover:bg-blue-500/10"
         onClick={() => markQcOkAndAdvance(e.videoIdx, e.frameIdx, instIdx)}
         title="This instance is fine: hide its flags and go to the next one (3)"
       >
