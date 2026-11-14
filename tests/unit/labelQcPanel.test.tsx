@@ -113,7 +113,7 @@ describe("LabelQcPanel", () => {
     withResults();
     useAppStore.setState({ frameIdx: 3 });
     render(<LabelQcPanel />);
-    fireEvent.click(screen.getByRole("button", { name: "Ignore (3)" }));
+    fireEvent.click(screen.getByRole("button", { name: "Ignore" }));
     expect(screen.getByText("1 flagged frame · 1 ignored")).toBeTruthy();
     expect(screen.queryByText("Unusual joint angle")).toBeNull();
 

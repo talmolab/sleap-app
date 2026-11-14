@@ -106,7 +106,7 @@ export function LabelQcPanel() {
         onClick={() => markQcOkAndAdvance(e.videoIdx, e.frameIdx, instIdx)}
         title="This instance is fine: hide its flags and go to the next one (3)"
       >
-        Ignore (3)
+        Ignore
       </Button>
     );
 

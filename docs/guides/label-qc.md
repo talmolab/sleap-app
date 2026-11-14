@@ -112,7 +112,7 @@ run**: its flags may already be fixed. Click **Rerun** to re-check everything.
 
 Some flags are false alarms: an animal really was curled up, or two really
 were touching. To ignore one, select the instance (++f++ already does) and
-press ++3++, or click **Ignore (3)** on its card. That hides every flag on
+press ++3++, or click **Ignore** on its card. That hides every flag on
 that instance (its anomaly and GMM flag and any error QC found on it) and
 moves on: to the next flagged instance on the same frame, else to the next
 flagged frame (also **Go ▸ Ignore Label QC Flag**). Flags on the frame as a
