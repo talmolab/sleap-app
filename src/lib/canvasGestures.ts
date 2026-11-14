@@ -46,6 +46,20 @@ export function instanceDoubleClickAction(
   return "add-missing-nodes";
 }
 
+/** A press that moves farther than this (screen px) is a drag, not a click. */
+export const PLACE_CLICK_MAX_MOVE_PX = 4;
+/** A press held longer than this (ms) is a long press, not a click. */
+export const PLACE_CLICK_MAX_MS = 300;
+
+/**
+ * Whether a press in the Label QC Review window's node placement was a click,
+ * which places the node. A drag (it pans the view) or a long press places
+ * nothing. (Ordinary placement places on press.)
+ */
+export function isPlacementClick(movedPx: number, heldMs: number): boolean {
+  return movedPx <= PLACE_CLICK_MAX_MOVE_PX && heldMs <= PLACE_CLICK_MAX_MS;
+}
+
 /**
  * Mouse gestures on the video canvas, for Help ▸ Keyboard Shortcuts. The docs
  * page (docs/reference/shortcuts.md, "Canvas gestures") lists these too.

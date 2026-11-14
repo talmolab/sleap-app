@@ -658,16 +658,36 @@ export interface QcCanvasFlag {
   instanceIdx: number;
   /** Node indices behind the flag, to circle. May be empty. */
   nodes: number[];
+  /** Node pairs whose length (or distance) is off, to draw as a dashed line. */
+  edges?: [number, number][];
+  /** Joint angles that are off, as [joint, arm end, arm end]: both arms dashed, an arc at the joint. */
+  angles?: [number, number, number][];
   /** Edited since the QC run: drawn faded, since it may already be fixed. */
   stale?: boolean;
 }
 
 const QC_FLAG_COLOR = "rgba(255, 45, 85, 0.95)";
+/** Dark casing under the red dashes, so they stay visible on light fur and same-colored bones. */
+const QC_CASING_COLOR = "rgba(11, 14, 19, 0.85)";
+
+/** Stroke the current path twice: a solid dark casing, then red dashes on top. */
+function strokeQcPath(ctx: CanvasRenderingContext2D, z: number, casing: number, width: number): void {
+  ctx.setLineDash([]);
+  ctx.strokeStyle = QC_CASING_COLOR;
+  ctx.lineWidth = casing / z;
+  ctx.stroke();
+  ctx.strokeStyle = QC_FLAG_COLOR;
+  ctx.lineWidth = width / z;
+  ctx.setLineDash([5 / z, 4 / z]);
+  ctx.stroke();
+}
 
 /**
- * Label QC overlay: a red dashed box around each flagged instance, and a red
- * dashed circle around each node behind the flag. Dashed, like the web QC
- * app's, to read as "the checker's guess" rather than part of the label.
+ * Label QC overlay: a red dashed box around each flagged instance, and on it
+ * whatever is off: a red dashed line along an edge whose length is off, both
+ * arms of an unusual joint angle with an arc at the joint, or a red dashed
+ * circle around a node. Dashed, like the web QC app's, to read as "the
+ * checker's guess" rather than part of the label.
  */
 export function renderQcFlags(
   ctx: CanvasRenderingContext2D,
@@ -676,6 +696,7 @@ export function renderQcFlags(
   opts: RenderOptions
 ): void {
   const z = opts.zoom;
+  const placed = (n: RenderedNode | undefined): n is RenderedNode => !!n && !isNaN(n.x);
   for (const flag of flags) {
     const inst = instances[flag.instanceIdx];
     if (!inst || !inst.visible) continue;
@@ -695,11 +716,46 @@ export function renderQcFlags(
     ctx.lineWidth = 1.5 / z;
     ctx.setLineDash([6 / z, 4 / z]);
     ctx.strokeRect(minX, minY, maxX - minX, maxY - minY);
+    ctx.lineCap = "round";
+
+    for (const [a, b] of flag.edges ?? []) {
+      const pa = inst.nodes[a];
+      const pb = inst.nodes[b];
+      if (!placed(pa) || !placed(pb)) continue;
+      ctx.beginPath();
+      ctx.moveTo(pa.x, pa.y);
+      ctx.lineTo(pb.x, pb.y);
+      strokeQcPath(ctx, z, 5, 3);
+    }
+
+    for (const [v, a, b] of flag.angles ?? []) {
+      const pv = inst.nodes[v];
+      const pa = inst.nodes[a];
+      const pb = inst.nodes[b];
+      if (!placed(pv) || !placed(pa) || !placed(pb)) continue;
+      ctx.beginPath();
+      ctx.moveTo(pa.x, pa.y);
+      ctx.lineTo(pv.x, pv.y);
+      ctx.lineTo(pb.x, pb.y);
+      strokeQcPath(ctx, z, 5, 2.2);
+      // The arc spans the angle itself (the short way round), clear of the joint's marker.
+      const a0 = Math.atan2(pa.y - pv.y, pa.x - pv.x);
+      const a1 = Math.atan2(pb.y - pv.y, pb.x - pv.x);
+      let d = a1 - a0;
+      while (d > Math.PI) d -= 2 * Math.PI;
+      while (d < -Math.PI) d += 2 * Math.PI;
+      ctx.beginPath();
+      ctx.arc(pv.x, pv.y, (opts.markerSize + 9) / z, a0, a0 + d, d < 0);
+      ctx.setLineDash([]);
+      ctx.strokeStyle = QC_FLAG_COLOR;
+      ctx.lineWidth = 1.8 / z;
+      ctx.stroke();
+    }
 
     const radius = (opts.markerSize + 6) / z;
     for (const idx of flag.nodes) {
       const node = inst.nodes[idx];
-      if (!node || isNaN(node.x)) continue;
+      if (!placed(node)) continue;
       // A dark casing under the red dashes keeps the ring visible on light fur.
       ctx.setLineDash([]);
       ctx.strokeStyle = "rgba(0, 0, 0, 0.6)";

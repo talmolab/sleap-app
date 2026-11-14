@@ -44,6 +44,8 @@ import { instanceVisible, instanceShowsNonVisible } from "@/lib/instanceVisibili
 import { formatShortcut } from "@/lib/formatShortcut";
 import { useQcVisibility } from "@/hooks/useQcVisibility";
 import { useQcFrameFlags } from "@/hooks/useQcFrameFlags";
+import { useQcStore } from "@/stores/qcStore";
+import { QcReviewFrame } from "./QcReviewFrame";
 import {
   getPaletteColor,
   getInstanceColor,
@@ -67,7 +69,12 @@ import {
   AddEdgeCommand,
   RenameNodeCommand,
 } from "../../commands";
-import { nodeClickAction, instanceDoubleClickAction } from "@/lib/canvasGestures";
+import {
+  nodeClickAction,
+  instanceDoubleClickAction,
+  isPlacementClick,
+  PLACE_CLICK_MAX_MOVE_PX,
+} from "@/lib/canvasGestures";
 import {
   buildBuilderRenderedInstance,
   renderPenStroke,
@@ -126,6 +133,31 @@ export function nextBuilderNodeName(nodes: { name: string }[]): string {
   let k = 0;
   while (names.has(`node_${k}`)) k++;
   return `node_${k}`;
+}
+
+/**
+ * Label QC Review: place the selected instance's problem node (the placement
+ * target) at scene (x, y), with an undo snapshot, then leave placement mode.
+ * Review places on a click's release (see handleMouseUp); ordinary placement
+ * places on press, in handleMouseDown, and moves on to the next unplaced node.
+ */
+export function placeQcReviewNode(x: number, y: number): void {
+  const store = useAppStore.getState();
+  const inst = store.instance;
+  const targetIdx = store.placementNodeIdx;
+  if (store.labelingMode !== "place" || !inst || "score" in inst) return;
+  if (targetIdx === null || targetIdx < 0 || targetIdx >= inst.points.length) return;
+  commandContext.execute(BeginEdit);
+  // Click is in crop-local image space; store back in source coords.
+  inst.points[targetIdx].xy = toSourceCoords(store.video, x, y);
+  inst.points[targetIdx].visible = true;
+  hintIfFirstNodeConfirm(inst.points[targetIdx].complete);
+  inst.points[targetIdx].complete = true;
+  store.markChanged();
+  store.touchFrame();
+  // Only the flag's own node: the hint said which one.
+  store.exitPlacementMode();
+  store.bumpOverlayVersion();
 }
 
 export function VideoPlayer() {
@@ -329,6 +361,17 @@ export function VideoPlayer() {
 
   // Track drag-start screen position for anchoring tooltip + inset
   const dragStartClient = useRef<{ clientX: number; clientY: number } | null>(null);
+  // A press in Label QC Review's placement mode: places the node on release if
+  // it was a click (not a drag, which pans, or a long press). `moved` =
+  // farthest it went (px).
+  const pendingPlace = useRef<{
+    clientX: number;
+    clientY: number;
+    t: number;
+    x: number;
+    y: number;
+    moved: number;
+  } | null>(null);
 
   // Track cursor scene position for placement-mode inset
   const cursorScene = useRef<{ x: number; y: number } | null>(null);
@@ -1271,6 +1314,18 @@ export function VideoPlayer() {
     setMarqueeEnd(null);
   }, [frameIdx, labeledFrame]);
 
+  // Label QC Review: select the node behind the flag once its instance is on
+  // screen (after the frame-change clear above, which runs first).
+  const qcNodeFocus = useQcStore((s) => s.nodeFocus);
+  useEffect(() => {
+    if (!qcNodeFocus || !labeledFrame) return;
+    const instanceIdx = labeledFrame.instances.indexOf(qcNodeFocus.instance);
+    if (instanceIdx < 0) return;
+    useQcStore.setState({ nodeFocus: null });
+    setSelectedNodes(new Set([makeNodeKey(instanceIdx, qcNodeFocus.node)]));
+    useAppStore.getState().bumpOverlayVersion();
+  }, [qcNodeFocus, labeledFrame]);
+
   // Keep the scratch `builderPositions` index-aligned with the skeleton node
   // list while building. AddNode also syncs inline, but this catches node-count
   // changes from undo/redo (which mutate skeleton.nodes without going through
@@ -2177,6 +2232,13 @@ export function VideoPlayer() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [fitSelection, renderedInstances]);
 
+  // Opening or closing the Label QC Review window resizes the canvas: zoom
+  // back to the instance under review.
+  useEffect(() => {
+    if (useQcStore.getState().reviewOpen && useAppStore.getState().instance)
+      useAppStore.getState().set("fitSelection", true);
+  }, [containerSize]);
+
   // Reset the view to default (zoom=1, no pan, fit-frame) on demand. Driven by a
   // one-shot nonce bumped from the toolbar button / 'R' hotkey — mirrors the
   // `fit`/`fitSelection` store-signal pattern (the toolbar/hotkey live
@@ -2272,6 +2334,14 @@ export function VideoPlayer() {
     if (!selectedInstance) {
       useAppStore.getState().exitPlacementMode();
       return;
+    }
+    // Label QC Review picks its own target (the flag's node): keep it while
+    // it is unplaced. Otherwise reset to the first unplaced node of the new
+    // instance.
+    if (useQcStore.getState().reviewOpen) {
+      const target = useAppStore.getState().placementNodeIdx;
+      const targetXy = target !== null ? selectedInstance.points[target]?.xy : undefined;
+      if (targetXy && (isNaN(targetXy[0]) || isNaN(targetXy[1]))) return;
     }
     // Reset placement target to first unplaced node of new instance
     const firstNaN = selectedInstance.points.findIndex(
@@ -2431,6 +2501,15 @@ export function VideoPlayer() {
       if (store.labelingMode === "place" && currentInstance && !("score" in currentInstance)) {
         const targetIdx = store.placementNodeIdx;
         if (targetIdx !== null && targetIdx >= 0 && targetIdx < currentInstance.points.length) {
+          // Label QC Review places on a click's release (placeQcReviewNode): a
+          // drag pans instead, and a long press does nothing.
+          if (useQcStore.getState().reviewOpen) {
+            e.preventDefault();
+            pendingPlace.current = { clientX: e.clientX, clientY: e.clientY, t: performance.now(), x, y, moved: 0 };
+            setIsPanning(true);
+            setPanStart({ x: e.clientX - panX, y: e.clientY - panY });
+            return;
+          }
           commandContext.execute(BeginEdit);
           // Click is in crop-local image space; store back in source coords.
           currentInstance.points[targetIdx].xy = toSourceCoords(
@@ -2728,6 +2807,12 @@ export function VideoPlayer() {
 
       // Handle panning
       if (isPanning) {
+        // A placement press only pans once it moves past the click threshold.
+        const pend = pendingPlace.current;
+        if (pend) {
+          pend.moved = Math.max(pend.moved, Math.hypot(e.clientX - pend.clientX, e.clientY - pend.clientY));
+          if (pend.moved <= PLACE_CLICK_MAX_MOVE_PX) return;
+        }
         const rawPx = e.clientX - panStart.x;
         const rawPy = e.clientY - panStart.y;
         const constrained = constrainPan(rawPx, rawPy, zoom);
@@ -2898,6 +2983,11 @@ export function VideoPlayer() {
       useAppStore.getState().bumpOverlayVersion();
       return;
     }
+
+    // Label QC Review placement: a click (not a drag or long press) places the node.
+    const pend = pendingPlace.current;
+    pendingPlace.current = null;
+    if (pend && isPlacementClick(pend.moved, performance.now() - pend.t)) placeQcReviewNode(pend.x, pend.y);
 
     // Area-delete mode: execute the delete command
     if (isAreaDeleting && areaDeleteStart && areaDeleteEnd) {
@@ -3289,7 +3379,8 @@ export function VideoPlayer() {
 
   return (
     <div className="flex flex-col flex-1 min-h-0">
-      {/* Canvas container */}
+      {/* Canvas container, framed as a window while Label QC Review is open */}
+      <QcReviewFrame>
       <div
         ref={containerRef}
         className={cn(
@@ -3324,7 +3415,7 @@ export function VideoPlayer() {
           onMouseDown={handleMouseDown}
           onMouseMove={handleMouseMove}
           onMouseUp={handleMouseUp}
-          onMouseLeave={() => { handleMouseUp(); setHoveredNode(null); setHoveredInstanceIdx(null); cursorScene.current = null; }}
+          onMouseLeave={() => { pendingPlace.current = null; handleMouseUp(); setHoveredNode(null); setHoveredInstanceIdx(null); cursorScene.current = null; }}
           onDoubleClick={handleDoubleClick}
           onContextMenu={handleContextMenu}
         />
@@ -3827,6 +3918,7 @@ export function VideoPlayer() {
         {/* Multi-instance transpose picker prompt (self-guards to pick mode). */}
         <TransposePickBar />
       </div>
+      </QcReviewFrame>
 
       {/* Seekbar */}
       <Seekbar />
