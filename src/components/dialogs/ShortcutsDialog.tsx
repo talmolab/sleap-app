@@ -39,6 +39,7 @@ const CATEGORIES: Record<string, string[]> = {
     "goto next track spawn",
     "goto next qc flag",
     "goto prev qc flag",
+    "ignore qc flag",
     "goto frame",
     "next video",
     "prev video",

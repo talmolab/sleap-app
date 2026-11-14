@@ -34,6 +34,7 @@ import {
   GoNextTrackSpawnFrame,
   GoNextQcFlag,
   GoPrevQcFlag,
+  MarkQcFlagOk,
   GoToStartFrame,
   GoToEndFrame,
   AddInstance,
@@ -214,8 +215,7 @@ export function useKeyboardShortcuts() {
         store().toggle("defaultToPan");
       },
 
-      // Mark Frame as Negative (N, as in SLEAP) — asks first if it would remove instances.
-      // Label QC review queue (F / Shift+F).
+      // Label QC review queue (F / Shift+F; 3 marks the selected flag OK).
       [DEFAULT_SHORTCUTS["goto next qc flag"]]: (e) => {
         if (isTextInput(e)) return;
         e.preventDefault();
@@ -226,7 +226,13 @@ export function useKeyboardShortcuts() {
         e.preventDefault();
         commandContext.execute(GoPrevQcFlag);
       },
+      [DEFAULT_SHORTCUTS["ignore qc flag"]]: (e) => {
+        if (isTextInput(e)) return;
+        e.preventDefault();
+        commandContext.execute(MarkQcFlagOk);
+      },
 
+      // Mark Frame as Negative (N, as in SLEAP) — asks first if it would remove instances.
       [DEFAULT_SHORTCUTS["mark negative"]]: (e) => {
         if (isTextInput(e)) return;
         e.preventDefault();

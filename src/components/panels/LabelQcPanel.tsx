@@ -4,10 +4,11 @@
  * Shares its results with the Label Quality Check dialog (qcStore), so a run
  * started in either shows up in both. The flagged frames are listed on top,
  * worst first; the card below shows everything QC found on the current frame.
- * F / Shift+F step through the list from anywhere (navCommands).
+ * F / Shift+F step through the list from anywhere (navCommands), and 3 (or a
+ * card's Mark OK) marks a flagged instance OK so its flags go away.
  */
 import { useEffect, useMemo, useRef } from "react";
-import { ChevronLeft, ChevronRight, CircleHelp } from "lucide-react";
+import { ChevronLeft, ChevronRight, CircleHelp, Eye, EyeOff } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Slider } from "@/components/ui/slider";
 import {
@@ -21,7 +22,11 @@ import { useAppStore } from "@/stores/appStore";
 import {
   buildQcQueue,
   goToQcEntry,
+  hasOpenFlags,
+  hideOkFlags,
+  markQcOkAndAdvance,
   qcFrameKey,
+  qcIsOk,
   stepQcQueue,
   useQcStore,
   type QcQueueEntry,
@@ -33,6 +38,8 @@ export function LabelQcPanel() {
   const video = useAppStore((s) => s.video);
   const frameIdx = useAppStore((s) => s.frameIdx);
   const skeleton = useAppStore((s) => s.skeleton);
+  // Edits change pose fingerprints, so OK marks are re-matched after each.
+  const editSeq = useAppStore((s) => s.editSeq);
   const {
     state,
     progress,
@@ -40,15 +47,24 @@ export function LabelQcPanel() {
     anomaly,
     threshold,
     editedFrames,
+    dismissed,
+    showDismissed,
     run,
     cancel,
     setThreshold,
+    setShowDismissed,
+    unmarkOk,
   } = useQcStore();
 
-  const queue = useMemo(
-    () => buildQcQueue(findings, anomaly, threshold),
-    [findings, anomaly, threshold],
+  const full = useMemo(
+    () => buildQcQueue(findings, anomaly, threshold, qcIsOk(labels, dismissed)),
+    // editSeq isn't read, but each edit can change a fingerprint.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [findings, anomaly, threshold, labels, dismissed, editSeq],
   );
+  const queue = useMemo(() => (showDismissed ? full : hideOkFlags(full)), [full, showDismissed]);
+  const openCount = useMemo(() => full.filter(hasOpenFlags).length, [full]);
+  const okCount = useMemo(() => full.reduce((n, e) => n + e.ok.length, 0), [full]);
   const videoIdx = labels && video ? labels.videos.indexOf(video) : -1;
   const pos = queue.findIndex((e) => e.videoIdx === videoIdx && e.frameIdx === frameIdx);
   const current = pos >= 0 ? queue[pos] : null;
@@ -66,6 +82,33 @@ export function LabelQcPanel() {
   const frameLabel = (e: { videoIdx: number; frameIdx: number }) =>
     `${multiVideo ? `V${e.videoIdx + 1} · ` : ""}${e.frameIdx}`;
   const isEdited = (e: QcQueueEntry) => editedFrames.has(qcFrameKey(e.videoIdx, e.frameIdx));
+
+  /** Mark OK, or (once marked) its "OK" tag and Undo, for one flagged instance. */
+  const okControl = (e: QcQueueEntry, instIdx: number) =>
+    e.ok.includes(instIdx) ? (
+      <span className="ml-auto flex shrink-0 items-center gap-1">
+        <span className="rounded bg-green-500/15 px-1 text-[10px] text-green-500">Ignored</span>
+        <Button
+          size="sm"
+          variant="ghost"
+          className="h-5 px-1.5 text-[10px]"
+          onClick={() => unmarkOk(e.videoIdx, e.frameIdx, instIdx)}
+          title="Flag this instance again"
+        >
+          Undo
+        </Button>
+      </span>
+    ) : (
+      <Button
+        size="sm"
+        variant="outline"
+        className="ml-auto h-5 shrink-0 border-green-500/50 px-1.5 text-[10px] text-green-400 hover:bg-green-500/10"
+        onClick={() => markQcOkAndAdvance(e.videoIdx, e.frameIdx, instIdx)}
+        title="This instance is fine: hide its flags and go to the next one (3)"
+      >
+        Ignore
+      </Button>
+    );
 
   const scoreBar = (label: string, score: number | null, cut: number | null) => (
     <div className="flex items-center gap-1.5">
@@ -95,19 +138,28 @@ export function LabelQcPanel() {
       )}
       {e.rules.map((r, i) => {
         const soft = SOFT_QC_KINDS.has(r.kind);
+        const ok = r.instanceIdx !== undefined && e.ok.includes(r.instanceIdx);
         return (
           <div
             key={`r${i}`}
             className={cn(
               "rounded border px-2 py-1.5",
-              soft ? "border-amber-500/30 bg-amber-500/5" : "border-red-500/30 bg-red-500/5",
+              ok
+                ? "border-border/60"
+                : soft
+                  ? "border-amber-500/30 bg-amber-500/5"
+                  : "border-red-500/30 bg-red-500/5",
             )}
           >
             <div className="flex items-center gap-1.5 text-[11px] font-medium">
               <span
                 className={cn(
                   "rounded px-1 text-[10px]",
-                  soft ? "bg-amber-500/15 text-amber-600" : "bg-red-500/15 text-red-500",
+                  ok
+                    ? "bg-muted text-muted-foreground"
+                    : soft
+                      ? "bg-amber-500/15 text-amber-600"
+                      : "bg-red-500/15 text-red-500",
                 )}
               >
                 {soft ? "Possible" : "Error"}
@@ -116,40 +168,65 @@ export function LabelQcPanel() {
               {r.instanceIdx !== undefined && (
                 <span className="text-muted-foreground">· inst {r.instanceIdx + 1}</span>
               )}
+              {r.instanceIdx !== undefined && okControl(e, r.instanceIdx)}
             </div>
-            <p className="mt-0.5 text-[11px] text-muted-foreground">{r.message}</p>
+            <p className={cn("mt-0.5 text-[11px] text-muted-foreground", ok && "opacity-60")}>
+              {r.message}
+            </p>
           </div>
         );
       })}
       {e.anomalies.map(({ a, v }) => {
         const node = a.gmmNode != null && a.gmmNode >= 0 ? nodeNames[a.gmmNode] : null;
+        const ok = e.ok.includes(a.instIdx);
         return (
-          <button
+          // Not a <button>: it holds the Mark OK / Undo buttons.
+          <div
             key={`a${a.instIdx}`}
-            className="rounded border border-border/60 px-2 py-1.5 text-left hover:bg-muted/40"
-            onClick={() => labels && goToQcEntry(labels, { ...e, anomalies: [{ a, v }] })}
+            role="button"
+            tabIndex={0}
+            className="cursor-pointer rounded border border-border/60 px-2 py-1.5 text-left hover:bg-muted/40"
+            onClick={(ev) => {
+              if ((ev.target as HTMLElement).closest("button")) return;
+              if (labels) goToQcEntry(labels, { ...e, anomalies: [{ a, v }] });
+            }}
+            onKeyDown={(ev) => {
+              if (ev.target !== ev.currentTarget || (ev.key !== "Enter" && ev.key !== " ")) return;
+              ev.preventDefault();
+              if (labels) goToQcEntry(labels, { ...e, anomalies: [{ a, v }] });
+            }}
             title="Select this instance"
           >
             <div className="flex items-center gap-1.5 text-[11px] font-medium">
-              <span className="rounded bg-amber-500/15 px-1 text-[10px] text-amber-600">
+              <span
+                className={cn(
+                  "rounded px-1 text-[10px]",
+                  ok ? "bg-muted text-muted-foreground" : "bg-amber-500/15 text-amber-600",
+                )}
+              >
                 {v.by === "gmm" ? "GMM" : v.by === "both" ? "Anomaly + GMM" : "Anomaly"}
               </span>
               inst {a.instIdx + 1}
-              {node && <span className="text-muted-foreground">· {node}</span>}
+              {node && <span className="truncate text-muted-foreground">· {node}</span>}
+              {okControl(e, a.instIdx)}
             </div>
-            <p className="mt-0.5 mb-1 text-[11px] text-muted-foreground">{v.issue}</p>
-            {scoreBar("Anomaly", a.score, threshold)}
-            {scoreBar("GMM", a.gmmScore, anomaly?.gmmThreshold ?? null)}
-          </button>
+            <div className={cn(ok && "opacity-60")}>
+              <p className="mt-0.5 mb-1 text-[11px] text-muted-foreground">{v.issue}</p>
+              {scoreBar("Anomaly", a.score, threshold)}
+              {scoreBar("GMM", a.gmmScore, anomaly?.gmmThreshold ?? null)}
+            </div>
+          </div>
         );
       })}
     </div>
   );
 
+  // OK instances' flags sort last, so [0] is an open flag when there is one.
   const summary = (e: QcQueueEntry) =>
     e.rules.length > 0 && (e.definite || e.anomalies.length === 0)
       ? QC_KIND_LABEL[e.rules[0].kind]
       : (e.anomalies[0]?.v.issue ?? "");
+  const allOk = (e: QcQueueEntry) => e.ok.length > 0 && !hasOpenFlags(e);
   /** Every issue on the frame, one per line (the row's hover text). */
   const allIssues = (e: QcQueueEntry) =>
     [
@@ -181,7 +258,7 @@ export function LabelQcPanel() {
       <p className="px-2 text-[11px] text-muted-foreground">
         Checks your labeled instances for definite errors (duplicates, points outside the
         frame…) and unusual poses, then lists the flagged frames worst first. Press F /
-        Shift+F to step through them.
+        Shift+F to step through them, and 3 to ignore a false alarm.
       </p>
     );
   } else if (state === "running") {
@@ -189,7 +266,9 @@ export function LabelQcPanel() {
   } else if (queue.length === 0) {
     body = (
       <p className="px-2 text-[11px] text-muted-foreground">
-        Nothing flagged. Lower the threshold to flag more.
+        {okCount > 0
+          ? "Every flag is ignored."
+          : "Nothing flagged. Lower the threshold to flag more."}
       </p>
     );
   } else {
@@ -241,7 +320,7 @@ export function LabelQcPanel() {
                 className={cn(
                   "flex w-full items-center gap-2 px-2 py-1 text-left text-[11px] hover:bg-muted/40",
                   i === pos && "bg-primary/10",
-                  isEdited(e) && "opacity-50",
+                  (isEdited(e) || allOk(e)) && "opacity-50",
                 )}
               >
                 <span className="w-12 shrink-0 font-mono tabular-nums">{frameLabel(e)}</span>
@@ -256,6 +335,11 @@ export function LabelQcPanel() {
                   </span>
                   {more > 0 && (
                     <span className="shrink-0 text-muted-foreground/70">+{more} more</span>
+                  )}
+                  {allOk(e) && (
+                    <span className="shrink-0 rounded bg-green-500/15 px-1 text-[10px] text-green-500">
+                      Ignored
+                    </span>
                   )}
                 </span>
                 {scoreCell(maxOf(e.anomalies.map(({ a }) => a.score)), threshold)}
@@ -316,9 +400,27 @@ export function LabelQcPanel() {
               {state === "done" ? "Rerun" : "Run QC"}
             </Button>
             {state === "done" && (
-              <span className="text-[11px] text-muted-foreground">
-                {queue.length} flagged frame{queue.length === 1 ? "" : "s"}
+              <span className="min-w-0 truncate text-[11px] text-muted-foreground">
+                {openCount} flagged frame{openCount === 1 ? "" : "s"}
+                {okCount > 0 && <> · {okCount} ignored</>}
               </span>
+            )}
+            {state === "done" && okCount > 0 && (
+              <Button
+                size="sm"
+                variant="ghost"
+                className="ml-auto h-6 shrink-0 px-1.5"
+                onClick={() => setShowDismissed(!showDismissed)}
+                aria-label={showDismissed ? "Hide ignored" : "Show ignored"}
+                aria-pressed={showDismissed}
+                title={
+                  showDismissed
+                    ? "Hide the ignored instances"
+                    : "Show the ignored instances, to undo"
+                }
+              >
+                {showDismissed ? <EyeOff className="h-3.5 w-3.5" /> : <Eye className="h-3.5 w-3.5" />}
+              </Button>
             )}
           </div>
         )}

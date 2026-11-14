@@ -6,9 +6,12 @@
  * the statistical anomaly + GMM scores (qc/anomaly.ts, chunked-async with
  * progress and cancel). Results belong to the `Labels` they were computed
  * from and are dropped when a different project loads.
+ *
+ * Instances marked OK (key 3, qcReviewed.ts) hide their flags. Those marks
+ * belong to the project, not the run: they survive Rerun and reopening it.
  */
 import { create } from "zustand";
-import type { Labels } from "@/types";
+import type { LabeledFrame, Labels } from "@/types";
 import { runLabelQc, SOFT_QC_KINDS, type QcFinding } from "@/lib/analyze/labelQc";
 import {
   anomalyVerdict,
@@ -22,6 +25,8 @@ import { makeQCConfig } from "@/lib/analyze/qc/config";
 import { useAppStore } from "@/stores/appStore";
 import { dirtyFrameTracker } from "@/lib/autosaveDirty";
 import { toast } from "@/lib/notify";
+import { resolveProjectKey } from "@/lib/trackColorOverrides";
+import { addQcMarks, loadQcMarks, qcMarkKey, removeQcMark } from "@/lib/qcReviewed";
 
 export type QcRunState = "idle" | "running" | "done";
 
@@ -40,7 +45,16 @@ export interface QcQueueEntry {
   anomalies: { a: AnomalyInstance; v: AnomalyVerdict }[];
   /** Worst statistical score on the frame (0 when only rules fired). */
   worst: number;
+  /**
+   * User instances on this frame marked OK. Their flags stay in `rules` and
+   * `anomalies` (after the others) but don't count toward `definite`/`worst`;
+   * `hideOkFlags` drops them.
+   */
+  ok: number[];
 }
+
+/** Whether a user instance is marked OK with its current pose. */
+export type QcIsOk = (videoIdx: number, frameIdx: number, userInstIdx: number) => boolean;
 
 interface QcState {
   /** The labels the current results were computed from. */
@@ -52,11 +66,31 @@ interface QcState {
   threshold: number;
   /** Frames edited since the run, as `qcFrameKey`s. */
   editedFrames: ReadonlySet<string>;
+  /** The project's OK marks (qcMarkKey), and the project key they belong to. */
+  dismissed: ReadonlySet<string>;
+  dismissedProject: string | null;
+  /** Show instances marked OK (greyed, with Undo) instead of hiding them. */
+  showDismissed: boolean;
   run: (labels: Labels) => Promise<void>;
   cancel: () => void;
   setThreshold: (t: number) => void;
+  setShowDismissed: (show: boolean) => void;
+  /** Mark a user instance OK with its current pose, or take that back. */
+  markOk: (videoIdx: number, frameIdx: number, userInstIdx: number) => void;
+  unmarkOk: (videoIdx: number, frameIdx: number, userInstIdx: number) => void;
+  /** Load a project's marks (on project load). */
+  loadDismissed: (projectKey: string | null) => Promise<void>;
   /** Drop results (project changed). */
   reset: () => void;
+}
+
+/** The current user instance at a QC position, or null. */
+function userInstanceAt(videoIdx: number, frameIdx: number, userInstIdx: number) {
+  const labels = useAppStore.getState().labels;
+  const video = labels?.videos[videoIdx];
+  if (!labels || !video) return null;
+  const lf = labels.find({ video, frameIdx })[0];
+  return lf?.userInstances[userInstIdx] ?? null;
 }
 
 let abort: AbortController | null = null;
@@ -69,6 +103,9 @@ export const useQcStore = create<QcState>((set, get) => ({
   anomaly: null,
   threshold: QC_ANOMALY_THRESHOLD,
   editedFrames: new Set(),
+  dismissed: new Set(),
+  dismissedProject: null,
+  showDismissed: false,
 
   run: async (labels) => {
     abort?.abort();
@@ -116,6 +153,40 @@ export const useQcStore = create<QcState>((set, get) => ({
 
   setThreshold: (threshold) => set({ threshold }),
 
+  setShowDismissed: (showDismissed) => set({ showDismissed }),
+
+  markOk: (videoIdx, frameIdx, userInstIdx) => {
+    const inst = userInstanceAt(videoIdx, frameIdx, userInstIdx);
+    const project = get().dismissedProject;
+    if (!inst || project === null) return;
+    const key = qcMarkKey(videoIdx, frameIdx, userInstIdx, inst);
+    if (get().dismissed.has(key)) return;
+    set({ dismissed: new Set(get().dismissed).add(key) });
+    void addQcMarks(project, [key]);
+  },
+
+  unmarkOk: (videoIdx, frameIdx, userInstIdx) => {
+    const inst = userInstanceAt(videoIdx, frameIdx, userInstIdx);
+    const project = get().dismissedProject;
+    if (!inst || project === null) return;
+    const key = qcMarkKey(videoIdx, frameIdx, userInstIdx, inst);
+    if (!get().dismissed.has(key)) return;
+    const dismissed = new Set(get().dismissed);
+    dismissed.delete(key);
+    set({ dismissed });
+    void removeQcMark(project, key);
+  },
+
+  loadDismissed: async (projectKey) => {
+    set({ dismissed: new Set(), dismissedProject: projectKey });
+    if (projectKey === null) return;
+    const keys = await loadQcMarks(projectKey);
+    // A different project may have loaded meanwhile.
+    if (keys.length === 0 || get().dismissedProject !== projectKey) return;
+    // Keep anything marked while loading.
+    set({ dismissed: new Set([...keys, ...get().dismissed]) });
+  },
+
   reset: () => {
     abort?.abort();
     abort = null;
@@ -136,40 +207,53 @@ export const qcFrameKey = (videoIdx: number, frameIdx: number) => `${videoIdx}:$
 /**
  * Group the results into one entry per flagged frame. Frames with a definite
  * rule error come first; the rest (statistical flags and possible rule errors
- * such as chain order) by worst statistical score.
+ * such as chain order) by worst statistical score. Instances `isOk` accepts
+ * are listed in `ok` and count for nothing, so a frame with only those sorts
+ * last.
  */
 export function buildQcQueue(
   findings: QcFinding[],
   anomaly: AnomalyResult | null,
   threshold: number,
+  isOk?: QcIsOk,
 ): QcQueueEntry[] {
   const byFrame = new Map<string, QcQueueEntry>();
   const entry = (videoIdx: number, frameIdx: number): QcQueueEntry => {
     const key = `${videoIdx}:${frameIdx}`;
     let e = byFrame.get(key);
     if (!e) {
-      e = { videoIdx, frameIdx, rules: [], definite: false, anomalies: [], worst: 0 };
+      e = { videoIdx, frameIdx, rules: [], definite: false, anomalies: [], worst: 0, ok: [] };
       byFrame.set(key, e);
     }
     return e;
   };
+  const okHere = (e: QcQueueEntry, instIdx: number | undefined) => {
+    if (instIdx === undefined || !isOk) return false;
+    if (e.ok.includes(instIdx)) return true;
+    if (!isOk(e.videoIdx, e.frameIdx, instIdx)) return false;
+    e.ok.push(instIdx);
+    return true;
+  };
   for (const f of findings) {
     const e = entry(f.videoIdx, f.frameIdx);
     e.rules.push(f);
-    if (!SOFT_QC_KINDS.has(f.kind)) e.definite = true;
+    if (!SOFT_QC_KINDS.has(f.kind) && !okHere(e, f.instanceIdx)) e.definite = true;
   }
   for (const a of anomaly?.instances ?? []) {
     const v = anomalyVerdict(a, threshold, anomaly?.gmmThreshold ?? null);
     if (!v.flagged) continue;
     const e = entry(a.videoIdx, a.frameIdx);
     e.anomalies.push({ a, v });
-    e.worst = Math.max(e.worst, v.score);
+    if (!okHere(e, a.instIdx)) e.worst = Math.max(e.worst, v.score);
   }
   const out = [...byFrame.values()];
   const soft = (f: QcFinding) => Number(SOFT_QC_KINDS.has(f.kind));
   for (const e of out) {
-    e.rules.sort((x, y) => soft(x) - soft(y));
-    e.anomalies.sort((x, y) => y.v.score - x.v.score);
+    const ok = (i: number | undefined) => Number(i !== undefined && e.ok.includes(i));
+    // Soft rules don't set `definite`, so okHere may not have seen them yet.
+    for (const r of e.rules) okHere(e, r.instanceIdx);
+    e.rules.sort((x, y) => ok(x.instanceIdx) - ok(y.instanceIdx) || soft(x) - soft(y));
+    e.anomalies.sort((x, y) => ok(x.a.instIdx) - ok(y.a.instIdx) || y.v.score - x.v.score);
   }
   return out.sort(
     (x, y) =>
@@ -178,6 +262,65 @@ export function buildQcQueue(
       x.videoIdx - y.videoIdx ||
       x.frameIdx - y.frameIdx,
   );
+}
+
+/** Whether a frame still has a flag not marked OK. */
+export const hasOpenFlags = (e: QcQueueEntry) =>
+  e.rules.some((r) => r.instanceIdx === undefined || !e.ok.includes(r.instanceIdx)) ||
+  e.anomalies.some(({ a }) => !e.ok.includes(a.instIdx));
+
+/** The queue without flags on OK instances, and without frames left with none. */
+export function hideOkFlags(queue: QcQueueEntry[]): QcQueueEntry[] {
+  const out: QcQueueEntry[] = [];
+  for (const e of queue) {
+    if (e.ok.length === 0) out.push(e);
+    else if (hasOpenFlags(e))
+      out.push({
+        ...e,
+        rules: e.rules.filter((r) => r.instanceIdx === undefined || !e.ok.includes(r.instanceIdx)),
+        anomalies: e.anomalies.filter(({ a }) => !e.ok.includes(a.instIdx)),
+        ok: [],
+      });
+  }
+  return out;
+}
+
+/**
+ * `isOk` for buildQcQueue: an instance is OK when a mark matches its position
+ * and current pose (so an edited pose is flagged again). Undefined when there
+ * are no marks. Fingerprints only instances at a marked position.
+ */
+export function qcIsOk(labels: Labels | null, dismissed: ReadonlySet<string>): QcIsOk | undefined {
+  if (!labels || dismissed.size === 0) return undefined;
+  const positions = new Set<string>();
+  for (const k of dismissed) positions.add(k.slice(0, k.lastIndexOf(":")));
+  let frames: Map<string, LabeledFrame> | null = null;
+  return (videoIdx, frameIdx, userInstIdx) => {
+    if (!positions.has(`${videoIdx}:${frameIdx}:${userInstIdx}`)) return false;
+    if (!frames) {
+      frames = new Map();
+      const videoIdxOf = new Map(labels.videos.map((v, i) => [v, i]));
+      for (const lf of labels.labeledFrames)
+        frames.set(qcFrameKey(videoIdxOf.get(lf.video) ?? -1, lf.frameIdx), lf);
+    }
+    const inst = frames.get(qcFrameKey(videoIdx, frameIdx))?.userInstances[userInstIdx];
+    return !!inst && dismissed.has(qcMarkKey(videoIdx, frameIdx, userInstIdx, inst));
+  };
+}
+
+/**
+ * The review queue as the panel shows it: OK instances' flags hidden unless
+ * "show dismissed" is on. Edits change fingerprints, so rebuild after them.
+ */
+export function liveQcQueue(): QcQueueEntry[] {
+  const qc = useQcStore.getState();
+  const full = buildQcQueue(
+    qc.findings,
+    qc.anomaly,
+    qc.threshold,
+    qcIsOk(useAppStore.getState().labels, qc.dismissed),
+  );
+  return qc.showDismissed ? full : hideOkFlags(full);
 }
 
 /** Jump to a flagged frame, select its worst flagged instance and zoom to it. */
@@ -189,8 +332,13 @@ export function goToQcEntry(labels: Labels, e: QcQueueEntry): void {
   app.setFrameIdx(e.frameIdx);
   const lf = labels.find({ video }).find((x) => x.frameIdx === e.frameIdx);
   // Indices are relative to userInstances (QC scores labels, not predictions).
+  // OK instances sort last, so this is the worst open one when there is one.
   const instIdx =
-    e.anomalies[0]?.a.instIdx ?? e.rules.find((r) => r.instanceIdx !== undefined)?.instanceIdx;
+    e.anomalies.find(({ a }) => !e.ok.includes(a.instIdx))?.a.instIdx ??
+    e.rules.find((r) => r.instanceIdx !== undefined && !e.ok.includes(r.instanceIdx))
+      ?.instanceIdx ??
+    e.anomalies[0]?.a.instIdx ??
+    e.rules.find((r) => r.instanceIdx !== undefined)?.instanceIdx;
   const inst = instIdx !== undefined ? (lf?.userInstances[instIdx] ?? null) : null;
   app.setInstance(inst);
   // Zoom to it (the canvas waits for the new frame to render first).
@@ -211,7 +359,7 @@ export function stepQcQueue(dir: 1 | -1): void {
     toast.info("Run Label QC first (Analyze → Label Quality Check, or the Label QC panel).");
     return;
   }
-  const queue = buildQcQueue(qc.findings, qc.anomaly, qc.threshold);
+  const queue = liveQcQueue();
   if (queue.length === 0) {
     toast.info("Label QC flagged no frames.");
     return;
@@ -224,10 +372,86 @@ export function stepQcQueue(dir: 1 | -1): void {
   if (!app.sidebarOpenPanels.includes("qc")) app.openPanel("qc");
 }
 
+/**
+ * Mark a flagged instance OK (key 3 / the card's Mark OK), then move on: to
+ * the next open instance flag on this frame, else to the next flagged frame.
+ */
+export function markQcOkAndAdvance(videoIdx: number, frameIdx: number, userInstIdx: number): void {
+  const labels = useAppStore.getState().labels;
+  if (!labels) return;
+  const before = liveQcQueue();
+  const pos = before.findIndex((e) => e.videoIdx === videoIdx && e.frameIdx === frameIdx);
+  useQcStore.getState().markOk(videoIdx, frameIdx, userInstIdx);
+  const after = liveQcQueue();
+  const here = after.find((e) => e.videoIdx === videoIdx && e.frameIdx === frameIdx);
+  const openInstance = (e: QcQueueEntry) =>
+    e.anomalies.some(({ a }) => !e.ok.includes(a.instIdx)) ||
+    e.rules.some((r) => r.instanceIdx !== undefined && !e.ok.includes(r.instanceIdx));
+  if (here && openInstance(here)) {
+    goToQcEntry(labels, here);
+    return;
+  }
+  // The frame that followed this one, if it is still flagged.
+  for (let i = 1; i <= before.length; i++) {
+    const b = before[(pos + i) % before.length];
+    const next = after.find(
+      (e) => e.videoIdx === b.videoIdx && e.frameIdx === b.frameIdx && hasOpenFlags(e),
+    );
+    if (next && next !== here) {
+      goToQcEntry(labels, next);
+      return;
+    }
+  }
+  toast.info("All Label QC flags reviewed.");
+}
+
+/**
+ * Key 3: mark the selected instance OK if it is flagged on this frame, then
+ * go to the next flag.
+ */
+export function markSelectedQcOk(): void {
+  const app = useAppStore.getState();
+  const qc = useQcStore.getState();
+  const labels = app.labels;
+  if (!labels) return;
+  if (qc.state !== "done" || qc.labels !== labels) {
+    toast.info("Run Label QC first (Analyze → Label Quality Check, or the Label QC panel).");
+    return;
+  }
+  const videoIdx = app.video ? labels.videos.indexOf(app.video) : -1;
+  const lf = app.video ? labels.find({ video: app.video, frameIdx: app.frameIdx })[0] : undefined;
+  const instIdx = app.instance && lf ? lf.userInstances.indexOf(app.instance) : -1;
+  const e = liveQcQueue().find((x) => x.videoIdx === videoIdx && x.frameIdx === app.frameIdx);
+  const flagged =
+    !!e &&
+    instIdx >= 0 &&
+    !e.ok.includes(instIdx) &&
+    (e.anomalies.some(({ a }) => a.instIdx === instIdx) ||
+      e.rules.some((r) => r.instanceIdx === instIdx));
+  if (!flagged) {
+    toast.info("Select a flagged instance on this frame to ignore it.");
+    return;
+  }
+  markQcOkAndAdvance(videoIdx, app.frameIdx, instIdx);
+}
+
+const projectKeyOf = (s: ReturnType<typeof useAppStore.getState>) =>
+  s.labels ? resolveProjectKey(s.projectPath, s.filename) : null;
+
 // Results belong to the labels they were computed from: drop them when a
-// different project loads.
+// different project loads. OK marks belong to the project: load its marks,
+// or after Save As (same labels, new path) copy them to the new key.
 useAppStore.subscribe((s, prev) => {
   if (s.labels !== prev.labels) useQcStore.getState().reset();
+  const key = projectKeyOf(s);
+  const qc = useQcStore.getState();
+  if (key === qc.dismissedProject) return;
+  if (s.labels === prev.labels && key !== null && qc.dismissedProject !== null) {
+    useQcStore.setState({ dismissedProject: key });
+    void addQcMarks(key, [...qc.dismissed]);
+  } else {
+    void qc.loadDismissed(key);
+  }
 });
 
 // A frame edited since the run is stale: its flags may already be fixed.
