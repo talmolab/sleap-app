@@ -16,7 +16,7 @@ import {
   cachedTrackSpawnFrames,
 } from "@/lib/navigationDomainCache";
 import { promptDialog } from "@/stores/promptStore";
-import { stepQcQueue } from "@/stores/qcStore";
+import { markSelectedQcOk, stepQcQueue } from "@/stores/qcStore";
 
 /** Navigate to the next frame that has labels (any instance). */
 export const GoNextLabeledFrame: Command = {
@@ -278,5 +278,14 @@ export const GoPrevQcFlag: Command = {
   topics: [UpdateTopic.Frame],
   execute() {
     stepQcQueue(-1);
+  },
+};
+
+/** Mark the selected flagged instance OK, then go to the next Label QC flag (3). */
+export const MarkQcFlagOk: Command = {
+  name: "MarkQcFlagOk",
+  topics: [UpdateTopic.Frame],
+  execute() {
+    markSelectedQcOk();
   },
 };

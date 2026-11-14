@@ -3,7 +3,7 @@
  * flagged-frame list and the current-frame card follow the shared qcStore.
  */
 import { describe, it, expect, afterEach, beforeEach, vi } from "../bun-test";
-import { render, screen, cleanup, fireEvent } from "@testing-library/react";
+import { render, screen, cleanup, fireEvent, act } from "@testing-library/react";
 import { Labels, LabeledFrame, Instance, Skeleton, Video } from "@talmolab/sleap-io.js";
 import type { QcFinding } from "@/lib/analyze/labelQc";
 import type { AnomalyInstance } from "@/lib/analyze/qc/anomaly";
@@ -16,6 +16,7 @@ vi.mock("sonner", () => ({
 const { useAppStore } = await import("@/stores/appStore");
 const { useQcStore, qcFrameKey } = await import("@/stores/qcStore");
 const { LabelQcPanel } = await import("@/components/panels/LabelQcPanel");
+const { setQcReviewedBackend, memoryBackend } = await import("@/lib/qcReviewed");
 
 const skeleton = new Skeleton({ nodes: ["head", "tail"], edges: [["head", "tail"]] });
 const video = new Video({ filename: "clip.mp4", openBackend: false, backendMetadata: { shape: [100, 480, 640, 1] } });
@@ -59,8 +60,10 @@ function withResults() {
 
 describe("LabelQcPanel", () => {
   beforeEach(() => {
+    setQcReviewedBackend(memoryBackend());
     useAppStore.setState({ labels, video, frameIdx: 0, skeleton });
     useQcStore.getState().reset();
+    useQcStore.setState({ dismissed: new Set(), showDismissed: false });
   });
   afterEach(cleanup);
 
@@ -104,5 +107,22 @@ describe("LabelQcPanel", () => {
     useAppStore.setState({ frameIdx: 3 });
     render(<LabelQcPanel />);
     expect(screen.getByText(/Edited since the run/)).toBeTruthy();
+  });
+
+  it("marks an instance OK, counts it as dismissed, and shows it again with Undo", () => {
+    withResults();
+    useAppStore.setState({ frameIdx: 3 });
+    render(<LabelQcPanel />);
+    fireEvent.click(screen.getByRole("button", { name: "Mark OK (3)" }));
+    expect(screen.getByText("1 flagged frame · 1 dismissed")).toBeTruthy();
+    expect(screen.queryByText("Unusual joint angle")).toBeNull();
+
+    expect(useAppStore.getState().frameIdx).toBe(7); // moved on to the next flag
+
+    fireEvent.click(screen.getByRole("button", { name: "Show dismissed" }));
+    act(() => useAppStore.setState({ frameIdx: 3 }));
+    expect(screen.getAllByText("OK").length).toBeGreaterThan(0);
+    fireEvent.click(screen.getByRole("button", { name: "Undo" }));
+    expect(screen.getByText("2 flagged frames")).toBeTruthy();
   });
 });

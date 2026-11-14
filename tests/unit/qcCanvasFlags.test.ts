@@ -61,6 +61,7 @@ const entry = (over: Partial<QcQueueEntry>): QcQueueEntry => ({
   definite: false,
   anomalies: [],
   worst: 0.9,
+  ok: [],
   ...over,
 });
 

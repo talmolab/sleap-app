@@ -31,6 +31,7 @@ export const DEFAULT_SHORTCUTS: Record<string, string> = {
   "goto next track spawn": "$mod+KeyE",
   "goto next qc flag": "KeyF",
   "goto prev qc flag": "Shift+KeyF",
+  "mark qc flag ok": "Digit3",
 
   // Navigation - videos
   "next video": "Alt+Shift+ArrowRight",
