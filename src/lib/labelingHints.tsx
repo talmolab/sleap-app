@@ -43,6 +43,11 @@
  * via a plain module-scoped variable (not the store, not persisted) so they
  * don't repeat once per node/conversion; being module state, it resets on
  * every fresh page load or app relaunch same as everything else here.
+ *
+ * No hints while the Label QC Review window is open: they would cover it,
+ * and placing or dragging a node there is reviewing, not first-time
+ * labeling. A hint held back there doesn't count as shown, so it still comes
+ * up later in ordinary labeling.
  */
 
 import { PredictedInstance } from "@talmolab/sleap-io.js";
@@ -50,6 +55,7 @@ import type { Instance, LabeledFrame, Labels } from "@talmolab/sleap-io.js";
 import { Lightbulb } from "lucide-react";
 import { toast } from "@/lib/notify";
 import { useAppStore } from "@/stores/appStore";
+import { useQcStore } from "@/stores/qcStore";
 import { formatShortcut } from "@/lib/formatShortcut";
 
 export type LabelingHintId =
@@ -137,13 +143,16 @@ const HINT_BODY: Record<LabelingHintId, React.ReactNode> = {
  *  status toast since these are meant to be read, not just glanced at. */
 const HINT_DURATION_MS = 12000;
 
+/** Hints are held back while the Label QC Review window is open. */
+const inQcReview = () => useQcStore.getState().reviewOpen;
+
 /**
  * Show a labeling hint toast, honoring the "Show Hints During Labeling"
- * setting — the only gate. Safe to call unconditionally from a triggering
- * action; a no-op only when the setting is off.
+ * setting — the only persisted gate. Safe to call unconditionally from a
+ * triggering action; a no-op when the setting is off or in Label QC Review.
  */
 export function showLabelingHint(id: LabelingHintId): void {
-  if (!useAppStore.getState().showLabelingHints) return;
+  if (!useAppStore.getState().showLabelingHints || inQcReview()) return;
 
   toast.info("Tip", {
     description: HINT_BODY[id],
@@ -192,7 +201,8 @@ let markOccludedInvisibleShownThisSession = false;
  * explanation for the same toast.
  */
 export function hintIfFirstNodeConfirm(wasAlreadyComplete: boolean): void {
-  if (wasAlreadyComplete) return;
+  // Held back in Review without using up the once-per-session showing.
+  if (wasAlreadyComplete || inQcReview()) return;
   if (!nodeConfirmedColorShownThisSession) {
     showLabelingHint("node-confirmed-color");
     nodeConfirmedColorShownThisSession = true;
@@ -221,7 +231,7 @@ let predictionConversionLifecycleShownThisSession = false;
  * `hintIfFirstInstance`'s return-value convention).
  */
 export function hintIfFirstPredictionConversion(): boolean {
-  if (predictionConversionLifecycleShownThisSession) return false;
+  if (predictionConversionLifecycleShownThisSession || inQcReview()) return false;
   showLabelingHint("prediction-conversion-lifecycle");
   predictionConversionLifecycleShownThisSession = true;
   return true;
@@ -246,7 +256,7 @@ export function hintIfFirstPredictionConversion(): boolean {
  * instance-creation ones buries the one explaining what red/green even mean.
  */
 export function hintIfFirstInstance(labels: Labels | null): boolean {
-  if (!labels) return false;
+  if (!labels || inQcReview()) return false;
   const totalUserInstances = labels.labeledFrames.reduce(
     (sum, lf) =>
       sum + lf.instances.filter((inst) => !(inst instanceof PredictedInstance)).length,
