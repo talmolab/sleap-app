@@ -147,14 +147,8 @@ export function runLabelQc(labels: Labels, opts: QcOptions = {}): QcFinding[] {
     const video = videos[v];
     const frames = [...labels.find({ video })];
 
-    // Per-video expected instance count = median over labeled frames (user
-    // only). Negative (background) frames are meant to have no animals, so
-    // they'd drag the median down; leave them out.
-    const isNeg = (f: (typeof frames)[number]) =>
-      Boolean((f as unknown as { isNegative?: boolean }).isNegative);
-    const expected = medianCount(
-      frames.filter((f) => !isNeg(f)).map((f) => f.userInstances.length),
-    );
+    // Per-video expected instance count = median over labeled frames (user only).
+    const expected = medianCount(frames.map((f) => f.userInstances.length));
 
     // Frame bounds for out-of-range (video.shape = [frames, height, width, channels]).
     const shape = (video as unknown as { shape: number[] | null }).shape;
@@ -164,7 +158,7 @@ export function runLabelQc(labels: Labels, opts: QcOptions = {}): QcFinding[] {
     for (const lf of frames) {
       const insts = lf.userInstances;
       const count = insts.length;
-      const isNegative = isNeg(lf);
+      const isNegative = Boolean((lf as unknown as { isNegative?: boolean }).isNegative);
 
       if (isNegativeFrameWithInstances(isNegative, count)) {
         findings.push({
@@ -174,12 +168,7 @@ export function runLabelQc(labels: Labels, opts: QcOptions = {}): QcFinding[] {
           videoIdx: v,
           frameIdx: lf.frameIdx,
         });
-      } else if (
-        // An empty negative frame is exactly what it should be, not incomplete.
-        !isNegative &&
-        Number.isFinite(expected) &&
-        isIncompleteFrame(count, expected)
-      ) {
+      } else if (Number.isFinite(expected) && isIncompleteFrame(count, expected)) {
         findings.push({
           kind: "incomplete_frame",
           message: `${count} instance(s); expected ~${expected} for this video`,
