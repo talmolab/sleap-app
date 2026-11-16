@@ -32,7 +32,7 @@ import { computeInstanceSizeStats, recommendMaxStride, recommendBackboneProfile,
 import { computeNodeVisibility, visibilityTier, type NodeVisibility } from "@/lib/anchorVisibility";
 import { isTauri } from "@/lib/platform";
 import { POST_TRAINING_TARGET_OPTIONS, describeClip } from "@/lib/postTrainingTarget";
-import { cropSizeWarnings, isCropHead, usesNegativeFrames } from "@/lib/cropWarnings";
+import { cropSizeWarnings, isCropHead, negativeFramesWarning, usesNegativeFrames } from "@/lib/cropWarnings";
 import {
   copyTrainingConfigsToClipboard,
   exportTrainingJobPackage,
@@ -479,6 +479,10 @@ function HeadTabContent({
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [headType, labels, hp.cropSize, hp.maxStride, hp.scale, hp.rotationPreset, hp.rotationCustomAngle, hp.scaleEnabled, hp.scaleMax, hp.backbone],
   );
+  const noNegativeFramesWarning = useMemo(
+    () => (showNegativeFrames ? negativeFramesWarning(hp.useNegativeFrames, labels) : null),
+    [showNegativeFrames, hp.useNegativeFrames, labels],
+  );
   const trainingMode = hp.trainingMode ?? "reuse_config";
   const modelLocked = trainingMode === "resume" || trainingMode === "finetune";
   const allLocked = trainingMode === "resume";
@@ -694,6 +698,12 @@ function HeadTabContent({
         {showNegativeFrames && (
           <>
             <Toggle {...HEAD_FIELD_DEFS.useNegativeFrames} checked={hp.useNegativeFrames} onChange={(v) => onUpdate({ useNegativeFrames: v })} />
+            {noNegativeFramesWarning && (
+              <div role="alert" className="rounded-md border border-orange-500/50 bg-orange-500/10 px-3 py-2 text-xs text-orange-700 dark:text-orange-300">
+                <AlertTriangle className="mr-1 inline h-3.5 w-3.5 align-[-3px]" />
+                {noNegativeFramesWarning}
+              </div>
+            )}
             <div className={hp.useNegativeFrames ? "" : "opacity-50"}>
               <Field {...HEAD_FIELD_DEFS.negativeLossWeight}>
                 <NumberInput min={0.01} max={100} value={hp.negativeLossWeight} onCommit={(n) => onUpdate({ negativeLossWeight: n })} step={0.1} className="h-9 text-sm" disabled={!hp.useNegativeFrames} />
