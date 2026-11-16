@@ -76,6 +76,7 @@ import { projectTag } from "@/lib/projectTag";
 import { formatDuration } from "@/lib/timestamp";
 import { classifyVisibility, type VideoVisibility } from "@/lib/remoteVisibility";
 import { SingleSkeletonGate } from "./SingleSkeletonGate";
+import { POST_TRAINING_TARGET_OPTIONS, describeClip } from "@/lib/postTrainingTarget";
 
 // ── Constants ────────────────────────────────────────────────────────────────
 
@@ -958,6 +959,7 @@ function TrainingPanelContent() {
   const [remoteOutputDir, setRemoteOutputDir] = useState<string | null>(null);
   const [hiddenDialogOpen, setHiddenDialogOpen] = useState(false);
   const [inferenceTarget, setInferenceTarget] = useState<string>("suggestions");
+  const clipDescription = describeClip(useAppStore((s) => s.frameRange));
   const [sampleCount, setSampleCount] = useState(20);
   const [skipUserLabeled, setSkipUserLabeled] = useState(false);
   const [existingPredictions, setExistingPredictions] = useState<"clear_all" | "replace" | "keep">("replace");
@@ -1492,16 +1494,18 @@ function TrainingPanelContent() {
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
-                <SelectItem value="nothing">Nothing (skip inference)</SelectItem>
-                <SelectItem value="suggestions">Suggested frames</SelectItem>
-                <SelectItem value="user_labeled">User labeled frames</SelectItem>
-                <SelectItem value="predicted">Frames with predictions</SelectItem>
-                <SelectItem value="video">Entire current video</SelectItem>
-                <SelectItem value="all_videos">All videos</SelectItem>
-                <SelectItem value="random_video">Random sample (current video)</SelectItem>
-                <SelectItem value="random">Random sample (all videos)</SelectItem>
+                {POST_TRAINING_TARGET_OPTIONS.map((o) => (
+                  <SelectItem key={o.value} value={o.value} disabled={o.value === "clip" && !clipDescription}>
+                    {o.label}
+                  </SelectItem>
+                ))}
               </SelectContent>
             </Select>
+            {inferenceTarget === "clip" && (
+              <p className={`text-[10px] mt-1 ${clipDescription ? "text-muted-foreground" : "text-destructive"}`}>
+                {clipDescription ?? "No clip selected — inference will be skipped"}
+              </p>
+            )}
             {(inferenceTarget === "random_video" || inferenceTarget === "random") && (
               <div className="flex items-center justify-between gap-2 mt-1">
                 <span className="text-[10px] text-muted-foreground shrink-0 flex items-center gap-1">
