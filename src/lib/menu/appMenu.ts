@@ -110,6 +110,8 @@ export interface MenuSnapshot {
   sidebarSide: "left" | "right";
   sidebarMultiPanel: boolean;
   fit: boolean;
+  followSelection: boolean;
+  actualSize: boolean;
   defaultToPan: boolean;
   placementMode: boolean;
   showInstances: boolean;
@@ -125,6 +127,15 @@ export interface MenuSnapshot {
   poseOpacity: number;
   nodeLabelSize: number;
   trailLength: number;
+  /** `"centroid"` or a node name. */
+  trailNode: string;
+  /** Node names of the project skeleton, for View ▸ Trail Node. */
+  trailNodeOptions: string[];
+  trailAlpha: number;
+  trailFade: boolean;
+  trailWidth: number;
+  boldLines: boolean;
+  showMeanNodeScore: boolean;
   palette: string;
   distinctlyColor: string;
   colorPredicted: boolean;
@@ -380,8 +391,18 @@ function viewMenu(s: MenuSnapshot): TopMenu {
       },
       panelsSubmenu(s),
       SEP,
-      { kind: "check", id: "view.fit", label: "Fit View to Instances", checked: s.fit, run: toggle("fit") },
-      { kind: "item", id: "view.fitSelection", label: "Fit View to Selection", enabled: s.hasInstance, run: () => store().set("fitSelection", true) },
+      // PyQt's three zoom modes; turning one on turns the others off.
+      { kind: "check", id: "view.fit", label: "Fit View to Instances", checked: s.fit, run: () => store().setZoomMode("fit", !s.fit) },
+      {
+        kind: "check",
+        id: "view.fitSelection",
+        label: "Fit View to Selection",
+        checked: s.followSelection,
+        run: () => store().setZoomMode("followSelection", !s.followSelection),
+      },
+      { kind: "check", id: "view.actualSize", label: "Actual Size (1:1)", checked: s.actualSize, run: () => store().setZoomMode("actualSize", !s.actualSize) },
+      // Zoom to the selected instance once, without following it afterwards.
+      { kind: "item", id: "view.zoomToSelection", label: "Zoom to Selection", enabled: s.hasInstance, run: () => store().set("fitSelection", true) },
       { kind: "check", id: "view.defaultToPan", label: "Default to Pan Mode", shortcut: DEFAULT_SHORTCUTS["toggle pan mode"], checked: s.defaultToPan, run: toggle("defaultToPan") },
       {
         kind: "check",
@@ -426,11 +447,14 @@ function viewMenu(s: MenuSnapshot): TopMenu {
       ),
       { kind: "check", id: "view.showLabels", label: "Show Node Names", shortcut: DEFAULT_SHORTCUTS["show labels"], checked: s.showLabels, run: toggle("showLabels") },
       { kind: "check", id: "view.showEdges", label: "Show Edges", checked: s.showEdges, run: toggle("showEdges") },
+      { kind: "check", id: "view.showMeanNodeScore", label: "Show Mean Node Score", checked: s.showMeanNodeScore, run: toggle("showMeanNodeScore") },
       { kind: "check", id: "view.crosshair", label: "Crosshair When Zoomed", checked: s.showCrosshair, run: toggle("showCrosshair") },
       { kind: "check", id: "view.magnifier", label: "Magnifier When Moving Nodes", checked: s.showInset, run: toggle("showInset") },
       { kind: "check", id: "view.temporalLoupe", label: "Play Neighboring Frames in Magnifier", checked: s.temporalLoupe, run: toggle("temporalLoupe") },
       SEP,
       sub("edgeStyle", "Edge Style", radio("view.edgeStyle.value", s.edgeStyle, [["Line", "Line"], ["Wedge", "Wedge"]], set("edgeStyle"))),
+      // PyQt keeps this in preferences.yaml only ("bold lines").
+      { kind: "check", id: "view.boldLines", label: "Bold Lines", checked: s.boldLines, run: toggle("boldLines") },
       SEP,
       sub(
         "markerSize",
@@ -479,6 +503,39 @@ function viewMenu(s: MenuSnapshot): TopMenu {
             ["500", "Maximum (500)"],
           ],
           setNum("trailLength"),
+        ),
+      ),
+      sub(
+        "trailNode",
+        "Trail Node",
+        radio(
+          "view.trailNode.value",
+          // A node missing from this skeleton falls back to the centroid.
+          s.trailNodeOptions.includes(s.trailNode) ? s.trailNode : "centroid",
+          [["centroid", "Centroid"], ...s.trailNodeOptions.map((n): [string, string] => [n, n])],
+          set("trailNode"),
+        ),
+      ),
+      { kind: "check", id: "view.trailFade", label: "Fade Older Trail Segments", checked: s.trailFade, run: toggle("trailFade") },
+      sub(
+        "trailAlpha",
+        "Trail Opacity",
+        radio(
+          "view.trailAlpha.value",
+          String(s.trailAlpha),
+          [["0.25", "25%"], ["0.5", "50%"], ["0.75", "75%"], ["1", "100%"]],
+          setNum("trailAlpha"),
+        ),
+      ),
+      // PyQt keeps this in preferences.yaml only ("trail width").
+      sub(
+        "trailWidth",
+        "Trail Width",
+        radio(
+          "view.trailWidth.value",
+          String(s.trailWidth),
+          [["1", "1 px"], ["2", "2 px"], ["3", "3 px"], ["4", "4 px"], ["6", "6 px"], ["8", "8 px"]],
+          setNum("trailWidth"),
         ),
       ),
       SEP,

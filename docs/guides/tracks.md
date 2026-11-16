@@ -135,4 +135,5 @@ leave behind empty identities that clutter the track list and every analysis fil
 
 **View ▸ Trail Length** draws each instance's recent path behind it. A trail that
 teleports across the frame is an identity swap; a trail that stops dead is a lost
-track.
+track. **View ▸ Trail Node**, **Fade Older Trail Segments**, **Trail Opacity** and
+**Trail Width** change how trails look — see [View & Display](view.md#sizing).

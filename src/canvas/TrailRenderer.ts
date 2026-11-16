@@ -1,7 +1,7 @@
 /**
  * Trail renderer for tracking proofreading.
  *
- * Draws polylines connecting instance centroids across frames,
+ * Draws polylines connecting instance centroids (or one chosen node) across frames,
  * with fading opacity to visualize track identity over time.
  * Crossing trails indicate identity swaps that need correction.
  */
@@ -30,6 +30,38 @@ function computeCentroid(
   return [sumX / count, sumY / count];
 }
 
+/** View ▸ trail options (PyQt `trail node` / `trail alpha` / `trail alpha fade` / `trail width`). */
+export interface TrailStyle {
+  /** `"centroid"` (mean of visible points) or a skeleton node name. */
+  node: string;
+  /** Opacity, 0-1. */
+  alpha: number;
+  /** Older segments are fainter; off draws the whole trail at `alpha`. */
+  fade: boolean;
+  /** Line width in output (screen) pixels, whatever the zoom. */
+  width: number;
+}
+
+export const DEFAULT_TRAIL_STYLE: TrailStyle = { node: "centroid", alpha: 1, fade: true, width: 4 };
+
+/**
+ * The point a trail follows on one instance: the centroid, or the named
+ * node's position (null when that node isn't visible). A name the skeleton
+ * doesn't have falls back to the centroid, like PyQt.
+ */
+export function trailPoint(
+  instance: { points: Array<{ xy: [number, number]; visible: boolean; name?: string }> },
+  node: string,
+  nodeNames: readonly string[]
+): [number, number] | null {
+  const idx = node === "centroid" ? -1 : nodeNames.indexOf(node);
+  if (idx < 0) return computeCentroid(instance);
+  const p = instance.points[idx];
+  if (!p || !p.visible) return null;
+  const [x, y] = p.xy;
+  return isNaN(x) || isNaN(y) ? null : [x, y];
+}
+
 /**
  * Render motion trails for tracked instances on the current frame.
  *
@@ -44,8 +76,9 @@ function computeCentroid(
  * @param trailLength - Number of frames to look back
  * @param tracks - All tracks in the project
  * @param palette - Name of the color palette to use
- * @param zoom - Current zoom level for line width scaling
+ * @param zoom - Image-to-output scale, so `style.width` stays in output pixels
  * @param trackColorOverrides - Active per-track color overrides (name → hex)
+ * @param style - Trail node / opacity / fade / width (View menu)
  */
 export function renderTrails(
   ctx: CanvasRenderingContext2D,
@@ -56,9 +89,13 @@ export function renderTrails(
   tracks: Track[],
   palette: string,
   zoom: number,
-  trackColorOverrides?: Record<string, string> | null
+  trackColorOverrides?: Record<string, string> | null,
+  style: TrailStyle = DEFAULT_TRAIL_STYLE
 ): void {
   if (trailLength <= 0 || tracks.length === 0) return;
+  // Opacity of a segment or dot `age` frames old.
+  const alphaAt = (age: number) =>
+    style.alpha * (style.fade ? Math.max(0.1, 1 - age / (trailLength + 1)) : 1);
 
   // Get all labeled frames for this video, sorted by frame index
   const videoFrames = labels
@@ -95,7 +132,9 @@ export function renderTrails(
     const trailPoints: Array<{ x: number; y: number; age: number }> = [];
 
     // Add current frame's centroid
-    const currentCentroid = computeCentroid(instance);
+    const nodeNames = instance.skeleton?.nodes?.map((n) => n.name) ?? [];
+    const pointOf = (inst: typeof instance) => trailPoint(inst, style.node, nodeNames);
+    const currentCentroid = pointOf(instance);
     if (!currentCentroid) continue;
     trailPoints.push({ x: currentCentroid[0], y: currentCentroid[1], age: 0 });
 
@@ -113,7 +152,7 @@ export function renderTrails(
       );
       if (!prevInstance) continue;
 
-      const centroid = computeCentroid(prevInstance);
+      const centroid = pointOf(prevInstance);
       if (!centroid) continue;
 
       trailPoints.push({ x: centroid[0], y: centroid[1], age: offset });
@@ -131,23 +170,21 @@ export function renderTrails(
 
       // Opacity based on the newer (smaller age) point of the segment
       const newerAge = Math.min(from.age, to.age);
-      const opacity = 1 - newerAge / (trailLength + 1);
 
       ctx.beginPath();
       ctx.moveTo(from.x, from.y);
       ctx.lineTo(to.x, to.y);
-      ctx.strokeStyle = rgbToCSS(color, Math.max(0.1, opacity * 0.8));
-      ctx.lineWidth = 2 / zoom;
+      ctx.strokeStyle = rgbToCSS(color, alphaAt(newerAge));
+      ctx.lineWidth = style.width / zoom;
       ctx.stroke();
     }
 
     // Draw small dots at each trail point
     for (const pt of trailPoints) {
       if (pt.age === 0) continue; // Skip current frame (already rendered by skeleton)
-      const opacity = 1 - pt.age / (trailLength + 1);
       ctx.beginPath();
-      ctx.arc(pt.x, pt.y, 2 / zoom, 0, Math.PI * 2);
-      ctx.fillStyle = rgbToCSS(color, Math.max(0.1, opacity * 0.6));
+      ctx.arc(pt.x, pt.y, style.width / zoom, 0, Math.PI * 2);
+      ctx.fillStyle = rgbToCSS(color, alphaAt(pt.age) * 0.75);
       ctx.fill();
     }
   }

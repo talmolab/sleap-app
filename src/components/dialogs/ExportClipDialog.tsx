@@ -108,6 +108,11 @@ export function ExportClipDialog() {
   const nodeLabelSize = useAppStore((s) => s.nodeLabelSize);
   const edgeStyle = useAppStore((s) => s.edgeStyle);
   const trailLength = useAppStore((s) => s.trailLength);
+  const trailNode = useAppStore((s) => s.trailNode);
+  const trailAlpha = useAppStore((s) => s.trailAlpha);
+  const trailFade = useAppStore((s) => s.trailFade);
+  const trailWidth = useAppStore((s) => s.trailWidth);
+  const boldLines = useAppStore((s) => s.boldLines);
 
   const [state, dispatch] = useReducer(clipExportReducer, { configs: [], focused: null });
   const [phase, setPhase] = useState<Phase>("checking");
@@ -264,7 +269,8 @@ export function ExportClipDialog() {
                   tracks,
                   palette,
                   zoom,
-                  trackColorOverrides
+                  trackColorOverrides,
+                  { node: trailNode, alpha: trailAlpha, fade: trailFade, width: trailWidth }
                 )
             : undefined,
         quality,
@@ -289,6 +295,7 @@ export function ExportClipDialog() {
             showNonVisibleNodes,
             colorPredicted,
             showTrackScore: false,
+            boldLines,
             // Exported clips draw poses solid; the view's opacity is a viewing aid.
             poseOpacity: 1,
           },
@@ -310,6 +317,11 @@ export function ExportClipDialog() {
       nodeLabelSize,
       edgeStyle,
       trailLength,
+      trailNode,
+      trailAlpha,
+      trailFade,
+      trailWidth,
+      boldLines,
       trackColorOverrides,
       quality,
     ]

@@ -54,8 +54,10 @@ Every menu and what its items do, in the order they appear in the menu bar.
 |---|---|
 | Side Panel / Sidebar on Left / Allow Multiple Panels | Layout |
 | **Panels ▸** *(one checkbox per panel)* / Reset to Defaults… | Each checkbox shows or hides that panel's button in the sidebar strip; it doesn't open the panel. See [Panels](panels.md) |
-| Fit View to Instances | Checkbox; ++cmd+equal++ toggles it |
-| Fit View to Selection | Needs a selected instance |
+| Fit View to Instances | Checkbox; ++cmd+equal++ toggles it. Re-fits each time the frame changes |
+| Fit View to Selection | Checkbox. Re-fits to the selected instance each time the frame changes, following its track onto the new frame |
+| Actual Size (1:1) | Checkbox. One video pixel per screen pixel; unchecking it shows the whole frame again |
+| Zoom to Selection | Zooms to the selected instance once. Needs a selected instance |
 | Default to Pan Mode | ++p++ |
 | Node Placement Mode | ++shift+n++ — needs a selected instance |
 | **Text Size ▸** Increase / Decrease / Reset to Default | ++cmd+shift+equal++ / ++cmd+minus++ |
@@ -63,13 +65,19 @@ Every menu and what its items do, in the order they appear in the menu bar.
 | Show Non-Visible Nodes | ++shift+v++ |
 | **Display ▸** Manual / Only selected (with hidden points) / All instances, visible points only / All visible + selected hidden points | How much hidden geometry is drawn |
 | Show Node Names / Show Edges | ++t++ / ++cmd+shift+tab++ |
+| Show Mean Node Score | Adds a *Mean node score* column to the Instances panel |
 | Crosshair When Zoomed / Magnifier When Moving Nodes | Precision aids |
 | Play Neighboring Frames in Magnifier | Loops the frames around the current one inside the magnifier |
 | **Edge Style ▸** Line / Wedge | |
+| Bold Lines | Edges and node outlines twice as thick |
 | **Node Marker Size ▸** Small (2) / Medium (4) / Large (6) / Extra Large (8) | |
 | **Pose Opacity ▸** 100% / 75% / 50% / 25% | |
 | **Node Label Size ▸** Small (8) / Medium (10) / Large (12) / Extra Large (14) | |
 | **Trail Length ▸** Off / Short (10) / Medium (50) / Long (100) / Very Long (250) / Maximum (500) | Frames of motion history drawn behind each instance |
+| **Trail Node ▸** Centroid / *(each skeleton node)* | The point the trail follows |
+| Fade Older Trail Segments | On by default: older parts of a trail are fainter |
+| **Trail Opacity ▸** 25% / 50% / 75% / 100% | |
+| **Trail Width ▸** 1 px … 8 px | Screen pixels, whatever the zoom; default 4 px |
 | **Color Palette ▸** standard / five+ / alphabet | |
 | **Apply Distinct Colors To ▸** Auto (Node / Track) / Tracks / Instances / Nodes / Edges | |
 | Color Predicted Instances | Off by default: predictions are drawn yellow until you turn this on |

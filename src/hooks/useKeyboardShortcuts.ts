@@ -209,7 +209,7 @@ export function useKeyboardShortcuts() {
       },
       [DEFAULT_SHORTCUTS.fit]: (e) => {
         e.preventDefault();
-        store().toggle("fit");
+        store().setZoomMode("fit", !store().fit);
       },
       // Reset the video canvas view to default (zoom=1, no pan). Plain letter
       // key, so ignore it while typing in an input.

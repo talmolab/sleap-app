@@ -123,6 +123,8 @@ import { toast } from "@/lib/notify";
 import { hintIfPredictionsRemain, hintIfFirstNodeConfirm } from "@/lib/labelingHints";
 import { setLabelsAutosaveInteracting } from "@/lib/labelsAutosave";
 import { spacePanState } from "@/lib/spacePanTracking";
+import { actualSizeView, fitPointsView, type CanvasFit, type CanvasView } from "@/lib/viewZoom";
+import { useFollowSelection } from "@/hooks/useFollowSelection";
 import { getPlatform, isTauri } from "@/platform/index";
 import { spawnOverlayServe, killOverlayServe, detectGpu } from "@/platform/backend";
 import { Film, Frame, Hand, ImageOff, MousePointer2, Tag, ZoomIn } from "lucide-react";
@@ -216,6 +218,11 @@ export function VideoPlayer() {
     [labels, editSeq]
   );
   const trailLength = useAppStore((s) => s.trailLength);
+  const trailNode = useAppStore((s) => s.trailNode);
+  const trailAlpha = useAppStore((s) => s.trailAlpha);
+  const trailFade = useAppStore((s) => s.trailFade);
+  const trailWidth = useAppStore((s) => s.trailWidth);
+  const boldLines = useAppStore((s) => s.boldLines);
   const lutMin = useAppStore((s) => s.lutMin);
   const lutMax = useAppStore((s) => s.lutMax);
   const colormap = useAppStore((s) => s.colormap);
@@ -224,6 +231,8 @@ export function VideoPlayer() {
   const overlayModelPaths = useAppStore((s) => s.overlayModelPaths);
   const defaultToPan = useAppStore((s) => s.defaultToPan);
   const fitSelection = useAppStore((s) => s.fitSelection);
+  const followSelection = useAppStore((s) => s.followSelection);
+  const actualSize = useAppStore((s) => s.actualSize);
   const qcOverlay = useQcFrameFlags();
   const resetViewNonce = useAppStore((s) => s.resetViewNonce);
   const userViewNonce = useAppStore((s) => s.userViewNonce);
@@ -726,6 +735,15 @@ export function VideoPlayer() {
   const baseScale = displayW > 0 && displayH > 0 ? Math.min(cw / displayW, ch / displayH) : 1;
   const offsetX = displayW > 0 && displayH > 0 ? (cw - displayW * baseScale) / 2 : 0;
   const offsetY = displayW > 0 && displayH > 0 ? (ch - displayH * baseScale) / 2 : 0;
+  const canvasFit: CanvasFit = { cw, ch, baseScale, offsetX, offsetY };
+  /** Jump to a computed view (no-op for null). */
+  const applyView = (v: CanvasView | null) => {
+    if (!v) return;
+    viewRef.current = v;
+    setZoom(v.zoom);
+    setPanX(v.panX);
+    setPanY(v.panY);
+  };
 
   // The in-progress builder skeleton as a RenderedInstance, reusing the same
   // machinery as real instances for draw + hit-test. `overlayVersion` is a dep
@@ -1646,8 +1664,10 @@ export function VideoPlayer() {
         trailLength,
         labels.tracks,
         palette,
-        zoom,
-        trackColorOverrides
+        // Total scale, so the trail width stays in screen pixels (PyQt's cosmetic pen).
+        baseScale * zoom,
+        trackColorOverrides,
+        { node: trailNode, alpha: trailAlpha, fade: trailFade, width: trailWidth }
       );
     }
 
@@ -1662,6 +1682,7 @@ export function VideoPlayer() {
       showNonVisibleNodes,
       colorPredicted,
       showTrackScore,
+      boldLines,
       zoom: baseScale * zoom,
     };
 
@@ -1779,6 +1800,11 @@ export function VideoPlayer() {
     distinctlyColor,
     projectHasTracks,
     trailLength,
+    trailNode,
+    trailAlpha,
+    trailFade,
+    trailWidth,
+    boldLines,
     zoom,
     panX,
     panY,
@@ -2203,9 +2229,9 @@ export function VideoPlayer() {
 
   // Fit view to selected instance (one-shot action): zooms and pans so the
   // selected instance's visible-node bounding box (+ padding) fills the
-  // viewport. Triggered from the "Fit View to Selection" menu item, the
-  // Shift+Up/Down cycle-instance shortcut, and clicking an instance in the
-  // Instances panel.
+  // viewport. Triggered from View ▸ Zoom to Selection, the Shift+Up/Down
+  // cycle-instance shortcut, clicking an instance in the Instances panel,
+  // and Label QC.
   useEffect(() => {
     if (!fitSelection || !selectedInstance) return;
     // Jumping to another frame and selecting there (Label QC's F) sets this
@@ -2214,41 +2240,31 @@ export function VideoPlayer() {
     // Reset the flag immediately so this is a one-shot action
     useAppStore.getState().set("fitSelection", false);
 
-    const [cw, ch] = containerSize;
-    if (cw === 0 || ch === 0) return;
-
     // Find the rendered instance matching the selected instance
     const selectedRendered = renderedInstances.find((ri) => ri.isSelected);
     if (!selectedRendered) return;
-
-    const visibleNodes = selectedRendered.nodes.filter((n) => n.visible);
-    if (visibleNodes.length === 0) return;
-
-    const xs = visibleNodes.map((n) => n.x);
-    const ys = visibleNodes.map((n) => n.y);
-    const pad = 50;
-    const minX = Math.min(...xs) - pad;
-    const maxX = Math.max(...xs) + pad;
-    const minY = Math.min(...ys) - pad;
-    const maxY = Math.max(...ys) + pad;
-
-    const bboxW = maxX - minX;
-    const bboxH = maxY - minY;
-    if (bboxW <= 0 || bboxH <= 0) return;
-
-    const newZoom = Math.min(cw / (bboxW * baseScale), ch / (bboxH * baseScale), 10);
-
-    const centerX = (minX + maxX) / 2;
-    const centerY = (minY + maxY) / 2;
-    const newPanX = cw / 2 - offsetX - centerX * baseScale * newZoom;
-    const newPanY = ch / 2 - offsetY - centerY * baseScale * newZoom;
-
-    viewRef.current = { zoom: newZoom, panX: newPanX, panY: newPanY };
-    setZoom(newZoom);
-    setPanX(newPanX);
-    setPanY(newPanY);
+    applyView(fitPointsView(selectedRendered.nodes.filter((n) => n.visible), canvasFit));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [fitSelection, renderedInstances]);
+
+  // View ▸ Fit View to Selection (toggle): fit on frame change only, never
+  // mid-drag (see useFollowSelection).
+  useFollowSelection({
+    followSelection,
+    selectedTrackName: selectedInstance?.track?.name ?? null,
+    hasSelection: !!selectedInstance,
+    frame: labeledFrame,
+    renderedInstances,
+    onFit: (ri) => applyView(fitPointsView(ri.nodes.filter((n) => n.visible), canvasFit)),
+  });
+
+  // View ▸ Actual Size (1:1): one video pixel per screen pixel. Re-applied when
+  // the canvas resizes, since that changes the fit-to-window base scale.
+  useEffect(() => {
+    if (!actualSize || frameDims[0] === 0 || frameDims[1] === 0) return;
+    applyView(actualSizeView(viewRef.current, canvasFit));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [actualSize, baseScale]);
 
   // Opening or closing the Label QC Review window resizes the canvas: zoom
   // back to the instance under review.
