@@ -112,16 +112,22 @@ Copying a *track* copies the identity assignment rather than the pose — see
 |---|---|
 | Delete selected instance | ++cmd+backspace++ / ++ctrl+backspace++ |
 | Delete instance **and** its track | ++cmd+shift+backspace++ / ++ctrl+shift+backspace++ |
-| Delete predictions in a dragged area | ++cmd+k++ / ++ctrl+k++ |
+| Delete predictions inside a dragged area, on every frame of this video | ++cmd+k++ / ++ctrl+k++ |
 
 The **Labels** menu has the bulk options:
 
 | Menu item | Deletes |
 |---|---|
 | **Delete Predictions on Current Frame** | Every prediction on this frame |
-| **Delete Predictions…** | Predictions matching one filter: score threshold, frame range, on user-labeled frames, max instances per frame, track, or instance type |
-| **Delete Predictions from Area…** (++cmd+k++ / ++ctrl+k++) | Predictions inside a rectangle you drag |
+| **Delete Predictions…** | Predictions matching one filter: low score, outside a frame range, or beyond max instances per frame (each in **this video**); on user-labeled frames (this video or all videos; only the unlinked duplicates, or all); by track or instance type (all videos) |
+| **Delete Predictions from Clip…** | Predictions in the frame range selected on the seekbar (shift-drag), in this video |
+| **Delete Predictions from Area…** (++cmd+k++ / ++ctrl+k++) | Predictions with all their points inside a rectangle you drag, on **every frame of this video** — for a static false detection such as a reflection |
 | **Delete All Predictions…** | Every prediction in the project, after a confirm |
+
+These match PyQt SLEAP's commands of the same name. They delete predictions
+only: user instances stay, and so do negative frames. **Outside a frame
+range** keeps the range you enter and deletes the rest of this video's
+predictions. Each delete is one undo step.
 
 ## Working with predictions
 

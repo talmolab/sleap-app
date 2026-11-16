@@ -120,6 +120,8 @@ import {
 } from "../../lib/resolveVideos";
 import { useVideoCheckStore } from "@/stores/videoCheckStore";
 import { toast } from "@/lib/notify";
+import { confirmDialog } from "@/stores/confirmStore";
+import { predictionsInArea } from "@/lib/predictionDeletion";
 import { hintIfPredictionsRemain, hintIfFirstNodeConfirm } from "@/lib/labelingHints";
 import { setLabelsAutosaveInteracting } from "@/lib/labelsAutosave";
 import { spacePanState } from "@/lib/spacePanTracking";
@@ -3062,12 +3064,28 @@ export function VideoPlayer() {
       const dx = Math.abs(areaDeleteEnd.x - areaDeleteStart.x);
       const dy = Math.abs(areaDeleteEnd.y - areaDeleteStart.y);
       if (dx > 5 && dy > 5) {
-        commandContext.execute(DeletePredictionsByArea, {
+        // The box applies to every frame of the current video (as in PyQt),
+        // so say how many predictions that is and ask first.
+        const box = {
           x1: areaDeleteStart.x,
           y1: areaDeleteStart.y,
           x2: areaDeleteEnd.x,
           y2: areaDeleteEnd.y,
-        });
+        };
+        const { labels: lbls, video: vid } = useAppStore.getState();
+        const count = lbls && vid ? predictionsInArea(lbls, vid, box).length : 0;
+        if (count === 0) {
+          toast.info("No predictions in this video lie inside the selected area.");
+        } else {
+          void confirmDialog({
+            title: "Delete predictions from area",
+            message: `There are ${count} predicted instances inside this area, across every frame of this video, which would be deleted. Delete them?`,
+            confirmLabel: "Delete",
+            destructive: true,
+          }).then((ok) => {
+            if (ok) commandContext.execute(DeletePredictionsByArea, box);
+          });
+        }
       }
       setIsAreaDeleting(false);
       setAreaDeleteStart(null);
@@ -3819,7 +3837,7 @@ export function VideoPlayer() {
             variant="destructive"
             className="absolute top-2 left-1/2 -translate-x-1/2 pointer-events-none rounded-md"
           >
-            Delete Area: Draw a rectangle to delete predictions · Esc to cancel
+            Delete Area: Draw a rectangle to delete predictions inside it on every frame of this video · Esc to cancel
           </Badge>
         )}
 

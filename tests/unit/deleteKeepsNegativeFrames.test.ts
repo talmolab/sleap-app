@@ -17,6 +17,8 @@ import { DeleteAllPredictions, MergePredictions } from "@/commands/editCommands"
 import {
   DeletePredictionsByScore,
   DeletePredictionsByRange,
+  DeletePredictionsFromClip,
+  DeletePredictionsByArea,
   DeletePredictionsOnLabeledFrames,
   DeletePredictionsByMaxCount,
   DeletePredictionsByTrack,
@@ -77,7 +79,10 @@ describe("delete commands keep negative frames", () => {
   const cases: [string, Command, (video: Video) => Record<string, unknown> | undefined][] = [
     ["Delete All Predictions", DeleteAllPredictions, () => undefined],
     ["by score", DeletePredictionsByScore, () => ({ threshold: 0.5 })],
-    ["by frame range", DeletePredictionsByRange, () => ({ startFrame: 0, endFrame: 5 })],
+    // The range is what to keep (#463): 5-9 leaves frame 1 outside it.
+    ["outside a frame range", DeletePredictionsByRange, () => ({ startFrame: 5, endFrame: 9 })],
+    ["from clip", DeletePredictionsFromClip, () => ({ startFrame: 0, endFrame: 5 })],
+    ["from area", DeletePredictionsByArea, () => ({ x1: 0, y1: 0, x2: 10, y2: 10 })],
     ["beyond max instances", DeletePredictionsByMaxCount, () => ({ maxInstances: 0 })],
     ["by track", DeletePredictionsByTrack, () => ({ trackName: "t1" })],
     ["by instance type", DeleteInstancesByType, () => ({ instanceType: "predicted" })],

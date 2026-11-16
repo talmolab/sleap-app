@@ -7,7 +7,17 @@
 
 import { frameHasContent } from "@/lib/frameLabeling";
 import {
+  predictionsBeyondMaxInstances,
+  predictionsInArea,
+  predictionsInClip,
+  predictionsOnUserLabeledFrames,
+  predictionsOutsideFrameRange,
+  predictionsWithLowScore,
+  type PredictionPair,
+} from "@/lib/predictionDeletion";
+import {
   Labels,
+  type LabeledFrame,
   PredictedInstance,
   Skeleton,
   labelsToCsv,
@@ -626,270 +636,252 @@ export const SaveAsJsonCommand: Command = {
 
 // ---------------------------------------------------------------------------
 // Delete Prediction Variants
+//
+// Scopes match PyQt SLEAP's commands of the same name (#463); the selectors in
+// `lib/predictionDeletion.ts` decide what goes. Only predictions are deleted,
+// never user instances, and frames that still hold something afterwards (a
+// negative mark, an annotation) are kept.
 // ---------------------------------------------------------------------------
 
-/** Delete predicted instances with score below a threshold. */
+/**
+ * Delete the given (frame, prediction) pairs in one pass, as one undo step.
+ * Drops only the frames this deletion left with nothing in them. Returns how
+ * many were deleted (0 means nothing changed and no undo step was pushed).
+ */
+function deletePredictionPairs(
+  ctx: CommandContext,
+  commandName: string,
+  pairs: PredictionPair[],
+): number {
+  const { labels, instance } = ctx.state;
+  if (!labels || pairs.length === 0) return 0;
+
+  const snapshot = ctx.takeAllFramesSnapshot(commandName);
+
+  const byFrame = new Map<LabeledFrame, Set<PredictedInstance>>();
+  for (const [lf, p] of pairs) {
+    let set = byFrame.get(lf);
+    if (!set) byFrame.set(lf, (set = new Set()));
+    set.add(p);
+  }
+
+  let removed = 0;
+  const emptied = new Set<LabeledFrame>();
+  for (const [lf, doomed] of byFrame) {
+    const before = lf.instances.length;
+    lf.instances = lf.instances.filter(
+      (inst) => !(inst instanceof PredictedInstance && doomed.has(inst)),
+    );
+    removed += before - lf.instances.length;
+    if (!frameHasContent(lf)) emptied.add(lf);
+  }
+  if (emptied.size > 0) {
+    labels.labeledFrames = labels.labeledFrames.filter((lf) => !emptied.has(lf));
+  }
+
+  ctx.pushUndoSnapshot(snapshot);
+
+  if (
+    instance instanceof PredictedInstance &&
+    [...byFrame.values()].some((s) => s.has(instance))
+  ) {
+    ctx.state.setInstance(null);
+  }
+  ctx.state.markChanged();
+  return removed;
+}
+
+function numParam(
+  params: Record<string, unknown> | undefined,
+  key: string,
+  fallback: number,
+): number {
+  const v = params?.[key];
+  return typeof v === "number" ? v : fallback;
+}
+
+/** Delete predictions in the current video with a score below a threshold. */
 export const DeletePredictionsByScore: Command = {
   name: "DeletePredictionsByScore",
   topics: [UpdateTopic.Labels, UpdateTopic.Frame, UpdateTopic.Instance],
   skipAutoSnapshot: true,
   execute(ctx: CommandContext, params?: Record<string, unknown>) {
-    const { labels, instance } = ctx.state;
-    if (!labels) return;
-    const threshold =
-      typeof params?.threshold === "number" ? params.threshold : 0.5;
+    const { labels, video } = ctx.state;
+    if (!labels || !video) return;
+    const threshold = numParam(params, "threshold", 0.5);
 
-    const snapshot = ctx.takeAllFramesSnapshot("DeletePredictionsByScore");
-    let removed = 0;
-
-    for (const lf of labels.labeledFrames) {
-      const before = lf.instances.length;
-      lf.instances = lf.instances.filter((inst) => {
-        if (inst instanceof PredictedInstance) {
-          return inst.score >= threshold;
-        }
-        return true;
-      });
-      removed += before - lf.instances.length;
-    }
-
-    labels.labeledFrames = labels.labeledFrames.filter(frameHasContent);
-
+    const removed = deletePredictionPairs(
+      ctx,
+      "DeletePredictionsByScore",
+      predictionsWithLowScore(labels, video, threshold),
+    );
     if (removed === 0) {
-      toast.info("No predictions matched the filter.");
+      toast.info("No predictions in this video scored below the threshold.");
       return;
     }
-
-    ctx.pushUndoSnapshot(snapshot);
-
-    if (instance && instance instanceof PredictedInstance) {
-      ctx.state.setInstance(null);
-    }
-    ctx.state.markChanged();
-    toast.success(`Deleted ${removed} prediction(s)`, {
-      description: `Score threshold: < ${threshold}`,
+    toast.success(`Deleted ${removed} prediction(s) in this video`, {
+      description: `Score below ${threshold}`,
     });
   },
 };
 
-/** Delete predicted instances within a frame range. */
+/**
+ * Delete predictions in the current video **outside** a frame range
+ * (`startFrame`..`endFrame`, 0-based, inclusive): the range is what to keep.
+ * PyQt's "Delete Predictions Outside Frame Range...". Other videos are left
+ * alone, since their frame numbers don't line up with this one's.
+ */
 export const DeletePredictionsByRange: Command = {
   name: "DeletePredictionsByRange",
   topics: [UpdateTopic.Labels, UpdateTopic.Frame, UpdateTopic.Instance],
   skipAutoSnapshot: true,
   execute(ctx: CommandContext, params?: Record<string, unknown>) {
-    const { labels, instance } = ctx.state;
-    if (!labels) return;
-    const startFrame =
-      typeof params?.startFrame === "number" ? params.startFrame : 0;
-    const endFrame =
-      typeof params?.endFrame === "number" ? params.endFrame : Infinity;
+    const { labels, video } = ctx.state;
+    if (!labels || !video) return;
+    const startFrame = numParam(params, "startFrame", 0);
+    const endFrame = numParam(params, "endFrame", Infinity);
 
-    const snapshot = ctx.takeAllFramesSnapshot("DeletePredictionsByRange");
-    let removed = 0;
-
-    for (const lf of labels.labeledFrames) {
-      if (lf.frameIdx >= startFrame && lf.frameIdx <= endFrame) {
-        const before = lf.instances.length;
-        lf.instances = lf.instances.filter(
-          (inst) => !(inst instanceof PredictedInstance)
-        );
-        removed += before - lf.instances.length;
-      }
-    }
-
-    labels.labeledFrames = labels.labeledFrames.filter(frameHasContent);
-
+    const removed = deletePredictionPairs(
+      ctx,
+      "DeletePredictionsByRange",
+      predictionsOutsideFrameRange(labels, video, startFrame, endFrame),
+    );
     if (removed === 0) {
-      toast.info("No predictions found in the specified range.");
+      toast.info("No predictions in this video outside the frame range.");
       return;
     }
-
-    ctx.pushUndoSnapshot(snapshot);
-
-    if (instance && instance instanceof PredictedInstance) {
-      ctx.state.setInstance(null);
-    }
-    ctx.state.markChanged();
-    toast.success(`Deleted ${removed} prediction(s)`, {
-      description: `Frames ${startFrame} to ${endFrame}`,
+    toast.success(`Deleted ${removed} prediction(s) in this video`, {
+      description: `Outside frames ${startFrame} to ${endFrame}`,
     });
   },
 };
 
-/** Delete predicted instances on frames that also have user instances. */
+/**
+ * Delete predictions in the clip selected on the seekbar (current video).
+ * `startFrame`/`endFrame` (0-based, inclusive) default to that selection.
+ * PyQt's "Delete Predictions from Clip...".
+ */
+export const DeletePredictionsFromClip: Command = {
+  name: "DeletePredictionsFromClip",
+  topics: [UpdateTopic.Labels, UpdateTopic.Frame, UpdateTopic.Instance],
+  skipAutoSnapshot: true,
+  execute(ctx: CommandContext, params?: Record<string, unknown>) {
+    const { labels, video, frameRange } = ctx.state;
+    if (!labels || !video) return;
+    const startFrame = numParam(params, "startFrame", frameRange?.[0] ?? NaN);
+    const endFrame = numParam(params, "endFrame", frameRange?.[1] ?? NaN);
+    if (!Number.isFinite(startFrame) || !Number.isFinite(endFrame)) {
+      toast.info("Select a clip first: shift-drag on the seekbar.");
+      return;
+    }
+
+    const removed = deletePredictionPairs(
+      ctx,
+      "DeletePredictionsFromClip",
+      predictionsInClip(labels, video, startFrame, endFrame),
+    );
+    if (removed === 0) {
+      toast.info("No predictions in the selected clip.");
+      return;
+    }
+    toast.success(`Deleted ${removed} prediction(s) from the clip`, {
+      description: `Frames ${startFrame} to ${endFrame} of this video`,
+    });
+  },
+};
+
+/**
+ * Delete predictions on frames that also have user instances. PyQt's
+ * "Delete Predictions on User-Labeled Frames...": `allVideos` (default false:
+ * current video only) and `unlinkedOnly` (default true: keep the prediction a
+ * user instance was made from).
+ */
 export const DeletePredictionsOnLabeledFrames: Command = {
   name: "DeletePredictionsOnLabeledFrames",
   topics: [UpdateTopic.Labels, UpdateTopic.Frame, UpdateTopic.Instance],
   skipAutoSnapshot: true,
-  execute(ctx: CommandContext) {
-    const { labels, instance } = ctx.state;
+  execute(ctx: CommandContext, params?: Record<string, unknown>) {
+    const { labels, video } = ctx.state;
     if (!labels) return;
+    const allVideos = params?.allVideos === true;
+    const unlinkedOnly = params?.unlinkedOnly !== false;
+    if (!allVideos && !video) return;
 
-    const snapshot = ctx.takeAllFramesSnapshot(
-      "DeletePredictionsOnLabeledFrames"
+    const removed = deletePredictionPairs(
+      ctx,
+      "DeletePredictionsOnLabeledFrames",
+      predictionsOnUserLabeledFrames(labels, allVideos ? null : video, unlinkedOnly),
     );
-    let removed = 0;
-
-    for (const lf of labels.labeledFrames) {
-      const hasUser = lf.instances.some(
-        (inst) => !(inst instanceof PredictedInstance)
-      );
-      if (hasUser) {
-        const before = lf.instances.length;
-        lf.instances = lf.instances.filter(
-          (inst) => !(inst instanceof PredictedInstance)
-        );
-        removed += before - lf.instances.length;
-      }
-    }
-
-    labels.labeledFrames = labels.labeledFrames.filter(frameHasContent);
-
+    const where = allVideos ? "in all videos" : "in this video";
     if (removed === 0) {
-      toast.info("No predictions found on user-labeled frames.");
+      toast.info(`No predictions to delete on user-labeled frames ${where}.`);
       return;
     }
-
-    ctx.pushUndoSnapshot(snapshot);
-
-    if (instance && instance instanceof PredictedInstance) {
-      ctx.state.setInstance(null);
-    }
-    ctx.state.markChanged();
-    toast.success(`Deleted ${removed} prediction(s)`, {
-      description: "On frames with user labels",
+    toast.success(`Deleted ${removed} prediction(s) ${where}`, {
+      description: unlinkedOnly
+        ? "Unlinked predictions on user-labeled frames"
+        : "All predictions on user-labeled frames",
     });
   },
 };
 
-/** Keep only the top N predicted instances per frame by score. */
+/** Keep only the top N predictions (by score) on each frame of the current video. */
 export const DeletePredictionsByMaxCount: Command = {
   name: "DeletePredictionsByMaxCount",
   topics: [UpdateTopic.Labels, UpdateTopic.Frame, UpdateTopic.Instance],
   skipAutoSnapshot: true,
   execute(ctx: CommandContext, params?: Record<string, unknown>) {
-    const { labels, instance } = ctx.state;
-    if (!labels) return;
-    const maxInstances =
-      typeof params?.maxInstances === "number" ? params.maxInstances : 2;
+    const { labels, video } = ctx.state;
+    if (!labels || !video) return;
+    const maxInstances = numParam(params, "maxInstances", 2);
 
-    const snapshot = ctx.takeAllFramesSnapshot("DeletePredictionsByMaxCount");
-    let removed = 0;
-
-    for (const lf of labels.labeledFrames) {
-      const predicted = lf.instances.filter(
-        (inst) => inst instanceof PredictedInstance
-      ) as PredictedInstance[];
-      const user = lf.instances.filter(
-        (inst) => !(inst instanceof PredictedInstance)
-      );
-
-      if (predicted.length > maxInstances) {
-        // Sort by score descending, keep top N
-        predicted.sort((a, b) => b.score - a.score);
-        const kept = predicted.slice(0, maxInstances);
-        removed += predicted.length - maxInstances;
-        lf.instances = [...user, ...kept];
-      }
-    }
-
-    labels.labeledFrames = labels.labeledFrames.filter(frameHasContent);
-
+    const removed = deletePredictionPairs(
+      ctx,
+      "DeletePredictionsByMaxCount",
+      predictionsBeyondMaxInstances(labels, video, maxInstances),
+    );
     if (removed === 0) {
-      toast.info("No predictions exceeded the max count.");
+      toast.info("No frame in this video has more predictions than the maximum.");
       return;
     }
-
-    ctx.pushUndoSnapshot(snapshot);
-
-    if (instance && instance instanceof PredictedInstance) {
-      ctx.state.setInstance(null);
-    }
-    ctx.state.markChanged();
-    toast.success(`Deleted ${removed} prediction(s)`, {
-      description: `Kept top ${maxInstances} per frame`,
+    toast.success(`Deleted ${removed} prediction(s) in this video`, {
+      description: `Kept the top ${maxInstances} per frame`,
     });
   },
 };
 
-// ---------------------------------------------------------------------------
-// Delete Predictions by Area (current frame only)
-// ---------------------------------------------------------------------------
-
-/** Compute the centroid of an instance's visible points. */
-function computeCentroid(
-  instance: { points: Array<{ xy: [number, number]; visible: boolean }> }
-): [number, number] | null {
-  let sumX = 0;
-  let sumY = 0;
-  let count = 0;
-  for (const p of instance.points) {
-    if (p.visible && !isNaN(p.xy[0]) && !isNaN(p.xy[1])) {
-      sumX += p.xy[0];
-      sumY += p.xy[1];
-      count++;
-    }
-  }
-  if (count === 0) return null;
-  return [sumX / count, sumY / count];
-}
-
-/** Delete predicted instances whose centroid falls within a rectangle on the current frame. */
+/**
+ * Delete predictions whose visible points all lie inside a box
+ * (`x1,y1`–`x2,y2`, image coordinates) on **every frame of the current
+ * video** — for static false detections such as a reflection. PyQt's
+ * "Delete Predictions from Area...".
+ */
 export const DeletePredictionsByArea: Command = {
   name: "DeletePredictionsByArea",
-  topics: [UpdateTopic.Frame, UpdateTopic.Instance],
+  topics: [UpdateTopic.Labels, UpdateTopic.Frame, UpdateTopic.Instance],
   skipAutoSnapshot: true,
   execute(ctx: CommandContext, params?: Record<string, unknown>) {
-    const { labels, labeledFrame, instance } = ctx.state;
-    if (!labels || !labeledFrame) return;
+    const { labels, video } = ctx.state;
+    if (!labels || !video) return;
+    const box = {
+      x1: numParam(params, "x1", 0),
+      y1: numParam(params, "y1", 0),
+      x2: numParam(params, "x2", 0),
+      y2: numParam(params, "y2", 0),
+    };
+    if (box.x1 === box.x2 || box.y1 === box.y2) return;
 
-    const x1 = typeof params?.x1 === "number" ? params.x1 : 0;
-    const y1 = typeof params?.y1 === "number" ? params.y1 : 0;
-    const x2 = typeof params?.x2 === "number" ? params.x2 : 0;
-    const y2 = typeof params?.y2 === "number" ? params.y2 : 0;
-
-    const minX = Math.min(x1, x2);
-    const maxX = Math.max(x1, x2);
-    const minY = Math.min(y1, y2);
-    const maxY = Math.max(y1, y2);
-
-    const snapshot = ctx.takeAllFramesSnapshot("DeletePredictionsByArea");
-    let removed = 0;
-
-    const before = labeledFrame.instances.length;
-    labeledFrame.instances = labeledFrame.instances.filter((inst) => {
-      if (!(inst instanceof PredictedInstance)) return true;
-      const centroid = computeCentroid(inst);
-      if (!centroid) return true;
-      const [cx, cy] = centroid;
-      if (cx >= minX && cx <= maxX && cy >= minY && cy <= maxY) {
-        return false; // Remove
-      }
-      return true;
-    });
-    removed = before - labeledFrame.instances.length;
-
-    // Remove empty labeled frames
-    if (labeledFrame.instances.length === 0) {
-      labels.labeledFrames = labels.labeledFrames.filter(
-        (lf) => lf !== labeledFrame
-      );
-    }
-
+    const removed = deletePredictionPairs(
+      ctx,
+      "DeletePredictionsByArea",
+      predictionsInArea(labels, video, box),
+    );
     if (removed === 0) {
-      toast.info("No predictions found in the selected area.");
+      toast.info("No predictions in this video lie inside the selected area.");
       return;
     }
-
-    ctx.pushUndoSnapshot(snapshot);
-
-    if (instance && instance instanceof PredictedInstance) {
-      ctx.state.setInstance(null);
-    }
-    ctx.state.markChanged();
-    toast.success(`Deleted ${removed} prediction(s)`, {
-      description: "From selected area on current frame",
+    toast.success(`Deleted ${removed} prediction(s) in this video`, {
+      description: "Inside the selected area, on every frame",
     });
   },
 };
