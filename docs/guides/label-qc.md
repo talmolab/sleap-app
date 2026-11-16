@@ -17,6 +17,11 @@ Click any result row to jump to that frame and instance. After you fix things,
 click **Re-run** to check again. To review the results frame by frame instead,
 use the [Label QC panel](#the-label-qc-panel).
 
+Above the tabs, **Issue types** shows only the kinds of issue you pick, and
+**Detector Settings** turns checks on or off and sets their thresholds. Both
+are [below](#choosing-what-gets-flagged), and they are the same in the dialog
+and the panel.
+
 ## What it checks
 
 ### Structural checks
@@ -68,12 +73,13 @@ put them ahead of the anomaly flags.
 
 ## Working through the results
 
-On the **Rules** tab, results are a table of **Issue**, **Frame**, and
-**Details**. Click a row to jump to it and fix it.
+On the **Rules** tab, results are a table of **Issue**, **Video**, **Frame**,
+and **Details**. Click a row to jump to it and fix it.
 
-**Add flagged frames to Suggestions** pushes every flagged frame into the
-[Suggestions](suggestions.md) list, so you can work through them with ++space++
-like any other labeling pass.
+**Add flagged frames to Suggestions** pushes every flagged frame on the tab
+into the [Suggestions](suggestions.md) list, so you can work through them with
+++space++ like any other labeling pass. Rule checks you switched off or issue
+types you hid are left out.
 
 ## The Label QC panel
 
@@ -94,6 +100,9 @@ a run started in either shows up in both.
   from anywhere in the app (also **Go ▸ Next Label QC Flag**). They select the
   worst flagged instance, zoom to it and open the panel.
 - The **threshold** slider works as it does in the dialog.
+- **Issue types** and **Detector Settings** work as they do in the dialog
+  (see [Choosing what gets flagged](#choosing-what-gets-flagged)).
+- In a project with more than one video, the list has a **Video** column.
 
 On the video, each flagged instance gets a red dashed box, and on it the
 thing that looks wrong, drawn in red dashes over a dark outline:
@@ -196,6 +205,53 @@ travel with it to another computer or to someone else, and in the browser
 they're lost if you clear the site's data. They survive **Rerun** and
 reopening the project.
 
+## Choosing what gets flagged
+
+### Showing only some issues
+
+Click **Issue types: all** (above the dialog's tabs, or under the panel's
+threshold) for a list of every kind of issue the run found, with how many
+flags each has: the rule checks (**Duplicate**, **Incomplete frame**…) and
+then the pose issues (**Unusual joint angle**, **Improbable pose**…). Untick
+the ones you don't want to see; **All** and **None** tick or untick them all.
+The button then reads, say, **Issue types: 3 of 7**.
+
+Hidden issues are gone from the dialog's tables, the panel's list,
+++f++ / ++shift+f++, the [Review window](#the-review-window) (its header says
+**filtered**) and the boxes on the video. A frame whose flags are all hidden
+leaves the list. The filter lasts until you open another project; it isn't
+saved.
+
+### Detector Settings
+
+Click **Detector Settings** (in the dialog, or at the top of the panel) to
+open it. Each check has a checkbox, a **?** with what it catches, and its
+thresholds, if any:
+
+| Check | Threshold | Default |
+|---|---|---|
+| **Anomaly score** | **score ≥**: the same as the threshold slider | 0.7 |
+| **Improbable pose (GMM)** | **least typical**: the share of your labels it flags | 5% |
+| **Whole-instance L/R flip** (listed as Chirality (L/R)) | **flip frac ≥**: the share of left/right pairs that must look swapped | 0.5 |
+| **Duplicate / split** | **IoU ≥**: how much two instances' boxes must overlap | 0.5 |
+| **Wrong chain order** | **turn ≥**: how sharp a turn along a chain counts as out of order; **inv frac ≥**: the share of turns that must be | 60°, 0.3 |
+| **Out of range**, **Empty instance**, **Incomplete frame**, **Negative frame** | none | |
+| **Sparse instance** | **nodes <**: fewer visible nodes than this | 2 |
+
+All checks start on.
+
+- **Checkboxes and the anomaly score apply right away**: unticking a check
+  hides its flags everywhere, without running QC again. Tick it to get them
+  back.
+- **The other thresholds apply on the next Run**, since they change what a run
+  finds. Until you **Rerun**, the section's title says **Rerun to apply** and
+  the changed boxes are outlined.
+- **Restore defaults** puts everything back.
+
+Settings are kept per project on this computer (in the desktop app) or in this
+browser (on the web), like [ignored flags](#ignoring-a-flag): not in the
+`.slp` file.
+
 ## Anomalies
 
 The **Anomalies** tab scores every instance by how unusual its pose is compared
@@ -204,12 +260,14 @@ visibility pattern, a likely L/R swap, and the like.
 Click **Run QC**; on a large project it shows progress and a **Cancel**
 button.
 
-- The table lists **Score**, **GMM**, **Confidence**, **Top issue**, and
-  **Frame**, worst first. An instance is listed if either score flags it.
+- The table lists **Score**, **GMM**, **Confidence**, **Top issue**,
+  **Video**, and **Frame**, worst first. An instance is listed if either score
+  flags it.
 - The **Threshold** slider sets the **Score** at which an instance is flagged.
-  Lower it to flag more. The **GMM** column has its own fixed threshold (below).
+  Lower it to flag more. The **GMM** column has its own threshold (below), set
+  in [Detector Settings](#detector-settings).
 - **Export CSV** saves both scores for every instance, not just the flagged
-  ones.
+  ones, whatever the filters.
 
 ### How the score works
 
@@ -245,7 +303,9 @@ tucked in while the others are spread. The **GMM** column catches those.
    score is the share of your labels that look more typical than this one.
 3. Instances in the least typical 5% (GMM score 0.95 or more) are flagged,
    whatever the **Threshold** slider says. Their **Top issue** reads
-   *Improbable pose*, followed by the measurement that stands out most.
+   *Improbable pose*, followed by the measurement that stands out most. To
+   flag a bigger or smaller share, change **least typical** in
+   [Detector Settings](#detector-settings) and **Rerun**.
 
 The GMM needs at least 50 labeled instances; with fewer, the column shows a
 dash and only the **Score** is used. Because it always flags about 5% of your

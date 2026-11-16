@@ -8,6 +8,7 @@
  */
 import { useMemo } from "react";
 import { useAppStore } from "@/stores/appStore";
+import { useQcView } from "@/hooks/useQcView";
 import {
   buildQcQueue,
   hideOkFlags,
@@ -111,9 +112,7 @@ export function useQcFrameFlags(): QcFrameOverlay {
   const show = panelOpen || reviewOpen;
   const qcLabels = useQcStore((s) => s.labels);
   const state = useQcStore((s) => s.state);
-  const findings = useQcStore((s) => s.findings);
-  const anomaly = useQcStore((s) => s.anomaly);
-  const threshold = useQcStore((s) => s.threshold);
+  const { findings, anomaly, threshold } = useQcView();
   const editedFrames = useQcStore((s) => s.editedFrames);
   const dismissed = useQcStore((s) => s.dismissed);
   const showDismissed = useQcStore((s) => s.showDismissed);
