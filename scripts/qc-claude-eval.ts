@@ -85,7 +85,7 @@ export function plantErrors(
   const out: Planted[] = [];
   for (const { f, i } of candidates.slice(0, opts.n)) {
     const inst = f.userInstances[i];
-    const visible = inst.points.map((p, k) => k).filter((k) => inst.points[k].visible && Number.isFinite(inst.points[k].xy[0]));
+    const visible = inst.points.map((_, k) => k).filter((k) => inst.points[k].visible && Number.isFinite(inst.points[k].xy[0]));
     const node = visible[Math.floor(rand() * visible.length)];
     const [x, y] = inst.points[node].xy;
     const d = opts.min + rand() * (opts.max - opts.min);

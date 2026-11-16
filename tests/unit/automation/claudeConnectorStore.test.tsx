@@ -16,7 +16,7 @@ const stop = vi.fn(async () => {});
 beforeEach(() => {
   start.mockClear();
   stop.mockClear();
-  setConnectorBackend({ start, stop });
+  setConnectorBackend({ start: () => start() as Promise<McpInfo>, stop: () => stop() as Promise<void> });
   useClaudeConnectorStore.setState({ enabled: false, info: null, busy: false, error: null });
 });
 afterEach(cleanup);

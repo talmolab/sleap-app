@@ -22,7 +22,7 @@ async function seedQc() {
   });
 }
 
-const text = (r: { content: unknown }) => (r.content as { type: string; text: string }[])[0].text;
+const text = (r: unknown) => (r as { content: { type: string; text: string }[] }).content[0].text;
 
 beforeEach(async () => {
   setQcReviewedBackend(memoryBackend());
