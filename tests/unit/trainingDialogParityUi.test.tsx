@@ -131,6 +131,43 @@ describe("TrainingConfigDialog PyQt-parity controls", () => {
     expect(updates).toContainEqual({ useNegativeFrames: true });
   });
 
+  // The option does nothing without negative frames; the tab must say so right under the toggle.
+  it("warns under the toggle when no frame is marked negative", async () => {
+    useAppStore.setState({ labels: makeProjectLabels() });
+    const configs = makeConfigs("top_down", null).map((c) => ({
+      ...c,
+      hyperparams: { ...c.hyperparams, useNegativeFrames: true },
+    }));
+    render(
+      <mod.TrainingConfigDialog
+        open
+        onClose={noop}
+        modelType="top_down"
+        configs={configs}
+        onUpdateSlot={noop}
+        inferenceTarget="nothing"
+        onInferenceTargetChange={noop}
+        remoteEnabled={false}
+        onRemoteEnabledChange={noop}
+        sampleCount={20}
+        onSampleCountChange={noop}
+        skipUserLabeled={false}
+        onSkipUserLabeledChange={noop}
+        existingPredictions="clear_all"
+        onExistingPredictionsChange={noop}
+        autoOpenWandb={false}
+        onAutoOpenWandbChange={noop}
+        exportFormat="none"
+        onExportFormatChange={noop}
+        useExportedForInference={false}
+        onUseExportedForInferenceChange={noop}
+      />
+    );
+    switchToTab(1); // centroid
+    await waitFor(() => expect(document.getElementById("head-data")).toBeTruthy());
+    expect(screen.getByRole("alert").textContent).toContain("no frames are marked as negative");
+  });
+
   // Centered-instance ignores negative frames; PyQt hides the fields there.
   it("hides the negative-frame fields on the centered-instance tab", async () => {
     renderDialog(noop, null);
