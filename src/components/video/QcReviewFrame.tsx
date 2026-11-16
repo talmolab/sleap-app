@@ -6,6 +6,8 @@
  * frame, which only adds a header (position, score, ordering tabs) and a
  * footer (issue, Prev / Delete instance / Ignore / Next) while
  * `qcStore.reviewOpen`. So dragging nodes, V, ⌘Z and zoom all work as usual.
+ * Claude's proposal for the instance on screen, if any, shows as a footer row
+ * (ClaudeSuggestion) and a ghost pose on the canvas.
  * Scores shown are live: an instance edited here shows its re-score
  * (`qcStore.rescored`) in place of the run's, marked "re-scored".
  * The element tree stays the same open or closed, so the canvas never remounts.
@@ -34,6 +36,7 @@ import { qcIssueText } from "@/lib/qcReview";
 import { formatShortcut } from "@/lib/formatShortcut";
 import { useQcView } from "@/hooks/useQcView";
 import { videoBasename } from "@/lib/videoFilter";
+import { ClaudeSuggestionRow } from "./ClaudeSuggestion";
 
 const RESCORED_TITLE = "Scored against the last run; Rerun to re-check against all labels.";
 
@@ -342,6 +345,7 @@ function ReviewFooter() {
           {flagged && chip("GMM", flagged.a.gmmScore, gmmThreshold)}
         </span>
       </div>
+      <ClaudeSuggestionRow />
       <div className="flex items-center gap-2 border-t border-border/60 px-3 py-2">
         <Button
           size="sm"

@@ -32,5 +32,7 @@ export const QC_REVIEW_KEYS: { action: string; keys: string }[] = [
   { action: "Previous / next flag", keys: "← / →" },
   { action: "Ignore the flag and go to the next", keys: "3" },
   { action: "Zoom back to the flagged instance", keys: "0" },
+  { action: "Accept Claude's suggestion", keys: "A" },
+  { action: "Reject Claude's suggestion", keys: "X" },
   { action: "Close the Review window", keys: "Esc" },
 ];

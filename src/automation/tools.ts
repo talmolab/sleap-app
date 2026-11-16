@@ -5,7 +5,7 @@
  */
 import { useAppStore } from "@/stores/appStore";
 import { useQcStore } from "@/stores/qcStore";
-import { isOutdated, useProposalStore, type NodeEdits, type Proposal } from "@/stores/proposalStore";
+import { proposalState, useProposalStore, type NodeEdits, type Proposal } from "@/stores/proposalStore";
 import { AutomationError } from "./errors";
 import { findQcFlag, flagTarget, listQcFlags, requireLabels, type QcFlag } from "./qcFlags";
 import { DEFAULT_MAX_EDGE, getRender, renderFlag } from "./render";
@@ -36,6 +36,8 @@ function latestProposals(): Map<string, Proposal> {
   return m;
 }
 
+const latestState = (p: Proposal | undefined) => (p ? proposalState(p) : null);
+
 /** A flag the proposal tools can act on: one user instance, still open. */
 function instanceFlag(flagId: string): QcFlag & { instIdx: number } {
   const flag = findQcFlag(flagId);
@@ -61,8 +63,7 @@ function describeProposal(p: Proposal) {
     proposal_id: p.id,
     flag_id: p.flagId,
     kind: p.kind,
-    status: p.status,
-    outdated: p.status === "pending" ? isOutdated(p) : undefined,
+    status: proposalState(p),
     video: p.videoIdx,
     frame: p.frameIdx,
     instance: p.instIdx,
@@ -153,7 +154,7 @@ export const listQcFlagsTool: Tool = {
         message: f.message,
         score: f.score,
         nodes: f.nodes,
-        proposal: latest.get(f.id)?.status ?? null,
+        proposal: latestState(latest.get(f.id)),
       })),
     });
   },
@@ -325,11 +326,15 @@ export const proposeIgnoreTool: Tool = {
 export const listProposalsTool: Tool = {
   name: "list_proposals",
   description:
-    "Claude's proposals in this session and what the user did with each: pending, accepted or rejected. A pending proposal is 'outdated' when the instance changed after it was made; it can't be accepted, so look at the flag again. Fix positions are in frame coordinates, by node name.",
+    "Claude's proposals in this session and where each stands: pending; accepted; rejected; 'outdated' (the instance changed after it was made, so it can't be accepted: look at the flag again); or 'undone' (accepted, then the user undid it). Fix positions are in frame coordinates, by node name.",
   inputSchema: {
     type: "object",
     properties: {
-      status: { type: "string", enum: ["pending", "accepted", "rejected"], description: "Only proposals with this status." },
+      status: {
+        type: "string",
+        enum: ["pending", "accepted", "rejected", "outdated", "undone"],
+        description: "Only proposals in this state.",
+      },
     },
     additionalProperties: false,
   },
@@ -338,7 +343,7 @@ export const listProposalsTool: Tool = {
     const status = args.status as string | undefined;
     const proposals = useProposalStore
       .getState()
-      .proposals.filter((p) => !status || p.status === status)
+      .proposals.filter((p) => !status || proposalState(p) === status)
       .map(describeProposal);
     return textResult({ proposals });
   },

@@ -102,7 +102,7 @@ describe("tool registry", () => {
     const inst = project.labels.find({ video: project.video, frameIdx: 20 })[0].userInstances[1];
     expect(inst.points[0].xy).toEqual([300, 100]);
     const listed = json(await registry.call("list_proposals", {}));
-    expect(listed.proposals[0]).toMatchObject({ flag_id: "v0:f20:i1:anomaly", status: "pending", outdated: false });
+    expect(listed.proposals[0]).toMatchObject({ flag_id: "v0:f20:i1:anomaly", status: "pending" });
     expect(listed.proposals[0].after).toEqual({ nose: [260, 70], tail: null });
   });
 
@@ -181,6 +181,31 @@ describe("tool registry", () => {
     const safe = await registry.callSafe("render_flag", {});
     expect(safe.isError).toBe(true);
     expect((safe.content[0] as { text: string }).text).toContain("flag_id is required");
+  });
+
+  // Why: Claude must learn that a proposal went stale or was undone, so it can look again.
+  it("list_proposals reports outdated and undone proposals", async () => {
+    const { SetNodes } = await import("@/commands/editCommands");
+    const { useAppStore } = await import("@/stores/appStore");
+    const p = useProposalStore.getState().addFix(
+      { flagId: "v0:f20:i1:anomaly", videoIdx: 0, frameIdx: 20, instIdx: 1, reason: "r" },
+      { 0: [1, 1] },
+    );
+    await useProposalStore.getState().accept(p.id, project.ctx);
+    expect(json(await registry.call("list_proposals", {})).proposals[0].status).toBe("accepted");
+    project.ctx.undo();
+    expect(json(await registry.call("list_proposals", { status: "undone" })).proposals).toHaveLength(1);
+    // Edit the instance: the undone proposal no longer matches the pose.
+    useAppStore.getState().setInstance(useAppStore.getState().labeledFrame!.userInstances[1]);
+    await project.ctx.execute(SetNodes, { nodes: { 2: [9, 9] } });
+    expect(json(await registry.call("list_proposals", {})).proposals[0].status).toBe("accepted");
+    const q = useProposalStore.getState().addFix(
+      { flagId: "v0:f20:i1:anomaly", videoIdx: 0, frameIdx: 20, instIdx: 1, reason: "r2" },
+      { 0: [2, 2] },
+    );
+    await project.ctx.execute(SetNodes, { nodes: { 2: [8, 8] } });
+    const out = json(await registry.call("list_proposals", { status: "outdated" })).proposals;
+    expect(out.map((x: { proposal_id: string }) => x.proposal_id)).toEqual([q.id]);
   });
 
   // Why: an ignore proposal is how Claude says "this pose is fine"; it must not change anything yet.

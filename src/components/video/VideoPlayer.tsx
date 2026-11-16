@@ -130,6 +130,8 @@ import { useFollowSelection } from "@/hooks/useFollowSelection";
 import { getPlatform, isTauri } from "@/platform/index";
 import { spawnOverlayServe, killOverlayServe, detectGpu } from "@/platform/backend";
 import { Film, Frame, Hand, ImageOff, MousePointer2, Tag, ZoomIn } from "lucide-react";
+import { renderProposalGhosts } from "@/canvas/proposalGhost";
+import { useProposalGhosts } from "@/hooks/useProposalGhosts";
 
 /**
  * First unused `node_${k}` name (k = 0, 1, 2, …) for a fresh builder node, so
@@ -236,6 +238,8 @@ export function VideoPlayer() {
   const followSelection = useAppStore((s) => s.followSelection);
   const actualSize = useAppStore((s) => s.actualSize);
   const qcOverlay = useQcFrameFlags();
+  // Claude's pending fixes on this frame (QC Review), drawn as ghost poses.
+  const proposalGhosts = useProposalGhosts();
   const resetViewNonce = useAppStore((s) => s.resetViewNonce);
   const userViewNonce = useAppStore((s) => s.userViewNonce);
   const areaDeleteMode = useAppStore((s) => s.areaDeleteMode);
@@ -1695,6 +1699,9 @@ export function VideoPlayer() {
     // Label QC: dashed boxes around flagged instances, circles on their nodes.
     if (qcOverlay.flags.length > 0) renderQcFlags(ctx, instances, qcOverlay.flags, renderOpts);
 
+    // Claude's proposed fixes: the pose after each, dashed, over the instance.
+    if (proposalGhosts.length > 0) renderProposalGhosts(ctx, instances, proposalGhosts, renderOpts);
+
     // Compute effective selection (includes live marquee preview)
     let effectiveSelection = selectedNodes;
     if (marqueeStart && marqueeEnd) {
@@ -1841,6 +1848,7 @@ export function VideoPlayer() {
     builderPositions,
     skeleton,
     qcOverlay,
+    proposalGhosts,
   ]);
 
   // Check if we're in explicit placement mode
