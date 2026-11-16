@@ -86,6 +86,11 @@ fn main() {
                     // self-update channels
                     "check_update",
                     "install_update",
+                    // Claude connector (loopback MCP endpoint)
+                    "mcp_start",
+                    "mcp_stop",
+                    "mcp_status",
+                    "mcp_response",
                 ])
                 .default_permission(DefaultPermissionRule::AllowAllCommands),
         ),

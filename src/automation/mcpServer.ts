@@ -17,6 +17,7 @@ import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
 import { registry as defaultRegistry } from "./tools";
 import type { ToolRegistry } from "./registry";
 import { APP_VERSION } from "@/lib/version";
+import { sleapCmd } from "@/lib/sleapPlugin";
 
 /** What Claude reads first: what SLEAP is and how the QC-review tools fit together. */
 export const SERVER_INSTRUCTIONS = `SLEAP is a pose-tracking app: users label body parts ("nodes", joined by "edges" into a skeleton) on animals in video frames, train models, and check their labels. This server connects you to the SLEAP desktop window the user has open.
@@ -137,14 +138,17 @@ export class WebviewTransport implements Transport {
 
 /** The real bridge: Tauri events in, the sleap plugin's `mcp_response` out. */
 export async function tauriBridge(): Promise<WebviewBridge> {
-  const [{ listen }, { invoke }] = await Promise.all([
-    import("@tauri-apps/api/event"),
+  const [{ getCurrentWebviewWindow }, { invoke }] = await Promise.all([
+    import("@tauri-apps/api/webviewWindow"),
     import("@tauri-apps/api/core"),
   ]);
   return {
+    // This window's events only: the endpoint sends each request to one window.
     listen: (onRequest) =>
-      listen<{ id: number; body: string }>("mcp:request", (e) => onRequest(e.payload)),
-    respond: (id, body) => invoke("plugin:sleap|mcp_response", { id, body }),
+      getCurrentWebviewWindow().listen<{ id: number; body: string }>("mcp:request", (e) =>
+        onRequest(e.payload),
+      ),
+    respond: (id, body) => invoke(sleapCmd("mcp_response"), { id, body }),
   };
 }
 

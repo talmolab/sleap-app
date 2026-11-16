@@ -1,6 +1,7 @@
 mod app_menu;
 mod environment;
 mod iroh_client;
+mod mcp_bridge;
 mod rtc;
 mod update_channels;
 
@@ -699,6 +700,10 @@ fn sleap_plugin<R: tauri::Runtime>() -> tauri::plugin::TauriPlugin<R> {
             iroh_client::iroh_blob_close,
             update_channels::check_update,
             update_channels::install_update,
+            mcp_bridge::mcp_start,
+            mcp_bridge::mcp_stop,
+            mcp_bridge::mcp_status,
+            mcp_bridge::mcp_response,
         ])
         .build()
 }
