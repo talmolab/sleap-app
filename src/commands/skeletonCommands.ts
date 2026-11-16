@@ -17,6 +17,7 @@ import {
 } from "../lib/skeletonTemplates";
 import { remapInstancePoints } from "../lib/skeletonIO";
 import { dirtyFrameTracker } from "../lib/autosaveDirty";
+import { sameSkeletonStructure } from "../lib/skeletonStructure";
 
 // ---------------------------------------------------------------------------
 // Snapshot helpers
@@ -114,6 +115,43 @@ function takeSkeletonSnapshot(
   };
 }
 
+/**
+ * Identical duplicate skeletons (old files, some merges) are the same skeleton
+ * to the user. Before editing `skeleton`, if every skeleton an instance uses is
+ * structurally identical to it, point all those instances at `skeleton` so the
+ * edit keeps them consistent (and the leftover duplicate object, now unused,
+ * doesn't turn the project into a "several skeletons" one). This is what
+ * `main` effectively did: it edited every instance and re-pointed them on
+ * Open Skeleton / templates / undo. Nothing is removed from labels.skeletons.
+ */
+function absorbIdenticalDuplicates(
+  labels: Labels | null,
+  skeleton: Skeleton | null,
+): void {
+  if (!labels || !skeleton || labels.skeletons.length <= 1) return;
+  const used = new Set<Skeleton>();
+  for (const lf of labels.labeledFrames) {
+    for (const inst of lf.instances) used.add(inst.skeleton);
+  }
+  for (const sk of used) {
+    if (!sameSkeletonStructure(skeleton, sk)) return; // genuinely different
+  }
+  for (const lf of labels.labeledFrames) {
+    for (const inst of lf.instances) {
+      if (inst.skeleton !== skeleton) inst.skeleton = skeleton;
+    }
+  }
+}
+
+/** Start a skeleton edit: fold in identical duplicates, then snapshot. */
+function beginSkeletonEdit(
+  ctx: CommandContext,
+  skeleton: Skeleton | null = ctx.state.skeleton,
+): SkeletonSnapshot {
+  absorbIdenticalDuplicates(ctx.state.labels, skeleton);
+  return takeSkeletonSnapshot(ctx, skeleton);
+}
+
 /** Restore skeleton state from a snapshot. */
 function restoreSkeletonSnapshot(
   ctx: CommandContext,
@@ -194,7 +232,7 @@ export const AddNodeCommand: Command = {
     if (!name?.trim()) return;
 
     // Snapshot before mutation
-    const before = takeSkeletonSnapshot(ctx);
+    const before = beginSkeletonEdit(ctx);
     ctx.pushUndoSnapshot({
       commandName: "AddNode",
       frame: null,
@@ -291,7 +329,7 @@ export const DeleteNodeCommand: Command = {
     if (nodeIdx === undefined || nodeIdx < 0 || nodeIdx >= skeleton.nodes.length)
       return;
 
-    const before = takeSkeletonSnapshot(ctx);
+    const before = beginSkeletonEdit(ctx);
 
     const node = skeleton.nodes[nodeIdx];
 
@@ -350,7 +388,7 @@ export const AddEdgeCommand: Command = {
     const dst = skeleton.nodes.find((n) => n.name === dstName);
     if (!src || !dst) return;
 
-    const before = takeSkeletonSnapshot(ctx);
+    const before = beginSkeletonEdit(ctx);
 
     skeleton.edges.push(new Edge(src, dst));
 
@@ -378,7 +416,7 @@ export const DeleteEdgeCommand: Command = {
     if (edgeIdx === undefined || edgeIdx < 0 || edgeIdx >= skeleton.edges.length)
       return;
 
-    const before = takeSkeletonSnapshot(ctx);
+    const before = beginSkeletonEdit(ctx);
 
     skeleton.edges.splice(edgeIdx, 1);
 
@@ -401,7 +439,7 @@ export const ClearEdgesCommand: Command = {
     const { skeleton } = ctx.state;
     if (!skeleton || skeleton.edges.length === 0) return;
 
-    const before = takeSkeletonSnapshot(ctx);
+    const before = beginSkeletonEdit(ctx);
     skeleton.edges = [];
     const afterSnapshot = takeSkeletonSnapshot(ctx);
     storeSkeletonUndo(ctx, "ClearEdges", before, afterSnapshot);
@@ -431,7 +469,7 @@ export const DeleteSkeletonCommand: Command = {
     // Already empty → nothing to do (no undo entry pushed).
     if (skeleton.nodes.length === 0 && skeleton.edges.length === 0) return;
 
-    const before = takeSkeletonSnapshot(ctx);
+    const before = beginSkeletonEdit(ctx);
 
     skeleton.nodes = [];
     skeleton.edges = [];
@@ -483,7 +521,7 @@ export const RenameNodeCommand: Command = {
       return;
     if (!newName?.trim()) return;
 
-    const before = takeSkeletonSnapshot(ctx);
+    const before = beginSkeletonEdit(ctx);
 
     const node = skeleton.nodes[nodeIdx];
     node.name = newName.trim();
@@ -527,7 +565,7 @@ export const LoadSkeletonTemplateCommand: Command = {
     const template = SKELETON_TEMPLATES[templateId];
     if (!template) return;
 
-    const before = takeSkeletonSnapshot(ctx);
+    const before = beginSkeletonEdit(ctx);
 
     applyTemplate(skeleton, template, labels);
 
@@ -568,7 +606,7 @@ export const OpenSkeletonCommand: Command = {
     const linkMap =
       (params?.linkMap as Map<string, string> | undefined) ?? new Map();
 
-    const before = takeSkeletonSnapshot(ctx);
+    const before = beginSkeletonEdit(ctx);
 
     // Source nodes for the point remap (the pre-import layout).
     const oldNodes = [...skeleton.nodes];
@@ -823,7 +861,7 @@ export const AddSymmetryCommand: Command = {
     });
     if (clash) return;
 
-    const before = takeSkeletonSnapshot(ctx);
+    const before = beginSkeletonEdit(ctx);
     skeleton.addSymmetry(node1, node2);
     const after = takeSkeletonSnapshot(ctx);
     storeSkeletonUndo(ctx, "AddSymmetry", before, after);
@@ -848,7 +886,7 @@ export const RemoveSymmetryCommand: Command = {
     const idx = params?.symmetryIdx as number | undefined;
     if (idx == null || idx < 0 || idx >= skeleton.symmetries.length) return;
 
-    const before = takeSkeletonSnapshot(ctx);
+    const before = beginSkeletonEdit(ctx);
     skeleton.symmetries.splice(idx, 1);
     const after = takeSkeletonSnapshot(ctx);
     storeSkeletonUndo(ctx, "RemoveSymmetry", before, after);
@@ -907,7 +945,7 @@ export const RenameSkeletonCommand: Command = {
     if (labels.skeletons.some((s) => s !== skeleton && s.name?.trim() === newName))
       return;
 
-    const before = takeSkeletonSnapshot(ctx, skeleton);
+    const before = beginSkeletonEdit(ctx, skeleton);
     skeleton.name = newName;
     const after = takeSkeletonSnapshot(ctx, skeleton);
     storeSkeletonUndo(ctx, "RenameSkeleton", before, after);

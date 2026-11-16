@@ -562,6 +562,17 @@ let exportSupportEnsured = { onnx: false, tensorrt: false };
 
 export type TrainingStatus = "idle" | "running" | "completed" | "error" | "stopped";
 
+/**
+ * True (and toasts why) when the open project uses several different
+ * skeletons. Imports lazily, like the other appStore reads in this file.
+ */
+async function blockedByMultiSkeleton(feature: string): Promise<boolean> {
+  const { useAppStore } = await import("@/stores/appStore");
+  const { multiSkeletonBlock } = await import("@/lib/multiSkeleton");
+  const { labels, skeleton } = useAppStore.getState();
+  return multiSkeletonBlock(labels, feature, { active: skeleton }) !== null;
+}
+
 export interface EpochSample {
   epoch: number;
   trainLoss: number | null;
@@ -1939,6 +1950,9 @@ export const useTrainingStore = create<TrainingState>()((set, get) => ({
     // One sleap-nn subprocess at a time: Cancel kills whichever is running.
     if (get().dryRun?.status === "running") return;
     const remoteOpts = opts && "remote" in opts ? opts : undefined;
+    // Training reads the open project's first skeleton: refuse a project that
+    // really uses several different skeletons (a worker-side file is its own).
+    if (remoteOpts?.labelsSource !== "worker-file" && (await blockedByMultiSkeleton("Training"))) return;
     const localOpts = opts && !("remote" in opts) ? opts as LocalTrainingOptions : undefined;
     const { config } = get();
 
@@ -2879,6 +2893,7 @@ export const useTrainingStore = create<TrainingState>()((set, get) => ({
 
   startDryRun: async () => {
     if (!isTauri || get().status !== "idle" || get().dryRun?.status === "running") return;
+    if (await blockedByMultiSkeleton("Training")) return;
     const { config } = get();
     const slots = getConfigSlots(config.modelType);
     const id = ++dryRunSeq;

@@ -18,6 +18,7 @@ import {
   encodeYamlSkeleton,
 } from "@talmolab/sleap-io.js";
 import type { Skeleton, Instance, Node } from "@talmolab/sleap-io.js";
+import { distinctSkeletonCount } from "./skeletonStructure";
 
 /**
  * Diff of node NAMES between the current ("old") and the imported ("new")
@@ -126,10 +127,12 @@ export async function parseSkeletonFile(
 
     case "slp": {
       const labels = await loadSlp(toArrayBuffer(data), { openVideos: false });
-      // A project file with several skeletons: don't guess which one is meant.
-      if (labels.skeletons.length > 1) {
+      // A project file with several different skeletons: don't guess which one
+      // is meant. Identical duplicates (old files) are one skeleton: use [0].
+      const distinct = distinctSkeletonCount(labels);
+      if (distinct > 1) {
         throw new Error(
-          `"${filename}" has ${labels.skeletons.length} skeletons. ` +
+          `"${filename}" has ${distinct} skeletons. ` +
             `Loading one skeleton from a file with several isn't supported yet.`,
         );
       }

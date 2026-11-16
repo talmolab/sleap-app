@@ -39,7 +39,18 @@ import {
 } from "@/commands/skeletonCommands";
 import { ExportCSVCommand } from "@/commands/fileCommands";
 import { instanceGeometry } from "@/canvas/instanceGeometry";
-import { placeInstance } from "@/lib/instancePlacement";
+import { fillMissingUserNodes, placeInstance } from "@/lib/instancePlacement";
+import {
+  applyDeltas,
+  buildBaseIndex,
+  decodeJournal,
+  encodeFrameDelta,
+  frameDeltaToRecord,
+} from "@/lib/autosaveJournal";
+import {
+  generateSuggestionFrames,
+  poseSuggestionBlockedMessage,
+} from "@/lib/suggestionStrategies";
 import { parseSkeletonFile } from "@/lib/skeletonIO";
 import { scoreLabelsAnomaly } from "@/lib/analyze/qc/anomaly";
 import {
@@ -49,13 +60,16 @@ import {
   nextSkeletonName,
 } from "@/lib/multiSkeleton";
 import {
+  Instance,
   LabeledFrame,
   Labels,
+  Skeleton,
   Video,
   loadSlp,
   saveSlpToBytes,
 } from "@talmolab/sleap-io.js";
 import {
+  makeDuplicateSkeletonProject,
   makeMouseSkeleton,
   makeTwoSkeletonProject,
   placedInstance,
@@ -380,5 +394,128 @@ describe("workflows that still need one skeleton refuse clearly", () => {
     await expect(parseSkeletonFile("two.slp", bytes)).rejects.toThrow(
       "Loading one skeleton from a file with several isn't supported yet.",
     );
+  });
+});
+
+describe("identical duplicate skeletons behave like a single skeleton", () => {
+  // Old files can carry two identical skeleton objects; on main every workflow
+  // used skeletons[0] and worked. They must not be gated as "several skeletons".
+  it("isn't counted as several skeletons, so guards let it through", () => {
+    const { labels } = makeDuplicateSkeletonProject();
+    expect(hasMultipleSkeletons(labels)).toBe(false);
+    expect(multiSkeletonBlock(labels, "Training")).toBeNull();
+    expect(poseSuggestionBlockedMessage(labels, "velocity")).toBeNull();
+    let qcError = "";
+    try {
+      scoreLabelsAnomaly(labels);
+    } catch (e) {
+      qcError = (e as Error).message;
+    }
+    expect(qcError).not.toContain("several skeletons");
+  });
+
+  // A node edit reaches every instance (as on main) and folds the duplicate's
+  // instances onto the edited skeleton, so the project stays "one skeleton".
+  it("a node edit updates both duplicates' instances and stays ungated", async () => {
+    const { labels, a, f0 } = makeDuplicateSkeletonProject();
+    useAppStore.getState().setLabels(labels, "old.slp");
+    await ctx.execute(AddNodeCommand, { name: "nose" });
+    expect(f0.instances.map((i) => i.points.length)).toEqual([4, 4]);
+    expect(f0.instances.every((i) => i.skeleton === a)).toBe(true);
+    expect(labels.skeletons.length).toBe(2); // nothing removed
+    expect(hasMultipleSkeletons(labels, a)).toBe(false);
+
+    ctx.undo();
+    const live = useAppStore.getState().labels!.labeledFrames[0];
+    expect(live.instances.map((i) => i.points.length)).toEqual([3, 3]);
+    expect(a.nodeNames).toEqual(["head", "body", "tail"]);
+  });
+
+  // Loading "the" skeleton from an old file with duplicates takes the first.
+  it("Load skeleton from a .slp with identical duplicates works", async () => {
+    const { labels } = makeDuplicateSkeletonProject();
+    const sk = await parseSkeletonFile("old.slp", await saveSlpToBytes(labels));
+    expect(sk.nodeNames).toEqual(["head", "body", "tail"]);
+  });
+});
+
+describe("several skeletons: autosave journal", () => {
+  // Crash recovery replays frame deltas that reference skeletons by index; a
+  // pellet (index 1) must come back as a pellet, not a mouse.
+  it("replays an instance whose skeleton index isn't 0", () => {
+    const { labels, f0 } = makeTwoSkeletonProject();
+    const delta = encodeFrameDelta(f0, buildBaseIndex(labels));
+    expect(delta.ins.map((i) => i.k)).toEqual([0, 0, 1]);
+
+    const { deltas } = decodeJournal(frameDeltaToRecord(delta));
+    const base = makeTwoSkeletonProject().labels;
+    base.labeledFrames.splice(0, base.labeledFrames.length);
+    applyDeltas(base, deltas);
+    const lf = base.labeledFrames.find((x) => x.frameIdx === 0)!;
+    expect(lf.instances.map((i) => i.skeleton)).toEqual([
+      base.skeletons[0],
+      base.skeletons[0],
+      base.skeletons[1],
+    ]);
+    expect(lf.instances[2].points.length).toBe(1);
+  });
+});
+
+describe("several skeletons: other single-skeleton paths", () => {
+  // Velocity / max-displacement compare one node index across every instance.
+  it("node-based suggestion methods refuse on several skeletons", () => {
+    const { labels, video } = makeTwoSkeletonProject();
+    expect(poseSuggestionBlockedMessage(labels, "velocity")).toContain("several skeletons");
+    expect(() =>
+      generateSuggestionFrames(labels, { method: "max_displacement", videos: [video] }),
+    ).toThrow("several skeletons");
+    // Skeleton-agnostic methods still work.
+    expect(poseSuggestionBlockedMessage(labels, "stride")).toBeNull();
+  });
+
+  // Add Missing Nodes must not borrow geometry from another skeleton that just
+  // happens to have the same number of nodes.
+  it("Add Missing Nodes ignores same-size instances of a different skeleton", () => {
+    const mouse = makeMouseSkeleton();
+    const triangle = new Skeleton({ nodes: ["p", "q", "r"], name: "triangle" });
+    const video = new Video({
+      filename: "t.mp4",
+      backendMetadata: { shape: [10, 2000, 2000, 3] },
+      openBackend: false,
+    });
+    const labels = new Labels({ videos: [video], skeletons: [mouse, triangle] });
+    const target = Instance.empty({ skeleton: mouse });
+    target.points = target.points.map((p, i) =>
+      i < 2 ? { ...p, xy: [i * 10, 0] as [number, number], visible: true } : p,
+    );
+    const other = placedInstance(triangle, [0, 0]);
+    other.points = other.points.map((p, i) => ({
+      ...p,
+      xy: (i === 2 ? [1000, 1000] : [i * 10, 0]) as [number, number],
+    }));
+    const lf = new LabeledFrame({ video, frameIdx: 0 });
+    lf.instances.push(target, other);
+    labels.labeledFrames.push(lf);
+
+    fillMissingUserNodes(target, labels, video, 0);
+    expect(target.points[2].xy[0]).toBeLessThan(100); // not pulled to (1000, 1000)
+  });
+
+  // Label QC results were scored on one skeleton: adding a second drops them.
+  it("adding a second skeleton clears Label QC results", async () => {
+    const video = new Video({
+      filename: "one.mp4",
+      backendMetadata: { shape: [10, 64, 64, 3] },
+      openBackend: false,
+    });
+    const mouse = makeMouseSkeleton();
+    const labels = new Labels({ videos: [video], skeletons: [mouse] });
+    useAppStore.getState().setLabels(labels, "one.slp");
+    useQcStore.setState({ state: "done" });
+    // An ordinary edit on a one-skeleton project keeps the results.
+    await ctx.execute(AddInstance);
+    expect(useQcStore.getState().state).toBe("done");
+    await ctx.execute(AddSkeletonCommand, { name: "food" });
+    expect(useQcStore.getState().state).toBe("idle");
   });
 });

@@ -57,6 +57,7 @@ import { PredictedInstance } from "@talmolab/sleap-io.js";
 import type { Labels, SuggestionFrame, Video } from "../../types";
 import {
   runSuggestionGeneration,
+  poseSuggestionBlockedMessage,
   type GenerationMethod,
   type GenerateParams,
 } from "../../lib/suggestionStrategies";
@@ -564,6 +565,12 @@ export function SuggestionsPanel({
         : labels.videos ?? [];
     if (method === "image_features") {
       void handleGenerateImageFeatures(videos);
+      return;
+    }
+    // Node-based methods assume one skeleton for every instance.
+    const blocked = poseSuggestionBlockedMessage(labels, method);
+    if (blocked) {
+      toast.info(blocked);
       return;
     }
     // Validate the numeric inputs the selected method / options require — an

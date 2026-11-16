@@ -721,8 +721,12 @@ function HyperparamsFields({
 
 /** Gated: needs a single-skeleton project (see SingleSkeletonGate). */
 export function TrainingPanel() {
+  // A job that's running (or finished and showing results) stays visible.
+  const busy = useTrainingStore(
+    (s) => s.status !== "idle" || s.dryRun?.status === "running"
+  );
   return (
-    <SingleSkeletonGate feature="Training" configRequest={"training"}>
+    <SingleSkeletonGate feature="Training" configRequest="training" busy={busy}>
       <TrainingPanelContent />
     </SingleSkeletonGate>
   );

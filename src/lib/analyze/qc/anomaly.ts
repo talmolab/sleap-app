@@ -26,6 +26,7 @@ import {
   type AsyncComputeOptions,
 } from "./detector";
 import { analyzerFromSkeleton } from "./skeletonIo";
+import { distinctSkeletonCount } from "@/lib/skeletonStructure";
 import { makeQCConfig, type QcConfig } from "./config";
 import { topIssue, confidence, issueForFeature, DIRECTIONAL_FEATURES } from "./explain";
 import type { AttributionEntry } from "./baseline";
@@ -284,7 +285,9 @@ function fitMaskFor(config: QcConfig, n: number): boolean[] | null {
 function assertSingleSkeleton(labels: Labels): void {
   if (!labels.skeletons?.length)
     throw new Error("Labels must have at least one skeleton");
-  if (labels.skeletons.length > 1)
+  // Identical duplicate skeleton objects (old files) are fine: points are
+  // positional, so skeletons[0] describes them all.
+  if (distinctSkeletonCount(labels) > 1)
     throw new Error("Label QC with several skeletons isn't supported yet.");
 }
 

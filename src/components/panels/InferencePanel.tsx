@@ -387,8 +387,10 @@ const DEFAULTS: Omit<InferenceConfig, "modelPaths" | "videoIndex" | "frameRange"
 
 /** Gated: needs a single-skeleton project (see SingleSkeletonGate). */
 export function InferencePanel() {
+  // A job that's running (or finished and showing results) stays visible.
+  const busy = useInferenceStore((s) => s.status !== "idle");
   return (
-    <SingleSkeletonGate feature="Running inference" configRequest={"inference"}>
+    <SingleSkeletonGate feature="Running inference" configRequest="inference" busy={busy}>
       <InferencePanelContent />
     </SingleSkeletonGate>
   );

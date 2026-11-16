@@ -11,12 +11,23 @@
 
 import type { Labels, Skeleton } from "@talmolab/sleap-io.js";
 import { toast } from "@/lib/notify";
+import { distinctSkeletonCount } from "@/lib/skeletonStructure";
 
-/** True when the project holds two or more skeletons. */
+export { distinctSkeletonCount } from "@/lib/skeletonStructure";
+
+type LabelsLike = Parameters<typeof distinctSkeletonCount>[0];
+
+/**
+ * True when the project really uses two or more structurally DIFFERENT
+ * skeletons. Identical duplicate skeleton objects (old files, some merges)
+ * don't count, so those projects behave exactly as on a single skeleton.
+ * `active` = the active skeleton, counted even before any instance uses it.
+ */
 export function hasMultipleSkeletons(
-  labels: Pick<Labels, "skeletons"> | null | undefined,
+  labels: LabelsLike | Pick<Labels, "skeletons"> | null | undefined,
+  active?: Skeleton | null,
 ): boolean {
-  return (labels?.skeletons?.length ?? 0) > 1;
+  return distinctSkeletonCount(labels as LabelsLike, active) > 1;
 }
 
 /**
@@ -33,11 +44,11 @@ export function multiSkeletonMessage(feature: string): string {
  * skeletons, or null when it's fine to continue.
  */
 export function multiSkeletonBlock(
-  labels: Pick<Labels, "skeletons"> | null | undefined,
+  labels: LabelsLike | Pick<Labels, "skeletons"> | null | undefined,
   feature: string,
-  { toastIt = true }: { toastIt?: boolean } = {},
+  { toastIt = true, active }: { toastIt?: boolean; active?: Skeleton | null } = {},
 ): string | null {
-  if (!hasMultipleSkeletons(labels)) return null;
+  if (!hasMultipleSkeletons(labels, active)) return null;
   const message = multiSkeletonMessage(feature);
   if (toastIt) {
     toast.info(message, {

@@ -87,7 +87,7 @@ import {
   renderPenStroke,
 } from "@/canvas/skeletonBuilderRender";
 import { nodesCrossedBySegment } from "@/lib/skeletonPenChain";
-import { hasMultipleSkeletons, skeletonDisplayName } from "@/lib/multiSkeleton";
+import { skeletonDisplayName } from "@/lib/multiSkeleton";
 import { instanceGeometry } from "@/canvas/instanceGeometry";
 import { isValidEdgeSelection } from "@/lib/skeletonEdgeEditing";
 import { Badge } from "@/components/ui/badge";
@@ -3719,8 +3719,11 @@ export function VideoPlayer() {
               style={{ left: tipX, top: tipY }}
             >
               {isPredicted ? "Predicted Instance" : "User Instance"}
-              {/* Several skeletons in the project: say which one this is. */}
-              {labels && hasMultipleSkeletons(labels) &&
+              {/* Several skeletons in the project: say which one this is
+                  (instances of differently named skeletons only; a cheap
+                  check, since this re-renders on every hover move). */}
+              {labels && labels.skeletons.length > 1 &&
+                new Set(labels.skeletons.map((s) => s.name)).size > 1 &&
                 ` · ${skeletonDisplayName(lfInst.skeleton, labels.skeletons)}`}
             </div>
           );

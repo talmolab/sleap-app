@@ -42,6 +42,7 @@ import {
 } from "@/components/ui/select";
 import { toast } from "@/lib/notify";
 import {
+  distinctSkeletonCount,
   hasMultipleSkeletons,
   multiSkeletonBlock,
   multiSkeletonMessage,
@@ -826,8 +827,8 @@ export function NewJobWizard({ workerId, workerLabel, seed, onClose, onSubmitted
               {labelsError && <p className="text-xs text-red-400">{labelsError}</p>}
               {labels && !loadingLabels && (
                 <p className="text-xs text-muted-foreground">
-                  {labels.skeletons.length > 1
-                    ? `${labels.skeletons.length} skeletons`
+                  {hasMultipleSkeletons(labels)
+                    ? `${distinctSkeletonCount(labels)} skeletons`
                     : (labels.skeletons[0]?.name ?? "Skeleton")} · {labels.videos.length} video
                   {labels.videos.length === 1 ? "" : "s"} · {labels.labeledFrames.length} labeled frame
                   {labels.labeledFrames.length === 1 ? "" : "s"}

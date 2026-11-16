@@ -610,8 +610,9 @@ export function fillMissingUserNodes(
     return n;
   }
 
-  // Reference instances: user instances (not this one) with the same node
-  // count, nearest in time first.
+  // Reference instances: user instances (not this one) of the same skeleton
+  // (or an identical one), nearest in time first. Matching by node count alone
+  // could pick another skeleton that happens to have as many nodes.
   type Ref = { inst: Instance; dist: number };
   const refs: Ref[] = [];
   for (const lf of labels?.labeledFrames ?? []) {
@@ -620,6 +621,7 @@ export function fillMissingUserNodes(
     for (const inst of lf.instances) {
       if (inst === instance || inst instanceof PredictedInstance) continue;
       if (inst.points.length !== pts.length) continue;
+      if (!sameSkeletonLayout(inst, instance.skeleton)) continue;
       if (!missing.some((i) => isPlaced(inst.points[i]))) continue;
       if (!labeled.some((i) => isPlaced(inst.points[i]))) continue;
       refs.push({ inst, dist });

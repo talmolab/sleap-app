@@ -59,3 +59,22 @@ export function makeTwoSkeletonProject() {
 
   return { labels, video, mouse, pellet, f0, f10 };
 }
+
+/**
+ * An old-file-style project: two IDENTICAL mouse skeleton objects, instances
+ * split between them. Not really "several skeletons" — must behave like main.
+ */
+export function makeDuplicateSkeletonProject() {
+  const a = makeMouseSkeleton();
+  const b = makeMouseSkeleton();
+  const video = new Video({
+    filename: "old.mp4",
+    backendMetadata: { shape: [100, 480, 640, 3] },
+    openBackend: false,
+  });
+  const labels = new Labels({ videos: [video], skeletons: [a, b] });
+  const f0 = new LabeledFrame({ video, frameIdx: 0 });
+  f0.instances.push(placedInstance(a, [100, 100]), placedInstance(b, [300, 100]));
+  labels.labeledFrames.push(f0);
+  return { labels, video, a, b, f0 };
+}
