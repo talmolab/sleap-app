@@ -304,6 +304,15 @@ describe("Dialog components", () => {
 
       expect(screen.getByText("Deletion method")).toBeInTheDocument();
     });
+
+    // Plain number boxes snap an emptied field back to 0 ("03000"); NumberInput lets you clear and retype.
+    it("uses NumberInput for its frame range and max-count fields", async () => {
+      const src = await Bun.file(
+        new URL("../../src/components/dialogs/DeletePredictionsDialog.tsx", import.meta.url),
+      ).text();
+      expect(src).not.toContain('type="number"');
+      expect(src.match(/<NumberInput/g)?.length).toBe(3);
+    });
   });
 
   describe("NewProjectDialog (#138)", () => {

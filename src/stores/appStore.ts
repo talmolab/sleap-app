@@ -1067,6 +1067,9 @@ export const useAppStore = create<AppState>()(
           state.labelsDraftPath = null;
           state.pendingExport = false;
 
+          // A clip selected in the previous project means nothing here.
+          state.frameRange = null;
+
           // Set first video and skeleton
           if (labels.videos.length > 0) {
             state.video = labels.videos[0];
@@ -1101,6 +1104,10 @@ export const useAppStore = create<AppState>()(
             // Per-instance visibility is scoped to the current frame/video —
             // reset it whenever the video actually changes.
             clearTransientVisibility(state);
+            // The seekbar clip selection is frame numbers of the old video;
+            // keeping it would let "Delete Predictions from Clip" (or Extract
+            // Clip) apply it to a different video.
+            state.frameRange = null;
           }
           state.video = video;
           // Mirror legacy SLEAP's switch_frame(video): jump to the video's

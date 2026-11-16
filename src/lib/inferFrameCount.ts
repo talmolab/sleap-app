@@ -17,3 +17,13 @@ export function inferFrameCount(labels: Labels | null, video: Video | null): num
   }
   return max + 1;
 }
+
+/**
+ * A video's length for UI that needs one: its own frame count when known,
+ * otherwise up to its last labeled frame (as the seekbar does). 0 when there
+ * is no video.
+ */
+export function videoFrameCount(labels: Labels | null, video: Video | null): number {
+  if (!video) return 0;
+  return video.shape?.[0] ?? inferFrameCount(labels, video);
+}

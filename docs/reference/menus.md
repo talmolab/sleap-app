@@ -101,8 +101,9 @@ Every menu and what its items do, in the order they appear in the menu bar.
 | Accept All Predictions on Current Frame | ++cmd+shift+a++ |
 | Accept All Predictions | Every prediction in the project |
 | Delete Predictions on Current Frame | |
-| Delete Predictions… | Predictions matching a filter |
-| Delete Predictions from Area… | ++cmd+k++ — drag a box on the frame |
+| Delete Predictions… | Predictions matching a filter; each option says whether it acts on this video or all videos |
+| Delete Predictions from Clip… | Predictions in the frame range selected on the seekbar, in this video. Asks first |
+| Delete Predictions from Area… | ++cmd+k++ — drag a box; predictions with all points inside it are deleted on every frame of this video. Asks first |
 | Delete All Predictions… | Asks first |
 | Extract Clip and Labels… | Saves the frame range selected on the seekbar as a trimmed clip plus its labels, numbered from frame 0, and opens it. Select a range by shift-dragging on the seekbar |
 | Extract Clip Labels Package… | Saves the selected range's labeled and suggested frames, with images, as a `.pkg.slp`, and opens it |

@@ -79,10 +79,10 @@ Use this to track which PyQt features have been ported to sleap-app.
 - [x] Delete Predictions on Current Frame
 - [x] Delete All Predictions...
 - [x] Delete Predictions with Low Score... (in dialog)
-- [ ] Delete Predictions from Clip...
+- [x] Delete Predictions from Clip... (current video, needs a seekbar range)
 - [x] Delete Predictions from Area... (Ctrl+K)
 - [x] Delete Predictions beyond Max Instances... (in Delete Predictions dialog)
-- [ ] Delete Predictions beyond Frame Limit...
+- [x] Delete Predictions beyond Frame Limit... (= "Outside a frame range (this video)" in Delete Predictions dialog)
 - [x] Delete Predictions on User-Labeled Frames... (in Delete Predictions dialog)
 
 ### Predict Menu

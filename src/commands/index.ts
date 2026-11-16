@@ -27,6 +27,7 @@ export {
   SaveAsJsonCommand,
   DeletePredictionsByScore,
   DeletePredictionsByRange,
+  DeletePredictionsFromClip,
   DeletePredictionsOnLabeledFrames,
   DeletePredictionsByMaxCount,
   DeletePredictionsByArea,

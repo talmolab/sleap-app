@@ -25,6 +25,7 @@ import {
 import { openNewInstance } from "@/lib/newInstance";
 import { requestStartTutorial } from "@/lib/tutorial/startTutorial";
 import { requestToggleNegativeFrame } from "@/lib/negativeFrame";
+import { predictionsInClip } from "@/lib/predictionDeletion";
 import {
   GRAPH_SPECS,
   reconcileReduction,
@@ -65,6 +66,7 @@ import {
   PasteInstance,
   DeleteFramePredictions,
   DeleteAllPredictions,
+  DeletePredictionsFromClip,
   AddInstancesFromAllPredictions,
   AddInstancesFromAllPredictionsInProject,
   AddTrack,
@@ -672,7 +674,40 @@ function labelsMenu(s: MenuSnapshot): TopMenu {
       { kind: "item", id: "labels.acceptAll", label: "Accept All Predictions", enabled: loaded, run: exec(AddInstancesFromAllPredictionsInProject) },
       { kind: "item", id: "labels.deleteFramePredictions", label: "Delete Predictions on Current Frame", enabled: loaded, run: exec(DeleteFramePredictions) },
       { kind: "item", id: "labels.deletePredictions", label: "Delete Predictions...", enabled: loaded, run: () => store().setDeletePredictionsDialogOpen(true) },
-      { kind: "item", id: "labels.deleteArea", label: "Delete Predictions from Area...", shortcut: "$mod+KeyK", enabled: loaded, run: () => store().toggle("areaDeleteMode") },
+      {
+        kind: "item",
+        id: "labels.deleteClip",
+        label: "Delete Predictions from Clip...",
+        // As in PyQt, this needs a frame range selected on the seekbar.
+        enabled: loaded && s.hasFrameRange,
+        title: "Delete the predictions in the frame range selected on the seekbar, in the current video. Select a range by shift-dragging on the seekbar.",
+        run: async () => {
+          const { labels, video, frameRange } = store();
+          if (!labels || !video || !frameRange) return;
+          const [start, end] = frameRange;
+          const count = predictionsInClip(labels, video, start, end).length;
+          if (count === 0) {
+            toast.info("No predictions in the selected clip.");
+            return;
+          }
+          const ok = await confirmDialog({
+            title: "Delete predictions from clip",
+            message: `There are ${count} predicted instances in frames ${start}-${end} of this video which would be deleted. Delete them?`,
+            confirmLabel: "Delete",
+            destructive: true,
+          });
+          if (ok) commandContext.execute(DeletePredictionsFromClip, { startFrame: start, endFrame: end });
+        },
+      },
+      {
+        kind: "item",
+        id: "labels.deleteArea",
+        label: "Delete Predictions from Area...",
+        shortcut: "$mod+KeyK",
+        enabled: loaded,
+        title: "Draw a box on the video: predictions with all their points inside it are deleted on every frame of the current video.",
+        run: () => store().toggle("areaDeleteMode"),
+      },
       {
         kind: "item",
         id: "labels.deleteAllPredictions",
