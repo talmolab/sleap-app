@@ -2560,7 +2560,7 @@ current frame's instances with their track, type, and score.</p>
 <td><span class="keys"><kbd class="key-command">Cmd</kbd><span>+</span><kbd class="key-shift">Shift</kbd><span>+</span><kbd class="key-backspace">Backspace</kbd></span> / <span class="keys"><kbd class="key-control">Ctrl</kbd><span>+</span><kbd class="key-shift">Shift</kbd><span>+</span><kbd class="key-backspace">Backspace</kbd></span></td>
 </tr>
 <tr>
-<td>Delete predictions in a dragged area</td>
+<td>Delete predictions inside a dragged area, on every frame of this video</td>
 <td><span class="keys"><kbd class="key-command">Cmd</kbd><span>+</span><kbd class="key-k">K</kbd></span> / <span class="keys"><kbd class="key-control">Ctrl</kbd><span>+</span><kbd class="key-k">K</kbd></span></td>
 </tr>
 </tbody>
@@ -2580,11 +2580,15 @@ current frame's instances with their track, type, and score.</p>
 </tr>
 <tr>
 <td><strong>Delete Predictions…</strong></td>
-<td>Predictions matching one filter: score threshold, frame range, on user-labeled frames, max instances per frame, track, or instance type</td>
+<td>Predictions matching one filter: low score, outside a frame range, or beyond max instances per frame (each in <strong>this video</strong>); on user-labeled frames (this video or all videos; only the unlinked duplicates, or all); by track or instance type (all videos)</td>
+</tr>
+<tr>
+<td><strong>Delete Predictions from Clip…</strong></td>
+<td>Predictions in the frame range selected on the seekbar (shift-drag), in this video</td>
 </tr>
 <tr>
 <td><strong>Delete Predictions from Area…</strong> (<span class="keys"><kbd class="key-command">Cmd</kbd><span>+</span><kbd class="key-k">K</kbd></span> / <span class="keys"><kbd class="key-control">Ctrl</kbd><span>+</span><kbd class="key-k">K</kbd></span>)</td>
-<td>Predictions inside a rectangle you drag</td>
+<td>Predictions with all their points inside a rectangle you drag, on <strong>every frame of this video</strong> — for a static false detection such as a reflection</td>
 </tr>
 <tr>
 <td><strong>Delete All Predictions…</strong></td>
@@ -2592,6 +2596,10 @@ current frame's instances with their track, type, and score.</p>
 </tr>
 </tbody>
 </table>
+<p>These match PyQt SLEAP's commands of the same name. They delete predictions
+only: user instances stay, and so do negative frames. <strong>Outside a frame
+range</strong> keeps the range you enter and deletes the rest of this video's
+predictions. Each delete is one undo step.</p>
 <h2 id="working-with-predictions">Working with predictions<a class="headerlink" href="#working-with-predictions" title="Permanent link">&para;</a></h2>
 <p>Predicted instances are drawn distinctly from user labels (<strong>View ▸ Color
 Predicted Instances</strong> changes how). They are suggestions until you accept them.</p>
