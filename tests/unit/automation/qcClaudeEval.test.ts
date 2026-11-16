@@ -64,6 +64,9 @@ describe("scoreProposals", () => {
     );
     expect(s.planted).toBe(3);
     expect(s.flaggedByQc).toBe(2);
+    expect(s.flaggedNoProposal).toBe(0);
+    expect(s.wrongNodeFixes).toBe(0);
+    expect(s.rightNodePct).toBe(100);
     expect(s.found).toBe(2);
     expect(s.medianErrorPx).toBe(6.5); // errors 5 and 8
     expect(s.within5PxPct).toBe(50);
@@ -75,10 +78,13 @@ describe("scoreProposals", () => {
     expect(s.falseAlarmsIgnoredPct).toBe(50);
   });
 
-  // Why: a fix that moves a different node doesn't count as finding the planted error.
-  it("needs the planted node itself", () => {
-    const s = scoreProposals(planted, [fix(1, 0, { b: [10, 10] })]);
-    expect(s.found).toBe(0);
-    expect(s.medianErrorPx).toBeNull();
+  // Why: a fix that moves a different node is a wrong fix, and must be counted as one, not dropped.
+  it("counts a fix on the wrong node as wrong", () => {
+    const s = scoreProposals(planted, [fix(1, 0, { b: [10, 10] }), fix(2, 1, { b: [0, 1], a: [3, 3] })]);
+    expect(s.found).toBe(1);
+    expect(s.wrongNodeFixes).toBe(1);
+    expect(s.fixesOnPlanted).toBe(2);
+    expect(s.rightNodePct).toBe(50);
+    expect(s.fixesWithExtraNodes).toBe(1);
   });
 });

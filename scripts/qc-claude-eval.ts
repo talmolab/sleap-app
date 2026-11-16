@@ -123,11 +123,21 @@ export interface Score {
   planted: number;
   /** Planted errors whose instance Label QC flagged (when flags were given). */
   flaggedByQc: number | null;
-  /** Planted errors Claude proposed moving the right node for. */
+  /** Of those, how many got no proposal at all (left for the user). */
+  flaggedNoProposal: number | null;
+  /** Planted errors with a fix that moves the planted node. */
   found: number;
   foundPct: number | null;
+  /** Fixes on a planted instance that don't move the planted node (wrong node). */
+  wrongNodeFixes: number;
+  /** Fixes that move the planted node and other nodes too. */
+  fixesWithExtraNodes: number;
   /** Planted errors Claude proposed to ignore (missed). */
   ignoredPlanted: number;
+  /** All fixes on planted instances: right node (found) + wrong node. */
+  fixesOnPlanted: number;
+  /** Share of fixes on planted instances that moved the right node. */
+  rightNodePct: number | null;
   medianErrorPx: number | null;
   within5PxPct: number | null;
   within10PxPct: number | null;
@@ -154,6 +164,8 @@ export function scoreProposals(
   const errors: number[] = [];
   let improved = 0;
   let ignoredPlanted = 0;
+  let wrongNodeFixes = 0;
+  let fixesWithExtraNodes = 0;
   for (const p of planted) {
     const prop = latest.get(key(p.videoIdx, p.frameIdx, p.instIdx));
     if (!prop) continue;
@@ -162,7 +174,12 @@ export function scoreProposals(
       continue;
     }
     const xy = prop.after?.[p.nodeName];
-    if (!xy) continue;
+    if (!xy) {
+      // A fix that leaves the planted node where it is (or hides it) is wrong.
+      wrongNodeFixes++;
+      continue;
+    }
+    if (Object.keys(prop.after ?? {}).length > 1) fixesWithExtraNodes++;
     const e = Math.hypot(xy[0] - p.original[0], xy[1] - p.original[1]);
     errors.push(e);
     if (e < p.distance) improved++;
@@ -175,18 +192,28 @@ export function scoreProposals(
     else otherFixed++;
   }
   let flaggedByQc: number | null = null;
+  let flaggedNoProposal: number | null = null;
   if (flags) {
     const flagged = new Set(flags.filter((f) => f.instance !== null).map((f) => key(f.video, f.frame, f.instance!)));
-    flaggedByQc = planted.filter((p) => flagged.has(key(p.videoIdx, p.frameIdx, p.instIdx))).length;
+    const hit = planted.filter((p) => flagged.has(key(p.videoIdx, p.frameIdx, p.instIdx)));
+    flaggedByQc = hit.length;
+    flaggedNoProposal = hit.filter((p) => !latest.has(key(p.videoIdx, p.frameIdx, p.instIdx))).length;
   }
   const found = errors.length;
+  const fixesOnPlanted = found + wrongNodeFixes;
+  const med = median(errors);
   return {
     planted: planted.length,
     flaggedByQc,
+    flaggedNoProposal,
     found,
     foundPct: pct(found, planted.length),
+    wrongNodeFixes,
+    fixesWithExtraNodes,
     ignoredPlanted,
-    medianErrorPx: median(errors) === null ? null : Math.round(median(errors)! * 10) / 10,
+    fixesOnPlanted,
+    rightNodePct: pct(found, fixesOnPlanted),
+    medianErrorPx: med === null ? null : Math.round(med * 10) / 10,
     within5PxPct: pct(errors.filter((e) => e <= 5).length, found),
     within10PxPct: pct(errors.filter((e) => e <= 10).length, found),
     improvedPct: pct(improved, found),
