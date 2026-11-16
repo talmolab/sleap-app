@@ -14,6 +14,7 @@ import { useModelOverlayStore } from "@/stores/modelOverlayStore";
 import { rgbToCSS } from "@/lib/colorPalettes";
 import { shownModelsShareTracks } from "@/hooks/useModelOverlayFrame";
 import {
+  buildAnimalIndex,
   buildTraces,
   traceAnimalCount,
   traceRange,
@@ -53,7 +54,13 @@ export function ModelTracesStrip() {
   );
   const byTrack = useMemo(() => shownModelsShareTracks(allModels, video), [allModels, video]);
   const trackNames = useMemo(() => traceTrackNames(models, byTrack), [models, byTrack]);
-  const animalCount = useMemo(() => traceAnimalCount(models), [models]);
+  // Linking animals across frames is the slow part: once per set of shown
+  // models, not per node or frame.
+  const animalIndex = useMemo(
+    () => (open && trackNames.length === 0 && models.length > 0 ? buildAnimalIndex(models) : null),
+    [open, trackNames, models]
+  );
+  const animalCount = animalIndex ? traceAnimalCount(animalIndex) : 0;
   const nodeNames = useMemo(() => skeleton?.nodes.map((n) => n.name) ?? [], [skeleton]);
   const safeNode = node < nodeNames.length ? node : 0;
 
@@ -70,8 +77,11 @@ export function ModelTracesStrip() {
   }, [storedTarget, trackNames, animalCount]);
 
   const traces = useMemo(
-    () => (open && models.length > 0 ? buildTraces(models, safeNode, target) : null),
-    [open, models, safeNode, target]
+    () =>
+      open && models.length > 0 && (target.kind === "track" || animalIndex)
+        ? buildTraces(models, safeNode, target, animalIndex ?? undefined)
+        : null,
+    [open, models, safeNode, target, animalIndex]
   );
 
   const series = useMemo<uPlot.Series[]>(
@@ -146,8 +156,11 @@ export function ModelTracesStrip() {
           </select>
         )}
         {trackNames.length === 0 && animalCount > 1 && (
-          <span className="text-muted-foreground" title="Without shared tracks, animals are matched frame by frame, so a line can switch animals">
-            (untracked: matched per frame)
+          <span
+            className="text-muted-foreground"
+            title="Without shared tracks, each animal is followed from frame to frame by position (closest pose). Animals that cross or vanish for a while can get a new number."
+          >
+            (untracked: followed by position)
           </span>
         )}
         <span className="flex-1" />

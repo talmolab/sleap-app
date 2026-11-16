@@ -3,7 +3,13 @@
  * per model), and the guards that keep uPlot away from non-finite values.
  */
 import { describe, it, expect } from "../bun-test";
-import { buildTraces, traceAnimalCount, traceRange, traceTrackNames } from "@/lib/modelOverlay/traces";
+import {
+  buildAnimalIndex,
+  buildTraces,
+  traceAnimalCount,
+  traceRange,
+  traceTrackNames,
+} from "@/lib/modelOverlay/traces";
 import { MODEL_COLORS, type OverlayPose } from "@/lib/modelOverlay/core";
 import type { OverlayModel } from "@/stores/modelOverlayStore";
 import { makeVideo, poseAt } from "./modelOverlayTestData";
@@ -66,11 +72,39 @@ describe("buildTraces", () => {
   });
 });
 
+describe("buildAnimalIndex", () => {
+  // Review: untracked lines hopped between animals when a model listed them in another order.
+  it("keeps an animal's number when the models list animals in a different order", () => {
+    const a = model("a", {
+      0: [pose(poseAt(100, 100)), pose(poseAt(300, 300))],
+      1: [pose(poseAt(305, 302)), pose(poseAt(104, 101))],
+    });
+    const b = model("b", {
+      0: [pose(poseAt(299, 301)), pose(poseAt(101, 99))],
+      1: [pose(poseAt(103, 102)), pose(poseAt(306, 300))],
+    });
+    const index = buildAnimalIndex([a, b]);
+    expect(index.count).toBe(2);
+    const t = buildTraces([a, b], 1, { kind: "animal", index: 0 }, index);
+    // Animal 0 is the one near (100, 100) on both frames, for both models.
+    expect(t.x).toEqual([
+      [100, 104],
+      [101, 103],
+    ]);
+  });
+
+  // An animal far from every known one (e.g. walks in) gets a new number instead of stealing one.
+  it("starts a new animal beyond the link distance", () => {
+    const a = model("a", { 0: [pose(poseAt(100, 100))], 1: [pose(poseAt(600, 600))] });
+    expect(buildAnimalIndex([a]).count).toBe(2);
+  });
+});
+
 describe("trace choices and ranges", () => {
-  // The animal picker offers as many animals as the busiest frame has.
+  // The animal picker offers the animals found; track names sort naturally.
   it("counts animals and lists track names", () => {
-    const a = model("a", { 0: [pose(poseAt(0, 0), "t10"), pose(poseAt(9, 9), "t2")], 1: [pose(poseAt(0, 0), "t2")] });
-    expect(traceAnimalCount([a])).toBe(2);
+    const a = model("a", { 0: [pose(poseAt(0, 0), "t10"), pose(poseAt(300, 300), "t2")], 1: [pose(poseAt(0, 0), "t2")] });
+    expect(traceAnimalCount(buildAnimalIndex([a]))).toBe(2);
     expect(traceTrackNames([a], true)).toEqual(["t2", "t10"]);
     expect(traceTrackNames([a], false)).toEqual([]);
   });

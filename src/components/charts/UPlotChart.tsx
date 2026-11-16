@@ -2,6 +2,7 @@ import { useEffect, useRef, forwardRef, useImperativeHandle } from "react";
 import uPlot from "uplot";
 import "uplot/dist/uPlot.min.css";
 import { formatCompactNumber } from "@/lib/formatNumber";
+import { createClickGate } from "@/lib/plotClickGate";
 
 export interface UPlotChartProps {
   data: uPlot.AlignedData;
@@ -20,6 +21,9 @@ export interface UPlotChartProps {
   /** Draw a vertical marker at this x (e.g. the current frame); null for none. */
   markerX?: number | null;
 }
+
+/** How long a click on the plot waits for a second click (a double-click zooms out instead). */
+const CLICK_DELAY_MS = 250;
 
 /** Imperative controls exposed to the parent (zoom reset + PNG capture). */
 export interface UPlotChartHandle {
@@ -169,7 +173,11 @@ export const UPlotChart = forwardRef<UPlotChartHandle, UPlotChartProps>(function
 
     // Click (no drag) → onClickX with the x value under the pointer. A drag is
     // uPlot's x-zoom, so a pointer that moved more than a few pixels is ignored.
+    // The call waits out the double-click time: a double-click (uPlot's zoom
+    // out) cancels it, so it never fires for either of its two clicks.
     let downAt: number | null = null;
+    const gate = createClickGate(CLICK_DELAY_MS, (x) => onClickRef.current?.(x));
+    const cancelClick = () => gate.doubleClick();
     const onDown = (e: MouseEvent) => {
       downAt = e.clientX;
     };
@@ -179,10 +187,11 @@ export const UPlotChart = forwardRef<UPlotChartHandle, UPlotChartProps>(function
       if (start === null || Math.abs(e.clientX - start) > 3 || !onClickRef.current) return;
       const left = e.clientX - u.over.getBoundingClientRect().left;
       const x = u.posToVal(left, "x");
-      if (Number.isFinite(x)) onClickRef.current(x);
+      if (Number.isFinite(x)) gate.click(x);
     };
     u.over.addEventListener("mousedown", onDown);
     u.over.addEventListener("mouseup", onUp);
+    u.over.addEventListener("dblclick", cancelClick);
 
     const ro = new ResizeObserver(() => {
       if (plotRef.current) plotRef.current.setSize({ width: el.clientWidth || 320, height });
@@ -195,6 +204,8 @@ export const UPlotChart = forwardRef<UPlotChartHandle, UPlotChartProps>(function
       if (onLeave) u.over.removeEventListener("mouseleave", onLeave);
       u.over.removeEventListener("mousedown", onDown);
       u.over.removeEventListener("mouseup", onUp);
+      u.over.removeEventListener("dblclick", cancelClick);
+      gate.cancel();
       if (throttleTimer.current) clearTimeout(throttleTimer.current);
       u.destroy();
       plotRef.current = null;
