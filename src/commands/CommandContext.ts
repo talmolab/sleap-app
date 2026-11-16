@@ -109,6 +109,12 @@ type UpdateListener = (topics: UpdateTopic[]) => void;
 
 const MAX_UNDO_STACK = 100;
 
+/** Topics that only move the playhead/camera — never a data edit (#468). */
+const NAVIGATION_TOPICS: ReadonlySet<UpdateTopic> = new Set([
+  UpdateTopic.Frame,
+  UpdateTopic.View,
+]);
+
 export class CommandContext {
   /** Stack of executed commands for change tracking. */
   private changeStack: ChangeRecord[] = [];
@@ -473,9 +479,15 @@ export class CommandContext {
     return before;
   }
 
-  /** Check if a command mutates data (has update topics). */
+  /**
+   * Check if a command mutates data: it has at least one topic other than
+   * Frame/View. Frame/View-only commands (Go to frame, next labeled frame, …)
+   * just move the playhead or the camera, so they take no undo step, keep the
+   * redo stack, and don't dirty the autosave (#468). Their topics are still
+   * signalled, so Frame listeners hear about the move.
+   */
   private isMutating(command: Command): boolean {
-    return command.topics.length > 0;
+    return command.topics.some((t) => !NAVIGATION_TOPICS.has(t));
   }
 
   /** Execute a command, track the change, and signal updates. */
