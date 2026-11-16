@@ -94,6 +94,7 @@ import {
   togglePlacementMode,
 } from "./menuActions";
 import type { AppMenu, MenuNode, MenuRadioNode, TopMenu } from "./types";
+import { useModelOverlayStore } from "@/stores/modelOverlayStore";
 
 /** Everything that changes what the menus show. */
 export interface MenuSnapshot {
@@ -791,6 +792,14 @@ function predictMenu(s: MenuSnapshot): TopMenu {
         checked: s.overlayModelOutputs,
         enabled: s.projectLoaded && s.overlayModelCount > 0,
         run: () => store().toggle("overlayModelOutputs"),
+      },
+      {
+        kind: "item",
+        id: "predict.compareModels",
+        label: "Compare Model Predictions…",
+        enabled: s.projectLoaded,
+        title: "Draw predictions from several models' .slp files over this video, one colour per model",
+        run: () => useModelOverlayStore.getState().setDialogOpen(true),
       },
     ],
   };
