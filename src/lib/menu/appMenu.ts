@@ -18,6 +18,8 @@ import { toast } from "@/lib/notify";
 import { PredictedInstance } from "@talmolab/sleap-io.js";
 import { confirmDialog } from "@/stores/confirmStore";
 import { confirmAndResetPreferences } from "@/lib/preferences";
+import { promptDialog } from "@/stores/promptStore";
+import { AcceptAllBboxes, DeletePredictedBboxes } from "@/commands/bboxCommands";
 import {
   confirmDeleteInstanceAndTrack,
   confirmDeleteUnusedTracks,
@@ -123,6 +125,7 @@ export interface MenuSnapshot {
   showLabels: boolean;
   showEdges: boolean;
   showBboxes: boolean;
+  bboxDrawMode: boolean;
   showCrosshair: boolean;
   showInset: boolean;
   temporalLoupe: boolean;
@@ -732,6 +735,55 @@ function labelsMenu(s: MenuSnapshot): TopMenu {
             toast.info("All predictions deleted");
           }
         },
+      },
+      SEP,
+      // Bounding boxes (#488).
+      {
+        kind: "submenu",
+        id: "labels.bboxes",
+        label: "Bounding Boxes",
+        items: [
+          { kind: "check", id: "labels.bboxes.tool", label: "Box Tool", shortcut: "KeyB", checked: s.bboxDrawMode, enabled: loaded, run: () => store().toggle("bboxDrawMode") },
+          { kind: "item", id: "labels.bboxes.fromPoses", label: "Boxes from Poses...", enabled: loaded, run: () => store().set("bboxFromPosesOpen", true) },
+          SEP,
+          {
+            kind: "item",
+            id: "labels.bboxes.acceptAll",
+            label: "Accept Predicted Boxes...",
+            enabled: loaded,
+            run: async () => {
+              const v = await promptDialog({
+                title: "Accept predicted boxes",
+                message: "Turn every predicted box scoring at least this much into a user box, across all frames.",
+                defaultValue: "0.5",
+                confirmLabel: "Accept",
+              });
+              if (v === null) return;
+              const minScore = Number(v);
+              if (!Number.isFinite(minScore)) return void toast.error("Enter a number, e.g. 0.5");
+              commandContext.execute(AcceptAllBboxes, { minScore });
+            },
+          },
+          {
+            kind: "item",
+            id: "labels.bboxes.deletePredicted",
+            label: "Delete Predicted Boxes...",
+            enabled: loaded,
+            run: async () => {
+              const v = await promptDialog({
+                title: "Delete predicted boxes",
+                message: "Delete predicted boxes scoring below this, across all frames. Leave it empty to delete every predicted box.",
+                defaultValue: "0.3",
+                confirmLabel: "Delete",
+              });
+              if (v === null) return;
+              const t = v.trim();
+              const maxScore = t === "" ? undefined : Number(t);
+              if (maxScore !== undefined && !Number.isFinite(maxScore)) return void toast.error("Enter a number, or leave it empty");
+              commandContext.execute(DeletePredictedBboxes, { maxScore });
+            },
+          },
+        ],
       },
       SEP,
       // As in PyQt, these need a frame range selected on the seekbar.

@@ -68,7 +68,7 @@ import { COLORMAPS } from "../../lib/colormaps";
 import { renderTrails } from "../../canvas/TrailRenderer";
 import { buildRenderedBboxes, renderBboxes, renderBboxHandles, renderBboxPreview, type RenderedBbox } from "../../canvas/BboxRenderer";
 import { dragRect, handleCursor, hitTestBbox, MIN_BBOX_SIZE, rectFromPoints, rectOfCorners, type BboxHandle } from "@/lib/bboxEditing";
-import { AddBbox, DeleteBbox, SetBboxGeometry } from "@/commands/bboxCommands";
+import { AddBbox, DeleteBbox, SetBboxGeometry, posesToBboxes } from "@/commands/bboxCommands";
 import { instanceInsideRect } from "@/lib/bboxLinking";
 import {
   commandContext,
@@ -301,6 +301,7 @@ export function VideoPlayer() {
   const areaDeleteMode = useAppStore((s) => s.areaDeleteMode);
   const bboxDrawMode = useAppStore((s) => s.bboxDrawMode);
   const selectedBboxIdx = useAppStore((s) => s.selectedBboxIdx);
+  const bboxPosePreviewPadding = useAppStore((s) => s.bboxPosePreviewPadding);
   const showCrosshair = useAppStore((s) => s.showCrosshair);
   // Image-features ROI crop tool (shared with the Suggestions panel).
   const imageFeatureRoiDrawActive = useAppStore((s) => s.imageFeatureRoiDrawActive);
@@ -1837,6 +1838,12 @@ export function VideoPlayer() {
       renderBboxHandles(ctx, rectOfCorners(selectedRb.corners), selectedRb.color, baseScale * zoom);
     }
     if (bboxPreview) renderBboxPreview(ctx, bboxPreview, baseScale * zoom);
+    // Boxes from Poses dialog: preview the boxes it would add on this frame.
+    if (bboxPosePreviewPadding !== null && labeledFrame && video) {
+      for (const b of posesToBboxes(labeledFrame, bboxPosePreviewPadding)) {
+        renderBboxPreview(ctx, b.corners.map(([cx, cy]) => toImageCoords(video, cx, cy)), baseScale * zoom);
+      }
+    }
     paintModelOverlay();
 
     const renderOpts = {
@@ -1953,6 +1960,7 @@ export function VideoPlayer() {
     renderedInstances,
     renderedBboxes,
     bboxPreview,
+    bboxPosePreviewPadding,
     labeledFrame,
     selectedInstance,
     showInstances,

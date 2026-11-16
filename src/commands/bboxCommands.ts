@@ -10,11 +10,14 @@
  */
 import {
   LabeledFrame,
+  PredictedBoundingBox,
+  PredictedInstance,
   UserBoundingBox,
   type BoundingBox,
   type Instance,
   type Track,
 } from "@talmolab/sleap-io.js";
+import { toast } from "@/lib/notify";
 import { UpdateTopic } from "../types";
 import type { Command } from "./types";
 import type { CommandContext } from "./CommandContext";
@@ -142,10 +145,192 @@ export const SetBboxProps: Command = {
   },
 };
 
+/** A user box with everything a predicted box carries except its score. */
+export function toUserBbox(box: BoundingBox): UserBoundingBox {
+  const user = new UserBoundingBox({
+    x1: box.x1,
+    y1: box.y1,
+    x2: box.x2,
+    y2: box.y2,
+    angle: box.angle,
+    track: box.track,
+    trackingScore: box.trackingScore,
+    instance: box.instance,
+    category: box.category,
+    name: box.name,
+    source: box.source,
+  });
+  user.identity = box.identity ?? null;
+  user.identityScore = box.identityScore ?? null;
+  user.categoryScore = box.categoryScore ?? null;
+  return user;
+}
+
+/** Score of a predicted box, -Infinity for anything else. */
+const scoreOf = (b: BoundingBox) =>
+  b instanceof PredictedBoundingBox && Number.isFinite(b.score) ? b.score : -Infinity;
+
+/**
+ * Accept predicted boxes on one frame: turn them into user boxes in place.
+ * Returns how many changed.
+ */
+function acceptOnFrame(lf: LabeledFrame, minScore: number, onlyIndex?: number): number {
+  let n = 0;
+  lf.bboxes = lf.bboxes.map((b, i) => {
+    if (!(b instanceof PredictedBoundingBox)) return b;
+    if (onlyIndex !== undefined ? i !== onlyIndex : scoreOf(b) < minScore) return b;
+    n++;
+    return toUserBbox(b);
+  });
+  return n;
+}
+
+/** Accept one predicted box (it becomes a user box). Params: `index`. */
+export const AcceptBbox: Command = {
+  name: "AcceptBbox",
+  topics: TOPICS,
+  execute(ctx, params) {
+    const t = targetBox(ctx, params);
+    if (!t || !(t.box instanceof PredictedBoundingBox)) return;
+    acceptOnFrame(t.lf, -Infinity, t.index);
+    touched(ctx, t.lf);
+  },
+};
+
+/** Accept every predicted box on the current frame scoring ≥ `minScore` (default 0). */
+export const AcceptFrameBboxes: Command = {
+  name: "AcceptFrameBboxes",
+  topics: TOPICS,
+  execute(ctx, params) {
+    const lf = currentFrame(ctx);
+    if (!lf) return;
+    const minScore = Number(params?.minScore ?? 0);
+    const n = acceptOnFrame(lf, Number.isFinite(minScore) ? minScore : 0);
+    if (n > 0) touched(ctx, lf);
+  },
+};
+
+/**
+ * Accept predicted boxes scoring ≥ `minScore` across the whole project (or one
+ * `video` when given). One undo step.
+ */
+export const AcceptAllBboxes: Command = {
+  name: "AcceptAllBboxes",
+  topics: [UpdateTopic.Labels, UpdateTopic.Frame, UpdateTopic.Instance],
+  skipAutoSnapshot: true,
+  execute(ctx, params) {
+    const { labels } = ctx.state;
+    if (!labels) return;
+    const minScore = Number(params?.minScore ?? 0);
+    const snapshot = ctx.takeAllFramesSnapshot("AcceptAllBboxes");
+    let n = 0;
+    for (const lf of labels.labeledFrames) {
+      n += acceptOnFrame(lf, Number.isFinite(minScore) ? minScore : 0);
+    }
+    if (n === 0) {
+      toast.info("No predicted boxes to accept.");
+      return;
+    }
+    ctx.pushUndoSnapshot(snapshot);
+    touched(ctx, ctx.state.labeledFrame);
+    toast.success(`Accepted ${n} predicted box${n === 1 ? "" : "es"}`);
+  },
+};
+
+/**
+ * Delete predicted boxes scoring below `maxScore` (default: all predicted
+ * boxes) across the project. Frames left empty are removed. One undo step.
+ */
+export const DeletePredictedBboxes: Command = {
+  name: "DeletePredictedBboxes",
+  topics: [UpdateTopic.Labels, UpdateTopic.Frame, UpdateTopic.Instance],
+  skipAutoSnapshot: true,
+  execute(ctx, params) {
+    const { labels } = ctx.state;
+    if (!labels) return;
+    const raw = params?.maxScore;
+    const maxScore = raw === undefined || raw === null ? Infinity : Number(raw);
+    const snapshot = ctx.takeAllFramesSnapshot("DeletePredictedBboxes");
+    let n = 0;
+    for (const lf of labels.labeledFrames) {
+      const before = lf.bboxes.length;
+      lf.bboxes = lf.bboxes.filter(
+        (b) => !(b instanceof PredictedBoundingBox) || !(scoreOf(b) < maxScore),
+      );
+      n += before - lf.bboxes.length;
+    }
+    if (n === 0) {
+      toast.info("No predicted boxes to delete.");
+      return;
+    }
+    labels.labeledFrames = labels.labeledFrames.filter(frameHasContent);
+    labels.reindex();
+    ctx.pushUndoSnapshot(snapshot);
+    ctx.state.set("selectedBboxIdx", null);
+    const { video, frameIdx } = ctx.state;
+    const cur = video ? labels.find({ video, frameIdx })[0] ?? null : null;
+    touched(ctx, cur);
+    toast.success(`Deleted ${n} predicted box${n === 1 ? "" : "es"}`);
+  },
+};
+
+/** Boxes "Boxes from Poses" would add to a frame (not yet added). */
+export function posesToBboxes(lf: LabeledFrame, padding: number): BoundingBox[] {
+  const linked = new Set(
+    lf.bboxes.filter((b) => !(b instanceof PredictedBoundingBox)).map((b) => b.instance),
+  );
+  const out: BoundingBox[] = [];
+  for (const inst of lf.instances) {
+    if (inst instanceof PredictedInstance || linked.has(inst)) continue;
+    const box = inst.toBbox({ padding });
+    if (!box.isEmpty) out.push(box);
+  }
+  return out;
+}
+
+/**
+ * Add a padded user box around every user pose instance that doesn't already
+ * have a linked user box — on the current frame (`scope: "frame"`, default)
+ * or every frame (`scope: "project"`). The same boxes sleap-nn derives at
+ * train time with `bbox_source: instances`, but saved and editable. One undo
+ * step. Params: `padding` (px, default 0), `scope`.
+ */
+export const BboxesFromPoses: Command = {
+  name: "BboxesFromPoses",
+  topics: [UpdateTopic.Labels, UpdateTopic.Frame, UpdateTopic.Instance],
+  skipAutoSnapshot: true,
+  execute(ctx, params) {
+    const { labels } = ctx.state;
+    if (!labels) return;
+    const padding = Number(params?.padding ?? 0);
+    const pad = Number.isFinite(padding) ? padding : 0;
+    const project = params?.scope === "project";
+    const frames = project ? labels.labeledFrames : [currentFrame(ctx)].filter((f): f is LabeledFrame => !!f);
+    const snapshot = project
+      ? ctx.takeAllFramesSnapshot("BboxesFromPoses")
+      : ctx.takeSnapshot("BboxesFromPoses");
+    let n = 0;
+    for (const lf of frames) {
+      const add = posesToBboxes(lf, pad);
+      lf.bboxes.push(...add);
+      n += add.length;
+    }
+    if (n === 0) {
+      toast.info("Every user instance already has a box.");
+      return;
+    }
+    ctx.pushUndoSnapshot(snapshot);
+    touched(ctx, ctx.state.labeledFrame ?? currentFrame(ctx));
+    toast.success(`Added ${n} box${n === 1 ? "" : "es"} from poses`);
+  },
+};
+
 /** Command names that only edit the current frame (for the incremental autosave). */
 export const BBOX_FRAME_COMMANDS = [
   AddBbox.name,
   SetBboxGeometry.name,
   DeleteBbox.name,
   SetBboxProps.name,
+  AcceptBbox.name,
+  AcceptFrameBboxes.name,
 ];

@@ -999,7 +999,8 @@ export function Seekbar() {
       // user-placed centroid with no skeleton instance (io.js isUserLabeled).
       const userLabeled = isUserLabeledFrame(lf);
       // Skip only truly empty frames; a centroid-only frame still gets a mark.
-      if (lf.instances.length === 0 && !userLabeled) continue;
+      // A frame holding only predicted boxes still gets a (predicted) mark.
+      if (lf.instances.length === 0 && !userLabeled && (lf.bboxes?.length ?? 0) === 0) continue;
       for (const inst of lf.instances) {
         const track = (inst as { track?: unknown }).track ?? null;
         const ti = track === null ? -1 : trackIdxOf.get(track) ?? -1;

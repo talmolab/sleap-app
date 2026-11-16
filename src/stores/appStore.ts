@@ -605,6 +605,10 @@ export interface AppState {
   bboxDrawMode: boolean;
   /** Index into the current frame's `bboxes` of the selected box, or null. */
   selectedBboxIdx: number | null;
+  /** Labels › Bounding Boxes › Boxes from Poses dialog. */
+  bboxFromPosesOpen: boolean;
+  /** While that dialog is open: the padding to preview on the canvas, else null. */
+  bboxPosePreviewPadding: number | null;
 
   // === Debug ===
   debugMode: boolean;
@@ -1072,6 +1076,8 @@ export const useAppStore = create<AppState>()(
       areaDeleteMode: false,
       bboxDrawMode: false,
       selectedBboxIdx: null,
+      bboxFromPosesOpen: false,
+      bboxPosePreviewPadding: null,
 
       // Debug
       debugMode: false,
