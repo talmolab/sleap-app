@@ -38,7 +38,7 @@ import {
   DialogTitle,
   DialogFooter,
 } from "@/components/ui/dialog";
-import { Input } from "@/components/ui/input";
+import { NumberInput } from "@/components/NumberInput";
 import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
 import {
@@ -251,22 +251,22 @@ export function DeletePredictionsDialog({
               <div className="grid grid-cols-2 gap-2">
                 <div>
                   <Label>Keep from frame</Label>
-                  <Input
-                    type="number"
+                  <NumberInput
+                    integer
                     min={0}
                     max={totalFrames > 0 ? totalFrames - 1 : undefined}
                     value={rangeStart}
-                    onChange={(e) => setRangeStart(parseInt(e.target.value, 10) || 0)}
+                    onCommit={setRangeStart}
                   />
                 </div>
                 <div>
                   <Label>to frame</Label>
-                  <Input
-                    type="number"
+                  <NumberInput
+                    integer
                     min={0}
                     max={totalFrames > 0 ? totalFrames - 1 : undefined}
                     value={rangeEnd}
-                    onChange={(e) => setRangeEnd(parseInt(e.target.value, 10) || 0)}
+                    onCommit={setRangeEnd}
                   />
                 </div>
               </div>
@@ -330,12 +330,12 @@ export function DeletePredictionsDialog({
           {mode === "maxCount" && (
             <div className="space-y-2">
               <Label>Max predictions per frame: {maxCount}</Label>
-              <Input
-                type="number"
+              <NumberInput
+                integer
                 min={1}
                 max={100}
                 value={maxCount}
-                onChange={(e) => setMaxCount(parseInt(e.target.value, 10) || 1)}
+                onCommit={setMaxCount}
               />
               <p className="text-xs text-muted-foreground">
                 On each frame of the current video, keep only the top {maxCount}{" "}
