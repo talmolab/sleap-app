@@ -201,6 +201,9 @@ export interface AppState {
    * each fire without a separate clear step. Transient — not persisted.
    */
   resetViewNonce: number;
+  /** Last view set by `setViewFromUser`; VideoPlayer applies it when `userViewNonce` bumps. Transient. */
+  userView: { zoom: number; panX: number; panY: number } | null;
+  userViewNonce: number;
   colorPredicted: boolean;
   /** Append the ` (0.81)` prediction score to on-canvas track labels. Default off (#316). Persisted. */
   showTrackScore: boolean;
@@ -611,6 +614,14 @@ export interface AppState {
   setLabeledFrame: (frame: LabeledFrame | null) => void;
   setMarkedFrame: (marked: { video: Video; frameIdx: number } | null) => void;
   resetView: () => void;
+  /**
+   * The user set the canvas view by hand: the Alt+drag zoom box (`view`), or
+   * Alt+double-click (`null` = reset to the default view, via `resetView`).
+   * Turns off the zoom modes that would snap the view back on the next frame
+   * (Fit View to Instances, a pending Fit View to Selection). The one place to
+   * clear any further zoom mode (e.g. #481's follow-selection / actual size).
+   */
+  setViewFromUser: (view: { zoom: number; panX: number; panY: number } | null) => void;
   markChanged: () => void;
   touchFrame: () => void;
   clearChanges: () => void;
@@ -844,6 +855,8 @@ export const useAppStore = create<AppState>()(
       fit: false,
       fitSelection: false,
       resetViewNonce: 0,
+      userView: null,
+      userViewNonce: 0,
       colorPredicted: false,
       showTrackScore: false,
       showLabelingHints: true,
@@ -1276,6 +1289,18 @@ export const useAppStore = create<AppState>()(
         set((state) => {
           state.resetViewNonce += 1;
         }),
+
+      setViewFromUser: (view) => {
+        set((state) => {
+          state.fit = false;
+          state.fitSelection = false;
+          if (view) {
+            state.userView = { ...view };
+            state.userViewNonce += 1;
+          }
+        });
+        if (!view) get().resetView();
+      },
 
       markChanged: () => {
         // Record the active frame as dirty for the incremental autosave BEFORE

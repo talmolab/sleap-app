@@ -22,7 +22,7 @@ With the mouse and trackpad:
 | Middle-button drag | Pan |
 | Hold ++space++ and drag | Pan |
 | Drag on empty canvas | Draw a selection box |
-| ++alt++ + drag on empty canvas | Draw a box and zoom to it; ++alt++ + double-click resets the zoom |
+| ++alt++ + drag on empty canvas | Draw a box and zoom to it; ++alt++ + double-click resets the zoom. Either turns off **Fit View to Instances** |
 
 **Default to Pan Mode** (++p++) makes a plain drag pan instead of drawing a
 selection box — handy when you're reviewing rather than editing. You can still

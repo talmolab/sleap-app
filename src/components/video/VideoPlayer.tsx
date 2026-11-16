@@ -226,6 +226,7 @@ export function VideoPlayer() {
   const fitSelection = useAppStore((s) => s.fitSelection);
   const qcOverlay = useQcFrameFlags();
   const resetViewNonce = useAppStore((s) => s.resetViewNonce);
+  const userViewNonce = useAppStore((s) => s.userViewNonce);
   const areaDeleteMode = useAppStore((s) => s.areaDeleteMode);
   const showCrosshair = useAppStore((s) => s.showCrosshair);
   // Image-features ROI crop tool (shared with the Suggestions panel).
@@ -2273,6 +2274,18 @@ export function VideoPlayer() {
     savedFreeView.current = { zoom: 1, panX: 0, panY: 0 };
   }, [resetViewNonce]);
 
+  // Apply a view the user set by hand (Alt+drag zoom box) through
+  // `setViewFromUser`, which also turns off zoom modes that would undo it.
+  useEffect(() => {
+    const view = useAppStore.getState().userView;
+    if (userViewNonce === 0 || !view) return;
+    viewRef.current = { ...view };
+    setZoom(view.zoom);
+    setPanX(view.panX);
+    setPanY(view.panY);
+    zoomMode.current = "free";
+  }, [userViewNonce]);
+
   // Mouse handlers for interaction
   const canvasToScene = useCallback(
     (clientX: number, clientY: number) => {
@@ -3090,12 +3103,7 @@ export function VideoPlayer() {
         const view = isZoomBoxTooSmall(rect, baseScale * zoom)
           ? null
           : viewForZoomRect(rect, containerSize[0], containerSize[1], baseScale, offsetX, offsetY);
-        if (view) {
-          viewRef.current = view;
-          setZoom(view.zoom);
-          setPanX(view.panX);
-          setPanY(view.panY);
-        }
+        if (view) useAppStore.getState().setViewFromUser(view);
       }
       setZoomBox(null);
       setInteractionMode("idle");
@@ -3328,9 +3336,15 @@ export function VideoPlayer() {
         return;
       }
 
-      // No prediction hit - reset zoom/pan in pan mode, or on Alt+double-click
-      // (PyQt SLEAP's clearZoom) in any mode.
-      if (shouldPan || isZoomBoxGesture(e)) {
+      // Alt+double-click on empty canvas: reset the zoom in any mode (PyQt
+      // SLEAP's clearZoom), through the store so zoom modes turn off too.
+      if (isZoomBoxGesture(e)) {
+        useAppStore.getState().setViewFromUser(null);
+        return;
+      }
+
+      // No prediction hit - reset zoom/pan only in pan mode
+      if (shouldPan) {
         viewRef.current = { zoom: 1, panX: 0, panY: 0 };
         setZoom(1);
         setPanX(0);

@@ -9,9 +9,10 @@ import { describe, it, expect, beforeEach, afterEach, beforeAll } from "../bun-t
 import { render, renderHook, screen, fireEvent, cleanup, act } from "@testing-library/react";
 import { useAppStore, PERSISTED_KEYS, type AppState } from "@/stores/appStore";
 import { useKeyboardShortcuts } from "@/hooks/useKeyboardShortcuts";
-import { FrameStepSizesDialog } from "@/components/dialogs/FrameStepSizesDialog";
+import { FrameStepSizesDialog, stepKeysLabel } from "@/components/dialogs/FrameStepSizesDialog";
 import { parseStepSize } from "@/lib/preferences";
-import { MAX_STEP_SIZE } from "@/lib/shortcuts";
+import { MAX_STEP_SIZE, shortcutBindings } from "@/lib/shortcuts";
+import { formatShortcut } from "@/lib/formatShortcut";
 
 beforeAll(() => {
   if (!globalThis.ResizeObserver) {
@@ -102,6 +103,45 @@ describe("Ctrl+arrow uses the step size preferences", () => {
     press(true, "ArrowRight");
     press(true, "ArrowLeft");
     expect(steps).toEqual([7, -7, 300, -300]);
+  });
+
+  // ⌘←/→ in a text field (like this dialog's own step fields) moves the caret;
+  // it used to also jump frames behind the dialog and swallow the keystroke.
+  it("leaves the keys to a focused text field", () => {
+    const steps: number[] = [];
+    useAppStore.setState({ incrementFrameIdx: (step: number) => void steps.push(step) });
+    renderHook(() => useKeyboardShortcuts());
+    const input = document.createElement("input");
+    document.body.appendChild(input);
+    for (const shiftKey of [false, true]) {
+      const ev = new KeyboardEvent("keydown", {
+        key: "ArrowRight",
+        code: "ArrowRight",
+        shiftKey,
+        metaKey: isMac,
+        ctrlKey: !isMac,
+        bubbles: true,
+        cancelable: true,
+      });
+      act(() => {
+        input.dispatchEvent(ev);
+      });
+      expect(ev.defaultPrevented).toBe(false);
+    }
+    expect(steps).toEqual([]);
+    input.remove();
+  });
+});
+
+describe("step key hint", () => {
+  // The hint lists every key bound to the step (#473 adds Ctrl+Alt+arrows),
+  // not just one hard-coded pair.
+  it("lists each bound key pair from shortcutBindings", () => {
+    const fwd = shortcutBindings("frame next large step");
+    const back = shortcutBindings("frame prev large step");
+    const label = stepKeysLabel("frame next large step", "frame prev large step");
+    expect(label.split(", ").length).toBe(fwd.length);
+    expect(label).toContain(`${formatShortcut(fwd[0])} / ${formatShortcut(back[0])}`);
   });
 });
 

@@ -7,7 +7,7 @@
 
 import { useState, useCallback } from "react";
 import { useAppStore } from "@/stores/appStore";
-import { DEFAULT_SHORTCUTS, STEP_SIZES, MAX_STEP_SIZE } from "@/lib/shortcuts";
+import { shortcutBindings, STEP_SIZES, MAX_STEP_SIZE } from "@/lib/shortcuts";
 import { formatShortcut } from "@/lib/formatShortcut";
 import { parseStepSize } from "@/lib/preferences";
 import {
@@ -22,8 +22,14 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Button } from "@/components/ui/button";
 
-const keysFor = (next: string, prev: string) =>
-  `${formatShortcut(DEFAULT_SHORTCUTS[next])} / ${formatShortcut(DEFAULT_SHORTCUTS[prev])}`;
+/** Every key pair bound to a step, e.g. "⌘⇧→ / ⌘⇧←, ⌘⌥→ / ⌘⌥←". */
+export function stepKeysLabel(next: string, prev: string): string {
+  const fwd = shortcutBindings(next);
+  const back = shortcutBindings(prev);
+  return fwd
+    .map((k, i) => (back[i] ? `${formatShortcut(k)} / ${formatShortcut(back[i])}` : formatShortcut(k)))
+    .join(", ");
+}
 
 export function FrameStepSizesDialog() {
   const open = useAppStore((s) => s.frameStepSizesDialogOpen);
@@ -81,7 +87,7 @@ export function FrameStepSizesDialog() {
           <Label htmlFor="medium-step-size" className="flex-col items-start gap-1">
             Medium step
             <span className="text-xs font-normal text-muted-foreground">
-              {keysFor("frame next medium step", "frame prev medium step")}
+              {stepKeysLabel("frame next medium step", "frame prev medium step")}
             </span>
           </Label>
           <Input
@@ -101,7 +107,7 @@ export function FrameStepSizesDialog() {
           <Label htmlFor="large-step-size" className="flex-col items-start gap-1">
             Large step
             <span className="text-xs font-normal text-muted-foreground">
-              {keysFor("frame next large step", "frame prev large step")}
+              {stepKeysLabel("frame next large step", "frame prev large step")}
             </span>
           </Label>
           <Input
