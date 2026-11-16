@@ -46,6 +46,7 @@ import {
   Loader2,
   CheckCircle2,
   XCircle,
+  Ban,
   AlertCircle,
   AlertTriangle,
   Upload,
@@ -1891,6 +1892,7 @@ export function TrainingPanel() {
                   : 0;
               const isCompleted = model.status === "completed";
               const isFailed = model.status === "failed";
+              const isCancelled = model.status === "cancelled";
               const isCurrent = i === currentModelIndex && isRunning;
 
               return (
@@ -1899,7 +1901,7 @@ export function TrainingPanel() {
                   className={isCompleted && !isDone ? "opacity-70" : ""}
                 >
                   {(() => {
-                    const hasChart = isCurrent || isCompleted || isFailed;
+                    const hasChart = isCurrent || isCompleted || isFailed || isCancelled;
                     return (
                       <div
                         role={hasChart ? "button" : undefined}
@@ -1916,15 +1918,18 @@ export function TrainingPanel() {
                         className={`text-[11px] font-medium flex items-center gap-1.5 mb-1 ${
                           isFailed
                             ? "text-destructive"
-                            : isCompleted
-                              ? "text-green-500"
-                              : "text-primary"
+                            : isCancelled
+                              ? "text-muted-foreground"
+                              : isCompleted
+                                ? "text-green-500"
+                                : "text-primary"
                         } ${hasChart ? "cursor-pointer hover:underline" : ""}`}
                       >
                         {isCompleted && (
                           <CheckCircle2 className="h-3 w-3" />
                         )}
                         {isFailed && <XCircle className="h-3 w-3" />}
+                        {isCancelled && <Ban className="h-3 w-3" />}
                         {isCurrent && (
                           <Loader2 className="h-3 w-3 animate-spin" />
                         )}
@@ -1941,7 +1946,11 @@ export function TrainingPanel() {
                               }`
                             : isFailed
                               ? `${model.label} — failed at epoch ${model.epoch}`
-                              : `${model.label} (pending)`}
+                              : isCancelled
+                                ? `${model.label} — cancelled at epoch ${model.epoch}`
+                                : isRunning
+                                  ? `${model.label} (pending)`
+                                  : `${model.label} (not started)`}
                         {hasChart && (
                           <LineChart className="h-3 w-3 ml-auto opacity-60" />
                         )}
@@ -1955,9 +1964,11 @@ export function TrainingPanel() {
                       className={`h-full transition-all duration-300 ${
                         isFailed
                           ? "bg-destructive"
-                          : isCompleted
-                            ? "bg-green-500"
-                            : "bg-primary"
+                          : isCancelled
+                            ? "bg-muted-foreground/40"
+                            : isCompleted
+                              ? "bg-green-500"
+                              : "bg-primary"
                       }`}
                       style={{
                         width: `${Math.max(0, Math.min(100, pct))}%`,
@@ -1966,7 +1977,7 @@ export function TrainingPanel() {
                   </div>
 
                   {/* Stats */}
-                  {(isCurrent || isCompleted || isFailed) && (
+                  {(isCurrent || isCompleted || isFailed || isCancelled) && (
                     <div className="flex justify-between text-[10px] text-muted-foreground mb-1">
                       <span>
                         {model.epoch} / {model.maxEpochs} epochs
