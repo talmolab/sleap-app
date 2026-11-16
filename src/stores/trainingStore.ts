@@ -183,6 +183,54 @@ export type ModelType =
 
 export type Backbone = "unet" | "convnext" | "swint";
 
+/** Size variant of a ConvNeXt/SwinT backbone — sleap-nn's `model_type`.
+ *  ConvNeXt has all four; SwinT has no "large". */
+export type BackboneSize = "tiny" | "small" | "base" | "large";
+
+export const BACKBONE_SIZES: Record<"convnext" | "swint", BackboneSize[]> = {
+  convnext: ["tiny", "small", "base", "large"],
+  swint: ["tiny", "small", "base"],
+};
+
+/** torchvision ImageNet weight names sleap-nn accepts for
+ *  `backbone_config.<convnext|swint>.pre_trained_weights`, by size. */
+const PRETRAINED_WEIGHT_NAMES: Record<"convnext" | "swint", Partial<Record<BackboneSize, string>>> = {
+  convnext: {
+    tiny: "ConvNeXt_Tiny_Weights",
+    small: "ConvNeXt_Small_Weights",
+    base: "ConvNeXt_Base_Weights",
+    large: "ConvNeXt_Large_Weights",
+  },
+  swint: {
+    tiny: "Swin_T_Weights",
+    small: "Swin_S_Weights",
+    base: "Swin_B_Weights",
+  },
+};
+
+/** Clamp a size to one the backbone supports (SwinT has no "large"). */
+export function resolveBackboneSize(backbone: "convnext" | "swint", size: BackboneSize): BackboneSize {
+  return BACKBONE_SIZES[backbone].includes(size) ? size : "tiny";
+}
+
+/** Defaults for a fresh UNet block (switching to UNet on a config that
+ *  shipped as ConvNeXt/SwinT) — the medium-RF baseline profile's values.
+ *  sleap-nn's own UNetConfig defaults differ (e.g. output_stride 1, which
+ *  would decode at full resolution), so every key is spelled out. */
+const UNET_BLOCK_DEFAULTS = {
+  in_channels: 1,
+  kernel_size: 3,
+  filters: 16,
+  filters_rate: 2.0,
+  max_stride: 16,
+  stem_stride: null,
+  middle_block: true,
+  up_interpolate: true,
+  stacks: 1,
+  convs_per_block: 2,
+  output_stride: 2,
+};
+
 /** UI-level data-pipeline choice; maps to sleap-nn's `data_config.data_pipeline_fw`. */
 export type DataPipeline = "stream" | "memory" | "disk";
 
@@ -237,6 +285,11 @@ export interface ConfigHyperparams {
   filtersRate: number;
   middleBlock: boolean;
   upInterpolate: boolean;
+  /** ConvNeXt/SwinT size variant (sleap-nn `model_type`); ignored for UNet. */
+  backboneSize: BackboneSize;
+  /** ConvNeXt/SwinT: initialize the encoder from torchvision's ImageNet
+   *  weights (sleap-nn `pre_trained_weights`); ignored for UNet. */
+  pretrainedWeights: boolean;
   // Model — head
   outputStride: number;
   anchorPart: string | null;
@@ -344,6 +397,8 @@ export const defaultHyperparams: ConfigHyperparams = {
   filtersRate: 2.0,
   middleBlock: true,
   upInterpolate: true,
+  backboneSize: "tiny",
+  pretrainedWeights: true,
   outputStride: 2,
   anchorPart: null,
   confmapsLossWeight: 1.0,
@@ -861,6 +916,21 @@ export function buildPostTrainingInferenceConfig(opts: {
  * `modelStats.ts` — before this function runs. Falls back to 1 (grayscale,
  * matching every baseline profile's default) if the caller can't resolve
  * one. */
+/** Smallest `output_stride` across every sub-head (confmaps, pafs, class
+ *  maps/vectors, …) of a `model_config.head_configs` object. */
+function minHeadOutputStride(headConfigs: Record<string, unknown>): number | null {
+  let min: number | null = null;
+  const visit = (node: unknown) => {
+    if (!node || typeof node !== "object") return;
+    for (const [k, v] of Object.entries(node as Record<string, unknown>)) {
+      if (k === "output_stride" && typeof v === "number") min = min === null ? v : Math.min(min, v);
+      else if (v && typeof v === "object") visit(v);
+    }
+  };
+  visit(headConfigs);
+  return min;
+}
+
 export function applyHyperparamsToYaml(
   yamlText: string,
   hp: ConfigHyperparams,
@@ -1082,21 +1152,6 @@ export function applyHyperparamsToYaml(
     }
   }
 
-  // Backbone model params
-  const backboneConfig = (model.backbone_config ?? {}) as Record<string, unknown>;
-  if (hp.backbone === "unet" || !hp.backbone) {
-    if (!backboneConfig.unet) backboneConfig.unet = {};
-    const unet = backboneConfig.unet as Record<string, unknown>;
-    unet.max_stride = hp.maxStride ?? resolvedMaxStride ?? 16;
-    unet.filters = hp.filters;
-    unet.filters_rate = hp.filtersRate;
-    unet.middle_block = hp.middleBlock;
-    unet.up_interpolate = hp.upInterpolate;
-    unet.stem_stride = hp.stemStride;
-    unet.in_channels = resolvedInChannels ?? 1;
-    model.backbone_config = backboneConfig;
-  }
-
   // Head params — output_stride and anchor_part
   for (const [, headVal] of Object.entries(headConfigs)) {
     if (headVal && typeof headVal === "object") {
@@ -1114,6 +1169,53 @@ export function applyHyperparamsToYaml(
       }
     }
   }
+
+  // Backbone. sleap-nn builds whichever `backbone_config` key is non-null, so
+  // the chosen backbone gets a full block and the other two are nulled —
+  // otherwise picking ConvNeXt/SwinT on a baseline profile (which ships
+  // `unet: {...}, convnext: null, swint: null`) silently trains a UNet.
+  const backboneConfig = (model.backbone_config ?? {}) as Record<string, unknown>;
+  const activeBackbone: Backbone = hp.backbone || "unet";
+  const existingBlock = backboneConfig[activeBackbone];
+  const block: Record<string, unknown> =
+    existingBlock && typeof existingBlock === "object" ? (existingBlock as Record<string, unknown>) : {};
+  if (activeBackbone === "unet") {
+    if (block !== existingBlock) {
+      // Switching back to UNet on a config that shipped as ConvNeXt/SwinT.
+      Object.assign(block, UNET_BLOCK_DEFAULTS, {
+        output_stride: minHeadOutputStride(headConfigs) ?? hp.outputStride,
+      });
+    }
+    block.max_stride = hp.maxStride ?? resolvedMaxStride ?? 16;
+    block.filters = hp.filters;
+    block.filters_rate = hp.filtersRate;
+    block.middle_block = hp.middleBlock;
+    block.up_interpolate = hp.upInterpolate;
+    block.stem_stride = hp.stemStride;
+    block.in_channels = resolvedInChannels ?? 1;
+  } else {
+    const size = resolveBackboneSize(activeBackbone, hp.backboneSize);
+    // `arch` overrides model_type in sleap-nn — drop any stale one so the
+    // size picked here is the size that trains.
+    delete block.arch;
+    block.model_type = size;
+    block.pre_trained_weights = hp.pretrainedWeights
+      ? PRETRAINED_WEIGHT_NAMES[activeBackbone][size] ?? null
+      : null;
+    // ImageNet weights expect a 3-channel stem; sleap-nn would force this
+    // itself (and flip ensure_rgb), but writing it keeps the config honest.
+    block.in_channels = hp.pretrainedWeights ? 3 : (resolvedInChannels ?? 1);
+    block.max_stride = 32;
+    block.filters_rate = hp.filtersRate;
+    block.up_interpolate = hp.upInterpolate;
+    // The decoder upsamples down to min(head strides, backbone output_stride);
+    // sleap-nn's default of 1 would decode at full resolution for nothing.
+    block.output_stride = minHeadOutputStride(headConfigs) ?? hp.outputStride;
+  }
+  for (const key of ["unet", "convnext", "swint"] as const) {
+    backboneConfig[key] = key === activeBackbone ? block : null;
+  }
+  model.backbone_config = backboneConfig;
 
   // Loss weights — per sub-head (skip centroid and single_instance whose
   // confmaps schemas in sleap-nn don't include loss_weight)
@@ -1629,6 +1731,13 @@ export const useTrainingStore = create<TrainingState>()((set, get) => ({
         filtersRate: typeof unetConfig.filters_rate === "number" ? unetConfig.filters_rate : 2.0,
         middleBlock: typeof unetConfig.middle_block === "boolean" ? unetConfig.middle_block : true,
         upInterpolate: typeof unetConfig.up_interpolate === "boolean" ? unetConfig.up_interpolate : true,
+        backboneSize: (["tiny", "small", "base", "large"] as const).find((s) => s === unetConfig.model_type) ?? "tiny",
+        // A ConvNeXt/SwinT block without pre_trained_weights is a from-scratch
+        // run; for UNet (or no backbone) keep the default so switching to a
+        // pretrained backbone in the dialog starts with weights on.
+        pretrainedWeights: ["convnext", "swint"].includes(activeBackbone.toLowerCase())
+          ? typeof unetConfig.pre_trained_weights === "string" && unetConfig.pre_trained_weights.length > 0
+          : true,
         outputStride,
         anchorPart,
         confmapsLossWeight,

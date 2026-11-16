@@ -20,8 +20,8 @@ import {
 } from "@/components/ui/select";
 import { Search, HelpCircle, RefreshCw, Check, RotateCcw, Lightbulb } from "lucide-react";
 import type { Labels } from "@talmolab/sleap-io.js";
-import type { ConfigFile, ConfigHyperparams, Backbone, ModelType, DataPipeline, ColorMode } from "@/stores/trainingStore";
-import { getSlotLabel, getConfigSlots, useTrainingStore } from "@/stores/trainingStore";
+import type { ConfigFile, ConfigHyperparams, Backbone, BackboneSize, ModelType, DataPipeline, ColorMode } from "@/stores/trainingStore";
+import { getSlotLabel, getConfigSlots, useTrainingStore, BACKBONE_SIZES, resolveBackboneSize } from "@/stores/trainingStore";
 import { checkWandbAuth, detectGpu, type WandbAuth } from "@/platform/backend";
 import { BackendPicker } from "@/components/common/BackendPicker";
 import { useAppStore } from "@/stores/appStore";
@@ -253,7 +253,9 @@ const HEAD_FIELD_DEFS = {
   hardToEasyRatio: { id: "field-hardtoeasyratio", label: "Hard/Easy Ratio", keywords: "ohkm mining online ratio hard easy" },
   lossScale: { id: "field-lossscale", label: "Loss Scale", keywords: "ohkm mining online loss scale" },
   secModel: { id: "head-model", label: "Model" },
-  backbone: { id: "field-backbone", label: "Backbone", hint: "Select the backbone architecture. UNet is the default and works well for most cases. ConvNeXt and Swin Transformer support pretrained ImageNet weights but require RGB images.", keywords: "unet convnext swin architecture" },
+  backbone: { id: "field-backbone", label: "Backbone", hint: "Select the backbone architecture. UNet is the default and works well for most cases. ConvNeXt and Swin Transformer can start from ImageNet-pretrained weights, which need RGB input.", keywords: "unet convnext swin architecture" },
+  backboneSize: { id: "field-backbonesize", label: "Model Size", hint: "Size of the ConvNeXt / Swin Transformer encoder. Larger sizes have more capacity but train slower and use more GPU memory. Tiny is a good default.", keywords: "convnext swin tiny small base large variant", conditional: true },
+  pretrainedWeights: { id: "field-pretrainedweights", label: "Pretrained Weights (ImageNet)", hint: "Initialize the encoder from torchvision's ImageNet weights (downloaded on first use). Usually trains faster and generalizes better than from scratch. Requires RGB input — grayscale videos are converted.", keywords: "pretrained imagenet weights transfer convnext swin", conditional: true },
   stemStride: { id: "field-stemstride", label: "Stem Stride", keywords: "downsampling stride" },
   maxStride: { id: "field-maxstride", label: "Max Stride", keywords: "downsampling receptive field stride" },
   filters: { id: "field-filters", label: "Filters", keywords: "channels" },
@@ -1011,10 +1013,10 @@ function HeadTabContent({
             value={hp.backbone || ""}
             onValueChange={(v) => {
               const backbone = v as Backbone;
-              // ConvNeXt/SwinT are pretrained on RGB images and require 3-channel
-              // input — nudge Convert Colors to RGB the moment a pretrained
-              // backbone is picked (still freely overridable afterward).
-              const needsRgb = backbone === "convnext" || backbone === "swint";
+              // ImageNet weights for ConvNeXt/SwinT expect 3-channel input —
+              // nudge Convert Colors to RGB the moment one is picked with
+              // pretrained weights on (still freely overridable afterward).
+              const needsRgb = (backbone === "convnext" || backbone === "swint") && hp.pretrainedWeights;
               onUpdate(needsRgb ? { backbone, colorMode: "rgb" as ColorMode } : { backbone });
             }}
           >
@@ -1024,12 +1026,44 @@ function HeadTabContent({
             </SelectContent>
           </Select>
         </Field>
-        {isPretrainedBackbone && (
-          <p className="text-[10px] text-muted-foreground pl-1">
-            <Lightbulb className="mr-1 inline h-3 w-3 align-[-2px]" />{hp.backbone === "convnext" ? "ConvNeXt" : "Swin Transformer"} is pretrained on RGB images — Convert Colors set to RGB
-          </p>
+        {(hp.backbone === "convnext" || hp.backbone === "swint") && (
+          <>
+            <Field {...HEAD_FIELD_DEFS.backboneSize}>
+              <Select
+                value={resolveBackboneSize(hp.backbone, hp.backboneSize)}
+                onValueChange={(v) => onUpdate({ backboneSize: v as BackboneSize })}
+              >
+                <SelectTrigger className="h-9 text-sm"><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  {BACKBONE_SIZES[hp.backbone].map((s) => (
+                    <SelectItem key={s} value={s}>{s[0].toUpperCase() + s.slice(1)}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </Field>
+            <label id={HEAD_FIELD_DEFS.pretrainedWeights.id} data-search-field="" className="flex items-center gap-1.5 cursor-pointer scroll-mt-4">
+              <input
+                type="checkbox"
+                checked={hp.pretrainedWeights}
+                onChange={(e) => {
+                  const pretrainedWeights = e.target.checked;
+                  onUpdate(pretrainedWeights ? { pretrainedWeights, colorMode: "rgb" as ColorMode } : { pretrainedWeights });
+                }}
+                className="accent-primary"
+              />
+              <span className="text-sm flex items-center gap-1">{HEAD_FIELD_DEFS.pretrainedWeights.label} <HintBubble text={HEAD_FIELD_DEFS.pretrainedWeights.hint ?? ""} /></span>
+            </label>
+            <p className="text-[10px] text-muted-foreground pl-1">
+              <Lightbulb className="mr-1 inline h-3 w-3 align-[-2px]" />
+              {hp.pretrainedWeights
+                ? `${hp.backbone === "convnext" ? "ConvNeXt" : "Swin Transformer"} ImageNet weights expect RGB — Convert Colors set to RGB. Max stride is fixed at 32.`
+                : `Training ${hp.backbone === "convnext" ? "ConvNeXt" : "Swin Transformer"} from scratch. Max stride is fixed at 32.`}
+            </p>
+          </>
         )}
         <Separator className="my-3" />
+        {!isPretrainedBackbone && (
+        <>
         <div className="flex items-center gap-6 flex-wrap">
           <div id={HEAD_FIELD_DEFS.stemStride.id} data-search-field="" className="flex items-center gap-2 scroll-mt-4">
             <span className="text-sm text-muted-foreground flex items-center gap-1.5">
@@ -1073,15 +1107,12 @@ function HeadTabContent({
             <NumberInput min={1} integer value={hp.filters} onCommit={(n) => onUpdate({ filters: n })} className="h-8 text-sm w-16" />
           </div>
         </div>
-        {hp.maxStride === null && isPretrainedBackbone && (
-          <p className="text-[10px] text-muted-foreground pl-1">
-            <Lightbulb className="mr-1 inline h-3 w-3 align-[-2px]" />Auto: {effectiveMaxStride} — fixed for pretrained {hp.backbone === "convnext" ? "ConvNeXt" : "Swin Transformer"} backbones
-          </p>
-        )}
-        {hp.maxStride === null && !isPretrainedBackbone && sizeStats && (
+        {hp.maxStride === null && sizeStats && (
           <p className="text-[10px] text-muted-foreground pl-1">
             <Lightbulb className="mr-1 inline h-3 w-3 align-[-2px]" />Auto: {effectiveMaxStride} — based on avg. animal size ~{Math.round(sizeStats.avgAnimalSize)}px (scaled {hp.scale}×)
           </p>
+        )}
+        </>
         )}
         <div className="flex items-center gap-6 flex-wrap">
           <div id={HEAD_FIELD_DEFS.filtersRate.id} data-search-field="" className="flex items-center gap-2 scroll-mt-4">
@@ -1091,10 +1122,12 @@ function HeadTabContent({
             </span>
             <NumberInput min={1} value={hp.filtersRate} onCommit={(n) => onUpdate({ filtersRate: n })} step={0.1} className="h-8 text-sm w-20" />
           </div>
+          {!isPretrainedBackbone && (
           <label id={HEAD_FIELD_DEFS.middleBlock.id} data-search-field="" className="flex items-center gap-1.5 cursor-pointer scroll-mt-4">
             <input type="checkbox" checked={hp.middleBlock} onChange={(e) => onUpdate({ middleBlock: e.target.checked })} className="accent-primary" />
             <span className="text-sm flex items-center gap-1">{HEAD_FIELD_DEFS.middleBlock.label} <HintBubble text="If enabled, adds an intermediate block between the downsampling and upsampling branch for additional processing at the largest receptive field size." /></span>
           </label>
+          )}
           <label id={HEAD_FIELD_DEFS.upInterpolate.id} data-search-field="" className="flex items-center gap-1.5 cursor-pointer scroll-mt-4">
             <input type="checkbox" checked={hp.upInterpolate} onChange={(e) => onUpdate({ upInterpolate: e.target.checked })} className="accent-primary" />
             <span className="text-sm flex items-center gap-1">{HEAD_FIELD_DEFS.upInterpolate.label} <HintBubble text="If enabled, use bilinear upsampling instead of transposed convolutions. This can save computations but may lower overall accuracy." /></span>
