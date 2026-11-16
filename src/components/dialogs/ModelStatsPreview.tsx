@@ -73,7 +73,7 @@ export function ModelStatsPreview({ hp, maxStride, filters, filtersRate, outputS
   const cropSize = showCropSize
     ? hp.cropSize ?? computeCropSize(labels, maxStride, hp.scale, augPadding)
     : null;
-  const params = computeParamCount(backbone, maxStride, filters, filtersRate, undefined, outputStride, stemStride, inputChannels);
+  const params = computeParamCount(backbone, maxStride, filters, filtersRate, hp.backboneSize, outputStride, stemStride, inputChannels);
   const downBlocks = Math.log2(maxStride);
 
   // Compute features at output stride (decoder output channels at the final up block)
