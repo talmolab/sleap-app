@@ -126,7 +126,7 @@ export const getSession: Tool = {
 export const listQcFlagsTool: Tool = {
   name: "list_qc_flags",
   description:
-    "The open Label QC flags, most severe first. Each flag is one problem on one user instance (or, with instance null, on a whole frame): a rule finding (duplicate, out_of_range, chirality, …) or a statistical 'anomaly' with a score in [0,1] and the nodes it is about. Flags the user ignored are left out. Each has a stable id to pass to render_flag and the propose_ tools, and the status of Claude's latest proposal for it, if any. Errors if Label QC hasn't been run: then ask the user to run Analyze → Label QC.",
+    "The open Label QC flags, most severe first. Each flag is one problem on one user instance (or, with instance null, on a whole frame): a rule finding (duplicate, out_of_range, chirality, …) or a statistical 'anomaly' with a score in [0,1] and the nodes it is about. Flags the user ignored are left out. Each has a stable id to pass to render_flag and the propose_ tools, and the status of Claude's latest proposal for it, if any. Errors if Label QC hasn't been run: then ask the user to run Analyze → Label Quality Check.",
   inputSchema: {
     type: "object",
     properties: {

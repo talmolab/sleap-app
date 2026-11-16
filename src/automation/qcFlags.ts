@@ -82,7 +82,7 @@ export function requireQcRun(): Labels {
   if (qc.state !== "done" || qc.labels !== labels) {
     throw new AutomationError(
       "NO_QC_RUN",
-      "Label QC hasn't been run on this project. Ask the user to run Analyze → Label QC first.",
+      "Label QC hasn't been run on this project. Ask the user to run Analyze → Label Quality Check (or the Label QC panel) first.",
     );
   }
   return labels;
