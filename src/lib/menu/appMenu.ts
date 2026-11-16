@@ -374,7 +374,7 @@ function viewMenu(s: MenuSnapshot): TopMenu {
       SEP,
       { kind: "check", id: "view.fit", label: "Fit View to Instances", checked: s.fit, run: toggle("fit") },
       { kind: "item", id: "view.fitSelection", label: "Fit View to Selection", enabled: s.hasInstance, run: () => store().set("fitSelection", true) },
-      { kind: "check", id: "view.defaultToPan", label: "Default to Pan Mode", shortcut: "KeyP", checked: s.defaultToPan, run: toggle("defaultToPan") },
+      { kind: "check", id: "view.defaultToPan", label: "Default to Pan Mode", shortcut: DEFAULT_SHORTCUTS["toggle pan mode"], checked: s.defaultToPan, run: toggle("defaultToPan") },
       {
         kind: "check",
         id: "view.placementMode",
@@ -416,7 +416,7 @@ function viewMenu(s: MenuSnapshot): TopMenu {
           (v) => store().setQcDisplayMode(v as Parameters<ReturnType<typeof store>["setQcDisplayMode"]>[0]),
         ),
       ),
-      { kind: "check", id: "view.showLabels", label: "Show Node Names", checked: s.showLabels, run: toggle("showLabels") },
+      { kind: "check", id: "view.showLabels", label: "Show Node Names", shortcut: DEFAULT_SHORTCUTS["show labels"], checked: s.showLabels, run: toggle("showLabels") },
       { kind: "check", id: "view.showEdges", label: "Show Edges", checked: s.showEdges, run: toggle("showEdges") },
       { kind: "check", id: "view.crosshair", label: "Crosshair When Zoomed", checked: s.showCrosshair, run: toggle("showCrosshair") },
       { kind: "check", id: "view.magnifier", label: "Magnifier When Moving Nodes", checked: s.showInset, run: toggle("showInset") },
@@ -729,7 +729,7 @@ function tracksMenu(s: MenuSnapshot): TopMenu {
     { kind: "item", id: "tracks.copy", label: "Copy Instance Track", shortcut: "$mod+Shift+KeyC", enabled: s.hasInstance, run: exec(CopyTrack) },
     { kind: "item", id: "tracks.paste", label: "Paste Instance Track", shortcut: "$mod+Shift+KeyV", enabled: s.projectLoaded, run: exec(PasteTrack) },
     SEP,
-    { kind: "check", id: "tracks.propagate", label: "Propagate Track Labels", checked: s.propagateTrackLabels, run: () => store().toggle("propagateTrackLabels") },
+    { kind: "check", id: "tracks.propagate", label: "Propagate Track Labels", shortcut: DEFAULT_SHORTCUTS["propagate track labels"], checked: s.propagateTrackLabels, run: () => store().toggle("propagateTrackLabels") },
     SEP,
     {
       kind: "item",
