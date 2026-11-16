@@ -9,7 +9,7 @@
  */
 import { useAppStore } from "@/stores/appStore";
 import { buildExportRenderedInstances } from "@/lib/videoExport";
-import { renderInstances } from "@/canvas/SkeletonRenderer";
+import { FOCUS_DIM_OPACITY, renderInstances } from "@/canvas/SkeletonRenderer";
 import { frameToCanvas } from "@/lib/frameCanvas";
 import { cropOrigin, toImageCoords } from "@/lib/cropTransform";
 import { AutomationError } from "./errors";
@@ -139,18 +139,25 @@ export async function renderFlag(flagId: string, opts: { maxEdge?: number } = {}
     video,
   });
   const focusIdx = instance ? lf.instances.indexOf(instance) : -1;
-  renderInstances(ctx as unknown as CanvasRenderingContext2D, rendered, {
-    markerSize: Math.max(app.markerSize, 4),
-    nodeLabelSize: 13,
-    edgeStyle: app.edgeStyle,
-    showInstances: true,
-    showLabels: true,
-    showEdges: true,
-    showNonVisibleNodes: true,
-    colorPredicted: true,
-    focusInstance: focusIdx >= 0 ? rendered[focusIdx] : null,
-    zoom: crop.scale,
-  });
+  const draw = (list: typeof rendered, extra: { showLabels: boolean; poseOpacity: number }) =>
+    renderInstances(ctx as unknown as CanvasRenderingContext2D, list, {
+      markerSize: Math.max(app.markerSize, 4),
+      nodeLabelSize: 13,
+      edgeStyle: app.edgeStyle,
+      showInstances: true,
+      showEdges: true,
+      showNonVisibleNodes: true,
+      colorPredicted: true,
+      zoom: crop.scale,
+      ...extra,
+    });
+  if (focusIdx >= 0) {
+    // Others dimmed and unlabeled, so every name in the picture is the flagged instance's.
+    draw(rendered.filter((_, i) => i !== focusIdx), { showLabels: false, poseOpacity: FOCUS_DIM_OPACITY });
+    draw([rendered[focusIdx]], { showLabels: true, poseOpacity: 1 });
+  } else {
+    draw(rendered, { showLabels: true, poseOpacity: 1 });
+  }
 
   const blob = await out.convertToBlob({ type: "image/png" });
   const png = new Uint8Array(await blob.arrayBuffer());
