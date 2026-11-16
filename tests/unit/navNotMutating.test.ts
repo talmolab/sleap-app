@@ -203,3 +203,63 @@ describe("navigation commands are not edits (#468)", () => {
     expect(dirtyFrameTracker.needsFullSnapshot).toBe(false);
   });
 });
+
+describe("undo/redo go to the frame they change (#487 part 1)", () => {
+  let ctx: CommandContext;
+  beforeEach(() => {
+    resetStore();
+    dirtyFrameTracker.clear();
+    ctx = new CommandContext();
+  });
+
+  // Undo used to restore frame 0's instances while showing frame 5.
+  it("undo goes back to the edited frame and restores it", async () => {
+    const { labels } = setup();
+    await ctx.execute(NudgePoint); // edits frame 0
+    await ctx.execute(nav.GoNextUserFrame); // → 5
+    expect(useAppStore.getState().frameIdx).toBe(5);
+
+    expect(ctx.undo()).toBe(true);
+    const s = useAppStore.getState();
+    expect(s.frameIdx).toBe(0);
+    expect(s.labeledFrame?.frameIdx).toBe(0);
+    expect(firstX(labels, 0)).toBe(10);
+    expect(firstX(labels, 5)).toBe(10); // frame 5 untouched
+  });
+
+  // Redo from another frame must redo the edit on its own frame, not the viewed one.
+  it("redo from another frame goes to the edited frame and redoes it", async () => {
+    const { labels } = setup();
+    await ctx.execute(NudgePoint);
+    ctx.undo();
+    await ctx.execute(nav.GoNextUserFrame); // → 5, redo kept
+    expect(redoDepth(ctx)).toBe(1);
+
+    expect(ctx.redo()).toBe(true);
+    expect(useAppStore.getState().frameIdx).toBe(0);
+    expect(firstX(labels, 0)).toBe(110);
+    expect(firstX(labels, 5)).toBe(10);
+    // And it undoes cleanly again from there.
+    ctx.undo();
+    expect(firstX(labels, 0)).toBe(10);
+  });
+
+  // The jump undo makes is navigation, so it must not touch the stacks.
+  it("the navigation during undo adds no undo step and keeps redo", async () => {
+    setup();
+    await ctx.execute(NudgePoint);
+    await ctx.execute(nav.GoNextUserFrame);
+    ctx.undo();
+    expect(undoDepth(ctx)).toBe(0);
+    expect(redoDepth(ctx)).toBe(1);
+  });
+
+  // Bulk (multi-frame) undo has no single frame to go to: the view stays put.
+  it("a multi-frame undo leaves the view where it is", async () => {
+    setup();
+    ctx.pushUndoSnapshot(ctx.takeAllFramesSnapshot("BulkOp")); // taken on frame 0
+    await ctx.execute(nav.GoNextUserFrame); // → 5
+    expect(ctx.undo()).toBe(true);
+    expect(useAppStore.getState().frameIdx).toBe(5);
+  });
+});

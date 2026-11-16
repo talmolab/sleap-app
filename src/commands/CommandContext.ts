@@ -306,10 +306,30 @@ export class CommandContext {
     dirtyFrameTracker.markFromSnapshot(snapshot);
   }
 
+  /** Move the view to the video + frame a single-frame snapshot was taken on. */
+  private goToSnapshotFrame(snapshot: UndoSnapshot): void {
+    const { labels } = this.state;
+    const video = snapshot.frame?.videoRef ?? snapshot.activeVideo;
+    const frameIdx = snapshot.frame?.frameIdx ?? snapshot.activeFrameIdx;
+    if (!labels || !video || !labels.videos.includes(video)) return;
+    if (this.state.video !== video) this.state.setVideo(video);
+    if (this.state.frameIdx !== frameIdx) this.state.setFrameIdx(frameIdx);
+  }
+
   /** Restore state from a snapshot. Returns a snapshot of the state being replaced. */
   private restoreSnapshot(snapshot: UndoSnapshot): UndoSnapshot {
     const { labels } = this.state;
     if (!labels) return this.takeSnapshot(snapshot.commandName);
+
+    // A single-frame snapshot belongs to one frame: go there first, so the
+    // restored instances are shown on their own frame (not drawn over whatever
+    // frame the user browsed to), further edits land there, and the redo
+    // snapshot below captures that frame rather than the one being viewed
+    // (#487). Plain store navigation — no undo step, redo untouched. Multi-frame
+    // snapshots (e.g. Delete Predictions) leave the view where it is.
+    if (!snapshot.allFrames && !snapshot.scopedFrames) {
+      this.goToSnapshotFrame(snapshot);
+    }
 
     // If this is a multi-frame snapshot, take a matching before-snapshot —
     // scoped to the same (video, frame-range) the original snapshot covered
