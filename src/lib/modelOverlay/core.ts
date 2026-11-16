@@ -109,7 +109,17 @@ export function targetFromVideo(video: Video): TargetVideo {
 }
 
 export type VideoMatch =
-  | { ok: true; video: Video; by: "path" | "name" }
+  | {
+      ok: true;
+      video: Video;
+      /**
+       * "path": same path. "name": same file name and at least one of frame
+       * count / height / width known on both sides and equal. "probable": same
+       * file name, nothing contradicts it, but nothing confirms it either
+       * (neither side recorded comparable sizes) — shown, not ticked.
+       */
+      by: "path" | "name" | "probable";
+    }
   | { ok: false; reason: string };
 
 function describeDims(d: Pick<TargetVideo, "frameCount" | "height" | "width">): string {
@@ -123,10 +133,16 @@ function differs(a: number | null, b: number | null): boolean {
   return a !== null && b !== null && a !== b;
 }
 
+/** Both known and equal. */
+function agrees(a: number | null, b: number | null): boolean {
+  return a !== null && b !== null && a === b;
+}
+
 /**
  * Which of `videos` is the target video: the one with the same path, else one
  * with the same file name whose frame count and frame size don't contradict
  * the target's (a value the file didn't record doesn't count against it).
+ * A name match with no size confirming it is only "probable".
  */
 export function matchVideo(videos: readonly Video[], target: TargetVideo): VideoMatch {
   const want = normalizePath(target.path);
@@ -135,6 +151,7 @@ export function matchVideo(videos: readonly Video[], target: TargetVideo): Video
 
   const name = pathBaseName(target.path);
   const sameName = videos.filter((v) => pathBaseName(videoPath(v)) === name);
+  let probable: Video | null = null;
   for (const v of sameName) {
     const d = videoDims(v);
     if (
@@ -142,9 +159,13 @@ export function matchVideo(videos: readonly Video[], target: TargetVideo): Video
       !differs(d.height, target.height) &&
       !differs(d.width, target.width)
     ) {
-      return { ok: true, video: v, by: "name" };
+      const confirmed =
+        agrees(d.frameCount, target.frameCount) || agrees(d.height, target.height) || agrees(d.width, target.width);
+      if (confirmed) return { ok: true, video: v, by: "name" };
+      probable ??= v;
     }
   }
+  if (probable) return { ok: true, video: probable, by: "probable" };
   if (sameName.length > 0) {
     return {
       ok: false,
@@ -246,7 +267,7 @@ export type CandidateAnalysis =
       /** Frames that have at least one predicted pose. */
       frameCount: number;
       /** The file's video was found by path or only by file name. */
-      matchedBy: "path" | "name";
+      matchedBy: "path" | "name" | "probable";
     }
   | { ok: false; name: string; reason: string };
 
@@ -284,6 +305,16 @@ export function analyzePredictionFile(
 
   const frames = extractPoses(labels, vm.video, sk.nodeMap);
   return { ok: true, name, frames, frameCount: frames.size, matchedBy: vm.by };
+}
+
+/**
+ * SLEAP / sleap-nn write a run's predictions on its own train/val/test split
+ * next to the checkpoint (`models/<run>/labels_pr.train.slp`, `labels_pr.val.0.slp`).
+ * Those only cover the labeled frames in that split, so they aren't a
+ * whole-video comparison: listed, not ticked by default.
+ */
+export function isTrainingSplitFile(fileName: string): boolean {
+  return /^labels_(pr|gt)\.(train|val|test)(\.\d+)?\.slp$/i.test(pathBaseName(fileName));
 }
 
 /** "name", or "name (2)", "name (3)", … when another model already uses it. */

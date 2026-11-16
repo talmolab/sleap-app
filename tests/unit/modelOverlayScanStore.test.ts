@@ -24,8 +24,8 @@ function fakeFs(tree: Record<string, (string | [string, number])[]>): SlpScanFs 
         return { name, isDirectory: !Array.isArray(e) };
       });
     },
-    async size(path) {
-      return sizes.get(path) ?? null;
+    async stat(path) {
+      return { size: sizes.get(path) ?? null, mtime: sizes.has(path) ? 1000 : null };
     },
   };
 }

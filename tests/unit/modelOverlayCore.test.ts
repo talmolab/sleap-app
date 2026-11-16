@@ -7,6 +7,7 @@ import { Skeleton } from "@talmolab/sleap-io.js";
 import {
   analyzePredictionFile,
   checkSkeleton,
+  isTrainingSplitFile,
   extractPoses,
   matchVideo,
   modelNameFromProvenance,
@@ -34,10 +35,18 @@ describe("matchVideo", () => {
     expect(m.ok && m.by === "name").toBe(true);
   });
 
-  // Older files don't record the video's size; that alone mustn't block the match.
-  it("accepts a same-name video whose size wasn't recorded", () => {
+  // Older files don't record the video's size; that alone mustn't block the match,
+  // but with nothing to confirm it, it's only "probable" (listed, not ticked).
+  it("calls a same-name video with no recorded size a probable match", () => {
     const m = matchVideo([makeVideo("/cluster/mouse.mp4", null)], target);
-    expect(m.ok).toBe(true);
+    expect(m.ok && m.by).toBe("probable");
+  });
+
+  // Review: a project video of unknown size used to match any same-named file.
+  it("needs a confirming size when the project video's size is unknown", () => {
+    const unknown = targetFromVideo(makeVideo("/data/session1/mouse.mp4", null));
+    const m = matchVideo([makeVideo("/cluster/mouse.mp4", [50, 10, 10, 1])], unknown);
+    expect(m.ok && m.by).toBe("probable");
   });
 
   // Same name but a different recording (e.g. a re-encode) must not be overlaid.
@@ -126,6 +135,15 @@ describe("extractPoses / analyzePredictionFile", () => {
     const labels = makePredictionLabels({ nodes: ["head", "thorax"], frames: { 0: [{ xy: poseAt(1, 1) }] } });
     const a = analyzePredictionFile(labels, "p.slp", target, NODES);
     expect(a.ok ? "" : a.reason).toBe("Skeleton differs: missing node abdomen");
+  });
+});
+
+describe("isTrainingSplitFile", () => {
+  // sleap-nn writes models/<run>/labels_pr.<split>[.<n>].slp; those only cover labeled frames.
+  it("recognises a run's split predictions", () => {
+    expect(isTrainingSplitFile("/p/models/run/labels_pr.train.slp")).toBe(true);
+    expect(isTrainingSplitFile("C:\\p\\models\\run\\labels_pr.val.0.slp")).toBe(true);
+    expect(isTrainingSplitFile("/p/labels.v001.predictions.slp")).toBe(false);
   });
 });
 

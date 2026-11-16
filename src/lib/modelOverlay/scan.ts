@@ -16,8 +16,8 @@ import { normalizePath } from "./core";
 
 export interface SlpScanFs {
   readDir(path: string): Promise<{ name: string; isDirectory: boolean }[]>;
-  /** File size in bytes, or null when it can't be read. */
-  size(path: string): Promise<number | null>;
+  /** Size in bytes and last-modified time (ms), each null when it can't be read. */
+  stat(path: string): Promise<{ size: number | null; mtime: number | null }>;
 }
 
 /** Files bigger than this are listed with a reason instead of opened by the scan. */
@@ -26,6 +26,8 @@ export const MAX_SCAN_BYTES = 1024 * 1024 * 1024;
 export interface ScannedSlp {
   path: string;
   size: number | null;
+  /** Last-modified time in ms (cache key for the dialog's checks), when known. */
+  mtime: number | null;
 }
 
 function sep(p: string): "\\" | "/" {
@@ -50,11 +52,12 @@ async function defaultFs(): Promise<SlpScanFs> {
       const entries = await fs.readDir(path);
       return entries.map((e) => ({ name: e.name, isDirectory: e.isDirectory }));
     },
-    async size(path) {
+    async stat(path) {
       try {
-        return (await fs.stat(path)).size;
+        const st = await fs.stat(path);
+        return { size: st.size, mtime: st.mtime ? st.mtime.getTime() : null };
       } catch {
-        return null;
+        return { size: null, mtime: null };
       }
     },
   };
@@ -94,7 +97,7 @@ export async function scanPredictionFiles(projectPath: string | null, fs?: SlpSc
       const key = normalizePath(path);
       if (key === self || seen.has(key)) continue;
       seen.add(key);
-      out.push({ path, size: await io.size(path) });
+      out.push({ path, ...(await io.stat(path)) });
     }
   }
   return out.sort((a, b) => a.path.localeCompare(b.path));
