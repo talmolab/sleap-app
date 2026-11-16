@@ -35,7 +35,8 @@ frames only have predictions.
 
 The current frame's instances. Shows each one's track, whether it is a user label
 or a prediction, and its score. Selecting a row selects the instance on the
-canvas.
+canvas. **View ▸ Show Mean Node Score** adds a *Mean node score* column: the
+average confidence of the nodes the model placed.
 
 ## Notifications panel
 

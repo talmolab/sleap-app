@@ -124,6 +124,7 @@ import { hintIfPredictionsRemain, hintIfFirstNodeConfirm } from "@/lib/labelingH
 import { setLabelsAutosaveInteracting } from "@/lib/labelsAutosave";
 import { spacePanState } from "@/lib/spacePanTracking";
 import { actualSizeView, fitPointsView, type CanvasFit, type CanvasView } from "@/lib/viewZoom";
+import { useFollowSelection } from "@/hooks/useFollowSelection";
 import { getPlatform, isTauri } from "@/platform/index";
 import { spawnOverlayServe, killOverlayServe, detectGpu } from "@/platform/backend";
 import { Film, Frame, Hand, ImageOff, MousePointer2, Tag, ZoomIn } from "lucide-react";
@@ -2230,7 +2231,7 @@ export function VideoPlayer() {
   // selected instance's visible-node bounding box (+ padding) fills the
   // viewport. Triggered from View ▸ Zoom to Selection, the Shift+Up/Down
   // cycle-instance shortcut, clicking an instance in the Instances panel,
-  // and View ▸ Fit View to Selection (below) whenever the selection changes.
+  // and Label QC.
   useEffect(() => {
     if (!fitSelection || !selectedInstance) return;
     // Jumping to another frame and selecting there (Label QC's F) sets this
@@ -2246,34 +2247,16 @@ export function VideoPlayer() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [fitSelection, renderedInstances]);
 
-  // View ▸ Fit View to Selection (toggle, PyQt `fit_selection`): zoom to the
-  // selected instance each time the selection changes. Moving to another frame
-  // clears the selection, so the view then follows the last selected
-  // instance's track onto the new frame (zoom only; nothing gets selected).
-  const followTrackRef = useRef<string | null>(null);
-  const followedFrameRef = useRef<unknown>(null);
-  useEffect(() => {
-    if (!followSelection) {
-      followTrackRef.current = null;
-      return;
-    }
-    if (!selectedInstance) return;
-    followTrackRef.current = selectedInstance.track?.name ?? null;
-    followedFrameRef.current = labeledFrame;
-    useAppStore.getState().set("fitSelection", true);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [followSelection, selectedInstance]);
-  useEffect(() => {
-    if (!followSelection || selectedInstance || !followTrackRef.current) return;
-    // Once per frame, so editing on this frame doesn't keep re-zooming.
-    if (followedFrameRef.current === labeledFrame) return;
-    const sameTrack = renderedInstances.filter((ri) => ri.trackName === followTrackRef.current);
-    const target = sameTrack.find((ri) => !ri.isPredicted) ?? sameTrack[0];
-    if (!target) return;
-    followedFrameRef.current = labeledFrame;
-    applyView(fitPointsView(target.nodes.filter((n) => n.visible), canvasFit));
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [followSelection, selectedInstance, renderedInstances, labeledFrame]);
+  // View ▸ Fit View to Selection (toggle): fit on frame change only, never
+  // mid-drag (see useFollowSelection).
+  useFollowSelection({
+    followSelection,
+    selectedTrackName: selectedInstance?.track?.name ?? null,
+    hasSelection: !!selectedInstance,
+    frame: labeledFrame,
+    renderedInstances,
+    onFit: (ri) => applyView(fitPointsView(ri.nodes.filter((n) => n.visible), canvasFit)),
+  });
 
   // View ▸ Actual Size (1:1): one video pixel per screen pixel. Re-applied when
   // the canvas resizes, since that changes the fit-to-window base scale.
