@@ -50,7 +50,7 @@ import { useModelOverlayFrame } from "@/hooks/useModelOverlayFrame";
 import { renderModelOverlay, hitTestModelOverlay } from "@/canvas/modelOverlayRenderer";
 import { ModelOverlayLegend } from "./ModelOverlayLegend";
 import { ModelPoseAcceptBar } from "./ModelPoseAcceptBar";
-import { pickModelPose, acceptModelPose } from "@/lib/modelOverlay/canvasActions";
+import { pickModelPose, acceptModelPose, modelClickRoute } from "@/lib/modelOverlay/canvasActions";
 import { useModelOverlayStore } from "@/stores/modelOverlayStore";
 import {
   getPaletteColor,
@@ -2689,12 +2689,13 @@ export function VideoPlayer() {
         instances, x, y, nodeThreshold,
         showLabels ? { zoom, markerSize, nodeLabelSize } : undefined
       );
-      // Compare Model Predictions: a plain click on a model's node picks that
-      // pose for Accept — unless it's on one of the project's user instances,
-      // which keep their usual click (select / drag).
-      if (!e.shiftKey && !e.altKey && !e.ctrlKey && !e.metaKey) {
+      // Compare Model Predictions: Alt+click on a model's node picks that pose
+      // for Accept. Plain clicks stay with the project's instances, predictions
+      // included (see canvasActions.ts for the routing).
+      if (e.altKey) {
         const ovHit = hitModelPose(x, y, nodeThreshold);
-        if (ovHit && (!nodeHit || instances[nodeHit.instanceIdx]?.isPredicted)) {
+        const projectHit = nodeHit ? (instances[nodeHit.instanceIdx]?.isPredicted ? "predicted" : "user") : null;
+        if (ovHit && modelClickRoute(e, true, projectHit) === "model") {
           pickModelPose(modelOverlayRef.current.layers, ovHit.layer, ovHit.pose);
           return;
         }
@@ -3377,14 +3378,17 @@ export function VideoPlayer() {
         instances, x, y, nodeThreshold,
         showLabels ? { zoom, markerSize, nodeLabelSize } : undefined
       );
-      // Compare Model Predictions: double-clicking a model's node accepts that
-      // pose into the project (it replaces the matching prediction). User
-      // instances keep their own double-click.
-      const ovHit = hitModelPose(x, y, nodeThreshold);
-      if (ovHit && (!nodeHit || instances[nodeHit.instanceIdx]?.isPredicted)) {
-        const layer = modelOverlayRef.current.layers[ovHit.layer];
-        if (layer) acceptModelPose(layer.modelId, ovHit.pose);
-        return;
+      // Compare Model Predictions: Alt+double-click on a model's node accepts
+      // that pose (replacing the matching prediction). A plain double-click on
+      // a prediction still converts it, as without models shown.
+      if (e.altKey) {
+        const ovHit = hitModelPose(x, y, nodeThreshold);
+        const projectHit = nodeHit ? (instances[nodeHit.instanceIdx]?.isPredicted ? "predicted" : "user") : null;
+        if (ovHit && modelClickRoute(e, true, projectHit) === "model") {
+          const layer = modelOverlayRef.current.layers[ovHit.layer];
+          if (layer) void acceptModelPose(layer.modelId, ovHit.pose);
+          return;
+        }
       }
 
       if (nodeHit) {
@@ -4087,7 +4091,7 @@ export function VideoPlayer() {
         )}
 
         {/* Compare Model Predictions legend (self-guards to loaded models). */}
-        <ModelOverlayLegend />
+        <ModelOverlayLegend disagreementCount={modelOverlay.disagreements.length} />
         {/* Accept bar for a model pose picked on the canvas (self-guards). */}
         <ModelPoseAcceptBar />
         {/* Visual skeleton builder control bar (self-guards to build mode). */}

@@ -84,7 +84,8 @@ export const useModelOverlayStore = create<ModelOverlayState>()((set) => ({
   highlightDisagreement: true,
   threshold: DEFAULT_DISAGREEMENT_PX,
   setHighlightDisagreement: (on) => set({ highlightDisagreement: on }),
-  setThreshold: (px) => set({ threshold: Number.isFinite(px) && px >= 0 ? px : DEFAULT_DISAGREEMENT_PX }),
+  // Invalid input (NaN, negative) is ignored: the threshold keeps its value.
+  setThreshold: (px) => set((s) => ({ threshold: Number.isFinite(px) && px >= 0 ? px : s.threshold })),
   selected: null,
   setSelected: (sel) => set({ selected: sel }),
   addModels: (labels, added) =>

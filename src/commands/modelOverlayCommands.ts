@@ -37,19 +37,21 @@ export function instanceXyByNames(inst: Instance, nodeNames: readonly string[]):
 }
 
 /**
- * Which of the frame's predicted instances (index into `lf.instances`) the
- * pose at `poseIdx` matches, or -1. All of the model's poses on the frame take
- * part, so two animals can't both claim the same prediction.
+ * Which of the frame's predicted (or, with `kind: "user"`, user) instances —
+ * index into `lf.instances` — the pose at `poseIdx` matches, or -1. All of
+ * the model's poses on the frame take part, so two animals can't both claim
+ * the same instance.
  */
-export function matchProjectPrediction(
+export function matchProjectInstance(
   lf: LabeledFrame,
   modelPoses: readonly OverlayPose[],
   poseIdx: number,
-  nodeNames: readonly string[]
+  nodeNames: readonly string[],
+  kind: "predicted" | "user" = "predicted"
 ): number {
   const preds: number[] = [];
   lf.instances.forEach((inst, i) => {
-    if (inst instanceof PredictedInstance) preds.push(i);
+    if (inst instanceof PredictedInstance === (kind === "predicted")) preds.push(i);
   });
   if (preds.length === 0) return -1;
   const targets = preds.map((i) => instanceXyByNames(lf.instances[i], nodeNames));
@@ -71,6 +73,10 @@ function sameNodeNames(sk: Skeleton, names: readonly string[]): boolean {
  *   poses: OverlayPose[]  the model's poses on the current frame
  *   poseIdx: number       the one to accept
  *   modelName: string     for the confirmation toast
+ *   replaceUser?: boolean when no prediction matches but a user instance
+ *                         does, replace it (the caller asked the user first).
+ *                         Without it, that case changes nothing, so Accept
+ *                         never silently stacks a duplicate on a labeled animal.
  */
 export const AcceptModelPose: Command = {
   name: "AcceptModelPose",
@@ -94,8 +100,16 @@ export const AcceptModelPose: Command = {
       labels.append(lf);
     }
 
-    const matchIdx = matchProjectPrediction(lf, poses, poseIdx, nodeNames);
+    let matchIdx = matchProjectInstance(lf, poses, poseIdx, nodeNames, "predicted");
+    if (matchIdx < 0) {
+      const userIdx = matchProjectInstance(lf, poses, poseIdx, nodeNames, "user");
+      if (userIdx >= 0) {
+        if (params?.replaceUser !== true) return;
+        matchIdx = userIdx;
+      }
+    }
     const matched = matchIdx >= 0 ? lf.instances[matchIdx] : null;
+    const replacedUser = matched !== null && !(matched instanceof PredictedInstance);
     // Keep the matched prediction's skeleton object (multi-skeleton projects)
     // when it has the same nodes; points are written in its node order.
     const target = matched && sameNodeNames(matched.skeleton, nodeNames) ? matched.skeleton : skeleton;
@@ -128,7 +142,7 @@ export const AcceptModelPose: Command = {
     const name = typeof params?.modelName === "string" ? params.modelName : "model";
     toast.success(
       matched
-        ? `Accepted ${name}'s pose, replacing the matching prediction${matched.track ? ` (${matched.track.name})` : ""}`
+        ? `Accepted ${name}'s pose, replacing the matching ${replacedUser ? "user instance" : "prediction"}${matched.track ? ` (${matched.track.name})` : ""}`
         : `Accepted ${name}'s pose as a new instance`
     );
   },

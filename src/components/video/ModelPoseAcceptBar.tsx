@@ -2,7 +2,7 @@
  * Bar at the top of the canvas after clicking a model's pose (Compare Model
  * Predictions): names the model and offers Accept, which makes the pose a
  * user instance replacing the matching prediction (see AcceptModelPose).
- * Double-clicking the pose does the same without the bar.
+ * Opened by Alt+click on a model's pose; Alt+double-click accepts without the bar.
  */
 import { Check, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -38,7 +38,7 @@ export function ModelPoseAcceptBar() {
         size="sm"
         className="h-6 px-2 text-xs"
         onClick={acceptSelectedModelPose}
-        title="Make this pose a user instance, replacing the matching prediction on this frame (undoable)"
+        title="Make this pose a user instance, replacing the matching prediction on this frame (undoable). Alt+double-click a model's pose does the same."
       >
         <Check className="mr-1 h-3 w-3" /> Accept
       </Button>

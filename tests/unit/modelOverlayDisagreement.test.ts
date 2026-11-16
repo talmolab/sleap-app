@@ -14,6 +14,9 @@ import {
 import { findDisagreementFrame, frameDisagreements } from "@/hooks/useModelOverlayFrame";
 import { hitTestModelOverlay } from "@/canvas/modelOverlayRenderer";
 import { AcceptModelPose } from "@/commands/modelOverlayCommands";
+import { modelClickRoute, acceptModelPose } from "@/lib/modelOverlay/canvasActions";
+import { useConfirmStore } from "@/stores/confirmStore";
+import { parseThreshold } from "@/components/video/ModelOverlayLegend";
 import { CommandContext } from "@/commands/CommandContext";
 import { useAppStore } from "@/stores/appStore";
 import { useModelOverlayStore, type OverlayModel } from "@/stores/modelOverlayStore";
@@ -71,6 +74,16 @@ describe("groupAcrossModels", () => {
     expect(groupAcrossModels([a, b], true)).toEqual([
       [{ layer: 0, pose: 0 }, { layer: 1, pose: 0 }],
       [{ layer: 0, pose: 1 }],
+    ]);
+  });
+
+  // Review: a model that gives two poses the same track must not put both in one group.
+  it("keeps one pose per model per track group", () => {
+    const a = { poses: [pose(poseAt(100, 100), "t1")] };
+    const b = { poses: [pose(poseAt(400, 400), "t1"), pose(poseAt(101, 99), "t1")] };
+    expect(groupAcrossModels([a, b], true)).toEqual([
+      [{ layer: 0, pose: 0 }, { layer: 1, pose: 1 }],
+      [{ layer: 1, pose: 0 }],
     ]);
   });
 
@@ -199,10 +212,81 @@ describe("AcceptModelPose", () => {
     expect(frame.instances.every((i) => i instanceof PredictedInstance)).toBe(true);
   });
 
-  // A user instance is never replaced by Accept (only predictions are).
-  it("leaves user instances alone", async () => {
+  // Review: on an animal you already labeled (no prediction to replace), Accept
+  // must not silently stack a duplicate — without the user's OK nothing changes.
+  it("changes nothing on a labeled animal unless told to replace", async () => {
+    const user = makeUser(skeleton, poseAt(100, 100), trackA);
+    lf.instances.splice(0, 1, user);
+    await ctx.execute(AcceptModelPose, { poses: [pose(poseAt(102, 101))], poseIdx: 0, modelName: "m" });
+    expect(lf.instances.length).toBe(2);
+    expect(lf.instances[0]).toBe(user);
+  });
+
+  // The canvas action asks before replacing a user instance; cancelling changes nothing, confirming replaces.
+  it("asks before replacing a user instance from the canvas", async () => {
+    const user = makeUser(skeleton, poseAt(100, 100), trackA);
+    lf.instances.splice(0, 1, user);
+    useModelOverlayStore.getState().addModels(labels, [
+      { name: "m", source: "/m.slp", video: labels.videos[0], frames: new Map([[0, [pose(poseAt(103, 100))]]]) },
+    ]);
+    const id = useModelOverlayStore.getState().models[0].id;
+
+    let done = acceptModelPose(id, 0);
+    await Promise.resolve();
+    expect(useConfirmStore.getState().request?.confirmLabel).toBe("Replace");
+    useConfirmStore.getState().respond(false);
+    await done;
+    expect(lf.instances[0]).toBe(user);
+
+    done = acceptModelPose(id, 0);
+    await Promise.resolve();
+    useConfirmStore.getState().respond(true);
+    await done;
+    expect(lf.instances[0]).not.toBe(user);
+    expect(lf.instances[0].track).toBe(trackA);
+  });
+
+  // After the user confirms, the labeled animal's instance is replaced, keeping its track.
+  it("replaces the matching user instance when confirmed", async () => {
     lf.instances.splice(0, 1, makeUser(skeleton, poseAt(100, 100), trackA));
-    await ctx.execute(AcceptModelPose, { poses: [pose(poseAt(100, 100))], poseIdx: 0, modelName: "m" });
-    expect(lf.instances.length).toBe(3);
+    await ctx.execute(AcceptModelPose, { poses: [pose(poseAt(102, 101))], poseIdx: 0, modelName: "m", replaceUser: true });
+    expect(lf.instances.length).toBe(2);
+    expect(lf.instances[0].track).toBe(trackA);
+    expect(lf.instances[0].points[1].xy).toEqual([102, 101]);
+  });
+});
+
+describe("click routing", () => {
+  const none = { altKey: false, shiftKey: false, ctrlKey: false, metaKey: false };
+  const alt = { ...none, altKey: true };
+
+  // User decision: the project's predictions keep plain clicks/double-clicks while models are shown.
+  it("gives plain clicks to the project, predictions included", () => {
+    expect(modelClickRoute(none, true, "predicted")).toBe("project");
+    expect(modelClickRoute(none, true, null)).toBe("project");
+  });
+
+  // Alt+click is the explicit model gesture, over predictions or empty space.
+  it("gives Alt+click on a model node to the model", () => {
+    expect(modelClickRoute(alt, true, "predicted")).toBe("model");
+    expect(modelClickRoute(alt, true, null)).toBe("model");
+  });
+
+  // Alt+drag on a user instance moves it (existing gesture), so users keep Alt too.
+  it("keeps Alt+click on a user instance for the user instance", () => {
+    expect(modelClickRoute(alt, true, "user")).toBe("project");
+    expect(modelClickRoute({ ...alt, shiftKey: true }, true, "predicted")).toBe("project");
+    expect(modelClickRoute(alt, false, null)).toBe("project");
+  });
+});
+
+describe("threshold input", () => {
+  // Review: clearing the box used to set 0 px and ring every node.
+  it("ignores empty, invalid and negative input", () => {
+    expect(parseThreshold("")).toBeNull();
+    expect(parseThreshold("abc")).toBeNull();
+    expect(parseThreshold("-3")).toBeNull();
+    expect(parseThreshold("12.5")).toBe(12.5);
+    expect(parseThreshold("0")).toBe(0);
   });
 });

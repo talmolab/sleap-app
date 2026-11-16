@@ -183,7 +183,8 @@ function groupMean(layers: readonly MatchLayer[], members: readonly GroupMember[
  */
 export function groupAcrossModels(layers: readonly MatchLayer[], byTrack: boolean): GroupMember[][] {
   if (byTrack) {
-    const groups = new Map<string, GroupMember[]>();
+    // track → layer → that model's poses with the track (normally one).
+    const byName = new Map<string, Map<number, number[]>>();
     const loose: GroupMember[][] = [];
     layers.forEach((layer, li) =>
       layer.poses.forEach((pose, pi) => {
@@ -191,12 +192,41 @@ export function groupAcrossModels(layers: readonly MatchLayer[], byTrack: boolea
           loose.push([{ layer: li, pose: pi }]);
           return;
         }
-        const g = groups.get(pose.trackName);
-        if (g) g.push({ layer: li, pose: pi });
-        else groups.set(pose.trackName, [{ layer: li, pose: pi }]);
+        let perLayer = byName.get(pose.trackName);
+        if (!perLayer) byName.set(pose.trackName, (perLayer = new Map()));
+        const list = perLayer.get(li);
+        if (list) list.push(pi);
+        else perLayer.set(li, [pi]);
       })
     );
-    return [...groups.values(), ...loose];
+    const groups: GroupMember[][] = [];
+    for (const perLayer of byName.values()) {
+      // One pose per model per group: models with a single pose for the track
+      // go in first; a model that gave the same track to several poses
+      // contributes the one closest to them, the rest stand alone.
+      const group: GroupMember[] = [];
+      for (const [li, list] of perLayer) if (list.length === 1) group.push({ layer: li, pose: list[0] });
+      for (const [li, list] of perLayer) {
+        if (list.length === 1) continue;
+        let best = list[0];
+        if (group.length > 0) {
+          const nValues = layers[li].poses[list[0]].xy.length;
+          const mean = groupMean(layers, group, nValues);
+          let bestD = Infinity;
+          for (const pi of list) {
+            const d = meanNodeDistance(layers[li].poses[pi].xy, mean);
+            if (d < bestD) {
+              bestD = d;
+              best = pi;
+            }
+          }
+        }
+        group.push({ layer: li, pose: best });
+        for (const pi of list) if (pi !== best) loose.push([{ layer: li, pose: pi }]);
+      }
+      groups.push(group);
+    }
+    return [...groups, ...loose];
   }
 
   let ref = -1;
