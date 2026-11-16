@@ -49,6 +49,7 @@ import {
 } from "../lib/exportUtils";
 import { toast } from "@/lib/notify";
 import { toastExported } from "@/lib/exportToast";
+import { multiSkeletonBlock } from "@/lib/multiSkeleton";
 import {
   analysisFilename,
   directoryOf,
@@ -514,6 +515,9 @@ async function exportAnalysisFiles(
 ): Promise<void> {
   const { labels, filename } = ctx.state;
   if (!labels) return;
+  // sleap-io.js lays analysis arrays out on skeletons[0] (as Python's analysis
+  // writer uses the single-skeleton accessor): refuse rather than mis-export.
+  if (multiSkeletonBlock(labels, "Exporting analysis files")) return;
   const kind = format === "h5" ? "Analysis HDF5" : "Analysis CSV";
   if (labels.labeledFrames.length === 0) {
     toast.info("No labeled frames in project. Nothing to export.");

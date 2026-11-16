@@ -24,6 +24,7 @@
 import { create } from "zustand";
 import type { Instance, LabeledFrame, Labels } from "@/types";
 import { runLabelQc, SOFT_QC_KINDS, type QcFinding } from "@/lib/analyze/labelQc";
+import { multiSkeletonBlock } from "@/lib/multiSkeleton";
 import {
   anomalyVerdict,
   scoreLabelsAnomalyAsync,
@@ -169,6 +170,8 @@ export const useQcStore = create<QcState>((set, get) => ({
   hiddenIssues: new Set(),
 
   run: async (labels) => {
+    // The scorer fits one model per skeleton; per-skeleton QC is a later slice.
+    if (multiSkeletonBlock(labels, "Label QC")) return;
     abort?.abort();
     const ac = new AbortController();
     abort = ac;

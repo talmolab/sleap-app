@@ -126,6 +126,13 @@ export async function parseSkeletonFile(
 
     case "slp": {
       const labels = await loadSlp(toArrayBuffer(data), { openVideos: false });
+      // A project file with several skeletons: don't guess which one is meant.
+      if (labels.skeletons.length > 1) {
+        throw new Error(
+          `"${filename}" has ${labels.skeletons.length} skeletons. ` +
+            `Loading one skeleton from a file with several isn't supported yet.`,
+        );
+      }
       const skeleton = labels.skeletons[0];
       if (!skeleton) {
         throw new Error(`No skeleton found in "${filename}".`);

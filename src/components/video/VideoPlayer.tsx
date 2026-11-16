@@ -87,6 +87,8 @@ import {
   renderPenStroke,
 } from "@/canvas/skeletonBuilderRender";
 import { nodesCrossedBySegment } from "@/lib/skeletonPenChain";
+import { hasMultipleSkeletons, skeletonDisplayName } from "@/lib/multiSkeleton";
+import { instanceGeometry } from "@/canvas/instanceGeometry";
 import { isValidEdgeSelection } from "@/lib/skeletonEdgeEditing";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -1404,25 +1406,8 @@ export function VideoPlayer() {
         ? edgeIndices.map((_, eIdx) => getPaletteColor(palette, eIdx))
         : undefined;
 
-      const nodes: RenderedNode[] = inst.points.map((point, nIdx) => {
-        // Cropped videos store points in SOURCE coords; translate into the
-        // displayed crop-local image space so they overlay the cropped frame.
-        // Identity for uncropped videos. (cropped pkg.slp / SLP-2.3)
-        const [nx, ny] = toImageCoords(video, point.xy[0], point.xy[1]);
-        return {
-          x: nx,
-          y: ny,
-          visible: point.visible && !isNaN(point.xy[0]),
-          complete: point.complete,
-          name: skeleton.nodes[nIdx]?.name ?? `node_${nIdx}`,
-          score: point.score,
-        };
-      });
-
-      const edges = edgeIndices.map(
-        ([srcIdx, dstIdx]) =>
-          ({ srcIdx, dstIdx }) as { srcIdx: number; dstIdx: number }
-      );
+      // Nodes/edges from the instance's own skeleton (several per project).
+      const { nodes, edges } = instanceGeometry(inst, video);
 
       return {
         nodes,
@@ -2103,11 +2088,16 @@ export function VideoPlayer() {
     if (isDragInset) {
       labelName = overlayInst?.nodes[skipNodeIdx]?.name ?? `node_${skipNodeIdx}`;
     } else if (isPlaceInset && placementNodeIdx !== null) {
+      // Name from the placed instance's own skeleton (a project can hold
+      // several); the active skeleton is the fallback.
+      const placeSkeleton = selectedInstance?.skeleton ?? skeleton;
       labelName =
-        skeleton?.nodes[placementNodeIdx]?.name ?? `node_${placementNodeIdx}`;
+        placeSkeleton?.nodes[placementNodeIdx]?.name ?? `node_${placementNodeIdx}`;
     } else if (isHoldInset && hoveredNode) {
+      const hoverSkeleton =
+        labeledFrame?.instances[hoveredNode.instanceIdx]?.skeleton ?? skeleton;
       labelName =
-        skeleton?.nodes[hoveredNode.nodeIdx]?.name ??
+        hoverSkeleton?.nodes[hoveredNode.nodeIdx]?.name ??
         `node_${hoveredNode.nodeIdx}`;
     }
 
@@ -2180,6 +2170,8 @@ export function VideoPlayer() {
     INSET_ZOOM,
     zoom,
     skeleton,
+    selectedInstance,
+    labeledFrame,
     placementNodeIdx,
     hoveredNode,
     showInset,
@@ -3727,6 +3719,9 @@ export function VideoPlayer() {
               style={{ left: tipX, top: tipY }}
             >
               {isPredicted ? "Predicted Instance" : "User Instance"}
+              {/* Several skeletons in the project: say which one this is. */}
+              {labels && hasMultipleSkeletons(labels) &&
+                ` · ${skeletonDisplayName(lfInst.skeleton, labels.skeletons)}`}
             </div>
           );
         })()}

@@ -8,7 +8,7 @@
 
 import { frameHasContent } from "@/lib/frameLabeling";
 import { Instance, LabeledFrame, PredictedInstance } from "@talmolab/sleap-io.js";
-import type { Labels } from "@talmolab/sleap-io.js";
+import type { Labels, Skeleton } from "@talmolab/sleap-io.js";
 import { UpdateTopic } from "../types";
 import type { Command } from "./types";
 import type { CommandContext } from "./CommandContext";
@@ -327,13 +327,29 @@ export const CopyInstance: Command = {
   },
 };
 
+/**
+ * The skeleton a copy of `source` should get: the source's own skeleton when it
+ * belongs to this project (points are positional, so a pasted mouse must stay a
+ * mouse even while the pellet skeleton is active), else the active skeleton
+ * (e.g. a clipboard instance copied from a previously open project).
+ */
+function skeletonForCopy(
+  labels: Labels,
+  source: Instance,
+  active: Skeleton | null,
+): Skeleton | null {
+  return labels.skeletons.includes(source.skeleton) ? source.skeleton : active;
+}
+
 /** Paste the clipboard instance onto the current frame. */
 export const PasteInstance: Command = {
   name: "PasteInstance",
   topics: [UpdateTopic.Frame, UpdateTopic.Instance],
   execute(ctx: CommandContext) {
-    const { labels, video, frameIdx, clipboardInstance, skeleton } = ctx.state;
-    if (!labels || !video || !clipboardInstance || !skeleton) return;
+    const { labels, video, frameIdx, clipboardInstance } = ctx.state;
+    if (!labels || !video || !clipboardInstance) return;
+    const skeleton = skeletonForCopy(labels, clipboardInstance, ctx.state.skeleton);
+    if (!skeleton) return;
 
     // Never materialize a node-less instance (see AddInstance).
     if (skeleton.nodes.length === 0) {
@@ -377,9 +393,11 @@ export const DuplicateInstance: Command = {
   name: "DuplicateInstance",
   topics: [UpdateTopic.Frame, UpdateTopic.Instance],
   execute(ctx: CommandContext, params?: Record<string, unknown>) {
-    const { labels, video, frameIdx, skeleton } = ctx.state;
+    const { labels, video, frameIdx } = ctx.state;
     const source = params?.instance as Instance | undefined;
-    if (!labels || !video || !skeleton || !source) return;
+    if (!labels || !video || !source) return;
+    const skeleton = skeletonForCopy(labels, source, ctx.state.skeleton);
+    if (!skeleton) return;
 
     const newInstance = new Instance({
       skeleton,

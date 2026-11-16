@@ -40,8 +40,18 @@ import { useQcView } from "@/hooks/useQcView";
 import { videoBasename } from "@/lib/videoFilter";
 import { QcIssueFilter } from "@/components/qc/QcIssueFilter";
 import { QcDetectorSettings } from "@/components/qc/QcDetectorSettings";
+import { SingleSkeletonGate } from "./SingleSkeletonGate";
 
+/** Gated: needs a single-skeleton project (see SingleSkeletonGate). */
 export function LabelQcPanel() {
+  return (
+    <SingleSkeletonGate feature="Label QC">
+      <LabelQcPanelContent />
+    </SingleSkeletonGate>
+  );
+}
+
+function LabelQcPanelContent() {
   const labels = useAppStore((s) => s.labels);
   const video = useAppStore((s) => s.video);
   const frameIdx = useAppStore((s) => s.frameIdx);

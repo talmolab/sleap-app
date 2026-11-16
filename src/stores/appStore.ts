@@ -141,6 +141,12 @@ export interface AppState {
    */
   mergePartner: Instance | null;
   labeledFrame: LabeledFrame | null;
+  /**
+   * The ACTIVE skeleton: the one the Skeleton panel shows and edits, and the one
+   * new instances get. Always one of `labels.skeletons` (null when there are
+   * none). A project can hold several skeletons (e.g. a mouse skeleton and a
+   * 1-node pellet skeleton); each instance draws with its own `inst.skeleton`.
+   */
   skeleton: Skeleton | null;
   lastInteractedFrame: number | null;
   /** User-bookmarked frame (Mark Frame ⌘M / go-to ⌘⇧M). One per project. */
@@ -734,6 +740,17 @@ export interface AppState {
   captureSkeletonTemplateLayout: () => void;
   /** Discard the captured template layout (back to the circle default). */
   clearSkeletonTemplateLayout: () => void;
+  /**
+   * Make `skeleton` (one of `labels.skeletons`) the active skeleton. Not an
+   * edit: no undo entry, no unsaved-changes flag. Leaves the visual builder
+   * and drops the drawn template layout (it belongs to the old skeleton).
+   */
+  setActiveSkeleton: (skeleton: Skeleton) => void;
+  /**
+   * Keep the active skeleton valid after undo/redo: if it is no longer in
+   * `labels.skeletons` (e.g. "Add skeleton" was undone), fall back to the first.
+   */
+  reconcileActiveSkeleton: () => void;
 
   // Anchor-part picker actions (see field docs above). `startAnchorPick`
   // returns the new request id so the requester can match it against
@@ -1779,6 +1796,29 @@ export const useAppStore = create<AppState>()(
         set((state) => {
           state.skeletonTemplateLayout = null;
         }),
+
+      setActiveSkeleton: (skeleton) => {
+        const { labels, skeleton: current, skeletonBuildMode } = get();
+        if (!labels || skeleton === current) return;
+        if (!labels.skeletons.includes(skeleton)) return;
+        if (skeletonBuildMode) get().exitSkeletonBuild();
+        set((state) => {
+          state.skeleton = skeleton;
+          state.skeletonTemplateLayout = null;
+          state.overlayVersion += 1;
+        });
+      },
+
+      reconcileActiveSkeleton: () => {
+        const { labels, skeleton } = get();
+        if (!labels || (skeleton && labels.skeletons.includes(skeleton))) return;
+        const next = labels.skeletons[0] ?? null;
+        if (next === skeleton) return;
+        set((state) => {
+          state.skeleton = next;
+          state.skeletonTemplateLayout = null;
+        });
+      },
 
       // Anchor-part picker (Training panel). See field docs above for the
       // request-id race-avoidance rationale.

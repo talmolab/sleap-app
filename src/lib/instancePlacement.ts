@@ -337,6 +337,19 @@ function placeRandom(
   return instance;
 }
 
+/**
+ * Whether `inst`'s points can be copied positionally into a new instance of
+ * `skeleton`: same skeleton object, or one with the same nodes in the same
+ * order. In a project with several skeletons this keeps a new mouse from being
+ * seeded from a pellet (and vice versa).
+ */
+function sameSkeletonLayout(inst: Instance, skeleton: Skeleton): boolean {
+  if (inst.skeleton === skeleton) return true;
+  // Defensive: a skeleton-less instance (test doubles) keeps the old behavior.
+  if (!inst.skeleton || typeof inst.skeleton.matches !== "function") return true;
+  return inst.skeleton.matches(skeleton, { requireSameOrder: true });
+}
+
 /** "prior_frame" — copy points from same-track instance on the previous frame. */
 function placePriorFrame(
   skeleton: Skeleton,
@@ -345,12 +358,15 @@ function placePriorFrame(
   priorFrame: LabeledFrame | null
 ): Instance {
   if (priorFrame && priorFrame.instances.length > 0) {
-    const userInstances = priorFrame.instances.filter(
+    const sameSkeleton = priorFrame.instances.filter((inst) =>
+      sameSkeletonLayout(inst, skeleton)
+    );
+    const userInstances = sameSkeleton.filter(
       (inst) => !(inst instanceof PredictedInstance) && hasPlacedPoints(inst)
     );
     const candidates = userInstances.length > 0
       ? userInstances
-      : priorFrame.instances.filter((inst) => hasPlacedPoints(inst));
+      : sameSkeleton.filter((inst) => hasPlacedPoints(inst));
 
     if (candidates.length > 0) {
       const usedTracks = new Set(
@@ -386,7 +402,10 @@ function placePrediction(
 ): Instance {
   // Find predicted instances that don't have a corresponding user instance
   const predicted = existingInstances.filter(
-    (inst) => inst instanceof PredictedInstance && hasPlacedPoints(inst)
+    (inst) =>
+      inst instanceof PredictedInstance &&
+      hasPlacedPoints(inst) &&
+      sameSkeletonLayout(inst, skeleton)
   );
   const userInstances = existingInstances.filter(
     (inst) => !(inst instanceof PredictedInstance)
