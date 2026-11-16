@@ -80,7 +80,14 @@ export interface RenderOptions {
    * poses overlapping it (Label QC, going to a flagged instance).
    */
   focusInstance?: RenderedInstance | null;
+  /** Edges and node outlines twice as thick (PyQt `bold lines`). Default off. */
+  boldLines?: boolean;
   zoom: number;
+}
+
+/** Edge and node-outline width multiplier: PyQt's `bold lines` doubles its pen widths. */
+export function lineScale(opts: Pick<RenderOptions, "boldLines">): number {
+  return opts.boldLines ? 2 : 1;
 }
 
 const DEFAULT_OPTIONS: RenderOptions = {
@@ -228,20 +235,20 @@ function renderNode(
     // back to plain gray instead (see renderLineEdge/renderNodeLabel).
     const strokeColor = opts.colorPredicted ? color : UNCOLORED_PREDICTED_NODE_COLOR;
     ctx.strokeStyle = rgbToCSS(strokeColor);
-    ctx.lineWidth = 1 / opts.zoom;
+    ctx.lineWidth = lineScale(opts) / opts.zoom;
     ctx.fillStyle = rgbToCSS(PREDICTED_FILL_COLOR, 0.5);
     ctx.fill();
     ctx.stroke();
   } else if (node.visible) {
     ctx.strokeStyle = rgbToCSS(color);
-    ctx.lineWidth = 1 / opts.zoom;
+    ctx.lineWidth = lineScale(opts) / opts.zoom;
     ctx.fillStyle = rgbToCSS(color, 0.5);
     ctx.fill();
     ctx.stroke();
   } else {
     // Non-visible: hollow circle, thin border
     ctx.strokeStyle = rgbToCSS(color);
-    ctx.lineWidth = 0.5 / opts.zoom;
+    ctx.lineWidth = (0.5 * lineScale(opts)) / opts.zoom;
     ctx.fillStyle = "transparent";
     ctx.stroke();
   }
@@ -274,7 +281,7 @@ function renderLineEdge(
   ctx.moveTo(src.x, src.y);
   ctx.lineTo(dst.x, dst.y);
   ctx.strokeStyle = rgbToCSS(color, alpha);
-  ctx.lineWidth = (isPredicted ? 1 : 2) / opts.zoom;
+  ctx.lineWidth = ((isPredicted ? 1 : 2) * lineScale(opts)) / opts.zoom;
   ctx.stroke();
   ctx.restore();
 }
@@ -295,8 +302,8 @@ function renderWedgeEdge(
   const nx = -dy / len;
   const ny = dx / len;
 
-  const srcWidth = (3 / opts.zoom);
-  const dstWidth = (1 / opts.zoom);
+  const srcWidth = (3 * lineScale(opts)) / opts.zoom;
+  const dstWidth = lineScale(opts) / opts.zoom;
 
   // A wedge (filled shape) can't be dashed, so an edge touching a non-visible
   // node just renders dimmer than a fully-detected one.

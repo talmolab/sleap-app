@@ -56,6 +56,7 @@ import {
 } from "@/components/ui/tooltip";
 import { PredictedInstance } from "@talmolab/sleap-io.js";
 import { instanceNamedPoints } from "@/lib/instancePoints";
+import { meanNodeScore } from "@/lib/meanNodeScore";
 import type { Instance, Labels } from "../../types";
 
 function isPredicted(instance: Instance): instance is PredictedInstance {
@@ -222,6 +223,7 @@ function InstanceRow({
   distinctlyColor,
   colorPredicted,
   projectHasTracks,
+  showMeanNodeScore,
   visibilityChecked,
   viewOnlyChecked,
   invisibleNodesChecked,
@@ -242,6 +244,7 @@ function InstanceRow({
   distinctlyColor: string;
   colorPredicted: boolean;
   projectHasTracks: boolean;
+  showMeanNodeScore: boolean;
   visibilityChecked: boolean;
   viewOnlyChecked: boolean;
   invisibleNodesChecked: boolean;
@@ -268,6 +271,7 @@ function InstanceRow({
   const visibleNodes = instance.nVisible;
   const totalNodes = instance.points.length;
   const score = predicted ? (instance as PredictedInstance).score : null;
+  const nodeScore = showMeanNodeScore && predicted ? meanNodeScore(instance.points) : null;
 
   // Inline track rename (double-click the name; propagates to all instances).
   const [editingTrack, setEditingTrack] = useState(false);
@@ -348,6 +352,11 @@ function InstanceRow({
       <TableCell className="py-0.5 px-2 text-xs text-right tabular-nums text-muted-foreground">
         {score !== null ? score.toFixed(2) : "--"}
       </TableCell>
+      {showMeanNodeScore && (
+        <TableCell className="py-0.5 px-2 text-xs text-right tabular-nums text-muted-foreground">
+          {nodeScore !== null ? nodeScore.toFixed(2) : "--"}
+        </TableCell>
+      )}
       <TableCell className="py-0.5 px-2">
         {/* One row, never stacked; the table (in the panel's overflow-auto
             container) scrolls horizontally when the sidebar is too narrow to
@@ -488,6 +497,7 @@ export function InstancesPanel() {
   const palette = useAppStore((s) => s.palette);
   const distinctlyColor = useAppStore((s) => s.distinctlyColor);
   const colorPredicted = useAppStore((s) => s.colorPredicted);
+  const showMeanNodeScore = useAppStore((s) => s.showMeanNodeScore);
   const trackColorOverrides = useAppStore((s) =>
     getActiveTrackOverrides(s.trackColorOverrides, s.projectPath, s.filename),
   );
@@ -698,6 +708,14 @@ export function InstancesPanel() {
                 <TableHead className="py-1 px-2 text-xs font-normal text-right h-auto border-b">
                   Score
                 </TableHead>
+                {showMeanNodeScore && (
+                  <TableHead
+                    className="py-1 px-2 text-xs font-normal text-right h-auto border-b"
+                    title="Average confidence of the nodes the model placed (View ▸ Show Mean Node Score)"
+                  >
+                    Mean node score
+                  </TableHead>
+                )}
                 <TableHead className="py-1 px-2 text-xs font-normal text-right h-auto border-b">
                   Display
                 </TableHead>
@@ -726,6 +744,7 @@ export function InstancesPanel() {
                     distinctlyColor={distinctlyColor}
                     colorPredicted={colorPredicted}
                     projectHasTracks={projectHasTracks}
+                    showMeanNodeScore={showMeanNodeScore}
                     visibilityChecked={visibilityChecked}
                     viewOnlyChecked={viewOnlyInstance === inst}
                     invisibleNodesChecked={instanceShowsNonVisible(

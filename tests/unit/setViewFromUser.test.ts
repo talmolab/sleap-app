@@ -34,6 +34,15 @@ describe("setViewFromUser", () => {
     expect(s.fit).toBe(false);
   });
 
+  // Fit View to Selection (follow) and Actual Size would also snap the zoom box back.
+  it("turns off Fit View to Selection and Actual Size too", () => {
+    useAppStore.setState({ followSelection: true, actualSize: true });
+    useAppStore.getState().setViewFromUser({ zoom: 2, panX: 0, panY: 0 });
+    const s = useAppStore.getState();
+    expect(s.followSelection).toBe(false);
+    expect(s.actualSize).toBe(false);
+  });
+
   // The view is per session, like the rest of the canvas zoom.
   it("is not saved with the preferences", () => {
     expect(PERSISTED_KEYS).not.toContain("userView");
