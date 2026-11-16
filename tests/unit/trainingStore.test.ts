@@ -2218,3 +2218,52 @@ describe("markEpochBegin / epochStartedAt", () => {
   });
 });
 
+// At inference the centered-instance model crops around the anchor the CENTROID
+// model finds, so the two configs must name the same anchor_part. The UI's one
+// Anchor Part picker used to update only the centered-instance config.
+describe("top-down anchor part is shared by the centroid and centered-instance configs", () => {
+  const profile = (name: string) =>
+    readFileSync(join(import.meta.dir, "../../src/assets/training_profiles", name), "utf-8");
+  const anchorOf = (text: string, head: string) =>
+    (yaml.load(text) as { model_config: { head_configs: Record<string, { confmaps: { anchor_part: string | null } }> } })
+      .model_config.head_configs[head].confmaps.anchor_part;
+  const hpOf = (slot: string) =>
+    useTrainingStore.getState().config.configs.find((c) => c.slot === slot)!.hyperparams;
+
+  beforeEach(() => {
+    const store = useTrainingStore.getState();
+    store.reset();
+    store.addConfigFile(store.parseYamlConfig(profile("baseline_medium_rf.centroid.yaml"), "centroid.yaml", "centroid")!);
+    store.addConfigFile(store.parseYamlConfig(profile("baseline_medium_rf.topdown.yaml"), "ci.yaml", "centered_instance")!);
+  });
+
+  it("picking an anchor on the centered-instance config also sets the centroid's", () => {
+    useTrainingStore.getState().updateConfigHyperparams("centered_instance", { anchorPart: "thorax" });
+    expect(hpOf("centroid").anchorPart).toBe("thorax");
+    const centroid = useTrainingStore.getState().config.configs.find((c) => c.slot === "centroid")!;
+    expect(anchorOf(applyHyperparamsToYaml(centroid.content, centroid.hyperparams), "centroid")).toBe("thorax");
+  });
+
+  it("clearing the anchor clears both, overwriting a stale anchor_part in the file", () => {
+    const store = useTrainingStore.getState();
+    store.updateConfigHyperparams("centered_instance", { anchorPart: "thorax" });
+    store.updateConfigHyperparams("centered_instance", { anchorPart: null });
+    expect(hpOf("centroid").anchorPart).toBeNull();
+    const stale = profile("baseline_medium_rf.centroid.yaml").replace("anchor_part: null", "anchor_part: thorax");
+    expect(anchorOf(applyHyperparamsToYaml(stale, hpOf("centroid")), "centroid")).toBeNull();
+  });
+
+  it("loading a config that names an anchor sets it for its partner", () => {
+    const store = useTrainingStore.getState();
+    const withAnchor = profile("baseline_medium_rf.topdown.yaml").replace("anchor_part: null", "anchor_part: head");
+    store.addConfigFile(store.parseYamlConfig(withAnchor, "ci.yaml", "centered_instance")!);
+    expect(hpOf("centroid").anchorPart).toBe("head");
+  });
+
+  it("leaves other settings and non-top-down configs alone", () => {
+    useTrainingStore.getState().updateConfigHyperparams("centroid", { sigma: 7 });
+    expect(hpOf("centroid").sigma).toBe(7);
+    expect(hpOf("centered_instance").sigma).not.toBe(7);
+  });
+});
+

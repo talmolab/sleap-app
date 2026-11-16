@@ -364,6 +364,14 @@ export const useInferenceStore = create<InferenceState>()((set) => ({
   },
 
   startInference: async (config: InferenceConfig, remoteOpts?: RemoteInferenceOptions) => {
+    // Local inference reads the saved project file (see runInference); a run
+    // on it while the window holds unsaved labels would predict the wrong
+    // frames and miss newly labeled ones for "exclude user labeled".
+    if (!remoteOpts?.remote) {
+      const { confirmSaveBeforeRun } = await import("@/lib/unsavedGuard");
+      if (!(await confirmSaveBeforeRun(useAppStore.getState().projectPath, "inference"))) return;
+    }
+
     set({
       status: "running",
       error: null,

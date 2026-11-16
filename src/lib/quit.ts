@@ -67,9 +67,114 @@ async function closeThisWindow(): Promise<void> {
   await getCurrentWindow().destroy();
 }
 
-/** Quit the WHOLE app, prompting if there are unsaved changes. */
+// ── Quit across windows ─────────────────────────────────────────────────────
+// Each desktop window is its own JS heap with its own project, but Quit exits
+// the whole process — so the quitting window must ask every OTHER window about
+// ITS unsaved work too. Request/reply over targeted Tauri events:
+//   requester → window  QUIT_ASK    { id, to, from }
+//   window → requester  QUIT_REPLY  { id, phase: "ack", dirty }       (at once)
+//                       QUIT_REPLY  { id, phase: "decision", proceed } (if dirty,
+//                                    after that window's own Quit prompt)
+const QUIT_ASK = "quit-ask";
+const QUIT_REPLY = "quit-reply";
+/** How long to wait for a window to acknowledge. A window that never answers
+ *  (no listener — still booting) has no project of its own to lose. The
+ *  user's decision itself is never timed out. */
+const QUIT_ACK_TIMEOUT_MS = 5000;
+
+interface QuitAsk { id: string; to: string; from: string }
+type QuitReply =
+  | { id: string; phase: "ack"; dirty: boolean }
+  | { id: string; phase: "decision"; proceed: boolean };
+
+/** How the quitting window reaches its peers (a seam for tests). */
+export interface QuitPeers {
+  /** Labels of every window except this one. */
+  otherWindows(): Promise<string[]>;
+  /** Ask `label` about unsaved work: null if it didn't answer in time; else
+   *  whether it's dirty and, when it is, its user's Quit decision. */
+  ask(label: string): Promise<{ dirty: boolean; decision: Promise<boolean> } | null>;
+}
+
+/**
+ * Walk the other windows one at a time; each one with unsaved work shows its
+ * own Quit prompt. Resolves false as soon as any user cancels, true once every
+ * window agreed (or had nothing to lose).
+ */
+export async function confirmOtherWindows(peers: QuitPeers): Promise<boolean> {
+  for (const label of await peers.otherWindows()) {
+    const reply = await peers.ask(label);
+    if (!reply?.dirty) continue;
+    if (!(await reply.decision)) return false;
+  }
+  return true;
+}
+
+async function tauriQuitPeers(): Promise<QuitPeers> {
+  const { getCurrentWebviewWindow, getAllWebviewWindows } = await import(
+    "@tauri-apps/api/webviewWindow"
+  );
+  const { emitTo } = await import("@tauri-apps/api/event");
+  const me = getCurrentWebviewWindow();
+  return {
+    async otherWindows() {
+      try {
+        return (await getAllWebviewWindows()).map((w) => w.label).filter((l) => l !== me.label);
+      } catch (err) {
+        console.warn("[quit] window enumeration failed; checking this window only:", err);
+        return [];
+      }
+    },
+    async ask(label) {
+      const id = crypto.randomUUID();
+      let onAck!: (dirty: boolean) => void;
+      let onDecision!: (proceed: boolean) => void;
+      const ack = new Promise<boolean>((r) => (onAck = r));
+      const decision = new Promise<boolean>((r) => (onDecision = r));
+      const unlisten = await me.listen<QuitReply>(QUIT_REPLY, ({ payload }) => {
+        if (payload?.id !== id) return;
+        if (payload.phase === "ack") onAck(payload.dirty);
+        else onDecision(payload.proceed);
+      });
+      await emitTo(label, QUIT_ASK, { id, to: label, from: me.label } satisfies QuitAsk);
+      const dirty = await Promise.race([
+        ack,
+        new Promise<null>((r) => setTimeout(() => r(null), QUIT_ACK_TIMEOUT_MS)),
+      ]);
+      if (!dirty) {
+        unlisten();
+        return dirty === null ? null : { dirty: false, decision: Promise.resolve(true) };
+      }
+      return { dirty: true, decision: decision.finally(unlisten) };
+    },
+  };
+}
+
+/**
+ * Answer other windows' Quit checks: report whether this window has unsaved
+ * work and, if so, bring it forward and ask its user. Call once at startup.
+ */
+async function setupQuitPeerListener(): Promise<void> {
+  const { getCurrentWebviewWindow } = await import("@tauri-apps/api/webviewWindow");
+  const { emitTo } = await import("@tauri-apps/api/event");
+  const me = getCurrentWebviewWindow();
+  await me.listen<QuitAsk>(QUIT_ASK, async ({ payload }) => {
+    if (!payload || payload.to !== me.label) return;
+    const reply = (r: QuitReply) => emitTo(payload.from, QUIT_REPLY, r);
+    const dirty = hasUnsavedWork(useAppStore.getState());
+    await reply({ id: payload.id, phase: "ack", dirty });
+    if (!dirty) return;
+    const { focusWindow } = await import("./windowRouting");
+    await focusWindow(me.label);
+    const proceed = await confirmUnsaved();
+    await reply({ id: payload.id, phase: "decision", proceed });
+  });
+}
+
+/** Quit the WHOLE app, prompting in every window that has unsaved changes. */
 export async function quitApp(): Promise<void> {
   if (!(await confirmUnsaved())) return;
+  if (isTauri && !(await confirmOtherWindows(await tauriQuitPeers()))) return;
   await forceQuit();
 }
 
@@ -82,6 +187,10 @@ export async function quitApp(): Promise<void> {
  */
 export async function setupCloseHandler(): Promise<void> {
   if (!isTauri) return;
+
+  await setupQuitPeerListener().catch((err) =>
+    console.warn("[quit] couldn't listen for other windows' quit checks:", err),
+  );
 
   const { getCurrentWindow } = await import("@tauri-apps/api/window");
   const appWindow = getCurrentWindow();
