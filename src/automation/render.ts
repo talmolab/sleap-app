@@ -12,6 +12,7 @@ import { buildExportRenderedInstances } from "@/lib/videoExport";
 import { FOCUS_DIM_OPACITY, renderInstances } from "@/canvas/SkeletonRenderer";
 import { frameToCanvas } from "@/lib/frameCanvas";
 import { cropOrigin, toImageCoords } from "@/lib/cropTransform";
+import { poseOf, type PoseSnapshot } from "@/stores/proposalStore";
 import { AutomationError } from "./errors";
 import { findQcFlag, flagTarget, requireLabels } from "./qcFlags";
 import { frameToRender, instanceBBox, planCrop, type RenderTransform } from "./coords";
@@ -23,6 +24,10 @@ const MAX_RENDERS = 50;
 
 export interface RenderRecord {
   renderId: string;
+  /** The project it was rendered from; a render from another project is refused. */
+  labels?: object | null;
+  /** The flagged instance's pose when rendered (what Claude looked at). */
+  pose?: PoseSnapshot;
   flagId: string;
   videoIdx: number;
   frameIdx: number;
@@ -45,7 +50,7 @@ export function rememberRender(r: Omit<RenderRecord, "renderId">): RenderRecord 
 
 export function getRender(renderId: string): RenderRecord {
   const r = renders.get(renderId);
-  if (!r) {
+  if (!r || (r.labels && r.labels !== useAppStore.getState().labels)) {
     throw new AutomationError(
       "UNKNOWN_RENDER",
       `Unknown render_id "${renderId}" (only the last ${MAX_RENDERS} are kept). Call render_flag again.`,
@@ -58,6 +63,12 @@ export function getRender(renderId: string): RenderRecord {
 export function clearRenders(): void {
   renders.clear();
 }
+
+// A render's transform belongs to one project's video: forget them all when
+// another project loads.
+useAppStore.subscribe((s, prev) => {
+  if (s.labels !== prev.labels) clearRenders();
+});
 
 export interface RenderedNodeInfo {
   name: string;
@@ -163,6 +174,8 @@ export async function renderFlag(flagId: string, opts: { maxEdge?: number } = {}
   const png = new Uint8Array(await blob.arrayBuffer());
 
   const rec = rememberRender({
+    labels,
+    pose: instance ? poseOf(instance) : undefined,
     flagId: flag.id,
     videoIdx: flag.videoIdx,
     frameIdx: flag.frameIdx,

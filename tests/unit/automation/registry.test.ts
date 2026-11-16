@@ -106,6 +106,54 @@ describe("tool registry", () => {
     expect(listed.proposals[0].after).toEqual({ nose: [260, 70], tail: null });
   });
 
+  // Why: a render from a project that was since closed has the old video's crop; using it would put nodes in the wrong place.
+  it("refuses a render_id from another project", async () => {
+    const { getRender } = await import("@/automation/render");
+    const r = rememberRender({
+      labels: project.labels,
+      flagId: "v0:f20:i1:anomaly",
+      videoIdx: 0,
+      frameIdx: 20,
+      instIdx: 1,
+      transform: { originX: 0, originY: 0, scale: 1, offsetX: 0, offsetY: 0 },
+      width: 100,
+      height: 100,
+    });
+    expect(getRender(r.renderId).renderId).toBe(r.renderId);
+    await seedQc(); // opens a new project (same flags)
+    expect(
+      await errCode(() =>
+        registry.call("propose_fix", { flag_id: "v0:f20:i1:anomaly", render_id: r.renderId, nodes: { nose: [1, 1] }, reason: "x" }),
+      ),
+    ).toBe("UNKNOWN_RENDER");
+  });
+
+  // Why: if a node moved after Claude looked, its fix was made for a pose that isn't there any more.
+  it("judges a fix against the pose Claude rendered", async () => {
+    const inst = project.labels.find({ video: project.video, frameIdx: 20 })[0].userInstances[1];
+    const renderedPose = inst.points.map((p) => [p.xy[0], p.xy[1], p.visible] as [number, number, boolean]);
+    const r = rememberRender({
+      labels: project.labels,
+      pose: renderedPose,
+      flagId: "v0:f20:i1:anomaly",
+      videoIdx: 0,
+      frameIdx: 20,
+      instIdx: 1,
+      transform: { originX: 0, originY: 0, scale: 1, offsetX: 0, offsetY: 0 },
+      width: 400,
+      height: 400,
+    });
+    inst.points[2].xy = [1, 2]; // the user moves a node after the render
+    const out = json(
+      await registry.call("propose_fix", { flag_id: "v0:f20:i1:anomaly", render_id: r.renderId, nodes: { nose: [5, 5] }, reason: "x" }),
+    );
+    expect(out.status).toBe("outdated");
+    const { isOutdated } = await import("@/stores/proposalStore");
+    expect(isOutdated(useProposalStore.getState().proposals[0])).toBe(true);
+    // "before" is what Claude saw, not the pose now.
+    expect(useProposalStore.getState().proposals[0].before).toEqual({ 0: [300, 100] });
+  });
+
   // Why: mistakes in Claude's arguments should come back as readable errors, not crashes or wrong edits.
   it("rejects unknown tools, bad arguments, unknown nodes, wrong renders and off-picture points", async () => {
     expect(await errCode(() => registry.call("save_project", {}))).toBe("UNKNOWN_TOOL");

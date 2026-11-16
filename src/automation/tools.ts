@@ -270,7 +270,16 @@ export const proposeFixTool: Tool = {
     const p = useProposalStore.getState().addFix(
       { flagId: flag.id, videoIdx: flag.videoIdx, frameIdx: flag.frameIdx, instIdx: flag.instIdx, reason: args.reason as string },
       edits,
+      { pose: render.pose },
     );
+    if (isOutdated(p)) {
+      return textResult({
+        proposal_id: p.id,
+        status: "outdated",
+        message:
+          "The pose changed after your render_flag, so this proposal can't be accepted. Call render_flag again and propose from the new picture.",
+      });
+    }
     return textResult({
       proposal_id: p.id,
       status: "pending",

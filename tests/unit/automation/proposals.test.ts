@@ -14,7 +14,8 @@ let project: ReturnType<typeof loadFixtureWithOneInstance>;
 
 /** The second user instance on frame 20 (not the one selected at start). */
 const target = { flagId: "v0:f20:i1:anomaly", videoIdx: 0, frameIdx: 20, instIdx: 1, reason: "nose was on the ear" };
-const inst = () => project.labels.find({ video: project.video, frameIdx: 20 })[0].userInstances[1];
+const lf20 = () => project.labels.find({ video: project.video, frameIdx: 20 })[0];
+const inst = () => lf20().userInstances[1];
 const pose = () => inst().points.map((p) => [p.xy[0], p.xy[1], p.visible]);
 
 async function codeOf(fn: () => unknown) {
@@ -58,6 +59,32 @@ describe("proposal store", () => {
     ctx.undo();
     expect(pose()).toEqual(start);
     expect(ctx.canUndo).toBe(false);
+  });
+
+  // Why: Accept must edit the proposal's instance, never whichever instance happens to be selected.
+  it("accept edits the proposal's instance even with another one selected", async () => {
+    const other = lf20().userInstances[0];
+    const otherPose = other.points.map((p) => [...p.xy]);
+    useAppStore.getState().setFrameIdx(20);
+    useAppStore.getState().setInstance(other);
+    const p = useProposalStore.getState().addFix(target, { 0: [5, 6] });
+    // Pass no ctx, so accept awaits its import first; select the other instance meanwhile.
+    const done = useProposalStore.getState().accept(p.id);
+    useAppStore.getState().setInstance(other);
+    await done;
+    expect(inst().points[0].xy).toEqual([5, 6]);
+    expect(other.points.map((q) => [...q.xy])).toEqual(otherPose);
+  });
+
+  // Why: a double click on Accept must apply the fix once, as one undo step.
+  it("applies a fix once when accepted twice at the same time", async () => {
+    const p = useProposalStore.getState().addFix(target, { 0: [5, 6] });
+    const results = await Promise.allSettled([
+      useProposalStore.getState().accept(p.id),
+      useProposalStore.getState().accept(p.id),
+    ]);
+    expect(results.filter((r) => r.status === "fulfilled")).toHaveLength(1);
+    expect(inst().points[0].xy).toEqual([5, 6]);
   });
 
   // Why: if the user changed the pose after Claude looked, Claude's fix may be wrong now.

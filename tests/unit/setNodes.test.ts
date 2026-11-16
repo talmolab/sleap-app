@@ -42,6 +42,24 @@ describe("SetNodes", () => {
     expect(dirtyFrameTracker.needsFullSnapshot).toBe(false);
   });
 
+  // Why: an accepted fix names its instance, so the edit can't land on whatever is selected.
+  it("edits the given instance, not the selection, and only on the frame on screen", async () => {
+    const lf = useAppStore.getState().labeledFrame!;
+    const selected = useAppStore.getState().instance!;
+    const { makeAutomationProject } = await import("./helpers/automationFixture");
+    const stranger = makeAutomationProject().labels.labeledFrames[0].instances[0];
+    await ctx.execute(SetNodes, { nodes: { 0: [7, 7] }, instance: stranger });
+    expect(stranger.points[0].xy).toEqual([100, 100]);
+    expect(lf.instances[0]).toBe(selected);
+    // A second instance on the same frame (frame 20 has two).
+    useAppStore.getState().setFrameIdx(20);
+    const lf20 = useAppStore.getState().labeledFrame!;
+    useAppStore.getState().setInstance(lf20.instances[0]);
+    await ctx.execute(SetNodes, { nodes: { 0: [7, 7] }, instance: lf20.instances[1] });
+    expect(lf20.instances[1].points[0].xy).toEqual([7, 7]);
+    expect(lf20.instances[0].points[0].xy).toEqual([100, 100]);
+  });
+
   // Why: with no instance selected there's nothing to edit, and nothing should change.
   it("does nothing without a selected instance", async () => {
     useAppStore.getState().setInstance(null);

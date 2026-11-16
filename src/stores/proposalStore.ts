@@ -51,7 +51,12 @@ export interface ProposalTarget {
 
 interface ProposalState {
   proposals: Proposal[];
-  addFix: (target: ProposalTarget, nodes: NodeEdits) => Proposal;
+  /**
+   * `pose` is the pose Claude looked at (taken by render_flag). The proposal
+   * is judged against it, so a node moved between the render and the
+   * proposal makes the proposal outdated. Defaults to the pose now.
+   */
+  addFix: (target: ProposalTarget, nodes: NodeEdits, opts?: { pose?: PoseSnapshot }) => Proposal;
   addIgnore: (target: ProposalTarget) => Proposal;
   /** Apply a pending proposal. `ctx` defaults to the app's command context. */
   accept: (id: string, ctx?: CommandContext) => Promise<void>;
@@ -73,9 +78,16 @@ export function proposalInstance(p: Pick<Proposal, "videoIdx" | "frameIdx" | "in
   return lf?.userInstances[p.instIdx] ?? null;
 }
 
+/** An instance's pose as [x, y, visible] per node, as seen at one moment. */
+export type PoseSnapshot = [number, number, boolean][];
+
+export function poseOf(inst: Instance): PoseSnapshot {
+  return inst.points.map((p) => [p.xy[0], p.xy[1], p.visible]);
+}
+
 /** An instance's whole pose as a string, to tell whether it changed. */
 export function poseFingerprint(inst: Instance): string {
-  return JSON.stringify(inst.points.map((p) => [p.xy[0], p.xy[1], p.visible]));
+  return JSON.stringify(poseOf(inst));
 }
 
 /** Whether the instance changed (or went away) since the proposal was made. */
@@ -120,12 +132,13 @@ export const useProposalStore = create<ProposalState>((set, get) => {
   return {
     proposals: [],
 
-    addFix: (t, nodes) => {
+    addFix: (t, nodes, opts) => {
       const inst = requireInstance(t);
+      const pose = opts?.pose ?? poseOf(inst);
       const before: NodeEdits = {};
       for (const k of Object.keys(nodes)) {
-        const p = inst.points[Number(k)];
-        before[Number(k)] = p && p.visible && Number.isFinite(p.xy[0]) ? [p.xy[0], p.xy[1]] : null;
+        const p = pose[Number(k)];
+        before[Number(k)] = p && p[2] && Number.isFinite(p[0]) ? [p[0], p[1]] : null;
       }
       return add({
         ...t,
@@ -133,7 +146,7 @@ export const useProposalStore = create<ProposalState>((set, get) => {
         kind: "fix",
         before,
         after: { ...nodes },
-        fingerprint: poseFingerprint(inst),
+        fingerprint: JSON.stringify(pose),
         status: "pending",
       });
     },
@@ -164,17 +177,29 @@ export const useProposalStore = create<ProposalState>((set, get) => {
         setStatus(id, "accepted");
         return;
       }
+      // Resolve the command context first: no await may fall between going to
+      // the instance and running the command, or the selection could change.
+      const cc = ctx ?? (await import("@/commands/CommandContext")).commandContext;
+      // Re-check after the await: a second Accept, or an edit, may have landed.
+      if (get().proposals.find((x) => x.id === id)?.status !== "pending") {
+        throw new AutomationError("NOT_PENDING", `Proposal "${id}" was already decided.`);
+      }
+      if (isOutdated(p)) {
+        throw new AutomationError("OUTDATED", "This instance changed after Claude's suggestion, so it can't be applied.");
+      }
       const inst = proposalInstance(p)!;
       const app = useAppStore.getState();
       const video = app.labels!.videos[p.videoIdx];
-      // Commands act on the selection: go there first. setVideo jumps frames,
-      // and setFrameIdx clears the selection, so this order matters.
+      // The undo snapshot is of the frame on screen: go there first. setVideo
+      // jumps frames and setFrameIdx clears the selection, so this order matters.
+      // setFrameIdx also sets the frame on screen (labeledFrame), which setVideo clears.
       if (app.video !== video) app.setVideo(video);
-      if (useAppStore.getState().frameIdx !== p.frameIdx) useAppStore.getState().setFrameIdx(p.frameIdx);
+      useAppStore.getState().setFrameIdx(p.frameIdx);
       useAppStore.getState().setInstance(inst);
-      const cc = ctx ?? (await import("@/commands/CommandContext")).commandContext;
-      await cc.execute(SetNodes, { nodes: p.after }, { undoLabel: undoLabel(p.reason) });
+      // The instance is passed explicitly, so SetNodes edits it whatever is selected.
+      const done = cc.execute(SetNodes, { nodes: p.after, instance: inst }, { undoLabel: undoLabel(p.reason) });
       setStatus(id, "accepted");
+      await done;
     },
 
     reject: (id) => {
