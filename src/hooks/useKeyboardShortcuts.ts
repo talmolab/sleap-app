@@ -95,20 +95,24 @@ export function useKeyboardShortcuts() {
         store().incrementFrameIdx(-STEP_SIZES.small);
       },
       [DEFAULT_SHORTCUTS["frame next medium step"]]: (e) => {
+        if (isTextInput(e)) return; // ⌘←/→ moves the caret in a text field
         e.preventDefault();
-        store().incrementFrameIdx(STEP_SIZES.medium);
+        store().incrementFrameIdx(store().mediumStepSize);
       },
       [DEFAULT_SHORTCUTS["frame prev medium step"]]: (e) => {
+        if (isTextInput(e)) return; // ⌘←/→ moves the caret in a text field
         e.preventDefault();
-        store().incrementFrameIdx(-STEP_SIZES.medium);
+        store().incrementFrameIdx(-store().mediumStepSize);
       },
       [DEFAULT_SHORTCUTS["frame next large step"]]: (e) => {
+        if (isTextInput(e)) return; // ⌘←/→ moves the caret in a text field
         e.preventDefault();
-        store().incrementFrameIdx(STEP_SIZES.large);
+        store().incrementFrameIdx(store().largeStepSize);
       },
       [DEFAULT_SHORTCUTS["frame prev large step"]]: (e) => {
+        if (isTextInput(e)) return; // ⌘←/→ moves the caret in a text field
         e.preventDefault();
-        store().incrementFrameIdx(-STEP_SIZES.large);
+        store().incrementFrameIdx(-store().largeStepSize);
       },
 
       // Skip to start/end

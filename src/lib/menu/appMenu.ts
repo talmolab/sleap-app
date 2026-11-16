@@ -17,6 +17,7 @@ import { QC_MODE_CHOICES } from "@/lib/instanceVisibility";
 import { toast } from "@/lib/notify";
 import { PredictedInstance } from "@talmolab/sleap-io.js";
 import { confirmDialog } from "@/stores/confirmStore";
+import { confirmAndResetPreferences } from "@/lib/preferences";
 import {
   confirmDeleteInstanceAndTrack,
   confirmDeleteUnusedTracks,
@@ -234,10 +235,15 @@ function fileMenu(s: MenuSnapshot): TopMenu {
       ],
     },
   ];
+  items.push(SEP);
+  if (s.isTauri) {
+    items.push({ kind: "item", id: "file.reveal", label: "Reveal Project in File Manager", enabled: s.hasProjectPath, run: revealProjectInFileManager });
+  }
+  // PyQt SLEAP: File ▸ "Reset preferences to defaults...", just above Open
+  // Preferences Directory. Asks first (Tauri-safe in-app confirm).
+  items.push({ kind: "item", id: "file.resetPreferences", label: "Reset Preferences to Defaults...", run: () => void confirmAndResetPreferences() });
   if (s.isTauri) {
     items.push(
-      SEP,
-      { kind: "item", id: "file.reveal", label: "Reveal Project in File Manager", enabled: s.hasProjectPath, run: revealProjectInFileManager },
       { kind: "item", id: "file.preferencesDir", label: "Open Preferences Directory...", run: openPreferencesDirectory },
       { kind: "item", id: "file.clearTranscodeCache", label: "Clear Video Transcode Cache...", run: clearVideoTranscodeCache },
     );
@@ -298,6 +304,8 @@ function goMenu(s: MenuSnapshot): TopMenu {
     items: [
       go("toFrame", "Go to Frame...", () => store().setGoToFrameDialogOpen(true), "$mod+KeyJ"),
       go("selectToFrame", "Select to Frame...", () => store().setSelectToFrameDialogOpen(true), "$mod+Shift+KeyJ"),
+      // PyQt's "medium/large step size" prefs (preferences.yaml only there).
+      { kind: "item", id: "go.frameStepSizes", label: "Frame Step Sizes...", run: () => store().set("frameStepSizesDialogOpen", true) },
       SEP,
       go("nextLabeled", "Next Labeled Frame", exec(GoNextLabeledFrame), "Alt+ArrowRight"),
       go("prevLabeled", "Previous Labeled Frame", exec(GoPrevLabeledFrame), "Alt+ArrowLeft"),

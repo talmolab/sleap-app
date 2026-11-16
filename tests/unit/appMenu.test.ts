@@ -206,3 +206,37 @@ describe("searchableCommands", () => {
     expect(off && "enabled" in off ? off.enabled : null).toBe(false);
   });
 });
+
+describe("Preferences parity (PyQt File ▸ Reset preferences to defaults…, step sizes)", () => {
+  // PyQt has the reset in File, just above Open Preferences Directory; the
+  // browser has no preferences folder but still needs the reset.
+  it("offers Reset Preferences to Defaults in the browser and on desktop", () => {
+    for (const isTauri of [true, false]) {
+      const items = top(buildAppMenu({ ...BASE, isTauri }), "file").items;
+      const ids = items.map((n) => ("id" in n ? n.id : n.kind));
+      const reset = ids.indexOf("file.resetPreferences");
+      expect(reset).toBeGreaterThan(-1);
+      if (isTauri) expect(ids[reset + 1]).toBe("file.preferencesDir");
+    }
+  });
+
+  // The reset must ask first, never reset straight from the menu click.
+  it("asks before resetting", async () => {
+    const { useConfirmStore } = await import("@/stores/confirmStore");
+    const item = find(buildAppMenu(BASE), "file.resetPreferences");
+    if (item?.kind !== "item") throw new Error("missing");
+    void item.run();
+    expect(useConfirmStore.getState().request?.title).toBe("Reset Preferences");
+    useConfirmStore.getState().respond(false);
+  });
+
+  // Step sizes are a preference, so the item works with no project open.
+  it("opens Go ▸ Frame Step Sizes… even with no project", async () => {
+    const { useAppStore } = await import("@/stores/appStore");
+    const item = find(buildAppMenu({ ...BASE, projectLoaded: false }), "go.frameStepSizes");
+    if (item?.kind !== "item") throw new Error("missing");
+    expect(item.enabled ?? true).toBe(true);
+    await item.run();
+    expect(useAppStore.getState().frameStepSizesDialogOpen).toBe(true);
+  });
+});

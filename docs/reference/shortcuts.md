@@ -121,6 +121,8 @@ Mouse and trackpad, on the video canvas.
 | Double-click a user instance | Add the nodes it's missing, as non-visible nodes to drag into place (as in SLEAP) |
 | Drag a selected node | Move all selected nodes together |
 | ++alt++ + drag a node | Move the whole instance |
+| ++alt++ + drag on empty canvas | Draw a box and zoom to it, as in SLEAP |
+| ++alt++ + double-click empty canvas | Reset the zoom |
 | ++alt++ + scroll | Rotate the selected instance |
 | Right-click a node | Flip it between visible and non-visible |
 | Right-click an instance's body or empty canvas | Context menu: add, copy, paste, delete or merge instances, assign a track, mark the frame negative |

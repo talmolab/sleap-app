@@ -54,6 +54,7 @@ import {
 } from "@/lib/panelLayout";
 import { buildTutorialSteps, type TutorialStep } from "@/lib/tutorial/steps";
 import { isTauri } from "@/platform/index";
+import { STEP_SIZES, isValidStepSize } from "@/lib/shortcuts";
 
 // Required before immer can draft Set/Map fields (hiddenInstances /
 // showNonVisibleOverride). Idempotent global; must run before store creation.
@@ -200,6 +201,9 @@ export interface AppState {
    * each fire without a separate clear step. Transient — not persisted.
    */
   resetViewNonce: number;
+  /** Last view set by `setViewFromUser`; VideoPlayer applies it when `userViewNonce` bumps. Transient. */
+  userView: { zoom: number; panX: number; panY: number } | null;
+  userViewNonce: number;
   colorPredicted: boolean;
   /** Append the ` (0.81)` prediction score to on-canvas track labels. Default off (#316). Persisted. */
   showTrackScore: boolean;
@@ -245,6 +249,10 @@ export interface AppState {
   showInset: boolean;
   trailLength: number;
   trailShade: string;
+  /** Frames moved by Ctrl+Left/Right (PyQt pref "medium step size"). Persisted. */
+  mediumStepSize: number;
+  /** Frames moved by Ctrl+Shift+Left/Right (PyQt pref "large step size"). Persisted. */
+  largeStepSize: number;
   /** Magnifier plays the ±temporalWindow frames around the cursor. Persisted. */
   temporalLoupe: boolean;
   /** The magnifier includes frames before the current one. Persisted. */
@@ -491,6 +499,8 @@ export interface AppState {
   newProjectDialogOpen: boolean;
   goToFrameDialogOpen: boolean;
   selectToFrameDialogOpen: boolean;
+  /** Go ▸ Frame Step Sizes… dialog. */
+  frameStepSizesDialogOpen: boolean;
   deletePredictionsDialogOpen: boolean;
   mergeProjectDialogOpen: boolean;
   /** Path to auto-load into the Merge dialog when it opens (seeded by an .slp drop). */
@@ -604,6 +614,14 @@ export interface AppState {
   setLabeledFrame: (frame: LabeledFrame | null) => void;
   setMarkedFrame: (marked: { video: Video; frameIdx: number } | null) => void;
   resetView: () => void;
+  /**
+   * The user set the canvas view by hand: the Alt+drag zoom box (`view`), or
+   * Alt+double-click (`null` = reset to the default view, via `resetView`).
+   * Turns off the zoom modes that would snap the view back on the next frame
+   * (Fit View to Instances, a pending Fit View to Selection). The one place to
+   * clear any further zoom mode (e.g. #481's follow-selection / actual size).
+   */
+  setViewFromUser: (view: { zoom: number; panX: number; panY: number } | null) => void;
   markChanged: () => void;
   touchFrame: () => void;
   clearChanges: () => void;
@@ -736,6 +754,8 @@ export const PERSISTED_KEYS: (keyof AppState)[] = [
   "showLabelingHints",
   "hasSeenLabelingHintsPrompt",
   "trailLength",
+  "mediumStepSize",
+  "largeStepSize",
   "temporalLoupe",
   "neighborFramesEarlier",
   "neighborFramesLater",
@@ -835,6 +855,8 @@ export const useAppStore = create<AppState>()(
       fit: false,
       fitSelection: false,
       resetViewNonce: 0,
+      userView: null,
+      userViewNonce: 0,
       colorPredicted: false,
       showTrackScore: false,
       showLabelingHints: true,
@@ -852,6 +874,8 @@ export const useAppStore = create<AppState>()(
       showInset: true,
       trailLength: 0,
       trailShade: "Normal",
+      mediumStepSize: STEP_SIZES.medium,
+      largeStepSize: STEP_SIZES.large,
       temporalLoupe: false,
       neighborFramesEarlier: true,
       neighborFramesLater: true,
@@ -934,6 +958,7 @@ export const useAppStore = create<AppState>()(
       newProjectDialogOpen: false,
       goToFrameDialogOpen: false,
       selectToFrameDialogOpen: false,
+      frameStepSizesDialogOpen: false,
       deletePredictionsDialogOpen: false,
       mergeProjectDialogOpen: false,
       mergeProjectSeedPath: null,
@@ -1264,6 +1289,18 @@ export const useAppStore = create<AppState>()(
         set((state) => {
           state.resetViewNonce += 1;
         }),
+
+      setViewFromUser: (view) => {
+        set((state) => {
+          state.fit = false;
+          state.fitSelection = false;
+          if (view) {
+            state.userView = { ...view };
+            state.userViewNonce += 1;
+          }
+        });
+        if (!view) get().resetView();
+      },
 
       markChanged: () => {
         // Record the active frame as dirty for the incremental autosave BEFORE
@@ -1937,6 +1974,10 @@ export const useAppStore = create<AppState>()(
           overlayModelPaths: [],
           // Migrate the pre-tri-state #137 boolean to the navigationDomain enum.
           navigationDomain: navigationDomainFromPersisted(p),
+          // A hand-edited or corrupt step size would make Ctrl+arrow jump
+          // nowhere (or NaN frames): fall back to the default.
+          mediumStepSize: isValidStepSize(p.mediumStepSize) ? p.mediumStepSize : current.mediumStepSize,
+          largeStepSize: isValidStepSize(p.largeStepSize) ? p.largeStepSize : current.largeStepSize,
           panelOrder: reconcilePanelOrder(p.panelOrder),
           hiddenPanels: reconcileHiddenPanels(p.hiddenPanels),
           // Seed the open-panel stack: a stored set wins; a legacy single
