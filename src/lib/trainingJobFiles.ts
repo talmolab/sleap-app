@@ -7,7 +7,9 @@
  * - one sleap-nn config per model, `<head>.yaml` (e.g. `centroid.yaml`),
  * - `train-script.sh`, one `sleap-nn train` line per model, in pipeline order,
  * - `inference-script.sh`, the post-training inference as `sleap-nn track`
- *   lines (empty when the target is "Nothing"), and
+ *   lines (empty when the target is "Nothing"). Like PyQt, targets that name
+ *   a video read the original video file (by its absolute path); suggested /
+ *   user-labeled / predicted frames read the labels file, and
  * - `jobs.yaml`, the same jobs as data.
  *
  * PyQt's scripts call `sleap train` / `sleap track`; these call sleap-nn
@@ -56,9 +58,11 @@ export interface TrainingJobInputs {
   /** Validation labels file (Training panel "Validation Labels"), if any. */
   validationLabelsPath?: string;
   /**
-   * True when `labelsPath` is a package with the frames' images inside it.
-   * Then every inference line reads the package, never the original videos,
-   * so the package also works on a machine without them.
+   * True when `labelsPath` is a training job package (`.pkg.slp`): it holds
+   * only the labeled videos, in a different order, and only their labeled
+   * (and maybe suggested) frames. Inference on suggested / user-labeled /
+   * predicted frames reads it; a video target can't (see `videoFile` below),
+   * so a video with no file of its own is left out of the script.
    */
   selfContained?: boolean;
   inference: {
@@ -238,11 +242,12 @@ export function buildTrainingJobFiles(inputs: TrainingJobInputs): TrainingJobFil
         skipUserLabeled: inputs.inference.skipUserLabeled,
       });
       const videos = labels?.videos ?? [];
-      // A video-scoped line reads the video's own file (PyQt does the same),
-      // unless the labels file is a self-contained package or the video has
-      // no file of its own.
+      // A video target (current frame, clip, whole video, all videos, random
+      // samples) reads the original video file, as PyQt does (its
+      // VideoItemForInference uses the video's own path). It can't read the
+      // package instead: the package's video indices differ from the
+      // project's, and sleap-nn on a .slp predicts only frames stored in it.
       const videoFile = (vi: number): string | null => {
-        if (inputs.selfContained) return null;
         const v = videos[vi];
         const f = v?.filename;
         return v && !v.hasEmbeddedImages && typeof f === "string" ? f : null;
@@ -254,6 +259,14 @@ export function buildTrainingJobFiles(inputs: TrainingJobInputs): TrainingJobFil
         extra: { sampledFrames?: number[]; currentFrameIdx?: number } = {},
       ) => {
         const own = vi != null ? videoFile(vi) : null;
+        if (vi != null && !own && inputs.selfContained) {
+          notes.push(
+            `Video ${vi + 1} has no video file of its own (its frames are embedded, or it is an image ` +
+              "sequence), so its inference line was left out of the package's inference script.",
+          );
+          return;
+        }
+        // No file of its own outside a package: the project .slp + --video_index.
         const dataPath = own ?? labelsPath;
         const outputPath = `${baseName(dataPath)}${vi != null && !own ? `.video${vi}` : ""}.predictions.slp`;
         const args = buildInferenceArgs(cfg, {

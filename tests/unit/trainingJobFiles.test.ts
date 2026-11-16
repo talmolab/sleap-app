@@ -145,18 +145,46 @@ describe("training job files", () => {
     expect((yaml.load(fileText(job, "jobs.yaml")) as { inference: unknown[] }).inference).toEqual([]);
   });
 
-  // A packaged job must not depend on the original video; a saved-configs job reads the video directly (PyQt).
-  it("reads the package for video targets, the video file otherwise", () => {
-    const packaged = buildTrainingJobFiles(inputs({}, "frame"));
-    const pkgLine = fileText(packaged, "inference-script.sh");
-    expect(pkgLine).toContain("--data_path proj.pkg.slp");
-    expect(pkgLine).toContain("--video_index 0");
-    expect(pkgLine).toContain("--frames 7");
+  // Video targets must read the original video (PyQt): the package's video indices differ and it only holds labeled frames.
+  it("reads the original video file for video targets, in a package too", () => {
+    for (const selfContained of [true, false]) {
+      const job = buildTrainingJobFiles(
+        inputs(selfContained ? {} : { selfContained: false, labelsPath: "/data/proj.slp" }, "frame"),
+      );
+      const line = fileText(job, "inference-script.sh");
+      expect(line).toContain("--data_path /data/session1.mp4");
+      expect(line).not.toContain("--video_index");
+      expect(line).toContain("--frames 7");
+      expect(line).not.toContain("proj.pkg.slp --");
+    }
+    for (const target of ["video", "all_videos", "random", "random_video"]) {
+      const line = fileText(buildTrainingJobFiles(inputs({}, target)), "inference-script.sh");
+      expect(line).toContain("--data_path /data/session1.mp4");
+      expect(line).not.toContain("--video_index");
+    }
+  });
 
-    const saved = buildTrainingJobFiles(inputs({ selfContained: false, labelsPath: "/data/proj.slp" }, "frame"));
-    const savedLine = fileText(saved, "inference-script.sh");
-    expect(savedLine).toContain("--data_path /data/session1.mp4");
-    expect(savedLine).not.toContain("--video_index");
+  // Suggested / labeled frames are inside the package, so those targets read the package.
+  it("reads the package for suggested and user-labeled targets", () => {
+    for (const target of ["suggestions", "user_labeled"]) {
+      const line = fileText(buildTrainingJobFiles(inputs({}, target)), "inference-script.sh");
+      expect(line).toContain("--data_path proj.pkg.slp");
+    }
+  });
+
+  // A video with no file of its own can't be scripted from a package; leave it out with a note.
+  it("leaves out an embedded video's line in a package, with a note", () => {
+    const base = inputs({}, "video");
+    const v = base.labels!.videos[0] as unknown as { hasEmbeddedImages: boolean };
+    Object.defineProperty(v, "hasEmbeddedImages", { value: true });
+    const job = buildTrainingJobFiles(base);
+    expect(fileText(job, "inference-script.sh")).not.toContain("sleap-nn");
+    expect(job.notes.some((n) => n.includes("no video file of its own"))).toBe(true);
+
+    // Outside a package the project .slp still works, with --video_index.
+    const saved = buildTrainingJobFiles({ ...base, selfContained: false, labelsPath: "/data/proj.slp" });
+    expect(fileText(saved, "inference-script.sh")).toContain("--data_path /data/proj.slp --model_paths");
+    expect(fileText(saved, "inference-script.sh")).toContain("--video_index 0");
   });
 
   // "Selected clip" becomes a frame range; with nothing selected it's left out with a note.

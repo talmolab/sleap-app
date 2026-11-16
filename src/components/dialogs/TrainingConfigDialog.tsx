@@ -2134,7 +2134,7 @@ export function TrainingConfigDialog({
                   onClick={() => runJobAction(saveTrainingConfigFiles)}
                   title={isTauri
                     ? "Save the configuration files and scripts to run training and inference yourself"
-                    : "Download the configuration files and scripts (as a .zip) to run training and inference yourself"}
+                    : "Download the configuration files and scripts (as a .zip) to run training and inference yourself. Put your saved .slp file in the same folder before running them."}
                   className="px-3 h-8 rounded-md border text-sm hover:bg-muted disabled:opacity-50 disabled:pointer-events-none"
                 >
                   Save configuration files…

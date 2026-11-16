@@ -119,7 +119,7 @@ beforeEach(() => {
   packageLevel = null;
   browserSave = null;
   const labels = makeLabels();
-  useAppStore.setState({ labels, filename: "proj.slp", projectPath: "/data/proj.slp", video: labels.videos[0], frameIdx: 0 });
+  useAppStore.setState({ labels, filename: "proj.slp", projectPath: isTauri ? "/data/proj.slp" : null, video: labels.videos[0], frameIdx: 0 });
 });
 
 /** Checks every package must pass, whichever way it was written. */
@@ -174,15 +174,21 @@ describe("Save configuration files", () => {
   // The browser can't write into a folder, so it downloads the same files as a .zip.
   it("downloads the configs and scripts as a zip in the browser", async () => {
     isTauri = false;
+    useAppStore.setState({ projectPath: null });
     const saved = await mod.saveTrainingConfigFiles(request);
     expect(saved).toBe("proj.slp.training_configs.zip");
     const files = unzipSync(browserSave!.bytes);
     expect(Object.keys(files).sort()).toEqual([
+      "README.txt",
       "centered_instance.yaml",
       "centroid.yaml",
       "inference-script.sh",
       "jobs.yaml",
       "train-script.sh",
     ]);
+    // The browser only knows the file name, so the README must say where the .slp goes.
+    expect(strFromU8(files["README.txt"])).toContain("copy proj.slp (saved from SLEAP) next to these files");
+    const doc = yaml.load(strFromU8(files["centroid.yaml"])) as { data_config: { train_labels_path: string[] } };
+    expect(doc.data_config.train_labels_path).toEqual(["proj.slp"]);
   });
 });

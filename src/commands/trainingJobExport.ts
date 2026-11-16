@@ -129,18 +129,42 @@ export async function saveTrainingConfigFiles(req: TrainingJobRequest): Promise<
       showNotes(job);
       return dir;
     }
-    const zippable: Zippable = {};
+    // The browser only knows the project's file name, not where it is on
+    // disk, so the configs and scripts name it relative to their own folder.
+    const labelsName = baseName(projectLabelsPath());
+    const zippable: Zippable = { "README.txt": strToU8(browserConfigsReadme(labelsName)) };
     for (const f of job.files) zippable[f.name] = strToU8(f.text);
-    const name = `${baseName(useAppStore.getState().filename || "labels.slp")}.training_configs.zip`;
+    const name = `${labelsName}.training_configs.zip`;
     const saved = await saveBytesFile(zipSync(zippable), name, { name: "Zip archive", ext: "zip" });
     if (!saved) return null;
-    toastExported("Configuration files saved", saved, false);
+    toast.success("Configuration files saved", {
+      description: `${saved} — unzip it and put ${labelsName} in the same folder before running the scripts.`,
+    });
     showNotes(job);
     return saved;
   } catch (err) {
     failed("Couldn't save the configuration files", err);
     return null;
   }
+}
+
+/** README for the browser's configs zip: where the labels file has to go. */
+export function browserConfigsReadme(labelsName: string): string {
+  return [
+    "SLEAP training configuration files",
+    "",
+    `The configs and scripts here read the labels file "${labelsName}" from THIS folder.`,
+    `Before running them, copy ${labelsName} (saved from SLEAP) next to these files.`,
+    "Save your project first, so the copy has your latest labels.",
+    "",
+    "Then, with sleap-nn installed:",
+    "  bash train-script.sh       # trains every model into models/",
+    "  bash inference-script.sh   # runs the trained models (post-training inference target)",
+    "",
+    "Inference lines for a video target read the video at the path it had on the computer",
+    "this was exported from; edit inference-script.sh if the video is elsewhere.",
+    "",
+  ].join("\n");
 }
 
 /** Run `work` under the progress overlay while zipping, with Cancel. */
