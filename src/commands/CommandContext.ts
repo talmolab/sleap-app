@@ -34,6 +34,12 @@ interface SingleFrameData {
 /** Snapshot of frame state for undo/redo. */
 interface UndoSnapshot {
   commandName: string;
+  /**
+   * What the Edit menu and the ⌘Z toast call this step, when not the
+   * humanized command name (e.g. "Claude: nose was on the ear"). Autosave
+   * still classifies by `commandName`.
+   */
+  label?: string;
   /** Single frame data (for regular commands). */
   frame: SingleFrameData | null;
   /** Multi-frame data (for bulk operations like DeleteAllPredictions). */
@@ -530,13 +536,15 @@ export class CommandContext {
   /** Execute a command, track the change, and signal updates. */
   async execute(
     command: Command,
-    params?: Record<string, unknown>
+    params?: Record<string, unknown>,
+    options?: { undoLabel?: string }
   ): Promise<void> {
     // Snapshot before mutating commands for undo
     // (commands with skipAutoSnapshot handle their own snapshots)
     let autoSnapshot: UndoSnapshot | null = null;
     if (this.isMutating(command) && !command.skipAutoSnapshot) {
       autoSnapshot = this.takeSnapshot(command.name);
+      if (options?.undoLabel) autoSnapshot.label = options.undoLabel;
       this.undoStack.push(autoSnapshot);
       if (this.undoStack.length > MAX_UNDO_STACK) {
         this.undoStack.shift();
@@ -571,6 +579,7 @@ export class CommandContext {
     if (!snapshot) return false;
 
     const redoSnapshot = this.restoreSnapshot(snapshot);
+    redoSnapshot.label = snapshot.label;
     this.redoStack.push(redoSnapshot);
     // restoreSnapshot reverts the data, but the canvas instance overlay repaints
     // only when `overlayVersion` changes (VideoPlayer's draw effect depends on it)
@@ -585,7 +594,7 @@ export class CommandContext {
     ]);
     // Undo/redo are otherwise silent (only the status bar changes) — surface a
     // short, self-replacing toast naming the action so ⌘Z has visible feedback.
-    toast.info(`Undid ${humanizeCommandName(snapshot.commandName)}`, {
+    toast.info(`Undid ${snapshot.label ?? humanizeCommandName(snapshot.commandName)}`, {
       id: "undo-redo",
       duration: 1400,
     });
@@ -598,6 +607,7 @@ export class CommandContext {
     if (!snapshot) return false;
 
     const undoSnapshot = this.restoreSnapshot(snapshot);
+    undoSnapshot.label = snapshot.label;
     this.undoStack.push(undoSnapshot);
     this.state.bumpOverlayVersion();
     this.signalUpdate([
@@ -606,7 +616,7 @@ export class CommandContext {
       UpdateTopic.Instance,
       UpdateTopic.Tracks,
     ]);
-    toast.info(`Redid ${humanizeCommandName(snapshot.commandName)}`, {
+    toast.info(`Redid ${snapshot.label ?? humanizeCommandName(snapshot.commandName)}`, {
       id: "undo-redo",
       duration: 1400,
     });
@@ -623,18 +633,19 @@ export class CommandContext {
     return this.redoStack.length > 0;
   }
 
-  /** Get the name of the command that would be undone. */
+  /**
+   * Get the name of the command that would be undone: its undo label when it
+   * has one (shown as-is, since humanizing leaves a sentence unchanged).
+   */
   get undoCommandName(): string | null {
-    return this.undoStack.length > 0
-      ? this.undoStack[this.undoStack.length - 1].commandName
-      : null;
+    const top = this.undoStack[this.undoStack.length - 1];
+    return top ? (top.label ?? top.commandName) : null;
   }
 
-  /** Get the name of the command that would be redone. */
+  /** Get the name of the command that would be redone (see undoCommandName). */
   get redoCommandName(): string | null {
-    return this.redoStack.length > 0
-      ? this.redoStack[this.redoStack.length - 1].commandName
-      : null;
+    const top = this.redoStack[this.redoStack.length - 1];
+    return top ? (top.label ?? top.commandName) : null;
   }
 
   /** Notify listeners that specific topics have changed. */
