@@ -14,7 +14,8 @@ export type AutomationErrorCode =
   | "BAD_INPUT"
   | "OUTDATED"
   | "NOT_PENDING"
-  | "RENDER_FAILED";
+  | "RENDER_FAILED"
+  | "IGNORE_FAILED";
 
 export class AutomationError extends Error {
   readonly code: AutomationErrorCode;

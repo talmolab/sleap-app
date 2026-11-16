@@ -5,7 +5,7 @@
  */
 import { useAppStore } from "@/stores/appStore";
 import { useQcStore } from "@/stores/qcStore";
-import { proposalState, useProposalStore, type NodeEdits, type Proposal } from "@/stores/proposalStore";
+import { isOutdated, proposalState, useProposalStore, type NodeEdits, type Proposal } from "@/stores/proposalStore";
 import { AutomationError } from "./errors";
 import { findQcFlag, flagTarget, listQcFlags, requireLabels, type QcFlag } from "./qcFlags";
 import { DEFAULT_MAX_EDGE, getRender, renderFlag } from "./render";

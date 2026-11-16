@@ -7,7 +7,6 @@ import { useMemo } from "react";
 import { useShallow } from "zustand/react/shallow";
 import { useAppStore, type AppState } from "@/stores/appStore";
 import { commandContext } from "@/commands";
-import { humanizeCommandName } from "@/lib/humanizeCommand";
 import { isTauri } from "@/lib/platform";
 import { buildAppMenu, type MenuSnapshot } from "./appMenu";
 import type { AppMenu } from "./types";
@@ -96,8 +95,8 @@ export function snapshotFrom(i: MenuInputs): MenuSnapshot {
     // Instances need a skeleton with at least one node (a node-less skeleton
     // would yield a null instance).
     skeletonHasNodes: (i.skeleton?.nodes?.length ?? 0) > 0,
-    undoLabel: canUndo ? `Undo ${humanizeCommandName(commandContext.undoCommandName ?? "")}` : null,
-    redoLabel: canRedo ? `Redo ${humanizeCommandName(commandContext.redoCommandName ?? "")}` : null,
+    undoLabel: canUndo ? `Undo ${commandContext.undoLabel ?? ""}` : null,
+    redoLabel: canRedo ? `Redo ${commandContext.redoLabel ?? ""}` : null,
     navigationDomain: i.navigationDomain,
     sidebarCollapsed: i.sidebarCollapsed,
     sidebarSide: i.sidebarSide,

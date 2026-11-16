@@ -4,7 +4,7 @@
  * pose drawn on the canvas.
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from "../bun-test";
-import { render, screen, cleanup, fireEvent, act } from "@testing-library/react";
+import { render, screen, cleanup, fireEvent, act, renderHook } from "@testing-library/react";
 
 vi.mock("@/lib/platform", () => ({ isTauri: false, isMac: false, modKey: "Ctrl" }));
 const toastError = vi.fn();
@@ -19,7 +19,7 @@ const { setQcReviewedBackend, memoryBackend } = await import("@/lib/qcReviewed")
 const { commandContext, SetNodes } = await import("@/commands");
 const { QcReviewFrame } = await import("@/components/video/QcReviewFrame");
 const { handleProposalKey } = await import("@/lib/proposalReview");
-const { proposalGhosts } = await import("@/hooks/useProposalGhosts");
+const { proposalGhosts, useProposalGhosts } = await import("@/hooks/useProposalGhosts");
 const { ghostPose, renderProposalGhosts } = await import("@/canvas/proposalGhost");
 const { makeAutomationProject, anomalyAt } = await import("./helpers/automationFixture");
 
@@ -154,6 +154,44 @@ describe("Claude suggests row", () => {
     fireEvent.click(screen.getByRole("button", { name: "Reject" }));
     expect(screen.getByTestId("claude-suggestion").textContent).toContain("Rejected");
     expect(inst().points[0].xy).toEqual([300, 100]);
+  });
+});
+
+describe("review fixes", () => {
+  // Why: the canvas only redraws the ghost when the hook's value changes; after ⌘Z it must come back.
+  it("the ghost hook drops the ghost on Accept and brings it back on ⌘Z", async () => {
+    useProposalStore.getState().addFix(target, { 0: [5, 6] });
+    const { result } = renderHook(() => useProposalGhosts());
+    expect(result.current).toHaveLength(1);
+    await act(async () => {
+      await useProposalStore.getState().accept(useProposalStore.getState().proposals[0].id);
+    });
+    expect(result.current).toHaveLength(0);
+    act(() => {
+      commandContext.undo();
+    });
+    expect(result.current).toHaveLength(1);
+  });
+
+  // Why: Claude's reason is free text; the Edit menu must show it as written, not re-cased like a command name.
+  it("shows Claude's reason in the undo label as written", async () => {
+    useProposalStore.getState().addFix({ ...target, reason: "noseTip sat on theLeftWing" }, { 0: [5, 6] });
+    await useProposalStore.getState().accept(useProposalStore.getState().proposals[0].id);
+    expect(commandContext.undoLabel).toBe("Claude: noseTip sat on theLeftWing");
+  });
+
+  // Why: if the instance can't be marked OK, the row must not say "Ignored".
+  it("an ignore that can't be recorded stays pending and says why", async () => {
+    useProposalStore.getState().addIgnore(target);
+    useQcStore.setState({ dismissedProject: null, dismissed: new Set() });
+    renderReview();
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "Ignore flag" }));
+      await new Promise((r) => setTimeout(r, 0));
+    });
+    expect(useProposalStore.getState().proposals[0].status).toBe("pending");
+    expect(screen.getByTestId("claude-suggestion").textContent).not.toContain("Ignored");
+    expect(toastError).toHaveBeenCalled();
   });
 });
 

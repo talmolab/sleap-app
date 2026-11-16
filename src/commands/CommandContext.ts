@@ -648,6 +648,22 @@ export class CommandContext {
     return top ? (top.label ?? top.commandName) : null;
   }
 
+  /**
+   * What the Edit menu calls the step ⌘Z would undo: its undo label as given
+   * (free text, e.g. Claude's reason — never re-cased), else the humanized
+   * command name.
+   */
+  get undoLabel(): string | null {
+    const top = this.undoStack[this.undoStack.length - 1];
+    return top ? (top.label ?? humanizeCommandName(top.commandName)) : null;
+  }
+
+  /** The redo counterpart of {@link undoLabel}. */
+  get redoLabel(): string | null {
+    const top = this.redoStack[this.redoStack.length - 1];
+    return top ? (top.label ?? humanizeCommandName(top.commandName)) : null;
+  }
+
   /** Notify listeners that specific topics have changed. */
   signalUpdate(topics: UpdateTopic[]): void {
     for (const listener of this.listeners) {
