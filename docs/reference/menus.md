@@ -25,6 +25,7 @@ Every menu and what its items do, in the order they appear in the menu bar.
 | **Export ▸** JSON Package… | The labels as JSON plus a list of the project's videos; no images |
 | **Export ▸** Labeled Clip (Video)… | An MP4 with the poses drawn on |
 | Reveal Project in File Manager | Desktop only |
+| Reset Preferences to Defaults… | Puts display, navigation, panel-layout and text-size settings back to their defaults (asks first). Keeps your update channel, video path fixes and track colors |
 | Open Preferences Directory… | Desktop only |
 | Clear Video Transcode Cache… | Desktop only |
 | Quit | ++cmd+q++ |
@@ -34,6 +35,7 @@ Every menu and what its items do, in the order they appear in the menu bar.
 | Item | Notes |
 |---|---|
 | Go to Frame… / Select to Frame… | ++cmd+j++ / ++cmd+shift+j++ |
+| Frame Step Sizes… | How many frames the medium (++cmd+right++) and large (++cmd+shift+right++) steps jump; 10 and 100 by default |
 | Next / Previous Labeled Frame | ++alt+right++ / ++alt+left++ |
 | Navigate All Frames / Navigate Labeled Frames Only / Navigate Suggested Frames Only / Navigate Imaged Frames Only | Sets what ++right++ / ++left++ step through |
 | Next / Previous Suggestion | ++space++ / ++shift+space++ |
@@ -52,8 +54,10 @@ Every menu and what its items do, in the order they appear in the menu bar.
 |---|---|
 | Side Panel / Sidebar on Left / Allow Multiple Panels | Layout |
 | **Panels ▸** *(one checkbox per panel)* / Reset to Defaults… | Each checkbox shows or hides that panel's button in the sidebar strip; it doesn't open the panel. See [Panels](panels.md) |
-| Fit View to Instances | Checkbox; ++cmd+equal++ toggles it |
-| Fit View to Selection | Needs a selected instance |
+| Fit View to Instances | Checkbox; ++cmd+equal++ toggles it. Re-fits each time the frame changes |
+| Fit View to Selection | Checkbox. Re-fits to the selected instance each time the frame changes, following its track onto the new frame |
+| Actual Size (1:1) | Checkbox. One video pixel per screen pixel; unchecking it shows the whole frame again |
+| Zoom to Selection | Zooms to the selected instance once. Needs a selected instance |
 | Default to Pan Mode | ++p++ |
 | Node Placement Mode | ++shift+n++ — needs a selected instance |
 | **Text Size ▸** Increase / Decrease / Reset to Default | ++cmd+shift+equal++ / ++cmd+minus++ |
@@ -61,13 +65,19 @@ Every menu and what its items do, in the order they appear in the menu bar.
 | Show Non-Visible Nodes | ++shift+v++ |
 | **Display ▸** Manual / Only selected (with hidden points) / All instances, visible points only / All visible + selected hidden points | How much hidden geometry is drawn |
 | Show Node Names / Show Edges | ++t++ / ++cmd+shift+tab++ |
+| Show Mean Node Score | Adds a *Mean node score* column to the Instances panel |
 | Crosshair When Zoomed / Magnifier When Moving Nodes | Precision aids |
 | Play Neighboring Frames in Magnifier | Loops the frames around the current one inside the magnifier |
 | **Edge Style ▸** Line / Wedge | |
+| Bold Lines | Edges and node outlines twice as thick |
 | **Node Marker Size ▸** Small (2) / Medium (4) / Large (6) / Extra Large (8) | |
 | **Pose Opacity ▸** 100% / 75% / 50% / 25% | |
 | **Node Label Size ▸** Small (8) / Medium (10) / Large (12) / Extra Large (14) | |
 | **Trail Length ▸** Off / Short (10) / Medium (50) / Long (100) / Very Long (250) / Maximum (500) | Frames of motion history drawn behind each instance |
+| **Trail Node ▸** Centroid / *(each skeleton node)* | The point the trail follows |
+| Fade Older Trail Segments | On by default: older parts of a trail are fainter |
+| **Trail Opacity ▸** 25% / 50% / 75% / 100% | |
+| **Trail Width ▸** 1 px … 8 px | Screen pixels, whatever the zoom; default 4 px |
 | **Color Palette ▸** standard / five+ / alphabet | |
 | **Apply Distinct Colors To ▸** Auto (Node / Track) / Tracks / Instances / Nodes / Edges | |
 | Color Predicted Instances | Off by default: predictions are drawn yellow until you turn this on |
@@ -91,8 +101,9 @@ Every menu and what its items do, in the order they appear in the menu bar.
 | Accept All Predictions on Current Frame | ++cmd+shift+a++ |
 | Accept All Predictions | Every prediction in the project |
 | Delete Predictions on Current Frame | |
-| Delete Predictions… | Predictions matching a filter |
-| Delete Predictions from Area… | ++cmd+k++ — drag a box on the frame |
+| Delete Predictions… | Predictions matching a filter; each option says whether it acts on this video or all videos |
+| Delete Predictions from Clip… | Predictions in the frame range selected on the seekbar, in this video. Asks first |
+| Delete Predictions from Area… | ++cmd+k++ — drag a box; predictions with all points inside it are deleted on every frame of this video. Asks first |
 | Delete All Predictions… | Asks first |
 | Extract Clip and Labels… | Saves the frame range selected on the seekbar as a trimmed clip plus its labels, numbered from frame 0, and opens it. Select a range by shift-dragging on the seekbar |
 | Extract Clip Labels Package… | Saves the selected range's labeled and suggested frames, with images, as a `.pkg.slp`, and opens it |

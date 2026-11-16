@@ -54,6 +54,7 @@ import {
 } from "@/lib/panelLayout";
 import { buildTutorialSteps, type TutorialStep } from "@/lib/tutorial/steps";
 import { isTauri } from "@/platform/index";
+import { STEP_SIZES, isValidStepSize } from "@/lib/shortcuts";
 
 // Required before immer can draft Set/Map fields (hiddenInstances /
 // showNonVisibleOverride). Idempotent global; must run before store creation.
@@ -191,7 +192,23 @@ export interface AppState {
   showCrosshair: boolean;
   edgeStyle: EdgeStyle;
   fit: boolean;
+  /**
+   * One-shot signal: zoom to the selected instance once, then clear. Set by
+   * View ▸ Zoom to Selection, Shift+Up/Down, clicking a row in Instances, and
+   * Label QC. Transient.
+   */
   fitSelection: boolean;
+  /**
+   * View ▸ Fit View to Selection (PyQt `fit_selection`): keep zooming to the
+   * selected instance whenever it or the frame changes. Mutually exclusive
+   * with `fit` and `actualSize` (see `setZoomMode`). Transient, like PyQt.
+   */
+  followSelection: boolean;
+  /**
+   * View ▸ Actual Size (1:1) (PyQt `actual_size`): one video pixel per screen
+   * pixel. Mutually exclusive with `fit` and `followSelection`. Transient.
+   */
+  actualSize: boolean;
   /**
    * Monotonically-increasing one-shot signal to reset the main video canvas
    * view to its default (zoom = 1, no pan, fit-frame). Bumped by `resetView`
@@ -200,7 +217,14 @@ export interface AppState {
    * each fire without a separate clear step. Transient — not persisted.
    */
   resetViewNonce: number;
+  /** Last view set by `setViewFromUser`; VideoPlayer applies it when `userViewNonce` bumps. Transient. */
+  userView: { zoom: number; panX: number; panY: number } | null;
+  userViewNonce: number;
   colorPredicted: boolean;
+  /** Instances panel shows a "Mean node score" column (PyQt `show mean node score`). Persisted. */
+  showMeanNodeScore: boolean;
+  /** Draw skeleton edges and node outlines twice as thick (PyQt `bold lines`). Persisted. */
+  boldLines: boolean;
   /** Append the ` (0.81)` prediction score to on-canvas track labels. Default off (#316). Persisted. */
   showTrackScore: boolean;
   /**
@@ -245,6 +269,18 @@ export interface AppState {
   showInset: boolean;
   trailLength: number;
   trailShade: string;
+  /** Frames moved by Ctrl+Left/Right (PyQt pref "medium step size"). Persisted. */
+  mediumStepSize: number;
+  /** Frames moved by Ctrl+Shift+Left/Right (PyQt pref "large step size"). Persisted. */
+  largeStepSize: number;
+  /** What the trail follows: `"centroid"` or a skeleton node name (PyQt `trail node`). Persisted. */
+  trailNode: string;
+  /** Trail opacity, 0-1 (PyQt `trail alpha`). Persisted. */
+  trailAlpha: number;
+  /** Older trail segments are fainter (PyQt `trail alpha fade`). Persisted. */
+  trailFade: boolean;
+  /** Trail line width in screen pixels (PyQt `trail width`). Persisted. */
+  trailWidth: number;
   /** Magnifier plays the ±temporalWindow frames around the cursor. Persisted. */
   temporalLoupe: boolean;
   /** The magnifier includes frames before the current one. Persisted. */
@@ -491,6 +527,8 @@ export interface AppState {
   newProjectDialogOpen: boolean;
   goToFrameDialogOpen: boolean;
   selectToFrameDialogOpen: boolean;
+  /** Go ▸ Frame Step Sizes… dialog. */
+  frameStepSizesDialogOpen: boolean;
   deletePredictionsDialogOpen: boolean;
   mergeProjectDialogOpen: boolean;
   /** Path to auto-load into the Merge dialog when it opens (seeded by an .slp drop). */
@@ -604,6 +642,22 @@ export interface AppState {
   setLabeledFrame: (frame: LabeledFrame | null) => void;
   setMarkedFrame: (marked: { video: Video; frameIdx: number } | null) => void;
   resetView: () => void;
+  /**
+   * The user set the canvas view by hand: the Alt+drag zoom box (`view`), or
+   * Alt+double-click (`null` = reset to the default view, via `resetView`).
+   * Turns off the zoom modes that would snap the view back on the next frame
+   * (Fit View to Instances, a pending Fit View to Selection). The one place to
+   * clear any further zoom mode (e.g. #481's follow-selection / actual size).
+   */
+  setViewFromUser: (view: { zoom: number; panX: number; panY: number } | null) => void;
+
+  /**
+   * Turn one of View's zoom modes on or off. Fit View to Instances, Fit View
+   * to Selection and Actual Size (1:1) are mutually exclusive, as in PyQt:
+   * turning one on turns the other two off. Turning Actual Size off resets
+   * the view (PyQt `clearZoom`).
+   */
+  setZoomMode: (mode: ZoomMode, on: boolean) => void;
   markChanged: () => void;
   touchFrame: () => void;
   clearChanges: () => void;
@@ -720,6 +774,9 @@ export interface AppState {
   bumpOverlayVersion: () => void;
 }
 
+/** View ▸ zoom modes that keep applying as you move around (see `setZoomMode`). */
+export type ZoomMode = "fit" | "followSelection" | "actualSize";
+
 /** Keys persisted to localStorage for user preferences. */
 export const PERSISTED_KEYS: (keyof AppState)[] = [
   "palette",
@@ -733,9 +790,17 @@ export const PERSISTED_KEYS: (keyof AppState)[] = [
   "showCrosshair",
   "colorPredicted",
   "showTrackScore",
+  "showMeanNodeScore",
+  "boldLines",
   "showLabelingHints",
   "hasSeenLabelingHintsPrompt",
   "trailLength",
+  "mediumStepSize",
+  "largeStepSize",
+  "trailNode",
+  "trailAlpha",
+  "trailFade",
+  "trailWidth",
   "temporalLoupe",
   "neighborFramesEarlier",
   "neighborFramesLater",
@@ -834,8 +899,14 @@ export const useAppStore = create<AppState>()(
       edgeStyle: "Line" as EdgeStyle,
       fit: false,
       fitSelection: false,
+      followSelection: false,
+      actualSize: false,
       resetViewNonce: 0,
+      userView: null,
+      userViewNonce: 0,
       colorPredicted: false,
+      showMeanNodeScore: false,
+      boldLines: false,
       showTrackScore: false,
       showLabelingHints: true,
       hasSeenLabelingHintsPrompt: false,
@@ -852,6 +923,13 @@ export const useAppStore = create<AppState>()(
       showInset: true,
       trailLength: 0,
       trailShade: "Normal",
+      mediumStepSize: STEP_SIZES.medium,
+      largeStepSize: STEP_SIZES.large,
+      // PyQt prefs.py defaults.
+      trailNode: "centroid",
+      trailAlpha: 1,
+      trailFade: true,
+      trailWidth: 4,
       temporalLoupe: false,
       neighborFramesEarlier: true,
       neighborFramesLater: true,
@@ -934,6 +1012,7 @@ export const useAppStore = create<AppState>()(
       newProjectDialogOpen: false,
       goToFrameDialogOpen: false,
       selectToFrameDialogOpen: false,
+      frameStepSizesDialogOpen: false,
       deletePredictionsDialogOpen: false,
       mergeProjectDialogOpen: false,
       mergeProjectSeedPath: null,
@@ -988,6 +1067,9 @@ export const useAppStore = create<AppState>()(
           state.labelsDraftPath = null;
           state.pendingExport = false;
 
+          // A clip selected in the previous project means nothing here.
+          state.frameRange = null;
+
           // Set first video and skeleton
           if (labels.videos.length > 0) {
             state.video = labels.videos[0];
@@ -1022,6 +1104,10 @@ export const useAppStore = create<AppState>()(
             // Per-instance visibility is scoped to the current frame/video —
             // reset it whenever the video actually changes.
             clearTransientVisibility(state);
+            // The seekbar clip selection is frame numbers of the old video;
+            // keeping it would let "Delete Predictions from Clip" (or Extract
+            // Clip) apply it to a different video.
+            state.frameRange = null;
           }
           state.video = video;
           // Mirror legacy SLEAP's switch_frame(video): jump to the video's
@@ -1263,7 +1349,36 @@ export const useAppStore = create<AppState>()(
       resetView: () =>
         set((state) => {
           state.resetViewNonce += 1;
+          // The view is no longer 1:1, so View ▸ Actual Size un-checks.
+          state.actualSize = false;
         }),
+
+      setZoomMode: (mode, on) =>
+        set((state) => {
+          const wasActualSize = state.actualSize;
+          if (on) {
+            state.fit = false;
+            state.followSelection = false;
+            state.actualSize = false;
+          }
+          state[mode] = on;
+          if (mode === "actualSize" && !on && wasActualSize) state.resetViewNonce += 1;
+        }),
+
+      setViewFromUser: (view) => {
+        set((state) => {
+          state.fit = false;
+          state.fitSelection = false;
+          // #481's zoom modes would snap the view straight back too.
+          state.followSelection = false;
+          state.actualSize = false;
+          if (view) {
+            state.userView = { ...view };
+            state.userViewNonce += 1;
+          }
+        });
+        if (!view) get().resetView();
+      },
 
       markChanged: () => {
         // Record the active frame as dirty for the incremental autosave BEFORE
@@ -1937,6 +2052,10 @@ export const useAppStore = create<AppState>()(
           overlayModelPaths: [],
           // Migrate the pre-tri-state #137 boolean to the navigationDomain enum.
           navigationDomain: navigationDomainFromPersisted(p),
+          // A hand-edited or corrupt step size would make Ctrl+arrow jump
+          // nowhere (or NaN frames): fall back to the default.
+          mediumStepSize: isValidStepSize(p.mediumStepSize) ? p.mediumStepSize : current.mediumStepSize,
+          largeStepSize: isValidStepSize(p.largeStepSize) ? p.largeStepSize : current.largeStepSize,
           panelOrder: reconcilePanelOrder(p.panelOrder),
           hiddenPanels: reconcileHiddenPanels(p.hiddenPanels),
           // Seed the open-panel stack: a stored set wins; a legacy single

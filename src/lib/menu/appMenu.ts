@@ -17,6 +17,7 @@ import { QC_MODE_CHOICES } from "@/lib/instanceVisibility";
 import { toast } from "@/lib/notify";
 import { PredictedInstance } from "@talmolab/sleap-io.js";
 import { confirmDialog } from "@/stores/confirmStore";
+import { confirmAndResetPreferences } from "@/lib/preferences";
 import {
   confirmDeleteInstanceAndTrack,
   confirmDeleteUnusedTracks,
@@ -24,6 +25,7 @@ import {
 import { openNewInstance } from "@/lib/newInstance";
 import { requestStartTutorial } from "@/lib/tutorial/startTutorial";
 import { requestToggleNegativeFrame } from "@/lib/negativeFrame";
+import { predictionsInClip } from "@/lib/predictionDeletion";
 import {
   GRAPH_SPECS,
   reconcileReduction,
@@ -64,6 +66,7 @@ import {
   PasteInstance,
   DeleteFramePredictions,
   DeleteAllPredictions,
+  DeletePredictionsFromClip,
   AddInstancesFromAllPredictions,
   AddInstancesFromAllPredictionsInProject,
   AddTrack,
@@ -109,6 +112,8 @@ export interface MenuSnapshot {
   sidebarSide: "left" | "right";
   sidebarMultiPanel: boolean;
   fit: boolean;
+  followSelection: boolean;
+  actualSize: boolean;
   defaultToPan: boolean;
   placementMode: boolean;
   showInstances: boolean;
@@ -124,6 +129,15 @@ export interface MenuSnapshot {
   poseOpacity: number;
   nodeLabelSize: number;
   trailLength: number;
+  /** `"centroid"` or a node name. */
+  trailNode: string;
+  /** Node names of the project skeleton, for View ▸ Trail Node. */
+  trailNodeOptions: string[];
+  trailAlpha: number;
+  trailFade: boolean;
+  trailWidth: number;
+  boldLines: boolean;
+  showMeanNodeScore: boolean;
   palette: string;
   distinctlyColor: string;
   colorPredicted: boolean;
@@ -234,10 +248,15 @@ function fileMenu(s: MenuSnapshot): TopMenu {
       ],
     },
   ];
+  items.push(SEP);
+  if (s.isTauri) {
+    items.push({ kind: "item", id: "file.reveal", label: "Reveal Project in File Manager", enabled: s.hasProjectPath, run: revealProjectInFileManager });
+  }
+  // PyQt SLEAP: File ▸ "Reset preferences to defaults...", just above Open
+  // Preferences Directory. Asks first (Tauri-safe in-app confirm).
+  items.push({ kind: "item", id: "file.resetPreferences", label: "Reset Preferences to Defaults...", run: () => void confirmAndResetPreferences() });
   if (s.isTauri) {
     items.push(
-      SEP,
-      { kind: "item", id: "file.reveal", label: "Reveal Project in File Manager", enabled: s.hasProjectPath, run: revealProjectInFileManager },
       { kind: "item", id: "file.preferencesDir", label: "Open Preferences Directory...", run: openPreferencesDirectory },
       { kind: "item", id: "file.clearTranscodeCache", label: "Clear Video Transcode Cache...", run: clearVideoTranscodeCache },
     );
@@ -298,6 +317,8 @@ function goMenu(s: MenuSnapshot): TopMenu {
     items: [
       go("toFrame", "Go to Frame...", () => store().setGoToFrameDialogOpen(true), "$mod+KeyJ"),
       go("selectToFrame", "Select to Frame...", () => store().setSelectToFrameDialogOpen(true), "$mod+Shift+KeyJ"),
+      // PyQt's "medium/large step size" prefs (preferences.yaml only there).
+      { kind: "item", id: "go.frameStepSizes", label: "Frame Step Sizes...", run: () => store().set("frameStepSizesDialogOpen", true) },
       SEP,
       go("nextLabeled", "Next Labeled Frame", exec(GoNextLabeledFrame), "Alt+ArrowRight"),
       go("prevLabeled", "Previous Labeled Frame", exec(GoPrevLabeledFrame), "Alt+ArrowLeft"),
@@ -372,8 +393,18 @@ function viewMenu(s: MenuSnapshot): TopMenu {
       },
       panelsSubmenu(s),
       SEP,
-      { kind: "check", id: "view.fit", label: "Fit View to Instances", checked: s.fit, run: toggle("fit") },
-      { kind: "item", id: "view.fitSelection", label: "Fit View to Selection", enabled: s.hasInstance, run: () => store().set("fitSelection", true) },
+      // PyQt's three zoom modes; turning one on turns the others off.
+      { kind: "check", id: "view.fit", label: "Fit View to Instances", checked: s.fit, run: () => store().setZoomMode("fit", !s.fit) },
+      {
+        kind: "check",
+        id: "view.fitSelection",
+        label: "Fit View to Selection",
+        checked: s.followSelection,
+        run: () => store().setZoomMode("followSelection", !s.followSelection),
+      },
+      { kind: "check", id: "view.actualSize", label: "Actual Size (1:1)", checked: s.actualSize, run: () => store().setZoomMode("actualSize", !s.actualSize) },
+      // Zoom to the selected instance once, without following it afterwards.
+      { kind: "item", id: "view.zoomToSelection", label: "Zoom to Selection", enabled: s.hasInstance, run: () => store().set("fitSelection", true) },
       { kind: "check", id: "view.defaultToPan", label: "Default to Pan Mode", shortcut: DEFAULT_SHORTCUTS["toggle pan mode"], checked: s.defaultToPan, run: toggle("defaultToPan") },
       {
         kind: "check",
@@ -418,11 +449,14 @@ function viewMenu(s: MenuSnapshot): TopMenu {
       ),
       { kind: "check", id: "view.showLabels", label: "Show Node Names", shortcut: DEFAULT_SHORTCUTS["show labels"], checked: s.showLabels, run: toggle("showLabels") },
       { kind: "check", id: "view.showEdges", label: "Show Edges", checked: s.showEdges, run: toggle("showEdges") },
+      { kind: "check", id: "view.showMeanNodeScore", label: "Show Mean Node Score", checked: s.showMeanNodeScore, run: toggle("showMeanNodeScore") },
       { kind: "check", id: "view.crosshair", label: "Crosshair When Zoomed", checked: s.showCrosshair, run: toggle("showCrosshair") },
       { kind: "check", id: "view.magnifier", label: "Magnifier When Moving Nodes", checked: s.showInset, run: toggle("showInset") },
       { kind: "check", id: "view.temporalLoupe", label: "Play Neighboring Frames in Magnifier", checked: s.temporalLoupe, run: toggle("temporalLoupe") },
       SEP,
       sub("edgeStyle", "Edge Style", radio("view.edgeStyle.value", s.edgeStyle, [["Line", "Line"], ["Wedge", "Wedge"]], set("edgeStyle"))),
+      // PyQt keeps this in preferences.yaml only ("bold lines").
+      { kind: "check", id: "view.boldLines", label: "Bold Lines", checked: s.boldLines, run: toggle("boldLines") },
       SEP,
       sub(
         "markerSize",
@@ -471,6 +505,39 @@ function viewMenu(s: MenuSnapshot): TopMenu {
             ["500", "Maximum (500)"],
           ],
           setNum("trailLength"),
+        ),
+      ),
+      sub(
+        "trailNode",
+        "Trail Node",
+        radio(
+          "view.trailNode.value",
+          // A node missing from this skeleton falls back to the centroid.
+          s.trailNodeOptions.includes(s.trailNode) ? s.trailNode : "centroid",
+          [["centroid", "Centroid"], ...s.trailNodeOptions.map((n): [string, string] => [n, n])],
+          set("trailNode"),
+        ),
+      ),
+      { kind: "check", id: "view.trailFade", label: "Fade Older Trail Segments", checked: s.trailFade, run: toggle("trailFade") },
+      sub(
+        "trailAlpha",
+        "Trail Opacity",
+        radio(
+          "view.trailAlpha.value",
+          String(s.trailAlpha),
+          [["0.25", "25%"], ["0.5", "50%"], ["0.75", "75%"], ["1", "100%"]],
+          setNum("trailAlpha"),
+        ),
+      ),
+      // PyQt keeps this in preferences.yaml only ("trail width").
+      sub(
+        "trailWidth",
+        "Trail Width",
+        radio(
+          "view.trailWidth.value",
+          String(s.trailWidth),
+          [["1", "1 px"], ["2", "2 px"], ["3", "3 px"], ["4", "4 px"], ["6", "6 px"], ["8", "8 px"]],
+          setNum("trailWidth"),
         ),
       ),
       SEP,
@@ -607,7 +674,40 @@ function labelsMenu(s: MenuSnapshot): TopMenu {
       { kind: "item", id: "labels.acceptAll", label: "Accept All Predictions", enabled: loaded, run: exec(AddInstancesFromAllPredictionsInProject) },
       { kind: "item", id: "labels.deleteFramePredictions", label: "Delete Predictions on Current Frame", enabled: loaded, run: exec(DeleteFramePredictions) },
       { kind: "item", id: "labels.deletePredictions", label: "Delete Predictions...", enabled: loaded, run: () => store().setDeletePredictionsDialogOpen(true) },
-      { kind: "item", id: "labels.deleteArea", label: "Delete Predictions from Area...", shortcut: "$mod+KeyK", enabled: loaded, run: () => store().toggle("areaDeleteMode") },
+      {
+        kind: "item",
+        id: "labels.deleteClip",
+        label: "Delete Predictions from Clip...",
+        // As in PyQt, this needs a frame range selected on the seekbar.
+        enabled: loaded && s.hasFrameRange,
+        title: "Delete the predictions in the frame range selected on the seekbar, in the current video. Select a range by shift-dragging on the seekbar.",
+        run: async () => {
+          const { labels, video, frameRange } = store();
+          if (!labels || !video || !frameRange) return;
+          const [start, end] = frameRange;
+          const count = predictionsInClip(labels, video, start, end).length;
+          if (count === 0) {
+            toast.info("No predictions in the selected clip.");
+            return;
+          }
+          const ok = await confirmDialog({
+            title: "Delete predictions from clip",
+            message: `There are ${count} predicted instances in frames ${start}-${end} of this video which would be deleted. Delete them?`,
+            confirmLabel: "Delete",
+            destructive: true,
+          });
+          if (ok) commandContext.execute(DeletePredictionsFromClip, { startFrame: start, endFrame: end });
+        },
+      },
+      {
+        kind: "item",
+        id: "labels.deleteArea",
+        label: "Delete Predictions from Area...",
+        shortcut: "$mod+KeyK",
+        enabled: loaded,
+        title: "Draw a box on the video: predictions with all their points inside it are deleted on every frame of the current video.",
+        run: () => store().toggle("areaDeleteMode"),
+      },
       {
         kind: "item",
         id: "labels.deleteAllPredictions",

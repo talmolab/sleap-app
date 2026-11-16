@@ -1,20 +1,28 @@
 /**
  * Delete Predictions Dialog.
  *
- * Provides multiple deletion strategies for predicted instances:
- * - By score threshold
- * - By frame range
- * - On user-labeled frames only
- * - By max instances per frame
- * - By track
- * - By instance type
+ * Provides multiple deletion strategies for predicted instances. Scopes match
+ * PyQt SLEAP's commands of the same name (#463), and each option says its scope:
+ * - Low score (this video)
+ * - Outside a frame range (this video) — the range is what to keep
+ * - On user-labeled frames (this video or all videos; unlinked or all)
+ * - Beyond max instances per frame (this video)
+ * - By track (all videos)
+ * - By instance type (all videos)
  */
 
-import { useState, useCallback, useMemo } from "react";
+import { useState, useCallback, useEffect, useMemo } from "react";
 import { PredictedInstance } from "@talmolab/sleap-io.js";
 import { confirmDialog } from "@/stores/confirmStore";
 import { useAppStore } from "../../stores/appStore";
 import { commandContext } from "../../commands/CommandContext";
+import { videoFrameCount } from "@/lib/inferFrameCount";
+import {
+  predictionsBeyondMaxInstances,
+  predictionsOnUserLabeledFrames,
+  predictionsOutsideFrameRange,
+  predictionsWithLowScore,
+} from "@/lib/predictionDeletion";
 import {
   DeletePredictionsByScore,
   DeletePredictionsByRange,
@@ -30,7 +38,7 @@ import {
   DialogTitle,
   DialogFooter,
 } from "@/components/ui/dialog";
-import { Input } from "@/components/ui/input";
+import { NumberInput } from "@/components/NumberInput";
 import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
 import {
@@ -55,13 +63,34 @@ export function DeletePredictionsDialog({
 }: DeletePredictionsDialogProps) {
   const labels = useAppStore((s) => s.labels);
   const video = useAppStore((s) => s.video);
-  const totalFrames = video?.shape?.[0] ?? 0;
+  const videoRevision = useAppStore((s) => s.videoRevision);
+  // Same length the seekbar uses: the video's own frame count, or (when that
+  // is unknown) up to its last labeled frame. Starting the kept range at 0-0
+  // for an unknown-length video would delete nearly every prediction in it.
+  const totalFrames = useMemo(
+    () => (open ? videoFrameCount(labels, video) : 0),
+    // videoRevision: a deferred backend opening corrects video.shape[0].
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [open, labels, video, videoRevision],
+  );
 
   const [mode, setMode] = useState<DeleteMode>("score");
   const [scoreThreshold, setScoreThreshold] = useState(0.5);
   const [rangeStart, setRangeStart] = useState(0);
   const [rangeEnd, setRangeEnd] = useState(totalFrames > 0 ? totalFrames - 1 : 0);
+  // An empty or reversed range would keep nothing; don't offer Delete for it.
+  const rangeValid = totalFrames > 0 && rangeStart <= rangeEnd;
   const [maxCount, setMaxCount] = useState(2);
+  const [labeledAllVideos, setLabeledAllVideos] = useState(false);
+  const [unlinkedOnly, setUnlinkedOnly] = useState(true);
+
+  // Reset the kept range to the whole video each time the dialog opens (or the
+  // video changes): a stale range would delete everything outside it.
+  useEffect(() => {
+    if (!open) return;
+    setRangeStart(0);
+    setRangeEnd(totalFrames > 0 ? totalFrames - 1 : 0);
+  }, [open, video, totalFrames]);
   const [selectedTrack, setSelectedTrack] = useState<string>("__untracked__");
   const [instanceType, setInstanceType] = useState<"predicted" | "user" | "all">("predicted");
 
@@ -75,44 +104,22 @@ export function DeletePredictionsDialog({
 
     switch (mode) {
       case "score":
-        for (const lf of labels.labeledFrames) {
-          for (const inst of lf.instances) {
-            if (inst instanceof PredictedInstance && inst.score < scoreThreshold) {
-              count++;
-            }
-          }
-        }
+        if (video) count = predictionsWithLowScore(labels, video, scoreThreshold).length;
         break;
       case "range":
-        for (const lf of labels.labeledFrames) {
-          if (lf.frameIdx >= rangeStart && lf.frameIdx <= rangeEnd) {
-            for (const inst of lf.instances) {
-              if (inst instanceof PredictedInstance) count++;
-            }
-          }
-        }
+        if (video) count = predictionsOutsideFrameRange(labels, video, rangeStart, rangeEnd).length;
         break;
       case "labeled":
-        for (const lf of labels.labeledFrames) {
-          const hasUser = lf.instances.some(
-            (inst) => !(inst instanceof PredictedInstance)
-          );
-          if (hasUser) {
-            for (const inst of lf.instances) {
-              if (inst instanceof PredictedInstance) count++;
-            }
-          }
+        if (labeledAllVideos || video) {
+          count = predictionsOnUserLabeledFrames(
+            labels,
+            labeledAllVideos ? null : (video ?? null),
+            unlinkedOnly,
+          ).length;
         }
         break;
       case "maxCount":
-        for (const lf of labels.labeledFrames) {
-          const predicted = lf.instances.filter(
-            (inst) => inst instanceof PredictedInstance
-          );
-          if (predicted.length > maxCount) {
-            count += predicted.length - maxCount;
-          }
-        }
+        if (video) count = predictionsBeyondMaxInstances(labels, video, maxCount).length;
         break;
       case "track": {
         const trackName = selectedTrack === "__untracked__" ? null : selectedTrack;
@@ -144,7 +151,7 @@ export function DeletePredictionsDialog({
     }
 
     return count;
-  }, [labels, mode, scoreThreshold, rangeStart, rangeEnd, maxCount, selectedTrack, instanceType]);
+  }, [labels, video, mode, scoreThreshold, rangeStart, rangeEnd, maxCount, selectedTrack, instanceType, labeledAllVideos, unlinkedOnly]);
 
   const handleDelete = useCallback(async () => {
     // Double-confirm for "all" type deletion
@@ -171,7 +178,10 @@ export function DeletePredictionsDialog({
         });
         break;
       case "labeled":
-        await commandContext.execute(DeletePredictionsOnLabeledFrames);
+        await commandContext.execute(DeletePredictionsOnLabeledFrames, {
+          allVideos: labeledAllVideos,
+          unlinkedOnly,
+        });
         break;
       case "maxCount":
         await commandContext.execute(DeletePredictionsByMaxCount, {
@@ -190,7 +200,7 @@ export function DeletePredictionsDialog({
         break;
     }
     onOpenChange(false);
-  }, [mode, scoreThreshold, rangeStart, rangeEnd, maxCount, selectedTrack, instanceType, onOpenChange]);
+  }, [mode, scoreThreshold, rangeStart, rangeEnd, maxCount, selectedTrack, instanceType, labeledAllVideos, unlinkedOnly, onOpenChange]);
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -207,12 +217,12 @@ export function DeletePredictionsDialog({
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
-                <SelectItem value="score">By score threshold</SelectItem>
-                <SelectItem value="range">By frame range</SelectItem>
+                <SelectItem value="score">With low score (this video)</SelectItem>
+                <SelectItem value="range">Outside a frame range (this video)</SelectItem>
                 <SelectItem value="labeled">On user-labeled frames</SelectItem>
-                <SelectItem value="maxCount">By max instances per frame</SelectItem>
-                <SelectItem value="track">By track</SelectItem>
-                <SelectItem value="type">By instance type</SelectItem>
+                <SelectItem value="maxCount">Beyond max instances per frame (this video)</SelectItem>
+                <SelectItem value="track">By track (all videos)</SelectItem>
+                <SelectItem value="type">By instance type (all videos)</SelectItem>
               </SelectContent>
             </Select>
           </div>
@@ -230,7 +240,8 @@ export function DeletePredictionsDialog({
                 onValueChange={([v]) => setScoreThreshold(v)}
               />
               <p className="text-xs text-muted-foreground">
-                Predictions with an instance score below this threshold will be removed.
+                Predictions in the current video with an instance score below
+                this threshold will be removed. Other videos are not changed.
               </p>
             </div>
           )}
@@ -239,52 +250,97 @@ export function DeletePredictionsDialog({
             <div className="space-y-2">
               <div className="grid grid-cols-2 gap-2">
                 <div>
-                  <Label>Start frame</Label>
-                  <Input
-                    type="number"
+                  <Label>Keep from frame</Label>
+                  <NumberInput
+                    integer
                     min={0}
                     max={totalFrames > 0 ? totalFrames - 1 : undefined}
                     value={rangeStart}
-                    onChange={(e) => setRangeStart(parseInt(e.target.value, 10) || 0)}
+                    onCommit={setRangeStart}
                   />
                 </div>
                 <div>
-                  <Label>End frame</Label>
-                  <Input
-                    type="number"
+                  <Label>to frame</Label>
+                  <NumberInput
+                    integer
                     min={0}
                     max={totalFrames > 0 ? totalFrames - 1 : undefined}
                     value={rangeEnd}
-                    onChange={(e) => setRangeEnd(parseInt(e.target.value, 10) || 0)}
+                    onCommit={setRangeEnd}
                   />
                 </div>
               </div>
               <p className="text-xs text-muted-foreground">
-                Delete all predictions in frames {rangeStart} to {rangeEnd} (inclusive).
+                Keeps predictions on frames {rangeStart} to {rangeEnd} (inclusive)
+                and deletes the current video&apos;s predictions on every other
+                frame. Other videos are not changed.
               </p>
+              {!rangeValid && (
+                <p className="text-xs text-destructive">
+                  {totalFrames > 0
+                    ? "The start frame must not be after the end frame."
+                    : "This video's length is unknown, so no range can be kept."}
+                </p>
+              )}
             </div>
           )}
 
           {mode === "labeled" && (
-            <p className="text-sm text-muted-foreground">
-              Delete all predicted instances on frames that also contain
-              user-labeled instances.
-            </p>
+            <div className="space-y-3">
+              <p className="text-sm text-muted-foreground">
+                Delete predictions on frames that already have user-labeled
+                instances. This cleans up duplicates that appear when
+                predictions are merged into frames with user labels.
+              </p>
+              <div className="space-y-1.5">
+                <Label>Scope</Label>
+                <RadioRow
+                  name="labeledScope"
+                  checked={!labeledAllVideos}
+                  onChange={() => setLabeledAllVideos(false)}
+                  label="Current video only"
+                />
+                <RadioRow
+                  name="labeledScope"
+                  checked={labeledAllVideos}
+                  onChange={() => setLabeledAllVideos(true)}
+                  label="All videos"
+                />
+              </div>
+              <div className="space-y-1.5">
+                <Label>What to delete</Label>
+                <RadioRow
+                  name="labeledWhat"
+                  checked={unlinkedOnly}
+                  onChange={() => setUnlinkedOnly(true)}
+                  label="Unlinked predictions only (visible duplicates)"
+                  title="Delete predictions that no user instance on the frame was made from. These are the ones shown as duplicates next to user instances."
+                />
+                <RadioRow
+                  name="labeledWhat"
+                  checked={!unlinkedOnly}
+                  onChange={() => setUnlinkedOnly(false)}
+                  label="All predictions on user-labeled frames"
+                  title="Also delete the predictions user instances were made from (hidden behind them)."
+                />
+              </div>
+            </div>
           )}
 
           {mode === "maxCount" && (
             <div className="space-y-2">
               <Label>Max predictions per frame: {maxCount}</Label>
-              <Input
-                type="number"
+              <NumberInput
+                integer
                 min={1}
                 max={100}
                 value={maxCount}
-                onChange={(e) => setMaxCount(parseInt(e.target.value, 10) || 1)}
+                onCommit={setMaxCount}
               />
               <p className="text-xs text-muted-foreground">
-                Keep only the top {maxCount} predictions per frame (by score),
-                removing the rest.
+                On each frame of the current video, keep only the top {maxCount}{" "}
+                predictions (by score) and remove the rest. Other videos are not
+                changed.
               </p>
             </div>
           )}
@@ -306,7 +362,8 @@ export function DeletePredictionsDialog({
                 </SelectContent>
               </Select>
               <p className="text-xs text-muted-foreground">
-                Delete all predicted instances on the selected track.
+                Delete all predicted instances on the selected track, in every
+                video.
               </p>
             </div>
           )}
@@ -356,7 +413,8 @@ export function DeletePredictionsDialog({
                 </p>
               )}
               <p className="text-xs text-muted-foreground">
-                Delete all instances of the selected type across all frames.
+                Delete all instances of the selected type, on every frame of
+                every video.
               </p>
             </div>
           )}
@@ -375,12 +433,40 @@ export function DeletePredictionsDialog({
           <Button
             variant="destructive"
             onClick={handleDelete}
-            disabled={previewCount === 0}
+            disabled={previewCount === 0 || (mode === "range" && !rangeValid)}
           >
             Delete
           </Button>
         </DialogFooter>
       </DialogContent>
     </Dialog>
+  );
+}
+
+/** One radio button with its label (and optional hover explanation). */
+function RadioRow({
+  name,
+  checked,
+  onChange,
+  label,
+  title,
+}: {
+  name: string;
+  checked: boolean;
+  onChange: () => void;
+  label: string;
+  title?: string;
+}) {
+  return (
+    <label className="flex items-center gap-2 text-sm cursor-pointer" title={title}>
+      <input
+        type="radio"
+        name={name}
+        checked={checked}
+        onChange={onChange}
+        className="accent-primary"
+      />
+      {label}
+    </label>
   );
 }

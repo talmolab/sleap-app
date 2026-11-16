@@ -79,11 +79,19 @@ function clonePoints(points: Instance["points"]): Instance["points"] {
   }));
 }
 
-/** Deep-clone an array of instances (preserving skeleton/track references). */
+/**
+ * Deep-clone one frame's instances (preserving skeleton/track references).
+ *
+ * A user instance's `fromPredicted` is re-pointed at the clone of the
+ * prediction it was made from, so the link survives undo/redo. Without this,
+ * "Delete Predictions on User-Labeled Frames > Unlinked only" treated every
+ * prediction as unlinked after an undo and deleted the linked ones (#463).
+ */
 function cloneInstances(instances: Instance[]): Instance[] {
-  return instances.map((inst) => {
+  const predClones = new Map<PredictedInstance, PredictedInstance>();
+  const cloned = instances.map((inst) => {
     if (inst instanceof PredictedInstance) {
-      return new PredictedInstance({
+      const copy = new PredictedInstance({
         skeleton: inst.skeleton,
         points: inst.points.map((p) => ({
           xy: [p.xy[0], p.xy[1]] as [number, number],
@@ -95,11 +103,20 @@ function cloneInstances(instances: Instance[]): Instance[] {
         track: inst.track,
         score: inst.score,
       });
+      predClones.set(inst, copy);
+      return copy;
     }
+    return inst;
+  });
+  return cloned.map((inst) => {
+    if (inst instanceof PredictedInstance) return inst;
+    const from = inst.fromPredicted ?? null;
     return new Instance({
       skeleton: inst.skeleton,
       points: clonePoints(inst.points),
       track: inst.track,
+      // A link to a prediction on another frame keeps its original target.
+      fromPredicted: from ? (predClones.get(from) ?? from) : null,
     });
   });
 }

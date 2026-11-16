@@ -76,6 +76,13 @@ import {
   PLACE_CLICK_MAX_MOVE_PX,
 } from "@/lib/canvasGestures";
 import {
+  isZoomBoxGesture,
+  frameToRotated,
+  isZoomBoxTooSmall,
+  viewForZoomRect,
+  type Rect as ZoomRect,
+} from "@/lib/zoomBox";
+import {
   buildBuilderRenderedInstance,
   renderPenStroke,
 } from "@/canvas/skeletonBuilderRender";
@@ -113,9 +120,13 @@ import {
 } from "../../lib/resolveVideos";
 import { useVideoCheckStore } from "@/stores/videoCheckStore";
 import { toast } from "@/lib/notify";
+import { confirmDialog } from "@/stores/confirmStore";
+import { predictionsInArea } from "@/lib/predictionDeletion";
 import { hintIfPredictionsRemain, hintIfFirstNodeConfirm } from "@/lib/labelingHints";
 import { setLabelsAutosaveInteracting } from "@/lib/labelsAutosave";
 import { spacePanState } from "@/lib/spacePanTracking";
+import { actualSizeView, fitPointsView, type CanvasFit, type CanvasView } from "@/lib/viewZoom";
+import { useFollowSelection } from "@/hooks/useFollowSelection";
 import { getPlatform, isTauri } from "@/platform/index";
 import { spawnOverlayServe, killOverlayServe, detectGpu } from "@/platform/backend";
 import { Film, Frame, Hand, ImageOff, MousePointer2, Tag, ZoomIn } from "lucide-react";
@@ -209,6 +220,11 @@ export function VideoPlayer() {
     [labels, editSeq]
   );
   const trailLength = useAppStore((s) => s.trailLength);
+  const trailNode = useAppStore((s) => s.trailNode);
+  const trailAlpha = useAppStore((s) => s.trailAlpha);
+  const trailFade = useAppStore((s) => s.trailFade);
+  const trailWidth = useAppStore((s) => s.trailWidth);
+  const boldLines = useAppStore((s) => s.boldLines);
   const lutMin = useAppStore((s) => s.lutMin);
   const lutMax = useAppStore((s) => s.lutMax);
   const colormap = useAppStore((s) => s.colormap);
@@ -217,8 +233,11 @@ export function VideoPlayer() {
   const overlayModelPaths = useAppStore((s) => s.overlayModelPaths);
   const defaultToPan = useAppStore((s) => s.defaultToPan);
   const fitSelection = useAppStore((s) => s.fitSelection);
+  const followSelection = useAppStore((s) => s.followSelection);
+  const actualSize = useAppStore((s) => s.actualSize);
   const qcOverlay = useQcFrameFlags();
   const resetViewNonce = useAppStore((s) => s.resetViewNonce);
+  const userViewNonce = useAppStore((s) => s.userViewNonce);
   const areaDeleteMode = useAppStore((s) => s.areaDeleteMode);
   const showCrosshair = useAppStore((s) => s.showCrosshair);
   // Image-features ROI crop tool (shared with the Suggestions panel).
@@ -272,9 +291,11 @@ export function VideoPlayer() {
 
   // Multi-node selection state (local/ephemeral)
   const [selectedNodes, setSelectedNodes] = useState<Set<string>>(new Set());
-  const [interactionMode, setInteractionMode] = useState<"idle" | "marquee" | "dragging" | "roi">("idle");
+  const [interactionMode, setInteractionMode] = useState<"idle" | "marquee" | "dragging" | "roi" | "zoomBox">("idle");
   const [marqueeStart, setMarqueeStart] = useState<{ x: number; y: number } | null>(null);
   const [marqueeEnd, setMarqueeEnd] = useState<{ x: number; y: number } | null>(null);
+  // Alt+drag zoom box (PyQt SLEAP), in video-frame coords while it is drawn.
+  const [zoomBox, setZoomBox] = useState<ZoomRect | null>(null);
   // Image-features ROI rubber-band (image-pixel coords; live only while drawing).
   const [roiStart, setRoiStart] = useState<{ x: number; y: number } | null>(null);
   const [roiEnd, setRoiEnd] = useState<{ x: number; y: number } | null>(null);
@@ -716,6 +737,15 @@ export function VideoPlayer() {
   const baseScale = displayW > 0 && displayH > 0 ? Math.min(cw / displayW, ch / displayH) : 1;
   const offsetX = displayW > 0 && displayH > 0 ? (cw - displayW * baseScale) / 2 : 0;
   const offsetY = displayW > 0 && displayH > 0 ? (ch - displayH * baseScale) / 2 : 0;
+  const canvasFit: CanvasFit = { cw, ch, baseScale, offsetX, offsetY };
+  /** Jump to a computed view (no-op for null). */
+  const applyView = (v: CanvasView | null) => {
+    if (!v) return;
+    viewRef.current = v;
+    setZoom(v.zoom);
+    setPanX(v.panX);
+    setPanY(v.panY);
+  };
 
   // The in-progress builder skeleton as a RenderedInstance, reusing the same
   // machinery as real instances for draw + hit-test. `overlayVersion` is a dep
@@ -1585,16 +1615,22 @@ export function VideoPlayer() {
       }
     };
 
+    // Alt+drag zoom box, drawn like the selection box. Needs no instances.
+    const paintZoomBox = () => {
+      if (zoomBox) renderMarqueeRect(ctx, zoomBox.x1, zoomBox.y1, zoomBox.x2, zoomBox.y2, baseScale * zoom);
+    };
+
     if (!labeledFrame || !showInstances) {
       renderedInstancesRef.current = [];
       // The ROI + builder overlays are independent of instance rendering — still
       // draw them (persisted region / live rubber-band / scratch skeleton).
       const hasRoi = video ? imageFeatureRois.has(video) : false;
-      if (imageFeatureRoiDrawActive || hasRoi || skeletonBuildMode) {
+      if (imageFeatureRoiDrawActive || hasRoi || skeletonBuildMode || zoomBox) {
         ctx.save();
         applyImageTransform();
         paintRoi();
         paintBuilder();
+        paintZoomBox();
         ctx.restore();
       }
       return;
@@ -1630,8 +1666,10 @@ export function VideoPlayer() {
         trailLength,
         labels.tracks,
         palette,
-        zoom,
-        trackColorOverrides
+        // Total scale, so the trail width stays in screen pixels (PyQt's cosmetic pen).
+        baseScale * zoom,
+        trackColorOverrides,
+        { node: trailNode, alpha: trailAlpha, fade: trailFade, width: trailWidth }
       );
     }
 
@@ -1646,6 +1684,7 @@ export function VideoPlayer() {
       showNonVisibleNodes,
       colorPredicted,
       showTrackScore,
+      boldLines,
       zoom: baseScale * zoom,
     };
 
@@ -1708,6 +1747,7 @@ export function VideoPlayer() {
     if (marqueeStart && marqueeEnd) {
       renderMarqueeRect(ctx, marqueeStart.x, marqueeStart.y, marqueeEnd.x, marqueeEnd.y, baseScale * zoom);
     }
+    paintZoomBox();
 
     // Image-features ROI overlay (also drawn on the early-return path above).
     paintRoi();
@@ -1762,6 +1802,11 @@ export function VideoPlayer() {
     distinctlyColor,
     projectHasTracks,
     trailLength,
+    trailNode,
+    trailAlpha,
+    trailFade,
+    trailWidth,
+    boldLines,
     zoom,
     panX,
     panY,
@@ -1779,6 +1824,7 @@ export function VideoPlayer() {
     anchorPreviewCropSize,
     marqueeStart,
     marqueeEnd,
+    zoomBox,
     roiStart,
     roiEnd,
     imageFeatureRoiDrawActive,
@@ -2185,9 +2231,9 @@ export function VideoPlayer() {
 
   // Fit view to selected instance (one-shot action): zooms and pans so the
   // selected instance's visible-node bounding box (+ padding) fills the
-  // viewport. Triggered from the "Fit View to Selection" menu item, the
-  // Shift+Up/Down cycle-instance shortcut, and clicking an instance in the
-  // Instances panel.
+  // viewport. Triggered from View ▸ Zoom to Selection, the Shift+Up/Down
+  // cycle-instance shortcut, clicking an instance in the Instances panel,
+  // and Label QC.
   useEffect(() => {
     if (!fitSelection || !selectedInstance) return;
     // Jumping to another frame and selecting there (Label QC's F) sets this
@@ -2196,41 +2242,31 @@ export function VideoPlayer() {
     // Reset the flag immediately so this is a one-shot action
     useAppStore.getState().set("fitSelection", false);
 
-    const [cw, ch] = containerSize;
-    if (cw === 0 || ch === 0) return;
-
     // Find the rendered instance matching the selected instance
     const selectedRendered = renderedInstances.find((ri) => ri.isSelected);
     if (!selectedRendered) return;
-
-    const visibleNodes = selectedRendered.nodes.filter((n) => n.visible);
-    if (visibleNodes.length === 0) return;
-
-    const xs = visibleNodes.map((n) => n.x);
-    const ys = visibleNodes.map((n) => n.y);
-    const pad = 50;
-    const minX = Math.min(...xs) - pad;
-    const maxX = Math.max(...xs) + pad;
-    const minY = Math.min(...ys) - pad;
-    const maxY = Math.max(...ys) + pad;
-
-    const bboxW = maxX - minX;
-    const bboxH = maxY - minY;
-    if (bboxW <= 0 || bboxH <= 0) return;
-
-    const newZoom = Math.min(cw / (bboxW * baseScale), ch / (bboxH * baseScale), 10);
-
-    const centerX = (minX + maxX) / 2;
-    const centerY = (minY + maxY) / 2;
-    const newPanX = cw / 2 - offsetX - centerX * baseScale * newZoom;
-    const newPanY = ch / 2 - offsetY - centerY * baseScale * newZoom;
-
-    viewRef.current = { zoom: newZoom, panX: newPanX, panY: newPanY };
-    setZoom(newZoom);
-    setPanX(newPanX);
-    setPanY(newPanY);
+    applyView(fitPointsView(selectedRendered.nodes.filter((n) => n.visible), canvasFit));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [fitSelection, renderedInstances]);
+
+  // View ▸ Fit View to Selection (toggle): fit on frame change only, never
+  // mid-drag (see useFollowSelection).
+  useFollowSelection({
+    followSelection,
+    selectedTrackName: selectedInstance?.track?.name ?? null,
+    hasSelection: !!selectedInstance,
+    frame: labeledFrame,
+    renderedInstances,
+    onFit: (ri) => applyView(fitPointsView(ri.nodes.filter((n) => n.visible), canvasFit)),
+  });
+
+  // View ▸ Actual Size (1:1): one video pixel per screen pixel. Re-applied when
+  // the canvas resizes, since that changes the fit-to-window base scale.
+  useEffect(() => {
+    if (!actualSize || frameDims[0] === 0 || frameDims[1] === 0) return;
+    applyView(actualSizeView(viewRef.current, canvasFit));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [actualSize, baseScale]);
 
   // Opening or closing the Label QC Review window resizes the canvas: zoom
   // back to the instance under review.
@@ -2255,6 +2291,18 @@ export function VideoPlayer() {
     zoomMode.current = "free";
     savedFreeView.current = { zoom: 1, panX: 0, panY: 0 };
   }, [resetViewNonce]);
+
+  // Apply a view the user set by hand (Alt+drag zoom box) through
+  // `setViewFromUser`, which also turns off zoom modes that would undo it.
+  useEffect(() => {
+    const view = useAppStore.getState().userView;
+    if (userViewNonce === 0 || !view) return;
+    viewRef.current = { ...view };
+    setZoom(view.zoom);
+    setPanX(view.panX);
+    setPanY(view.panY);
+    zoomMode.current = "free";
+  }, [userViewNonce]);
 
   // Mouse handlers for interaction
   const canvasToScene = useCallback(
@@ -2476,6 +2524,12 @@ export function VideoPlayer() {
         );
         if (hit && !instances[hit.instanceIdx]?.isPredicted) {
           // Node hit in pan mode — fall through to normal node drag handling below
+        } else if (isZoomBoxGesture(e)) {
+          // Alt+drag off a node draws a zoom box in pan mode too (PyQt).
+          e.preventDefault();
+          setInteractionMode("zoomBox");
+          setZoomBox({ x1: x, y1: y, x2: x, y2: y });
+          return;
         } else {
           e.preventDefault();
           setIsPanning(true);
@@ -2694,6 +2748,14 @@ export function VideoPlayer() {
         return;
       }
 
+      // No hit + Alt: draw a zoom box (PyQt SLEAP's Alt+drag zoom). Alt+drag
+      // on a node still moves the whole instance (handled above).
+      if (isZoomBoxGesture(e)) {
+        setInteractionMode("zoomBox");
+        setZoomBox({ x1: x, y1: y, x2: x, y2: y });
+        return;
+      }
+
       // No hit: start marquee or deselect
       if (!e.shiftKey) {
         setSelectedNodes(new Set());
@@ -2835,6 +2897,13 @@ export function VideoPlayer() {
       if (interactionMode === "roi") {
         setRoiEnd(canvasToScene(e.clientX, e.clientY));
         useAppStore.getState().bumpOverlayVersion();
+        return;
+      }
+
+      // Zoom box: update the corner under the pointer.
+      if (interactionMode === "zoomBox") {
+        const { x, y } = canvasToScene(e.clientX, e.clientY);
+        setZoomBox((box) => (box ? { ...box, x2: x, y2: y } : box));
         return;
       }
 
@@ -2995,12 +3064,28 @@ export function VideoPlayer() {
       const dx = Math.abs(areaDeleteEnd.x - areaDeleteStart.x);
       const dy = Math.abs(areaDeleteEnd.y - areaDeleteStart.y);
       if (dx > 5 && dy > 5) {
-        commandContext.execute(DeletePredictionsByArea, {
+        // The box applies to every frame of the current video (as in PyQt),
+        // so say how many predictions that is and ask first.
+        const box = {
           x1: areaDeleteStart.x,
           y1: areaDeleteStart.y,
           x2: areaDeleteEnd.x,
           y2: areaDeleteEnd.y,
-        });
+        };
+        const { labels: lbls, video: vid } = useAppStore.getState();
+        const count = lbls && vid ? predictionsInArea(lbls, vid, box).length : 0;
+        if (count === 0) {
+          toast.info("No predictions in this video lie inside the selected area.");
+        } else {
+          void confirmDialog({
+            title: "Delete predictions from area",
+            message: `There are ${count} predicted instances inside this area, across every frame of this video, which would be deleted. Delete them?`,
+            confirmLabel: "Delete",
+            destructive: true,
+          }).then((ok) => {
+            if (ok) commandContext.execute(DeletePredictionsByArea, box);
+          });
+        }
       }
       setIsAreaDeleting(false);
       setAreaDeleteStart(null);
@@ -3042,6 +3127,23 @@ export function VideoPlayer() {
       return;
     }
 
+    // Zoom box: zoom so the drawn box fills the view; a click or a sliver of a
+    // box does nothing (PyQt ignores an empty rectangle too).
+    if (interactionMode === "zoomBox") {
+      if (zoomBox) {
+        const a = frameToRotated(zoomBox.x1, zoomBox.y1, rotation, fw, fh);
+        const b = frameToRotated(zoomBox.x2, zoomBox.y2, rotation, fw, fh);
+        const rect = { x1: a.x, y1: a.y, x2: b.x, y2: b.y };
+        const view = isZoomBoxTooSmall(rect, baseScale * zoom)
+          ? null
+          : viewForZoomRect(rect, containerSize[0], containerSize[1], baseScale, offsetX, offsetY);
+        if (view) useAppStore.getState().setViewFromUser(view);
+      }
+      setZoomBox(null);
+      setInteractionMode("idle");
+      return;
+    }
+
     if (interactionMode === "marquee" && marqueeStart && marqueeEnd) {
       const instances = renderedInstancesRef.current;
       const newSelection = nodesInRect(instances, marqueeStart.x, marqueeStart.y, marqueeEnd.x, marqueeEnd.y);
@@ -3079,7 +3181,7 @@ export function VideoPlayer() {
         s.bumpOverlayVersion();
       }
     }
-  }, [isDragging, isPanning, isZoomDragging, interactionMode, marqueeStart, marqueeEnd, isAreaDeleting, areaDeleteStart, areaDeleteEnd, roiStart, roiEnd, setImageFeatureRoi]);
+  }, [isDragging, isPanning, isZoomDragging, interactionMode, marqueeStart, marqueeEnd, zoomBox, rotation, fw, fh, baseScale, zoom, containerSize, offsetX, offsetY, isAreaDeleting, areaDeleteStart, areaDeleteEnd, roiStart, roiEnd, setImageFeatureRoi]);
 
   // Zoom with mouse wheel (towards pointer), Alt+Scroll for rotation
   // Use native event listener with { passive: false } so preventDefault() works
@@ -3268,6 +3370,13 @@ export function VideoPlayer() {
         return;
       }
 
+      // Alt+double-click on empty canvas: reset the zoom in any mode (PyQt
+      // SLEAP's clearZoom), through the store so zoom modes turn off too.
+      if (isZoomBoxGesture(e)) {
+        useAppStore.getState().setViewFromUser(null);
+        return;
+      }
+
       // No prediction hit - reset zoom/pan only in pan mode
       if (shouldPan) {
         viewRef.current = { zoom: 1, panX: 0, panY: 0 };
@@ -3385,7 +3494,7 @@ export function VideoPlayer() {
         ref={containerRef}
         className={cn(
           "flex-1 relative overflow-hidden bg-background min-h-0",
-          pickingAnchor ? "cursor-crosshair" : instanceSequencePick ? "cursor-crosshair" : skeletonBuildMode ? (skeletonBuildStage === "connect" ? "cursor-crosshair" : "cursor-cell") : imageFeatureRoiDrawActive ? "cursor-crosshair" : isPanning ? "cursor-grabbing" : isZoomDragging ? "cursor-zoom-in" : (shouldPan && isCmdHeld) ? "cursor-zoom-in" : shouldPan ? "cursor-grab" : isDragging ? "cursor-grabbing" : areaDeleteMode ? "cursor-crosshair" : interactionMode === "marquee" ? "cursor-crosshair" : isPlacingNodes ? "cursor-cell" : hoveredNode ? "cursor-pointer" : "cursor-default"
+          pickingAnchor ? "cursor-crosshair" : instanceSequencePick ? "cursor-crosshair" : skeletonBuildMode ? (skeletonBuildStage === "connect" ? "cursor-crosshair" : "cursor-cell") : imageFeatureRoiDrawActive ? "cursor-crosshair" : isPanning ? "cursor-grabbing" : isZoomDragging ? "cursor-zoom-in" : (shouldPan && isCmdHeld) ? "cursor-zoom-in" : shouldPan ? "cursor-grab" : isDragging ? "cursor-grabbing" : areaDeleteMode ? "cursor-crosshair" : interactionMode === "marquee" ? "cursor-crosshair" : interactionMode === "zoomBox" ? "cursor-zoom-in" : isPlacingNodes ? "cursor-cell" : hoveredNode ? "cursor-pointer" : "cursor-default"
         )}
         onMouseMove={crosshairActive ? handleCrosshairMove : undefined}
         onMouseLeave={
@@ -3728,7 +3837,7 @@ export function VideoPlayer() {
             variant="destructive"
             className="absolute top-2 left-1/2 -translate-x-1/2 pointer-events-none rounded-md"
           >
-            Delete Area: Draw a rectangle to delete predictions · Esc to cancel
+            Delete Area: Draw a rectangle to delete predictions inside it on every frame of this video · Esc to cancel
           </Badge>
         )}
 

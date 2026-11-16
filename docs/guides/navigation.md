@@ -11,6 +11,9 @@
 | Go to Frame… | ++cmd+j++ / ++ctrl+j++ |
 | Select to Frame… | ++cmd+shift+j++ / ++ctrl+shift+j++ |
 
+The ± 10 and ± 100 jumps are the default **medium** and **large** step sizes.
+Change them in **Go ▸ Frame Step Sizes…**.
+
 ## Jumping to frames that matter
 
 Scrubbing frame by frame through a 30-minute video is not a workflow. These jump

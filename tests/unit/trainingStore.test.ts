@@ -957,6 +957,77 @@ trainer_config: {}
     });
   });
 
+  // Baseline profiles ship `unet: {...}, convnext: null, swint: null`; sleap-nn
+  // builds whichever key is non-null, so picking ConvNeXt/SwinT must swap
+  // which block is populated — otherwise the run silently trains a UNet.
+  describe("applyHyperparamsToYaml - ConvNeXt / SwinT backbones", () => {
+    const profileYaml = readFileSync(
+      join(import.meta.dir, "../../src/assets/training_profiles/baseline_medium_rf.bottomup.yaml"),
+      "utf-8",
+    );
+    type Block = Record<string, unknown>;
+    type BackboneConfig = Record<"unet" | "convnext" | "swint", Block>;
+    const backboneOf = (text: string) =>
+      (yaml.load(text) as { model_config: { backbone_config: BackboneConfig } }).model_config.backbone_config;
+    const apply = (hp: Partial<typeof defaultHyperparams>, inCh?: number) =>
+      backboneOf(applyHyperparamsToYaml(profileYaml, { ...defaultHyperparams, ...hp }, null, undefined, inCh));
+
+    it("writes a convnext block and nulls unet/swint", () => {
+      const bc = apply({ backbone: "convnext" });
+      expect(bc.unet).toBeNull();
+      expect(bc.swint).toBeNull();
+      expect(bc.convnext.model_type).toBe("tiny");
+      expect(bc.convnext.pre_trained_weights).toBe("ConvNeXt_Tiny_Weights");
+      expect(bc.convnext.in_channels).toBe(3);
+      expect(bc.convnext.max_stride).toBe(32);
+    });
+
+    it("maps each size to its torchvision weight name", () => {
+      expect(apply({ backbone: "convnext", backboneSize: "large" }).convnext.pre_trained_weights).toBe("ConvNeXt_Large_Weights");
+      expect(apply({ backbone: "swint", backboneSize: "small" }).swint.pre_trained_weights).toBe("Swin_S_Weights");
+      expect(apply({ backbone: "swint", backboneSize: "base" }).swint.pre_trained_weights).toBe("Swin_B_Weights");
+    });
+
+    it("clamps SwinT to tiny when 'large' (ConvNeXt-only) is carried over", () => {
+      const bc = apply({ backbone: "swint", backboneSize: "large" });
+      expect(bc.swint.model_type).toBe("tiny");
+      expect(bc.swint.pre_trained_weights).toBe("Swin_T_Weights");
+    });
+
+    it("writes null pre_trained_weights and the resolved channels when training from scratch", () => {
+      const bc = apply({ backbone: "convnext", pretrainedWeights: false }, 1);
+      expect(bc.convnext.pre_trained_weights).toBeNull();
+      expect(bc.convnext.in_channels).toBe(1);
+    });
+
+    it("sets the backbone output_stride to the smallest head stride, not sleap-nn's default of 1", () => {
+      // bottom-up profile: confmaps at hp.outputStride, pafs at 8
+      expect(apply({ backbone: "swint", outputStride: 4 }).swint.output_stride).toBe(4);
+    });
+
+    it("restores a complete unet block when switching back from convnext", () => {
+      const convnextYaml = applyHyperparamsToYaml(profileYaml, { ...defaultHyperparams, backbone: "convnext" });
+      const bc = backboneOf(applyHyperparamsToYaml(convnextYaml, { ...defaultHyperparams, backbone: "unet" }));
+      expect(bc.convnext).toBeNull();
+      expect(bc.unet.kernel_size).toBe(3);
+      expect(bc.unet.convs_per_block).toBe(2);
+      expect(bc.unet.output_stride).toBe(2);
+    });
+
+    it("round-trips size and pretrained choice through parseYamlConfig", () => {
+      for (const [backbone, backboneSize, pretrainedWeights] of [
+        ["convnext", "base", true],
+        ["swint", "small", false],
+      ] as const) {
+        const text = applyHyperparamsToYaml(profileYaml, { ...defaultHyperparams, backbone, backboneSize, pretrainedWeights });
+        const parsed = useTrainingStore.getState().parseYamlConfig(text, "x.yaml", "bottomup")!.hyperparams;
+        expect(parsed.backbone).toBe(backbone);
+        expect(parsed.backboneSize).toBe(backboneSize);
+        expect(parsed.pretrainedWeights).toBe(pretrainedWeights);
+      }
+    });
+  });
+
   describe("parseYamlConfig - model params", () => {
     it("extracts backbone params from YAML", () => {
       const yamlText = `
