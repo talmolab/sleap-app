@@ -47,8 +47,11 @@ import { useQcFrameFlags } from "@/hooks/useQcFrameFlags";
 import { useQcStore } from "@/stores/qcStore";
 import { QcReviewFrame } from "./QcReviewFrame";
 import { useModelOverlayFrame } from "@/hooks/useModelOverlayFrame";
-import { renderModelOverlay } from "@/canvas/modelOverlayRenderer";
+import { renderModelOverlay, hitTestModelOverlay } from "@/canvas/modelOverlayRenderer";
 import { ModelOverlayLegend } from "./ModelOverlayLegend";
+import { ModelPoseAcceptBar } from "./ModelPoseAcceptBar";
+import { pickModelPose, acceptModelPose } from "@/lib/modelOverlay/canvasActions";
+import { useModelOverlayStore } from "@/stores/modelOverlayStore";
 import {
   getPaletteColor,
   getInstanceColor,
@@ -246,7 +249,18 @@ export function VideoPlayer() {
   // Claude's pending fixes on this frame (QC Review), drawn as ghost poses.
   const proposalGhosts = useProposalGhosts();
   // Compare Model Predictions: other models' poses on this frame (view only).
-  const modelLayers = useModelOverlayFrame();
+  const modelOverlay = useModelOverlayFrame();
+  const modelLayers = modelOverlay.layers;
+  // Click handlers read the latest overlay without re-binding on every frame.
+  const modelOverlayRef = useRef(modelOverlay);
+  modelOverlayRef.current = modelOverlay;
+  /** The model node under scene point (x, y), or null (none shown / none near). */
+  const hitModelPose = useCallback((x: number, y: number, threshold: number) => {
+    const { layers } = modelOverlayRef.current;
+    if (layers.length === 0) return null;
+    const v = useAppStore.getState().video;
+    return hitTestModelOverlay(layers, x, y, threshold, (sx, sy) => toImageCoords(v, sx, sy));
+  }, []);
   const resetViewNonce = useAppStore((s) => s.resetViewNonce);
   const userViewNonce = useAppStore((s) => s.userViewNonce);
   const areaDeleteMode = useAppStore((s) => s.areaDeleteMode);
@@ -1625,7 +1639,7 @@ export function VideoPlayer() {
         showEdges,
         zoom: baseScale * zoom,
         toImage: (x, y) => toImageCoords(video, x, y),
-      });
+      }, { selected: modelOverlay.selected, disagreements: modelOverlay.disagreements });
     };
 
     if (!labeledFrame || !showInstances) {
@@ -1857,6 +1871,7 @@ export function VideoPlayer() {
     qcOverlay,
     proposalGhosts,
     modelLayers,
+    modelOverlay,
   ]);
 
   // Check if we're in explicit placement mode
@@ -2674,6 +2689,18 @@ export function VideoPlayer() {
         instances, x, y, nodeThreshold,
         showLabels ? { zoom, markerSize, nodeLabelSize } : undefined
       );
+      // Compare Model Predictions: a plain click on a model's node picks that
+      // pose for Accept — unless it's on one of the project's user instances,
+      // which keep their usual click (select / drag).
+      if (!e.shiftKey && !e.altKey && !e.ctrlKey && !e.metaKey) {
+        const ovHit = hitModelPose(x, y, nodeThreshold);
+        if (ovHit && (!nodeHit || instances[nodeHit.instanceIdx]?.isPredicted)) {
+          pickModelPose(modelOverlayRef.current.layers, ovHit.layer, ovHit.pose);
+          return;
+        }
+      }
+      if (useModelOverlayStore.getState().selected) useModelOverlayStore.getState().setSelected(null);
+
       if (nodeHit) {
         if (tryBeginDuplicateDrag(nodeHit.instanceIdx)) return;
         const key = makeNodeKey(nodeHit.instanceIdx, nodeHit.nodeIdx);
@@ -2790,7 +2817,7 @@ export function VideoPlayer() {
       setMarqueeStart({ x, y });
       setMarqueeEnd({ x, y });
     },
-    [canvasToScene, markerSize, nodeLabelSize, showLabels, panX, panY, zoom, baseScale, shouldPan, isCmdHeld, isSpaceHeld, offsetX, offsetY, selectedNodes, areaDeleteMode, imageFeatureRoiDrawActive, skeletonBuildMode, skeleton, builderRI, pickingAnchor, instanceSequencePick]
+    [canvasToScene, markerSize, nodeLabelSize, showLabels, panX, panY, zoom, baseScale, shouldPan, isCmdHeld, isSpaceHeld, offsetX, offsetY, selectedNodes, areaDeleteMode, imageFeatureRoiDrawActive, skeletonBuildMode, skeleton, builderRI, pickingAnchor, instanceSequencePick, hitModelPose]
   );
 
   // Node-drag perf (#329): coalesce the overlay redraw to one per frame and
@@ -3350,6 +3377,16 @@ export function VideoPlayer() {
         instances, x, y, nodeThreshold,
         showLabels ? { zoom, markerSize, nodeLabelSize } : undefined
       );
+      // Compare Model Predictions: double-clicking a model's node accepts that
+      // pose into the project (it replaces the matching prediction). User
+      // instances keep their own double-click.
+      const ovHit = hitModelPose(x, y, nodeThreshold);
+      if (ovHit && (!nodeHit || instances[nodeHit.instanceIdx]?.isPredicted)) {
+        const layer = modelOverlayRef.current.layers[ovHit.layer];
+        if (layer) acceptModelPose(layer.modelId, ovHit.pose);
+        return;
+      }
+
       if (nodeHit) {
         const inst = instances[nodeHit.instanceIdx];
         // Predicted: convert to user instance; Shift+double-click also marks
@@ -3408,7 +3445,7 @@ export function VideoPlayer() {
         setPanY(0);
       }
     },
-    [canvasToScene, markerSize, nodeLabelSize, showLabels, zoom, baseScale, shouldPan, skeletonBuildMode, skeleton, builderRI]
+    [canvasToScene, markerSize, nodeLabelSize, showLabels, zoom, baseScale, shouldPan, skeletonBuildMode, skeleton, builderRI, hitModelPose]
   );
 
   // Right-click context menu
@@ -4051,6 +4088,8 @@ export function VideoPlayer() {
 
         {/* Compare Model Predictions legend (self-guards to loaded models). */}
         <ModelOverlayLegend />
+        {/* Accept bar for a model pose picked on the canvas (self-guards). */}
+        <ModelPoseAcceptBar />
         {/* Visual skeleton builder control bar (self-guards to build mode). */}
         <SkeletonBuildBar />
         {/* Anchor-part picker prompt (self-guards to pick mode). */}
