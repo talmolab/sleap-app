@@ -51,3 +51,22 @@ export function loadFixtureWithOneInstance(opts?: Parameters<typeof makeAutomati
   useAppStore.getState().setInstance(lf.instances[0]);
   return { ctx, ...project };
 }
+
+/** An anomaly score for one user instance (flagged when score ≥ 0.7). */
+export function anomalyAt(frameIdx: number, instIdx: number, score: number, issueNodes: number[] = [0]) {
+  return {
+    videoIdx: 0,
+    frameIdx,
+    instIdx,
+    score,
+    confidence: "high" as const,
+    topIssue: "Unusual joint angle",
+    issueNodes,
+    issueKind: "node" as const,
+    issueDir: 0,
+    contributions: {},
+    gmmScore: null,
+    gmmIssue: null,
+    gmmNode: null,
+  };
+}
