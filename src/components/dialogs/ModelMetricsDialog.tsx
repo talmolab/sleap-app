@@ -57,6 +57,9 @@ const COLUMNS = [
   "Dist Avg",
 ] as const;
 
+/** Extra columns shown when a box detector is in the table. */
+const BBOX_COLUMNS = ["Box mAP", "Box AP50", "Box AP75", "Box IoU"] as const;
+
 export interface ModelMetricsDialogProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
@@ -139,6 +142,10 @@ export function ModelMetricsDialog({
     }
   };
 
+  // Box columns only when a box detector is listed.
+  const showBbox = rows.some((r) => r.metrics?.mode === "bbox");
+  const columns: readonly string[] = showBbox ? [...COLUMNS, ...BBOX_COLUMNS] : COLUMNS;
+
   const openDetail = (row: ModelMetricsRow) => {
     setSelected(row);
     setDetailOpen(true);
@@ -165,7 +172,7 @@ export function ModelMetricsDialog({
             <Table className="min-w-[860px] border-separate border-spacing-0">
               <TableHeader className="sticky top-0 z-10 bg-background">
                 <TableRow>
-                  {COLUMNS.map((c) => (
+                  {columns.map((c) => (
                     <TableHead key={c} className="text-[11px] border-b">
                       {c}
                     </TableHead>
@@ -175,7 +182,7 @@ export function ModelMetricsDialog({
               <TableBody className="select-text">
                 {rows.length === 0 && !loading && (
                   <TableRow>
-                    <TableCell colSpan={COLUMNS.length} className="text-center text-muted-foreground text-xs py-6">
+                    <TableCell colSpan={columns.length} className="text-center text-muted-foreground text-xs py-6">
                       No trained models. Use “Add Trained Model(s)…” to add a run directory.
                     </TableCell>
                   </TableRow>
@@ -203,6 +210,14 @@ export function ModelMetricsDialog({
                       <TableCell className="font-mono tabular-nums">{fmt(s?.distP95)}</TableCell>
                       <TableCell className="font-mono tabular-nums">{fmt(s?.distP75)}</TableCell>
                       <TableCell className="font-mono tabular-nums">{fmt(s?.distAvg)}</TableCell>
+                      {showBbox && (
+                        <>
+                          <TableCell className="font-mono tabular-nums">{fmt(s?.bboxMAP)}</TableCell>
+                          <TableCell className="font-mono tabular-nums">{fmt(s?.bboxAP50)}</TableCell>
+                          <TableCell className="font-mono tabular-nums">{fmt(s?.bboxAP75)}</TableCell>
+                          <TableCell className="font-mono tabular-nums">{fmt(s?.bboxMeanIoU)}</TableCell>
+                        </>
+                      )}
                     </TableRow>
                   );
                 })}

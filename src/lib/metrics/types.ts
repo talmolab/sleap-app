@@ -15,7 +15,7 @@
  */
 
 /** Which sleap-nn match method produced these metrics. */
-export type MetricsMode = "oks" | "centroid" | "mask" | "semantic" | "unknown";
+export type MetricsMode = "oks" | "centroid" | "bbox" | "mask" | "semantic" | "unknown";
 
 /**
  * VOC (PASCAL-VOC-style average precision/recall) metrics. sleap-nn computes
@@ -77,6 +77,53 @@ export interface VisibilityMetrics {
 }
 
 /**
+ * Bounding-box detector metrics (sleap-nn `bbox_centernet` / `bbox_ssd`):
+ * COCO-style box AP/AR over IoU thresholds 0.50:0.95, plus precision /
+ * recall / F1 at the score threshold that maximizes F1. sleap-nn writes these
+ * as flat `bbox_*` keys in `metrics.{split}.{idx}.json` (`match_method="bbox"`).
+ */
+export interface BboxMetrics {
+  mAP: number | null;
+  AP50: number | null;
+  AP75: number | null;
+  AR: number | null;
+  precision: number | null;
+  recall: number | null;
+  f1: number | null;
+  /** Score threshold at which precision/recall/F1 above are measured. */
+  f1Threshold: number | null;
+  /** Mean IoU of matched boxes. */
+  meanIoU: number | null;
+  tp: number;
+  fp: number;
+  fn: number;
+  nFrames: number;
+  nGt: number;
+  nPred: number;
+  /** Inference speed during evaluation (frames per second). */
+  predictFps: number | null;
+  /** IoU thresholds the per-class curves are measured at (0.50 … 0.95). */
+  iouThresholds: number[];
+  /** Category names, one per row of `apPerClass` / `arPerClass`. */
+  categories: string[];
+  /** AP per category per IoU threshold. */
+  apPerClass: (number | null)[][];
+  /** AR per category per IoU threshold. */
+  arPerClass: (number | null)[][];
+  /** Precision-recall curve over descending score (all categories pooled). */
+  prCurve: { scores: number[]; precision: number[]; recall: number[] } | null;
+}
+
+/** Per-epoch box metrics read from the run's `training_log.csv`. */
+export interface BboxHistory {
+  epoch: number[];
+  mAP: (number | null)[];
+  AP50: (number | null)[];
+  AP75: (number | null)[];
+  meanIoU: (number | null)[];
+}
+
+/**
  * Normalized, mode-tagged metrics for one trained model + split. Sub-sections
  * are optional so non-keypoint modes (centroid/mask/semantic) or partial
  * artifacts still load. `raw` preserves the parsed JSON so the detailed view
@@ -91,6 +138,10 @@ export interface ModelMetrics {
   distance?: DistanceMetrics;
   pck?: PckMetrics;
   visibility?: VisibilityMetrics;
+  /** Box detector metrics (mode `"bbox"`). */
+  bbox?: BboxMetrics;
+  /** Box metrics per epoch from `training_log.csv`, when present. */
+  bboxHistory?: BboxHistory;
   raw: Record<string, unknown>;
 }
 
@@ -115,6 +166,14 @@ export interface MetricsSummary {
   distP90: number | null;
   distP95: number | null;
   distP99: number | null;
+  bboxMAP: number | null;
+  bboxAP50: number | null;
+  bboxAP75: number | null;
+  bboxAR: number | null;
+  bboxPrecision: number | null;
+  bboxRecall: number | null;
+  bboxF1: number | null;
+  bboxMeanIoU: number | null;
 }
 
 /**

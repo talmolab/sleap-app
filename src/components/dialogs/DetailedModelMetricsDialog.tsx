@@ -20,7 +20,8 @@ import {
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { computeNodeBoxplots, distanceAxisMax } from "@/lib/metrics/boxplot";
 import { runDirName } from "@/lib/metrics/loadModelMetrics";
-import type { ModelMetrics, ModelMetricsRow } from "@/lib/metrics/types";
+import type { BboxMetrics, ModelMetrics, ModelMetricsRow } from "@/lib/metrics/types";
+import { MiniLineChart, type MiniSeries } from "@/components/charts/MiniLineChart";
 
 // Ordered, human-readable labels — mirrors classic SLEAP METRICS_KEY_LABELS.
 interface LabeledMetric {
@@ -32,7 +33,97 @@ function fmt(v: number | null | undefined, digits = 5): string {
   return typeof v === "number" && Number.isFinite(v) ? v.toFixed(digits) : "—";
 }
 
+/** Scalar rows for a box detector (sleap-nn `bbox_*` metrics). */
+function buildBboxLabeledMetrics(b: BboxMetrics): LabeledMetric[] {
+  const at = b.f1Threshold !== null ? ` (score ≥ ${b.f1Threshold.toFixed(2)})` : "";
+  return [
+    { label: "Box mAP (IoU 0.50:0.95)", value: b.mAP },
+    { label: "Box AP at IoU 0.50", value: b.AP50 },
+    { label: "Box AP at IoU 0.75", value: b.AP75 },
+    { label: "Box mean Average Recall (AR)", value: b.AR },
+    { label: `Precision${at}`, value: b.precision },
+    { label: `Recall${at}`, value: b.recall },
+    { label: `F1${at}`, value: b.f1 },
+    { label: "Mean IoU of matched boxes", value: b.meanIoU },
+    { label: "True positives", value: b.tp },
+    { label: "False positives", value: b.fp },
+    { label: "False negatives", value: b.fn },
+    { label: "Ground-truth boxes", value: b.nGt },
+    { label: "Predicted boxes", value: b.nPred },
+    { label: "Frames evaluated", value: b.nFrames },
+    { label: "Inference speed (frames/s)", value: b.predictFps },
+  ].filter((row) => row.value !== null && row.value !== undefined);
+}
+
+const SERIES_COLORS = ["#3b82f6", "#f97316", "#10b981", "#a855f7", "#ef4444", "#eab308"];
+
+/** Counts print as integers; everything else with `digits` decimals. */
+function fmtValue(label: string, v: number | null, digits = 5): string {
+  if (typeof v !== "number" || !Number.isFinite(v)) return "—";
+  return /positives|negatives|boxes|Frames/.test(label) ? String(Math.round(v)) : v.toFixed(digits);
+}
+
+/** Box detector charts: AP vs IoU threshold, precision–recall, mAP per epoch. */
+function BboxCharts({ metrics }: { metrics: ModelMetrics }) {
+  const b = metrics.bbox!;
+  const apSeries: MiniSeries[] = b.apPerClass.map((ap, i) => ({
+    label: b.categories[i] ?? `class ${i}`,
+    color: SERIES_COLORS[i % SERIES_COLORS.length],
+    x: b.iouThresholds,
+    y: ap,
+    dots: true,
+  }));
+  const hist = metrics.bboxHistory;
+  return (
+    <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-6 gap-y-4 mb-6">
+      {apSeries.length > 0 && b.iouThresholds.length > 0 && (
+        <div>
+          <div className="text-xs font-semibold text-foreground mb-1">AP by IoU threshold</div>
+          <MiniLineChart
+            ariaLabel="Box AP by IoU threshold"
+            series={apSeries}
+            xLabel="IoU threshold"
+            yLabel="AP"
+            xDomain={[0.5, 0.95]}
+            xTicks={[0.5, 0.6, 0.7, 0.8, 0.9]}
+          />
+        </div>
+      )}
+      {b.prCurve && b.prCurve.recall.length > 0 && (
+        <div>
+          <div className="text-xs font-semibold text-foreground mb-1">Precision–recall (IoU 0.50)</div>
+          <MiniLineChart
+            ariaLabel="Box precision-recall curve"
+            series={[{ label: "PR", color: SERIES_COLORS[0], x: b.prCurve.recall, y: b.prCurve.precision }]}
+            xLabel="Recall"
+            yLabel="Precision"
+            xDomain={[0, 1]}
+          />
+        </div>
+      )}
+      {hist && hist.epoch.length > 0 && (
+        <div>
+          <div className="text-xs font-semibold text-foreground mb-1">Validation box metrics per epoch</div>
+          <MiniLineChart
+            ariaLabel="Validation box metrics per epoch"
+            series={[
+              { label: "mAP", color: SERIES_COLORS[0], x: hist.epoch, y: hist.mAP, dots: true },
+              { label: "AP50", color: SERIES_COLORS[1], x: hist.epoch, y: hist.AP50, dots: true },
+              { label: "AP75", color: SERIES_COLORS[2], x: hist.epoch, y: hist.AP75, dots: true },
+              { label: "mean IoU", color: SERIES_COLORS[3], x: hist.epoch, y: hist.meanIoU, dots: true },
+            ]}
+            xLabel="Epoch"
+            yLabel="Score"
+            formatX={(v) => String(Math.round(v))}
+          />
+        </div>
+      )}
+    </div>
+  );
+}
+
 function buildLabeledMetrics(m: ModelMetrics): LabeledMetric[] {
+  if (m.bbox) return buildBboxLabeledMetrics(m.bbox);
   const vis = m.visibility;
   const dist = m.distance;
   const pck = m.pck;
@@ -213,6 +304,7 @@ export function DetailedModelMetricsDialog({
   row,
 }: DetailedModelMetricsDialogProps) {
   const metrics = row?.metrics ?? null;
+  const isBbox = metrics?.mode === "bbox" && !!metrics.bbox;
   const labeled = useMemo(
     () => (metrics ? buildLabeledMetrics(metrics) : []),
     [metrics],
@@ -252,7 +344,9 @@ export function DetailedModelMetricsDialog({
           </p>
         ) : (
           <ScrollArea className="max-h-[72vh] pr-3">
+            {isBbox && <BboxCharts metrics={metrics} />}
             {/* Per-node distance boxplot — full width so it's actually legible. */}
+            {!isBbox && (
             <div className="mb-6">
               <div className="text-xs font-semibold text-foreground mb-1.5">
                 Per-node distance (ground truth vs prediction)
@@ -270,6 +364,7 @@ export function DetailedModelMetricsDialog({
                 </p>
               )}
             </div>
+            )}
 
             {/* Scalar metrics — two columns to reduce vertical clutter. */}
             {labeled.length > 0 ? (
@@ -281,7 +376,7 @@ export function DetailedModelMetricsDialog({
                   >
                     <span className="text-muted-foreground">{row2.label}</span>
                     <span className="font-mono tabular-nums text-foreground shrink-0">
-                      {fmt(row2.value)}
+                      {isBbox ? fmtValue(row2.label, row2.value) : fmt(row2.value)}
                     </span>
                   </div>
                 ))}
