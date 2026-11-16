@@ -33,6 +33,12 @@ import { computeNodeVisibility, visibilityTier, type NodeVisibility } from "@/li
 import { isTauri } from "@/lib/platform";
 import { POST_TRAINING_TARGET_OPTIONS, describeClip } from "@/lib/postTrainingTarget";
 import { cropSizeWarnings, isCropHead, usesNegativeFrames } from "@/lib/cropWarnings";
+import {
+  copyTrainingConfigsToClipboard,
+  exportTrainingJobPackage,
+  saveTrainingConfigFiles,
+  type TrainingJobRequest,
+} from "@/commands/trainingJobExport";
 import { confirmDialog } from "@/stores/confirmStore";
 
 /** Tailwind text color per visibility tier, matching the Training panel's log coloring. */
@@ -1358,6 +1364,17 @@ export function TrainingConfigDialog({
     else resetConfigHyperparams(activeTab);
   };
 
+  // PyQt's footer buttons (copy / save / export package) — see trainingJobExport.ts.
+  const [jobBusy, setJobBusy] = useState(false);
+  const runJobAction = async (action: (req: TrainingJobRequest) => Promise<unknown>) => {
+    setJobBusy(true);
+    try {
+      await action({ modelType, configs: sortedConfigs, inferenceTarget, sampleCount, skipUserLabeled });
+    } finally {
+      setJobBusy(false);
+    }
+  };
+
   const navItems =
     activeTab === "pipeline"
       ? mode === "worker-file"
@@ -2080,8 +2097,8 @@ export function TrainingConfigDialog({
               </TabsContent>
             ))}
           </div>
-          {/* Footer: reset (left) · Done (right) */}
-          <div className="flex items-center justify-between px-6 py-3 border-t shrink-0">
+          {/* Footer: reset (left) · PyQt's copy/save/export buttons · Done (right) */}
+          <div className="flex flex-wrap items-center justify-between gap-3 px-6 py-3 border-t shrink-0">
             <button
               type="button"
               onClick={handleResetDefaults}
@@ -2090,6 +2107,39 @@ export function TrainingConfigDialog({
               <RotateCcw className="h-3.5 w-3.5" />
               Reset to profile defaults…
             </button>
+            {mode !== "worker-file" && (
+              <div className="flex flex-wrap items-center gap-2 ml-auto">
+                <button
+                  type="button"
+                  disabled={jobBusy || sortedConfigs.length === 0}
+                  onClick={() => runJobAction(copyTrainingConfigsToClipboard)}
+                  title="Copy every model's sleap-nn configuration (YAML) to the clipboard"
+                  className="px-3 h-8 rounded-md border text-sm hover:bg-muted disabled:opacity-50 disabled:pointer-events-none"
+                >
+                  Copy to clipboard
+                </button>
+                <button
+                  type="button"
+                  disabled={jobBusy || sortedConfigs.length === 0}
+                  onClick={() => runJobAction(saveTrainingConfigFiles)}
+                  title={isTauri
+                    ? "Save the configuration files and scripts to run training and inference yourself"
+                    : "Download the configuration files and scripts (as a .zip) to run training and inference yourself"}
+                  className="px-3 h-8 rounded-md border text-sm hover:bg-muted disabled:opacity-50 disabled:pointer-events-none"
+                >
+                  Save configuration files…
+                </button>
+                <button
+                  type="button"
+                  disabled={jobBusy || sortedConfigs.length === 0 || !labels}
+                  onClick={() => runJobAction(exportTrainingJobPackage)}
+                  title="Save a .zip with the labeled frames (images included), the configuration files and scripts, to train on another computer"
+                  className="px-3 h-8 rounded-md border text-sm hover:bg-muted disabled:opacity-50 disabled:pointer-events-none"
+                >
+                  Export Training Job Package…
+                </button>
+              </div>
+            )}
             <button
               type="button"
               onClick={() => { onClose(); setSearchQuery(""); }}
