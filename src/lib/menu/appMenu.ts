@@ -841,6 +841,7 @@ function helpMenu(): TopMenu {
       { kind: "item", id: "help.shortcuts", label: "Keyboard Shortcuts...", run: () => store().setShortcutsDialogOpen(true) },
       { kind: "item", id: "help.labelingTips", label: "Labeling Tips...", run: () => store().setLabelingTipsDialogOpen(true) },
       { kind: "item", id: "help.docs", label: "Documentation", run: () => openExternal(getDocsUrl()) },
+      { kind: "item", id: "help.whatsNew", label: "New in SLEAP App", run: () => openExternal(`${getDocsUrl()}whats-new/`) },
       { kind: "item", id: "help.reportIssue", label: "Report Issue", run: () => openExternal("https://github.com/talmolab/sleap-app/issues") },
       { kind: "item", id: "help.diagnostics", label: "Collect Diagnostics...", run: () => store().setDiagnosticsDialogOpen(true) },
       { kind: "item", id: "help.releases", label: "Releases", run: () => openExternal("https://github.com/talmolab/sleap-app/releases") },

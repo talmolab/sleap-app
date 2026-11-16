@@ -155,6 +155,7 @@ Buttons in the menu bar, not menus.
 | Keyboard Shortcuts… | [Reference](shortcuts.md) |
 | Labeling Tips… | |
 | Documentation | Opens this site, for the channel the app is on (`app.sleap.ai/docs/<channel>/`) |
+| New in SLEAP App | Opens [New in SLEAP App](../whats-new.md): what this app adds over the Qt GUI |
 | Report Issue | Opens the issue tracker |
 | Collect Diagnostics… | Bundles environment info for a bug report |
 | Releases | Opens the releases page |
