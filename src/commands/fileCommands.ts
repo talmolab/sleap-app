@@ -740,6 +740,11 @@ export const DeletePredictionsByRange: Command = {
     if (!labels || !video) return;
     const startFrame = numParam(params, "startFrame", 0);
     const endFrame = numParam(params, "endFrame", Infinity);
+    // A reversed range keeps nothing; refuse it rather than wipe the video.
+    if (!(startFrame <= endFrame)) {
+      toast.info("The frame range is empty: the start is after the end.");
+      return;
+    }
 
     const removed = deletePredictionPairs(
       ctx,

@@ -22,7 +22,9 @@ import {
   predictionsBeyondMaxInstances,
   predictionsInArea,
   predictionsOnUserLabeledFrames,
+  predictionsOutsideFrameRange,
 } from "@/lib/predictionDeletion";
+import { videoFrameCount } from "@/lib/inferFrameCount";
 import {
   Instance,
   Labels,
@@ -180,6 +182,28 @@ describe("Delete Predictions scope (#463)", () => {
       expect(hasNegative(labels, v1)).toBe(true);
     });
 
+    // A reversed range keeps nothing, so the command refuses it instead of wiping the video.
+    it("refuses a reversed range", async () => {
+      const { labels, v1 } = setup();
+      await ctx.execute(DeletePredictionsByRange, { startFrame: 5, endFrame: 2 });
+      expect(countPreds(labels, v1)).toBe(START);
+      expect(ctx.canUndo).toBe(false);
+    });
+
+    // The dialog's default kept range must cover a video of unknown length, not 0-0.
+    it("gives an unknown-length video a length up to its last labeled frame", () => {
+      const v = new Video({ filename: "nolen.mp4", openBackend: false });
+      const labels = new Labels({
+        videos: [v],
+        skeletons: [skeleton],
+        labeledFrames: [new LabeledFrame({ video: v, frameIdx: 7, instances: [pred([[1, 1], [2, 2]], 0.5)] })],
+      });
+      expect(v.shape?.[0]).toBeUndefined();
+      const n = videoFrameCount(labels, v);
+      expect(n).toBe(8);
+      expect(predictionsOutsideFrameRange(labels, v, 0, n - 1)).toEqual([]);
+    });
+
     // A range covering the whole video deletes nothing (and adds no undo step).
     it("deletes nothing when the range covers every frame", async () => {
       const { labels, v1 } = setup();
@@ -190,6 +214,17 @@ describe("Delete Predictions scope (#463)", () => {
   });
 
   describe("from clip", () => {
+    // A clip selected on one video must not carry over to another video or project.
+    it("clears the clip selection when the video or project changes", () => {
+      const { labels, v2 } = setup();
+      useAppStore.getState().set("frameRange", [2, 5]);
+      useAppStore.getState().setVideo(v2);
+      expect(useAppStore.getState().frameRange).toBeNull();
+      useAppStore.getState().set("frameRange", [2, 5]);
+      useAppStore.getState().setLabels(labels, "again.slp");
+      expect(useAppStore.getState().frameRange).toBeNull();
+    });
+
     // PyQt's "Delete Predictions from Clip..." uses the seekbar selection, current video.
     it("deletes predictions in the selected clip of the current video", async () => {
       const { labels, v1, v2 } = setup();
@@ -269,6 +304,21 @@ describe("Delete Predictions scope (#463)", () => {
       expect(hasNegative(labels, v1)).toBe(true);
     });
 
+    // A point marked not visible is ignored even though it keeps its coordinates.
+    it("ignores points marked not visible", () => {
+      const v = makeVideo("t.mp4");
+      const p = pred([[10, 10], [90, 90]], 0.5);
+      p.points[1].visible = false;
+      const labels = new Labels({
+        videos: [v],
+        skeletons: [skeleton],
+        labeledFrames: [new LabeledFrame({ video: v, frameIdx: 0, instances: [p] })],
+      });
+      expect(p.points[1].visible).toBe(false);
+      expect(p.points[1].xy[0]).toBe(90);
+      expect(predictionsInArea(labels, v, { x1: 0, y1: 0, x2: 20, y2: 20 }).length).toBe(1);
+    });
+
     // Hidden (NaN) points are ignored, as PyQt drops NaN rows before testing.
     it("ignores points that are not visible", () => {
       const v = makeVideo("t.mp4");
@@ -302,6 +352,23 @@ describe("Delete Predictions scope (#463)", () => {
       const left = f5.instances.filter((i) => i instanceof PredictedInstance) as PredictedInstance[];
       expect(left.map((p) => p.score)).toEqual([0.9]); // the linked one stays
       expect(countPreds(labels, v2)).toBe(START);
+    });
+
+    // Undo used to drop fromPredicted, so "unlinked only" then deleted the linked one.
+    it("still keeps the linked prediction after an undo", async () => {
+      const { labels, v1 } = setup();
+      linkFrame5(labels, v1);
+      await ctx.execute(DeletePredictionsByScore, { threshold: 0.35 });
+      ctx.undo();
+      const restored = useAppStore.getState().labels!;
+      await ctx.execute(DeletePredictionsOnLabeledFrames);
+      const f5 = restored.labeledFrames.find((lf) => lf.video === v1 && lf.frameIdx === 5)!;
+      const left = f5.instances.filter((i) => i instanceof PredictedInstance) as PredictedInstance[];
+      expect(left.map((p) => p.score)).toEqual([0.9]);
+      const linkedUser = f5.instances.find(
+        (i) => !(i instanceof PredictedInstance) && i.fromPredicted,
+      );
+      expect(linkedUser?.fromPredicted).toBe(left[0]);
     });
 
     // "All predictions" also removes the linked one; user instances stay.

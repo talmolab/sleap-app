@@ -16,6 +16,7 @@ import { PredictedInstance } from "@talmolab/sleap-io.js";
 import { confirmDialog } from "@/stores/confirmStore";
 import { useAppStore } from "../../stores/appStore";
 import { commandContext } from "../../commands/CommandContext";
+import { videoFrameCount } from "@/lib/inferFrameCount";
 import {
   predictionsBeyondMaxInstances,
   predictionsOnUserLabeledFrames,
@@ -62,12 +63,23 @@ export function DeletePredictionsDialog({
 }: DeletePredictionsDialogProps) {
   const labels = useAppStore((s) => s.labels);
   const video = useAppStore((s) => s.video);
-  const totalFrames = video?.shape?.[0] ?? 0;
+  const videoRevision = useAppStore((s) => s.videoRevision);
+  // Same length the seekbar uses: the video's own frame count, or (when that
+  // is unknown) up to its last labeled frame. Starting the kept range at 0-0
+  // for an unknown-length video would delete nearly every prediction in it.
+  const totalFrames = useMemo(
+    () => (open ? videoFrameCount(labels, video) : 0),
+    // videoRevision: a deferred backend opening corrects video.shape[0].
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [open, labels, video, videoRevision],
+  );
 
   const [mode, setMode] = useState<DeleteMode>("score");
   const [scoreThreshold, setScoreThreshold] = useState(0.5);
   const [rangeStart, setRangeStart] = useState(0);
   const [rangeEnd, setRangeEnd] = useState(totalFrames > 0 ? totalFrames - 1 : 0);
+  // An empty or reversed range would keep nothing; don't offer Delete for it.
+  const rangeValid = totalFrames > 0 && rangeStart <= rangeEnd;
   const [maxCount, setMaxCount] = useState(2);
   const [labeledAllVideos, setLabeledAllVideos] = useState(false);
   const [unlinkedOnly, setUnlinkedOnly] = useState(true);
@@ -263,6 +275,13 @@ export function DeletePredictionsDialog({
                 and deletes the current video&apos;s predictions on every other
                 frame. Other videos are not changed.
               </p>
+              {!rangeValid && (
+                <p className="text-xs text-destructive">
+                  {totalFrames > 0
+                    ? "The start frame must not be after the end frame."
+                    : "This video's length is unknown, so no range can be kept."}
+                </p>
+              )}
             </div>
           )}
 
@@ -414,7 +433,7 @@ export function DeletePredictionsDialog({
           <Button
             variant="destructive"
             onClick={handleDelete}
-            disabled={previewCount === 0}
+            disabled={previewCount === 0 || (mode === "range" && !rangeValid)}
           >
             Delete
           </Button>
