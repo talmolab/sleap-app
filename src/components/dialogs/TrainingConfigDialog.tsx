@@ -18,7 +18,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { Search, HelpCircle, RefreshCw, Check, RotateCcw, Lightbulb } from "lucide-react";
+import { Search, HelpCircle, RefreshCw, Check, RotateCcw, Lightbulb, AlertTriangle } from "lucide-react";
 import type { Labels } from "@talmolab/sleap-io.js";
 import type { ConfigFile, ConfigHyperparams, Backbone, ModelType, DataPipeline, ColorMode } from "@/stores/trainingStore";
 import { getSlotLabel, getConfigSlots, useTrainingStore } from "@/stores/trainingStore";
@@ -31,6 +31,8 @@ import { getBaselineProfilesForHead, getRecommendedProfileForHead, slotToHeadTyp
 import { computeInstanceSizeStats, recommendMaxStride, recommendBackboneProfile, recommendCentroidScale, resolveEffectiveCropSize, detectVideoChannels, resolveInputChannels } from "@/lib/modelStats";
 import { computeNodeVisibility, visibilityTier, type NodeVisibility } from "@/lib/anchorVisibility";
 import { isTauri } from "@/lib/platform";
+import { POST_TRAINING_TARGET_OPTIONS, describeClip } from "@/lib/postTrainingTarget";
+import { cropSizeWarnings, isCropHead, usesNegativeFrames } from "@/lib/cropWarnings";
 import { confirmDialog } from "@/stores/confirmStore";
 
 /** Tailwind text color per visibility tier, matching the Training panel's log coloring. */
@@ -216,6 +218,8 @@ const HEAD_FIELD_DEFS = {
   validationFraction: { id: "field-validationfraction", label: "Validation Fraction", hint: 'Fraction of labeled frames to use as a validation set. Ignored if "Overfit Mode" is enabled.', keywords: "val fraction split" },
   overfitMode: { id: "field-overfitmode", label: "Overfit Mode (train=val)", hint: "If enabled, the same data will be used for both training and validation. This is useful for intentional overfitting on small datasets (fewer than 10 labeled frames) to test model capacity.", keywords: "overfit" },
   randomSeed: { id: "field-randomseed", label: "Random Seed", keywords: "seed reproducible split" },
+  useNegativeFrames: { id: "field-usenegativeframes", label: "Use Negative Frames", hint: "If enabled, frames you explicitly marked as negative (background frames with no instances) are added to the training set. The model learns to predict nothing on them, reducing false positives on empty frames. Mark frames in the labeling window with Labels > Mark Frame as Negative (N). Has no effect for centered-instance and top-down-ID models.", keywords: "negative background empty frames false positives", conditional: true },
+  negativeLossWeight: { id: "field-negativelossweight", label: "Negative Loss Weight", hint: "Relative weight of the loss on negative (background) frames. 1.0 weights them the same as labeled frames; increase above 1.0 if false positives persist, or decrease below 1.0 to reduce their influence. Must be greater than 0. Only used when Use Negative Frames is enabled.", keywords: "negative background loss weight", conditional: true },
   inputScaling: { id: "field-inputscaling", label: "Input Scaling", keywords: "scale rescale downsample input scale" },
   cropSize: { id: "field-cropsize", label: "Crop Size", keywords: "crop bounding box", conditional: true },
   secAugmentation: { id: "head-augmentation", label: "Augmentation" },
@@ -433,6 +437,8 @@ function HeadTabContent({
   const headType = slotToHeadType(modelType, slot);
   const baselineProfiles = getBaselineProfilesForHead(headType);
   const showCropSize = slot !== "centroid";
+  const showNegativeFrames = usesNegativeFrames(headType);
+  const setSizeDistributionDialogOpen = useAppStore((s) => s.setSizeDistributionDialogOpen);
   const storeLabels = useAppStore((s) => s.labels);
   const labels = labelsOverride ?? storeLabels;
   const sizeStats = useMemo(() => computeInstanceSizeStats(labels), [labels]);
@@ -461,6 +467,11 @@ function HeadTabContent({
     () => resolveEffectiveCropSize(labels, hp).cropSize,
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [labels, hp.cropSize, hp.maxStride, hp.scale, hp.rotationPreset, hp.rotationCustomAngle, hp.scaleEnabled, hp.scaleMax],
+  );
+  const cropWarnings = useMemo(
+    () => cropSizeWarnings(headType, hp, labels),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [headType, labels, hp.cropSize, hp.maxStride, hp.scale, hp.rotationPreset, hp.rotationCustomAngle, hp.scaleEnabled, hp.scaleMax, hp.backbone],
   );
   const trainingMode = hp.trainingMode ?? "reuse_config";
   const modelLocked = trainingMode === "resume" || trainingMode === "finetune";
@@ -674,6 +685,16 @@ function HeadTabContent({
         <div className="flex items-center gap-6">
           <Toggle {...HEAD_FIELD_DEFS.overfitMode} checked={hp.overfitMode} onChange={(v) => onUpdate({ overfitMode: v })} />
         </div>
+        {showNegativeFrames && (
+          <>
+            <Toggle {...HEAD_FIELD_DEFS.useNegativeFrames} checked={hp.useNegativeFrames} onChange={(v) => onUpdate({ useNegativeFrames: v })} />
+            <div className={hp.useNegativeFrames ? "" : "opacity-50"}>
+              <Field {...HEAD_FIELD_DEFS.negativeLossWeight}>
+                <NumberInput min={0.01} max={100} value={hp.negativeLossWeight} onCommit={(n) => onUpdate({ negativeLossWeight: n })} step={0.1} className="h-9 text-sm" disabled={!hp.useNegativeFrames} />
+              </Field>
+            </div>
+          </>
+        )}
         <div className="flex items-center gap-4 flex-wrap">
           <div id={HEAD_FIELD_DEFS.randomSeed.id} data-search-field="" className="flex items-center gap-2 scroll-mt-4">
             <span className="text-sm text-muted-foreground flex items-center gap-1.5">
@@ -718,7 +739,27 @@ function HeadTabContent({
                 <input type="checkbox" checked={hp.cropSize === null} onChange={(e) => onUpdate({ cropSize: e.target.checked ? null : (effectiveCropSize ?? 256) })} className="accent-primary" />
                 <span className="text-sm">Auto</span>
               </label>
+              {isCropHead(headType) && labels && mode !== "worker-file" && (
+                <button
+                  type="button"
+                  onClick={() => setSizeDistributionDialogOpen(true)}
+                  title="View the distribution of instance sizes and identify outliers"
+                  className="h-9 px-3 text-sm rounded-md border hover:bg-muted shrink-0"
+                >
+                  Analyze Sizes...
+                </button>
+              )}
             </div>
+            {cropWarnings.length > 0 && (
+              <div role="alert" className="rounded-md border border-orange-500/50 bg-orange-500/10 px-3 py-2 text-xs text-orange-700 dark:text-orange-300 space-y-1">
+                {cropWarnings.map((w) => (
+                  <p key={w}>
+                    <AlertTriangle className="mr-1 inline h-3.5 w-3.5 align-[-3px]" />
+                    {w}
+                  </p>
+                ))}
+              </div>
+            )}
             {hp.cropSize === null && sizeStats && (
               <p className="text-[10px] text-muted-foreground pl-1">
                 <Lightbulb className="mr-1 inline h-3 w-3 align-[-2px]" />Auto: padded for ±{hp.rotationPreset === "custom" ? hp.rotationCustomAngle : hp.rotationPreset === "off" ? 0 : hp.rotationPreset}° rotation
@@ -1214,6 +1255,8 @@ export function TrainingConfigDialog({
   const storeLabels = useAppStore((s) => s.labels);
   const labels = labelsOverride ?? storeLabels;
   const suggestionsCount = labels?.suggestions?.length ?? 0;
+  const clipRange = useAppStore((s) => s.frameRange);
+  const clipDescription = describeClip(clipRange);
   const storeSkeleton = useAppStore((s) => s.skeleton);
   const skeleton = labelsOverride ? (labelsOverride.skeletons[0] ?? null) : storeSkeleton;
   const overlayVersion = useAppStore((s) => s.overlayVersion);
@@ -1503,20 +1546,29 @@ export function TrainingConfigDialog({
                           <Select value={inferenceTarget} onValueChange={onInferenceTargetChange}>
                             <SelectTrigger className="h-9 text-sm w-48"><SelectValue /></SelectTrigger>
                             <SelectContent>
-                              <SelectItem value="nothing">Nothing (skip inference)</SelectItem>
-                              <SelectItem value="suggestions">Suggested frames</SelectItem>
-                              <SelectItem value="user_labeled">User labeled frames</SelectItem>
-                              <SelectItem value="predicted">Frames with predictions</SelectItem>
-                              <SelectItem value="video">Entire current video</SelectItem>
-                              <SelectItem value="all_videos">All videos</SelectItem>
-                              <SelectItem value="random_video">Random sample (current video)</SelectItem>
-                              <SelectItem value="random">Random sample (all videos)</SelectItem>
+                              {POST_TRAINING_TARGET_OPTIONS.map((o) => (
+                                <SelectItem key={o.value} value={o.value} disabled={o.value === "clip" && !clipDescription}>
+                                  {o.label}
+                                </SelectItem>
+                              ))}
                             </SelectContent>
                           </Select>
                         </div>
                         {inferenceTarget === "suggestions" && (
                           <span className="text-sm text-muted-foreground">
                             Frames in the Labeling Suggestions list ({suggestionsCount} frames)
+                          </span>
+                        )}
+                        {inferenceTarget === "frame" && (
+                          <span className="text-sm text-muted-foreground">
+                            The frame shown when training finishes
+                          </span>
+                        )}
+                        {inferenceTarget === "clip" && (
+                          <span className={`text-sm ${clipDescription ? "text-muted-foreground" : "text-destructive"}`}>
+                            {clipDescription
+                              ? `Selected on the timeline: ${clipDescription}`
+                              : "No clip selected — drag on the timeline to select one, or inference will be skipped"}
                           </span>
                         )}
                         {(inferenceTarget === "random_video" || inferenceTarget === "random") && (

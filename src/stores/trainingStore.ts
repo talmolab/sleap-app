@@ -17,6 +17,7 @@ import { confirmDialog } from "@/stores/confirmStore";
 import type { Labels } from "@/types";
 import type { JobResult, TrainJobSpec } from "@/lib/sleapConnect";
 import { buildRemoteTrackSpecs } from "@/lib/remoteTrackSpec";
+import { resolvePostTrainingTarget } from "@/lib/postTrainingTarget";
 import {
   LABELS_EMBED_WARN_BYTES,
   LABELS_EMBED_HARD_CAP_BYTES,
@@ -265,6 +266,10 @@ export interface ConfigHyperparams {
   // Data
   cropSize: number | null;
   randomSeed: number | null;
+  /** sleap-nn `data_config.use_negative_frames` (PyQt "Use Negative Frames"). */
+  useNegativeFrames: boolean;
+  /** sleap-nn `data_config.negative_loss_weight` (PyQt "Negative Loss Weight"); must be > 0. */
+  negativeLossWeight: number;
   // Optimization
   stopOnPlateau: boolean;
   plateauMinDelta: number;
@@ -368,6 +373,8 @@ export const defaultHyperparams: ConfigHyperparams = {
   brightnessMax: 0.2,
   cropSize: null,
   randomSeed: null,
+  useNegativeFrames: false,
+  negativeLossWeight: 1.0,
   stopOnPlateau: true,
   plateauMinDelta: 1e-08,
   onlineMining: false,
@@ -771,7 +778,8 @@ export function resolveRemoteMaxStride(
 export function buildPostTrainingInferenceConfig(opts: {
   modelType: ModelType;
   modelPaths: string[];
-  inferenceTarget: string;
+  /** A target name (see postTrainingTarget.ts), or an explicit frame range (a resolved "Selected clip"). */
+  inferenceTarget: string | { start: number; end: number };
   videoIndex: number | "all";
   sampleCount?: number;
   skipUserLabeled?: boolean;
@@ -969,6 +977,18 @@ export function applyHyperparamsToYaml(
   // Data config
   data.validation_fraction = hp.validationFraction;
   data.use_same_data_for_val = hp.overfitMode;
+
+  // Negative (background) frames. These keys only exist in sleap-nn >= 0.1.3,
+  // and an older sleap-nn rejects unknown keys in its structured config, so
+  // they're only ADDED when the user turns the option on. A config that
+  // already carries them (a newer profile, or one saved by a previous run)
+  // always gets them updated, so turning it off really turns it off.
+  if (hp.useNegativeFrames || "use_negative_frames" in data) {
+    data.use_negative_frames = hp.useNegativeFrames;
+  }
+  if (hp.useNegativeFrames || "negative_loss_weight" in data) {
+    data.negative_loss_weight = hp.negativeLossWeight > 0 ? hp.negativeLossWeight : 1.0;
+  }
 
   // Data — preprocessing
   if (!data.preprocessing) data.preprocessing = {};
@@ -1619,6 +1639,9 @@ export const useTrainingStore = create<TrainingState>()((set, get) => ({
         validationFraction: typeof dataConfig.validation_fraction === "number"
           ? dataConfig.validation_fraction : 0.1,
         overfitMode: dataConfig.use_same_data_for_val === true,
+        useNegativeFrames: dataConfig.use_negative_frames === true,
+        negativeLossWeight: typeof dataConfig.negative_loss_weight === "number" && dataConfig.negative_loss_weight > 0
+          ? dataConfig.negative_loss_weight : 1.0,
         earlyStoppingPatience: typeof earlyStopping.patience === "number"
           ? earlyStopping.patience : 10,
         sigma,
@@ -2061,15 +2084,23 @@ export const useTrainingStore = create<TrainingState>()((set, get) => ({
               log: appendLog(s.log, `— ${message}`),
             }));
           } else {
-            const { video, frameIdx } = useAppStore.getState();
+            const { video, frameIdx, frameRange: clipRange } = useAppStore.getState();
+            const resolvedTarget = resolvePostTrainingTarget(inferenceTarget, {
+              labels,
+              video,
+              frameRange: clipRange,
+            });
+            if ("skip" in resolvedTarget) {
+              set((s) => ({
+                postTrainingInference: { status: "skipped", message: resolvedTarget.skip, pendingMerge: null, merged: false },
+                log: appendLog(s.log, `— ${resolvedTarget.skip}`),
+              }));
+            } else {
             const inferenceConfig = buildPostTrainingInferenceConfig({
               modelType: config.modelType,
               modelPaths: modelDirs as string[],
-              inferenceTarget,
-              videoIndex:
-                inferenceTarget === "video" || inferenceTarget === "random_video"
-                  ? labels && video ? Math.max(0, labels.videos.indexOf(video)) : 0
-                  : "all",
+              inferenceTarget: resolvedTarget.frameRange,
+              videoIndex: resolvedTarget.videoIndex,
               sampleCount: remoteOpts.sampleCount,
               skipUserLabeled: remoteOpts.skipUserLabeled,
               existingPredictions: remoteOpts.existingPredictions,
@@ -2161,6 +2192,7 @@ export const useTrainingStore = create<TrainingState>()((set, get) => ({
                 },
                 log: appendLog(s.log, `— ${message}`),
               }));
+            }
             }
           }
           }
@@ -2474,7 +2506,17 @@ export const useTrainingStore = create<TrainingState>()((set, get) => ({
 
         // ── Post-training inference ───────────────────────────
         const inferenceTarget = localOpts?.inferenceTarget;
-        if (inferenceTarget && inferenceTarget !== "nothing" && trainedModelPaths.length > 0) {
+        // Resolved now (current video / timeline selection), like PyQt reads
+        // them when it builds the job. A target that can't run — "Selected
+        // clip" with nothing selected — is logged and skipped, never an error.
+        const resolvedTarget =
+          inferenceTarget && inferenceTarget !== "nothing" && trainedModelPaths.length > 0
+            ? resolvePostTrainingTarget(inferenceTarget, useAppStore.getState())
+            : null;
+        if (resolvedTarget && "skip" in resolvedTarget) {
+          set((s) => ({ log: appendLog(s.log, `— ${resolvedTarget.skip}`) }));
+        }
+        if (inferenceTarget && resolvedTarget && !("skip" in resolvedTarget)) {
           set((s) => ({
             log: appendLog(s.log, `— Running inference (${inferenceTarget}) with ${useExported ? `exported model: ${exportDir}` : `models: ${trainedModelPaths.join(", ")}`}...`),
           }));
@@ -2489,13 +2531,8 @@ export const useTrainingStore = create<TrainingState>()((set, get) => ({
           const inferenceConfig = buildPostTrainingInferenceConfig({
             modelType: config.modelType,
             modelPaths: useExported ? [exportDir!] : trainedModelPaths,
-            inferenceTarget,
-            videoIndex: (inferenceTarget === "video" || inferenceTarget === "random_video")
-              ? (() => {
-                  const { labels, video } = useAppStore.getState();
-                  return labels && video ? labels.videos.indexOf(video) : 0;
-                })()
-              : "all",
+            inferenceTarget: resolvedTarget.frameRange,
+            videoIndex: resolvedTarget.videoIndex,
             sampleCount: localOpts?.sampleCount,
             skipUserLabeled: localOpts?.skipUserLabeled,
             existingPredictions: localOpts?.existingPredictions,
