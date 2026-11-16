@@ -13,6 +13,7 @@
 
 import type { DiscoveredModel } from "./modelDiscovery";
 import { slotToHeadType, getRecommendedProfileForHead } from "./trainingProfiles";
+import { headTypeMatches } from "./bboxModels";
 import type { BackboneProfileRecommendation } from "./modelStats";
 import type { ModelType } from "@/stores/trainingStore";
 
@@ -65,7 +66,7 @@ export async function resolveSlotConfigSource(
 ): Promise<SlotConfigSource | null> {
   const headType = slotToHeadType(modelType, slot);
   if (opts.preferTrained ?? true) {
-    const trainedMatch = discovered.find((m) => m.headKey === headType);
+    const trainedMatch = discovered.find((m) => headTypeMatches(headType, m));
     if (trainedMatch) {
       try {
         const cfgPath = await fs.join(trainedMatch.path, "training_config.yaml");

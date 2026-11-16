@@ -23,7 +23,11 @@ export type PipelineType =
   | "bottom-up"
   | "single-animal"
   | "top-down-id"
-  | "bottom-up-id";
+  | "bottom-up-id"
+  /** A box detector alone: predicted boxes, no poses (sleap-nn >= 0.3.5). */
+  | "bbox"
+  /** Box detector + centered-instance model: poses, cropped to each predicted box. */
+  | "top-down-bbox";
 
 export interface InferenceConfig {
   // Pipeline

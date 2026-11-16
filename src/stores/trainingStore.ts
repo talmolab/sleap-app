@@ -25,6 +25,7 @@ import {
 import type { VideoVisibility } from "@/lib/remoteVisibility";
 import type { JobTelemetry } from "@/lib/protocolV1/jobTelemetry";
 import type { InferenceConfig, PendingRemoteMerge } from "@/stores/inferenceStore";
+import { isBboxHeadKey } from "@/lib/bboxModels";
 
 const MAX_BATCH_SAMPLES = 20000; // bound batchSamples; drop oldest beyond this
 const MAX_LOG_LINES = 1000; // bound the training log so it doesn't grow unbounded during long runs
@@ -180,7 +181,38 @@ export type ModelType =
   | "top_down"
   | "bottom_up"
   | "top_down_id"
-  | "bottom_up_id";
+  | "bottom_up_id"
+  /** A box detector alone (sleap-nn `bbox_centernet` / `bbox_ssd`): boxes, no poses. */
+  | "bbox"
+  /** sleap-nn's `topdown_bbox_*`: a box detector, then a centered-instance model on each box. */
+  | "top_down_bbox";
+
+/** The model types that train a box detector (and so need sleap-nn >= 0.3.5). */
+export function isBboxModelType(modelType: ModelType): boolean {
+  return modelType === "bbox" || modelType === "top_down_bbox";
+}
+
+/** Where box models read their ground-truth boxes (`data_config.bbox_source`). */
+export type BboxSource = "auto" | "bboxes" | "instances" | "masks";
+
+/** How a box crop is made square (`data_config.preprocessing.crop_bbox_aspect`). */
+export type CropBboxAspect = "square" | "letterbox" | "stretch";
+
+/**
+ * Box settings a `top_down_bbox` detector and its centered-instance model must
+ * share: sleap-nn derives the instance model's training boxes the same way as
+ * the detector's ground truth, so the pair should be trained with the same
+ * values (see `crop_mode` in sleap_nn/config/data_config.py). Editing one in
+ * a top-down-box pipeline sets it on both configs.
+ */
+export const SHARED_BBOX_HYPERPARAMS = ["bboxSource", "bboxPadding"] as const;
+
+/**
+ * Box models train locally only: a worker's sleap-nn version (box models need
+ * 0.3.5+) and its handling of the new model types haven't been checked.
+ */
+export const BBOX_REMOTE_UNSUPPORTED =
+  "Box detector models train on this computer only for now: remote workers aren't supported yet.";
 
 export type Backbone = "unet" | "convnext" | "swint";
 
@@ -380,6 +412,19 @@ export interface ConfigHyperparams {
   // "offline" logs to local disk only (no network/login); sync later with `wandb sync`.
   wandbMode: "online" | "offline";
   wandbApiKey: string;
+  // Bounding boxes (sleap-nn >= 0.3.5). Written only to configs that use them:
+  // a box detector head, or a centered-instance head with box crops.
+  /** `data_config.bbox_source`: user boxes, boxes around poses, or mask extents ("auto" = first that exists). */
+  bboxSource: BboxSource;
+  /** `data_config.bbox_padding`: pixels added to boxes derived from poses or masks. */
+  bboxPadding: number;
+  /** `preprocessing.crop_mode`: "bbox" crops each animal to its box and resizes it. */
+  cropMode: "fixed" | "bbox";
+  cropBboxAspect: CropBboxAspect;
+  /** `preprocessing.crop_bbox_padding`: margin on each side, as a fraction of the box's longest side. */
+  cropBboxPadding: number;
+  /** `preprocessing.crop_bbox_min_size`: smallest crop window side in pixels (`null` = set at training time). */
+  cropBboxMinSize: number | null;
 }
 
 export const defaultHyperparams: ConfigHyperparams = {
@@ -483,6 +528,12 @@ export const defaultHyperparams: ConfigHyperparams = {
   wandbGroup: "",
   wandbMode: "online",
   wandbApiKey: "",
+  bboxSource: "auto",
+  bboxPadding: 0,
+  cropMode: "fixed",
+  cropBboxAspect: "square",
+  cropBboxPadding: 0.1,
+  cropBboxMinSize: null,
 };
 
 export interface ConfigFile {
@@ -741,6 +792,10 @@ export function getConfigSlots(modelType: ModelType): string[] {
     case "top_down":
     case "top_down_id":
       return ["centroid", "centered_instance"];
+    case "top_down_bbox":
+      return ["bbox", "centered_instance"];
+    case "bbox":
+      return ["bbox"];
     default:
       return ["config"];
   }
@@ -751,6 +806,7 @@ export function getSlotLabel(slot: string): string {
   switch (slot) {
     case "centroid": return "Centroid Config";
     case "centered_instance": return "Centered Instance Config";
+    case "bbox": return "Box Detector Config";
     default: return "Config";
   }
 }
@@ -865,6 +921,8 @@ export function buildPostTrainingInferenceConfig(opts: {
     bottom_up: "bottom-up",
     top_down_id: "top-down-id",
     bottom_up_id: "bottom-up-id",
+    bbox: "bbox",
+    top_down_bbox: "top-down-bbox",
   };
   return {
     pipeline: pipelineMap[opts.modelType] || "top-down",
@@ -1216,9 +1274,21 @@ export function applyHyperparamsToYaml(
   }
 
   // Head params — output_stride and anchor_part
-  for (const [, headVal] of Object.entries(headConfigs)) {
+  for (const [headName, headVal] of Object.entries(headConfigs)) {
     if (headVal && typeof headVal === "object") {
       const head = headVal as Record<string, unknown>;
+      if (isBboxHeadKey(headName)) {
+        // A detector's stride lives on its sub-heads (CenterNet's center/size/
+        // offset, which sleap-nn requires to share one stride; SSD's finest
+        // pyramid level). It has no anchor part, and a key written directly
+        // on the head would be rejected as unknown.
+        for (const leaf of Object.values(head)) {
+          if (leaf && typeof leaf === "object") {
+            (leaf as Record<string, unknown>).output_stride = hp.outputStride;
+          }
+        }
+        continue;
+      }
       // anchor_part: a null anchor still clears a key the file already has
       // (e.g. an imported config's stale part), but never adds the key to a
       // head whose schema lacks it.
@@ -1303,6 +1373,25 @@ export function applyHyperparamsToYaml(
         (head.class_maps as Record<string, unknown>).loss_weight = hp.classLossWeight;
       }
     }
+  }
+
+  // Bounding boxes. Only written where they're used (a detector head, or a
+  // centered-instance head with box crops) or where the config already has the
+  // keys, so a pose config stays loadable by a sleap-nn older than 0.3.5.
+  const activeHeads = Object.entries(headConfigs)
+    .filter(([, v]) => v != null)
+    .map(([k]) => k);
+  const isDetector = activeHeads.some(isBboxHeadKey);
+  const isCropHead = activeHeads.some((k) => k === "centered_instance" || k === "multi_class_topdown");
+  if (isCropHead && (hp.cropMode === "bbox" || "crop_mode" in preprocessing)) {
+    preprocessing.crop_mode = hp.cropMode;
+    preprocessing.crop_bbox_aspect = hp.cropBboxAspect;
+    preprocessing.crop_bbox_padding = hp.cropBboxPadding;
+    preprocessing.crop_bbox_min_size = hp.cropBboxMinSize;
+  }
+  if (isDetector || (isCropHead && hp.cropMode === "bbox") || "bbox_source" in data) {
+    data.bbox_source = hp.bboxSource;
+    data.bbox_padding = hp.bboxPadding;
   }
 
   // Augmentation — individual controls
@@ -1397,7 +1486,7 @@ export function applyHyperparamsToYaml(
  * against the project. Shared by `startTraining` and `startDryRun`, so a dry
  * run checks exactly the config a real run would use.
  */
-function prepareLocalRun(
+export function prepareLocalRun(
   cf: ConfigFile,
   labels: Labels | null,
   sizeStats: ReturnType<typeof computeInstanceSizeStats>,
@@ -1551,19 +1640,31 @@ export const useTrainingStore = create<TrainingState>()((set, get) => ({
     })),
 
   updateConfigHyperparams: (slot, updates) =>
-    set((state) => ({
-      config: {
-        ...state.config,
-        configs: syncTopDownAnchor(
-          state.config.configs.map((c) =>
-            c.slot === slot
-              ? { ...c, hyperparams: { ...c.hyperparams, ...updates } }
-              : c,
+    set((state) => {
+      // A top-down-box pair shares its box settings: carry them to the other config.
+      const shared: Partial<ConfigHyperparams> = {};
+      if (state.config.modelType === "top_down_bbox") {
+        for (const key of SHARED_BBOX_HYPERPARAMS) {
+          if (key in updates) Object.assign(shared, { [key]: updates[key] });
+        }
+      }
+      const hasShared = Object.keys(shared).length > 0;
+      return {
+        config: {
+          ...state.config,
+          configs: syncTopDownAnchor(
+            state.config.configs.map((c) =>
+              c.slot === slot
+                ? { ...c, hyperparams: { ...c.hyperparams, ...updates } }
+                : hasShared
+                  ? { ...c, hyperparams: { ...c.hyperparams, ...shared } }
+                  : c,
+            ),
+            "anchorPart" in updates ? slot : undefined,
           ),
-          "anchorPart" in updates ? slot : undefined,
-        ),
-      },
-    })),
+        },
+      };
+    }),
 
   resetConfigHyperparams: (slot) =>
     set((state) => ({
@@ -1740,9 +1841,17 @@ export const useTrainingStore = create<TrainingState>()((set, get) => ({
       // Extract output_stride and anchor_part from head configs
       let outputStride = 2;
       let anchorPart: string | null = null;
-      for (const headVal of Object.values(headConfigs)) {
+      for (const [headName, headVal] of Object.entries(headConfigs)) {
         if (headVal && typeof headVal === "object") {
           const head = headVal as Record<string, unknown>;
+          if (isBboxHeadKey(headName)) {
+            // Stride on the sub-heads (center/size/offset, or ssd).
+            const leaf = Object.values(head).find(
+              (v) => v && typeof v === "object" && typeof (v as Record<string, unknown>).output_stride === "number",
+            ) as Record<string, unknown> | undefined;
+            if (leaf) outputStride = leaf.output_stride as number;
+            continue;
+          }
           if (typeof head.output_stride === "number") outputStride = head.output_stride;
           if (typeof head.anchor_part === "string") anchorPart = head.anchor_part;
           const confmaps = head.confmaps as Record<string, unknown> | undefined;
@@ -1936,6 +2045,22 @@ export const useTrainingStore = create<TrainingState>()((set, get) => ({
         wandbGroup: typeof wandb.group === "string" ? wandb.group : "",
         wandbMode: wandb.wandb_mode === "offline" ? "offline" : "online",
         wandbApiKey: typeof wandb.api_key === "string" ? wandb.api_key : "",
+        bboxSource:
+          dataConfig.bbox_source === "bboxes" ||
+          dataConfig.bbox_source === "instances" ||
+          dataConfig.bbox_source === "masks"
+            ? dataConfig.bbox_source
+            : "auto",
+        bboxPadding: typeof dataConfig.bbox_padding === "number" ? dataConfig.bbox_padding : 0,
+        cropMode: preprocessing.crop_mode === "bbox" ? "bbox" : "fixed",
+        cropBboxAspect:
+          preprocessing.crop_bbox_aspect === "letterbox" || preprocessing.crop_bbox_aspect === "stretch"
+            ? preprocessing.crop_bbox_aspect
+            : "square",
+        cropBboxPadding:
+          typeof preprocessing.crop_bbox_padding === "number" ? preprocessing.crop_bbox_padding : 0.1,
+        cropBboxMinSize:
+          typeof preprocessing.crop_bbox_min_size === "number" ? preprocessing.crop_bbox_min_size : null,
       };
 
       // Deliberately NOT auto-filling trainingLabelsPath/validationLabelsPath
@@ -2013,6 +2138,11 @@ export const useTrainingStore = create<TrainingState>()((set, get) => ({
       postTrainingInference: null,
       dryRun: null,
     });
+
+    if (remoteOpts?.remote && isBboxModelType(config.modelType)) {
+      set({ status: "error", error: BBOX_REMOTE_UNSUPPORTED });
+      return;
+    }
 
     if (remoteOpts?.remote) {
       // ── Remote training via sleap-connect worker ──────────

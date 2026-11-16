@@ -1002,6 +1002,8 @@ export const MergePredictions: Command = {
         lf.instances = lf.instances.filter(
           (inst) => !(inst instanceof PredictedInstance)
         );
+        // A box detector's predictions are boxes: clear those too.
+        lf.bboxes = lf.bboxes.filter((b) => !b.isPredicted);
       }
       labels.labeledFrames = labels.labeledFrames.filter(frameHasContent);
     }
@@ -1028,8 +1030,16 @@ export const MergePredictions: Command = {
     ctx.state.bumpOverlayVersion();
 
     const conflicts = result.conflicts.length;
+    // A box detector predicts boxes, not instances: count those so its run
+    // doesn't report "0 prediction(s)".
+    const boxes = predictions.labeledFrames.reduce(
+      (n, lf) => n + lf.bboxes.filter((b) => b.isPredicted).length,
+      0,
+    );
     toast.success(
-      `Merged ${result.instancesAdded} prediction(s) across ${result.framesMerged} frame(s)` +
+      `Merged ${result.instancesAdded} prediction(s)` +
+        (boxes > 0 ? ` and ${boxes} box(es)` : "") +
+        ` across ${result.framesMerged} frame(s)` +
         (conflicts > 0 ? `, ${conflicts} conflict(s)` : "") +
         "."
     );

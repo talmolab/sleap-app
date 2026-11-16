@@ -41,6 +41,8 @@ import {
 import { POST_TRAINING_TARGET_OPTIONS, describeClip } from "@/lib/postTrainingTarget";
 import { cropSizeWarnings, isCropHead, negativeFramesWarning, usesNegativeFrames } from "@/lib/cropWarnings";
 import { confirmDialog } from "@/stores/confirmStore";
+import { headTypeMatches } from "@/lib/bboxModels";
+import { BboxTrainingFields } from "@/components/panels/BboxTrainingFields";
 
 /** Tailwind text color per visibility tier, matching the Training panel's log coloring. */
 const VISIBILITY_COLOR: Record<ReturnType<typeof visibilityTier>, string> = {
@@ -120,6 +122,8 @@ const MODEL_TYPE_LABELS: Record<ModelType, string> = {
   bottom_up: "Bottom-Up",
   top_down_id: "Top-Down + ID",
   bottom_up_id: "Bottom-Up + ID",
+  bbox: "Box Detector",
+  top_down_bbox: "Top-Down (Box Crops)",
 };
 
 const MODEL_TYPE_DESCRIPTIONS: Record<ModelType, string> = {
@@ -128,6 +132,8 @@ const MODEL_TYPE_DESCRIPTIONS: Record<ModelType, string> = {
   bottom_up: 'This pipeline uses a single "bottom-up" model that predicts confidence maps for all body parts and part affinity fields to group them into individual animals.',
   top_down_id: 'This pipeline uses two models: a "centroid" model to locate and crop around each animal in the frame, and a "top-down identity" model that predicts node locations and classifies identity for each individual animal.',
   bottom_up_id: 'This pipeline uses a single "bottom-up identity" model that predicts confidence maps, part affinity fields for grouping, and identity classification maps.',
+  bbox: 'This pipeline uses a single "box detector" model that predicts a bounding box around each animal in the frame, with a score; it predicts no poses. Its training boxes are the boxes drawn in the project, or boxes around the labeled poses. Pick CenterNet or SSD with the config preset. Needs sleap-nn 0.3.5 or newer.',
+  top_down_bbox: 'This pipeline uses two models: a "box detector" model to find a box around each animal in the frame, and a "centered-instance confidence map" model that predicts node locations inside each box, cropped and resized so animals of different sizes fill the crop the same way. Needs sleap-nn 0.3.5 or newer.',
 };
 
 const PIPELINE_NAV = [
@@ -445,7 +451,8 @@ function HeadTabContent({
 }) {
   const headType = slotToHeadType(modelType, slot);
   const baselineProfiles = getBaselineProfilesForHead(headType);
-  const showCropSize = slot !== "centroid";
+  // Detectors and centroid models see the whole frame: no crop.
+  const showCropSize = slot !== "centroid" && slot !== "bbox";
   const showNegativeFrames = usesNegativeFrames(headType);
   const setSizeDistributionDialogOpen = useAppStore((s) => s.setSizeDistributionDialogOpen);
   const storeLabels = useAppStore((s) => s.labels);
@@ -527,7 +534,7 @@ function HeadTabContent({
         const cfgPath = await join(runDir, "training_config.yaml");
         if (await exists(cfgPath)) {
           const info = parseTrainingConfig(await readTextFile(cfgPath));
-          if (info.headKey && info.headKey !== headType) {
+          if (info.headKey && !headTypeMatches(headType, { headKey: info.headKey })) {
             toast.warning("Possible checkpoint head mismatch", {
               description: `The checkpoint you selected was trained for "${info.headKey}" and may not be compatible with this ${headType} head.`,
             });
@@ -1193,9 +1200,12 @@ function HeadTabContent({
         </div>
         <Separator className="my-3" />
         <h4 className="text-sm font-medium text-muted-foreground mb-2">Head</h4>
-        <Field {...HEAD_FIELD_DEFS.sigma}>
-          <NumberInput min={0.1} value={hp.sigma} onCommit={(n) => onUpdate({ sigma: n })} step={0.5} className="h-9 text-sm" />
-        </Field>
+        {/* A box detector's heatmap spread is sized per box by sleap-nn. */}
+        {headType !== "bbox" && (
+          <Field {...HEAD_FIELD_DEFS.sigma}>
+            <NumberInput min={0.1} value={hp.sigma} onCommit={(n) => onUpdate({ sigma: n })} step={0.5} className="h-9 text-sm" />
+          </Field>
+        )}
         <div id={HEAD_FIELD_DEFS.outputStride.id} data-search-field="" className="flex items-center gap-2 scroll-mt-4">
           <span className="text-sm text-muted-foreground flex items-center gap-1.5">
             {HEAD_FIELD_DEFS.outputStride.label}
@@ -1543,6 +1553,16 @@ export function TrainingConfigDialog({
                           className="h-8 text-sm w-20"
                         />
                       </div>
+                    </div>
+                  )}
+                  {(modelType === "bbox" || modelType === "top_down_bbox") && (
+                    <div className="max-w-md pt-1">
+                      <BboxTrainingFields
+                        modelType={modelType}
+                        configs={configs}
+                        onUpdateSlot={onUpdateSlot}
+                        size="md"
+                      />
                     </div>
                   )}
                   {modelType === "single_animal" && firstHp && (
