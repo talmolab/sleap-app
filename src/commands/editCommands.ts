@@ -205,7 +205,8 @@ export const DeleteSelectedInstance: Command = {
 
     // Clear selection
     ctx.state.setInstance(null);
-    ctx.state.setLabeledFrame(lf.instances.length > 0 ? lf : null);
+    // Keep showing the frame while it still has boxes (or other annotations).
+    ctx.state.setLabeledFrame(frameHasContent(lf) ? lf : null);
     ctx.state.markChanged();
   },
 };

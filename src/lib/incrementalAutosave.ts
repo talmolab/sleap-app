@@ -103,6 +103,23 @@ export function frameHasAdvancedInstanceFields(frame: LabeledFrame): boolean {
     };
     if (adv.identity != null || adv.category != null) return true;
   }
+  // Boxes: the delta keeps category but not identity or category score/embedding.
+  for (const box of frame.bboxes ?? []) {
+    const adv = box as unknown as {
+      identity?: unknown;
+      categoryScore?: unknown;
+      categoryEmbedding?: unknown;
+      identityEmbedding?: unknown;
+    };
+    if (
+      adv.identity != null ||
+      adv.categoryScore != null ||
+      adv.categoryEmbedding != null ||
+      adv.identityEmbedding != null
+    ) {
+      return true;
+    }
+  }
   return false;
 }
 
