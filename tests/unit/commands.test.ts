@@ -249,7 +249,7 @@ describe("CommandContext", () => {
 
   describe("undo/redo", () => {
     it("enables undo after executing a mutating command", async () => {
-      const cmd = testCommand("MutatingCmd", [UpdateTopic.Frame], () => {});
+      const cmd = testCommand("MutatingCmd", [UpdateTopic.Instance], () => {});
       await ctx.execute(cmd);
 
       expect(ctx.canUndo).toBe(true);
@@ -273,8 +273,8 @@ describe("CommandContext", () => {
 
     it("clears redo stack on new mutating command", async () => {
       // Execute a command, undo it, then execute a new one
-      const cmd1 = testCommand("Cmd1", [UpdateTopic.Frame], () => {});
-      const cmd2 = testCommand("Cmd2", [UpdateTopic.Frame], () => {});
+      const cmd1 = testCommand("Cmd1", [UpdateTopic.Instance], () => {});
+      const cmd2 = testCommand("Cmd2", [UpdateTopic.Instance], () => {});
 
       await ctx.execute(cmd1);
       ctx.undo();
@@ -287,14 +287,14 @@ describe("CommandContext", () => {
 
   describe("command names", () => {
     it("tracks undo command name", async () => {
-      const cmd = testCommand("ImportantAction", [UpdateTopic.Frame], () => {});
+      const cmd = testCommand("ImportantAction", [UpdateTopic.Instance], () => {});
       await ctx.execute(cmd);
 
       expect(ctx.undoCommandName).toBe("ImportantAction");
     });
 
     it("tracks redo command name after undo", async () => {
-      const cmd = testCommand("ImportantAction", [UpdateTopic.Frame], () => {});
+      const cmd = testCommand("ImportantAction", [UpdateTopic.Instance], () => {});
       await ctx.execute(cmd);
       ctx.undo();
 
@@ -320,7 +320,7 @@ describe("CommandContext", () => {
       setupProjectInStore();
 
       // First add something to redo stack
-      const cmd = testCommand("Cmd1", [UpdateTopic.Frame], () => {});
+      const cmd = testCommand("Cmd1", [UpdateTopic.Instance], () => {});
       await ctx.execute(cmd);
       ctx.undo();
       expect(ctx.canRedo).toBe(true);

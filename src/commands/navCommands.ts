@@ -73,7 +73,10 @@ function suggestionOrder(videos: Video[]) {
 /** Navigate to the next suggestion frame. */
 export const GoNextSuggestion: Command = {
   name: "GoNextSuggestion",
-  topics: [UpdateTopic.Frame, UpdateTopic.Suggestions],
+  // Frame only: this reads the suggestion list but never changes it. Listing
+  // Suggestions here made the jump count as an edit (undo step + full
+  // autosave rewrite, #468).
+  topics: [UpdateTopic.Frame],
   execute(ctx: CommandContext) {
     const { labels, video, frameIdx } = ctx.state;
     if (!labels || !video) return;
@@ -100,7 +103,8 @@ export const GoNextSuggestion: Command = {
 /** Navigate to the previous suggestion frame. */
 export const GoPrevSuggestion: Command = {
   name: "GoPrevSuggestion",
-  topics: [UpdateTopic.Frame, UpdateTopic.Suggestions],
+  // Frame only — see GoNextSuggestion (#468).
+  topics: [UpdateTopic.Frame],
   execute(ctx: CommandContext) {
     const { labels, video, frameIdx } = ctx.state;
     if (!labels || !video) return;

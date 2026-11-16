@@ -109,6 +109,12 @@ type UpdateListener = (topics: UpdateTopic[]) => void;
 
 const MAX_UNDO_STACK = 100;
 
+/** Topics that only move the playhead/camera — never a data edit (#468). */
+const NAVIGATION_TOPICS: ReadonlySet<UpdateTopic> = new Set([
+  UpdateTopic.Frame,
+  UpdateTopic.View,
+]);
+
 export class CommandContext {
   /** Stack of executed commands for change tracking. */
   private changeStack: ChangeRecord[] = [];
@@ -300,10 +306,30 @@ export class CommandContext {
     dirtyFrameTracker.markFromSnapshot(snapshot);
   }
 
+  /** Move the view to the video + frame a single-frame snapshot was taken on. */
+  private goToSnapshotFrame(snapshot: UndoSnapshot): void {
+    const { labels } = this.state;
+    const video = snapshot.frame?.videoRef ?? snapshot.activeVideo;
+    const frameIdx = snapshot.frame?.frameIdx ?? snapshot.activeFrameIdx;
+    if (!labels || !video || !labels.videos.includes(video)) return;
+    if (this.state.video !== video) this.state.setVideo(video);
+    if (this.state.frameIdx !== frameIdx) this.state.setFrameIdx(frameIdx);
+  }
+
   /** Restore state from a snapshot. Returns a snapshot of the state being replaced. */
   private restoreSnapshot(snapshot: UndoSnapshot): UndoSnapshot {
     const { labels } = this.state;
     if (!labels) return this.takeSnapshot(snapshot.commandName);
+
+    // A single-frame snapshot belongs to one frame: go there first, so the
+    // restored instances are shown on their own frame (not drawn over whatever
+    // frame the user browsed to), further edits land there, and the redo
+    // snapshot below captures that frame rather than the one being viewed
+    // (#487). Plain store navigation — no undo step, redo untouched. Multi-frame
+    // snapshots (e.g. Delete Predictions) leave the view where it is.
+    if (!snapshot.allFrames && !snapshot.scopedFrames) {
+      this.goToSnapshotFrame(snapshot);
+    }
 
     // If this is a multi-frame snapshot, take a matching before-snapshot —
     // scoped to the same (video, frame-range) the original snapshot covered
@@ -473,9 +499,15 @@ export class CommandContext {
     return before;
   }
 
-  /** Check if a command mutates data (has update topics). */
+  /**
+   * Check if a command mutates data: it has at least one topic other than
+   * Frame/View. Frame/View-only commands (Go to frame, next labeled frame, …)
+   * just move the playhead or the camera, so they take no undo step, keep the
+   * redo stack, and don't dirty the autosave (#468). Their topics are still
+   * signalled, so Frame listeners hear about the move.
+   */
   private isMutating(command: Command): boolean {
-    return command.topics.length > 0;
+    return command.topics.some((t) => !NAVIGATION_TOPICS.has(t));
   }
 
   /** Execute a command, track the change, and signal updates. */
