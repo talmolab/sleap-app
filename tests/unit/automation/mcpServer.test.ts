@@ -58,54 +58,77 @@ describe("MCP server", () => {
   });
 });
 
-/** A fake desktop bridge: deliver HTTP bodies, collect replies. */
+/** A fake desktop bridge: deliver HTTP bodies, collect replies (and session ids handed out). */
 function fakeBridge() {
-  let handler: ((r: { id: number; body: string }) => void) | null = null;
-  const replies = new Map<number, string>();
+  let handler: ((r: { id: number; body: string; session?: string | null }) => void) | null = null;
+  const sessions = new Map<number, string | undefined>();
   const waiters = new Map<number, (body: string) => void>();
   const bridge: WebviewBridge = {
     listen: async (fn) => {
       handler = fn;
       return () => (handler = null);
     },
-    respond: async (id, body) => {
-      replies.set(id, body);
+    respond: async (id, body, session) => {
+      sessions.set(id, session);
       waiters.get(id)?.(body);
     },
   };
   let bridgeId = 0;
-  /** POST one JSON-RPC body; resolves with the reply body. */
-  const post = (msg: unknown) =>
+  /** POST one JSON-RPC body (with an optional session header); resolves with the reply body. */
+  const post = (msg: unknown, session?: string) =>
     new Promise<string>((resolve) => {
       const id = ++bridgeId;
       waiters.set(id, resolve);
-      handler!({ id, body: typeof msg === "string" ? msg : JSON.stringify(msg) });
+      handler!({ id, body: typeof msg === "string" ? msg : JSON.stringify(msg), session: session ?? null });
     });
-  return { bridge, post, replies };
+  return { bridge, post, sessions, lastId: () => bridgeId };
 }
 
+const init = (id: number) => ({
+  jsonrpc: "2.0",
+  id,
+  method: "initialize",
+  params: { protocolVersion: "2025-06-18", capabilities: {}, clientInfo: { name: "c", version: "0" } },
+});
+
 describe("WebviewTransport", () => {
-  // Why: two Claude sessions can both send id 1; each must get its own answer back with its own id.
-  it("answers each request on its own HTTP request, with the client's id", async () => {
+  // Why: two Claude sessions can both send id 7; each must get its own answer back with its own id.
+  it("answers each request on its own HTTP request, with the client's id and a session", async () => {
     const fb = fakeBridge();
     await createMcpServer().connect(new WebviewTransport(fb.bridge));
-    const init = (id: number) => ({
-      jsonrpc: "2.0",
-      id,
-      method: "initialize",
-      params: { protocolVersion: "2025-06-18", capabilities: {}, clientInfo: { name: "c", version: "0" } },
-    });
     const r1 = JSON.parse(await fb.post(init(1)));
     expect(r1.id).toBe(1);
     expect(r1.result.serverInfo.name).toBe("sleap");
+    const session = fb.sessions.get(fb.lastId());
+    expect(typeof session).toBe("string");
     // A notification gets an empty reply (the bridge answers 202).
-    expect(await fb.post({ jsonrpc: "2.0", method: "notifications/initialized" })).toBe("");
+    expect(await fb.post({ jsonrpc: "2.0", method: "notifications/initialized" }, session)).toBe("");
     const [a, b] = await Promise.all([
-      fb.post({ jsonrpc: "2.0", id: 7, method: "tools/list" }),
-      fb.post({ jsonrpc: "2.0", id: 7, method: "tools/call", params: { name: "get_session", arguments: {} } }),
+      fb.post({ jsonrpc: "2.0", id: 7, method: "tools/list" }, session),
+      fb.post({ jsonrpc: "2.0", id: 7, method: "tools/call", params: { name: "get_session", arguments: {} } }, "other"),
     ]);
     expect(JSON.parse(a)).toMatchObject({ id: 7, result: { tools: expect.any(Array) } });
     expect(JSON.parse(b)).toMatchObject({ id: 7, result: { content: expect.any(Array) } });
+  });
+
+  // Why: one Claude session must not be able to cancel another session's request with the same id.
+  it("routes a cancellation only to the same session's request", () => {
+    const fb = fakeBridge();
+    const t = new WebviewTransport(fb.bridge);
+    const got: unknown[] = [];
+    t.onmessage = (m) => got.push(m);
+    void t.start();
+    return Promise.resolve().then(() => {
+      void fb.post({ jsonrpc: "2.0", id: 7, method: "tools/call", params: { name: "x" } }, "A");
+      void fb.post({ jsonrpc: "2.0", id: 7, method: "tools/call", params: { name: "x" } }, "B");
+      const ourA = (got[0] as { id: number }).id;
+      const ourB = (got[1] as { id: number }).id;
+      expect(ourA).not.toBe(ourB);
+      void fb.post({ jsonrpc: "2.0", method: "notifications/cancelled", params: { requestId: 7 } }, "B");
+      void fb.post({ jsonrpc: "2.0", method: "notifications/cancelled", params: { requestId: 99 } }, "A");
+      expect(got).toHaveLength(3); // the unknown id 99 is dropped
+      expect((got[2] as { params: { requestId: number } }).params.requestId).toBe(ourB);
+    });
   });
 
   // Why: garbage in must get a JSON-RPC error out, not a hung request.

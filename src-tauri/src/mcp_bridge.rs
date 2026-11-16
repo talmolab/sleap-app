@@ -3,22 +3,28 @@
 //! Claude Code talks MCP's Streamable HTTP transport: one JSON-RPC message per
 //! `POST /mcp`, the reply in the response body. This module only carries
 //! bytes: it checks the request is from this machine and carries the token,
-//! hands the body to the SLEAP window that turned the connector on (an
-//! `mcp:request {id, body}` event), and waits for the window's
-//! `mcp_response {id, body}` to answer. The MCP server itself — tools,
-//! schemas, instructions — runs in the window (src/automation/mcpServer.ts).
+//! hands the body to the SLEAP window that owns the connector (an
+//! `mcp:request {id, body, session}` event), and waits for that window's
+//! `mcp_response {id, body, session}` to answer. The MCP server itself —
+//! tools, schemas, instructions — runs in the window (src/automation/mcpServer.ts).
 //!
 //! Safety: off until the user turns on "Allow Claude to control SLEAP"; binds
 //! 127.0.0.1 only; every request needs `Authorization: Bearer <token>`; a
-//! `Host` or `Origin` that isn't loopback is refused (DNS rebinding). The port
-//! and token are kept in `~/.sleap-app/mcp.json` (mode 600 on Unix) so the
-//! `claude mcp add` command keeps working across launches.
+//! `Host` or `Origin` that isn't loopback is refused (DNS rebinding).
+//!
+//! Token and port: the token is new every launch and kept only in memory and
+//! in `~/.sleap-app/mcp-headers.json` (mode 600), which Claude Code reads with
+//! a `headersHelper` on every connection — so the connect command is run once,
+//! not once per launch. The port is picked once and saved in
+//! `~/.sleap-app/mcp.json`; if it's taken later, starting fails with a clear
+//! message instead of quietly moving (which would break the saved command).
+//! Picking a new port is an explicit choice in the UI.
 
 use std::collections::HashMap;
 use std::io::Read;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{mpsc, Arc, Mutex};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::{mpsc, Arc, Mutex, OnceLock};
 use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
@@ -30,33 +36,93 @@ const REQUEST_TIMEOUT: Duration = Duration::from_secs(60);
 const MAX_BODY: u64 = 4 * 1024 * 1024;
 /// Event the window listens for.
 const REQUEST_EVENT: &str = "mcp:request";
+/// The MCP session header (Streamable HTTP).
+const SESSION_HEADER: &str = "Mcp-Session-Id";
+/// Accept errors in a row before the listener gives up and reports it.
+const MAX_ACCEPT_ERRORS: u32 = 50;
 
-/// What the Environment panel shows and the `claude mcp add` command needs.
+/// Where the endpoint listens.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct McpInfo {
     pub port: u16,
-    pub token: String,
     pub url: String,
 }
+
+/// What `mcp_status` reports to the Environment panel.
+#[derive(Clone, Debug, Serialize, PartialEq)]
+pub struct McpStatus {
+    /// The endpoint is listening.
+    pub running: bool,
+    pub info: Option<McpInfo>,
+    /// Label of the window that answers requests.
+    pub owner: Option<String>,
+    /// Whether that window is still open.
+    pub owner_alive: bool,
+    /// The last problem (the listener stopped, …), if any.
+    pub error: Option<String>,
+    /// The command that connects Claude Code (needs the headers file path).
+    pub connect_command: Option<String>,
+}
+
+/// One request handed to the window.
+#[derive(Serialize, Clone, Debug)]
+pub struct RequestPayload {
+    pub id: u64,
+    pub body: String,
+    /// The client's `Mcp-Session-Id`, if it sent one.
+    pub session: Option<String>,
+}
+
+/// The window's answer: a body (empty = none) and, for `initialize`, a new session id.
+#[derive(Debug)]
+pub struct Reply {
+    pub body: String,
+    pub session: Option<String>,
+}
+
+/// How requests reach the window (a seam so the HTTP path can be tested without Tauri).
+pub trait Deliver: Send + Sync + 'static {
+    fn window_alive(&self, label: &str) -> bool;
+    fn deliver(&self, label: &str, payload: RequestPayload) -> Result<(), String>;
+}
+
+struct TauriDeliver<R: Runtime>(AppHandle<R>);
+
+impl<R: Runtime> Deliver for TauriDeliver<R> {
+    fn window_alive(&self, label: &str) -> bool {
+        self.0.get_webview_window(label).is_some()
+    }
+    fn deliver(&self, label: &str, payload: RequestPayload) -> Result<(), String> {
+        // emit_to returns Ok even when no window has that label, hence window_alive.
+        self.0.emit_to(label, REQUEST_EVENT, payload).map_err(|e| e.to_string())
+    }
+}
+
+type Pending = Arc<Mutex<HashMap<u64, mpsc::Sender<Reply>>>>;
 
 struct Running {
     server: Arc<tiny_http::Server>,
     info: McpInfo,
-    /// Label of the window that answers requests (the last to call mcp_start).
     target: Arc<Mutex<String>>,
+    stopped: Arc<AtomicBool>,
+    /// Cleared when the listener thread exits.
+    listening: Arc<AtomicBool>,
 }
 
-#[derive(Default)]
 pub struct McpBridge {
     running: Mutex<Option<Running>>,
-    pending: Arc<Mutex<HashMap<u64, mpsc::Sender<String>>>>,
+    pending: Pending,
     next_id: Arc<AtomicU64>,
+    /// This launch's token (made on first start, never written to mcp.json).
+    token: OnceLock<String>,
+    last_error: Arc<Mutex<Option<String>>>,
+    timeout: Duration,
 }
 
-#[derive(Serialize, Clone)]
-struct RequestPayload {
-    id: u64,
-    body: String,
+impl Default for McpBridge {
+    fn default() -> Self {
+        Self::with_timeout(REQUEST_TIMEOUT)
+    }
 }
 
 /// What to do with a request, decided from its line and headers alone.
@@ -121,48 +187,24 @@ pub fn check_request(
         _ => {
             return Verdict::Reject(
                 401,
-                "Unauthorized: missing or wrong token. Copy the command again from SLEAP's Environment panel.",
+                "Unauthorized: missing or wrong token. SLEAP makes a new token each launch; Claude Code reads it with the headersHelper from SLEAP's connect command.",
             )
         }
     }
     if method != "POST" {
-        // No server-to-client stream (GET) or sessions (DELETE) in the prototype.
+        // No server-to-client stream (GET) or session teardown (DELETE) in the prototype.
         return Verdict::Reject(405, "Method not allowed: send JSON-RPC with POST.");
     }
     Verdict::Forward
 }
 
-fn config_path() -> Option<PathBuf> {
-    dirs::home_dir().map(|h| h.join(".sleap-app").join("mcp.json"))
-}
-
-fn read_config() -> Option<McpInfo> {
-    let text = std::fs::read_to_string(config_path()?).ok()?;
-    serde_json::from_str(&text).ok()
-}
-
-fn write_config(info: &McpInfo) {
-    let Some(path) = config_path() else { return };
-    if let Some(parent) = path.parent() {
-        let _ = std::fs::create_dir_all(parent);
-    }
-    let Ok(text) = serde_json::to_string_pretty(info) else { return };
-    let mut opts = std::fs::OpenOptions::new();
-    opts.write(true).create(true).truncate(true);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        opts.mode(0o600);
-    }
-    if let Ok(mut f) = opts.open(&path) {
-        use std::io::Write;
-        let _ = f.write_all(text.as_bytes());
-        // An older file may predate mode 600.
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            let _ = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600));
-        }
+/// The port to bind: the saved one (exactly), or any free one when there is
+/// none saved or the user asked for a new one.
+pub fn choose_port(saved: Option<u16>, new_port: bool) -> Option<u16> {
+    if new_port {
+        None
+    } else {
+        saved
     }
 }
 
@@ -179,17 +221,21 @@ fn header<'a>(req: &'a tiny_http::Request, name: &str) -> Option<&'a str> {
         .map(|h| h.value.as_str())
 }
 
-fn respond(req: tiny_http::Request, status: u16, body: String, json: bool) {
+fn respond(req: tiny_http::Request, status: u16, body: String, json: bool, session: Option<&str>) {
     let mut resp = tiny_http::Response::from_string(body).with_status_code(status);
-    if json {
-        if let Ok(h) = tiny_http::Header::from_bytes(&b"Content-Type"[..], &b"application/json"[..]) {
+    let mut add = |k: &str, v: &str| {
+        if let Ok(h) = tiny_http::Header::from_bytes(k.as_bytes(), v.as_bytes()) {
             resp.add_header(h);
         }
+    };
+    if json {
+        add("Content-Type", "application/json");
     }
     if status == 401 {
-        if let Ok(h) = tiny_http::Header::from_bytes(&b"WWW-Authenticate"[..], &b"Bearer"[..]) {
-            resp.add_header(h);
-        }
+        add("WWW-Authenticate", "Bearer");
+    }
+    if let Some(s) = session {
+        add(SESSION_HEADER, s);
     }
     let _ = req.respond(resp);
 }
@@ -198,61 +244,261 @@ fn error_body(msg: &str) -> String {
     serde_json::json!({ "error": msg }).to_string()
 }
 
-fn handle<R: Runtime>(
-    app: AppHandle<R>,
-    mut req: tiny_http::Request,
+struct HandleCtx {
+    deliver: Arc<dyn Deliver>,
     token: String,
     target: Arc<Mutex<String>>,
-    pending: Arc<Mutex<HashMap<u64, mpsc::Sender<String>>>>,
+    pending: Pending,
     next_id: Arc<AtomicU64>,
-) {
+    timeout: Duration,
+}
+
+fn handle(ctx: &HandleCtx, mut req: tiny_http::Request) {
     let verdict = check_request(
         req.method().as_str(),
         req.url(),
         header(&req, "Host"),
         header(&req, "Origin"),
         header(&req, "Authorization"),
-        &token,
+        &ctx.token,
     );
     if let Verdict::Reject(status, msg) = verdict {
-        respond(req, status, error_body(msg), true);
+        respond(req, status, error_body(msg), true, None);
         return;
     }
     let mut body = String::new();
     if req.as_reader().take(MAX_BODY + 1).read_to_string(&mut body).is_err() {
-        respond(req, 400, error_body("Body must be UTF-8 JSON."), true);
+        respond(req, 400, error_body("Body must be UTF-8 JSON."), true, None);
         return;
     }
     if body.len() as u64 > MAX_BODY {
-        respond(req, 413, error_body("Request too large."), true);
+        respond(req, 413, error_body("Request too large."), true, None);
+        return;
+    }
+    let label = ctx.target.lock().unwrap().clone();
+    if !ctx.deliver.window_alive(&label) {
+        respond(
+            req,
+            503,
+            error_body(
+                "The SLEAP window running the Claude connector was closed. Turn on \"Allow Claude to control SLEAP\" in an open SLEAP window.",
+            ),
+            true,
+            None,
+        );
         return;
     }
 
-    let id = next_id.fetch_add(1, Ordering::Relaxed) + 1;
+    let id = ctx.next_id.fetch_add(1, Ordering::Relaxed) + 1;
     let (tx, rx) = mpsc::channel();
-    pending.lock().unwrap().insert(id, tx);
-    let label = target.lock().unwrap().clone();
-    if app.emit_to(label.as_str(), REQUEST_EVENT, RequestPayload { id, body }).is_err() {
-        pending.lock().unwrap().remove(&id);
-        respond(req, 503, error_body("The SLEAP window isn't available."), true);
+    ctx.pending.lock().unwrap().insert(id, tx);
+    let session = header(&req, SESSION_HEADER).map(str::to_string);
+    if ctx.deliver.deliver(&label, RequestPayload { id, body, session }).is_err() {
+        ctx.pending.lock().unwrap().remove(&id);
+        respond(req, 503, error_body("The SLEAP window isn't available."), true, None);
         return;
     }
-    match rx.recv_timeout(REQUEST_TIMEOUT) {
-        Ok(reply) if reply.is_empty() => respond(req, 202, String::new(), false),
-        Ok(reply) => respond(req, 200, reply, true),
+    match rx.recv_timeout(ctx.timeout) {
+        Ok(reply) if reply.body.is_empty() => respond(req, 202, String::new(), false, reply.session.as_deref()),
+        Ok(reply) => respond(req, 200, reply.body, true, reply.session.as_deref()),
         Err(mpsc::RecvTimeoutError::Timeout) => {
-            pending.lock().unwrap().remove(&id);
+            ctx.pending.lock().unwrap().remove(&id);
             respond(
                 req,
                 504,
                 error_body("SLEAP didn't answer in time. Is the project window open and responsive?"),
                 true,
+                None,
             );
         }
         Err(mpsc::RecvTimeoutError::Disconnected) => {
-            respond(req, 503, error_body("SLEAP stopped the Claude connector."), true);
+            respond(req, 503, error_body("SLEAP stopped the Claude connector."), true, None);
         }
     }
+}
+
+impl McpBridge {
+    pub fn with_timeout(timeout: Duration) -> Self {
+        Self {
+            running: Mutex::new(None),
+            pending: Arc::default(),
+            next_id: Arc::default(),
+            token: OnceLock::new(),
+            last_error: Arc::default(),
+            timeout,
+        }
+    }
+
+    /// This launch's token (made once per process).
+    pub fn token(&self) -> Result<String, String> {
+        if let Some(t) = self.token.get() {
+            return Ok(t.clone());
+        }
+        let t = new_token()?;
+        Ok(self.token.get_or_init(|| t).clone())
+    }
+
+    /// Start listening on `port` (exactly) or any free port (`None`), with
+    /// requests going to window `owner`. Already running: just re-target.
+    pub fn start(&self, deliver: Arc<dyn Deliver>, owner: &str, port: Option<u16>) -> Result<McpInfo, String> {
+        let mut running = self.running.lock().unwrap();
+        if let Some(r) = running.as_ref() {
+            if r.listening.load(Ordering::SeqCst) {
+                *r.target.lock().unwrap() = owner.to_string();
+                return Ok(r.info.clone());
+            }
+            // The listener died: start over.
+            running.take();
+        }
+        let token = self.token()?;
+        let server = match port {
+            Some(p) => tiny_http::Server::http(("127.0.0.1", p)).map_err(|e| {
+                format!(
+                    "PORT_IN_USE: Port {p} (where Claude Code expects SLEAP) is in use by another program ({e}). Close that program, or choose a new port and run the connect command again."
+                )
+            })?,
+            None => tiny_http::Server::http("127.0.0.1:0").map_err(|e| format!("Couldn't start the Claude connector: {e}"))?,
+        };
+        let port = server.server_addr().to_ip().map(|a| a.port()).ok_or("Couldn't read the connector's port")?;
+        let info = McpInfo { port, url: format!("http://127.0.0.1:{port}/mcp") };
+        *self.last_error.lock().unwrap() = None;
+
+        let server = Arc::new(server);
+        let target = Arc::new(Mutex::new(owner.to_string()));
+        let stopped = Arc::new(AtomicBool::new(false));
+        let listening = Arc::new(AtomicBool::new(true));
+        let ctx = Arc::new(HandleCtx {
+            deliver,
+            token,
+            target: target.clone(),
+            pending: self.pending.clone(),
+            next_id: self.next_id.clone(),
+            timeout: self.timeout,
+        });
+        {
+            let (server, stopped, listening, last_error) =
+                (server.clone(), stopped.clone(), listening.clone(), self.last_error.clone());
+            std::thread::Builder::new()
+                .name("sleap-mcp".into())
+                .spawn(move || {
+                    let mut errors = 0u32;
+                    loop {
+                        match server.recv() {
+                            Ok(req) => {
+                                errors = 0;
+                                let ctx = ctx.clone();
+                                std::thread::spawn(move || handle(&ctx, req));
+                            }
+                            Err(_) if stopped.load(Ordering::SeqCst) => break,
+                            Err(e) => {
+                                // A passing accept error: keep listening, but don't spin.
+                                errors += 1;
+                                log::warn!("Claude connector: accept error: {e}");
+                                if errors >= MAX_ACCEPT_ERRORS {
+                                    *last_error.lock().unwrap() =
+                                        Some(format!("The Claude connector stopped listening: {e}. Turn it off and on again."));
+                                    break;
+                                }
+                                std::thread::sleep(Duration::from_millis(50));
+                            }
+                        }
+                    }
+                    listening.store(false, Ordering::SeqCst);
+                })
+                .map_err(|e| format!("Couldn't start the Claude connector: {e}"))?;
+        }
+        *running = Some(Running { server, info: info.clone(), target, stopped, listening });
+        Ok(info)
+    }
+
+    pub fn stop(&self) {
+        if let Some(r) = self.running.lock().unwrap().take() {
+            r.stopped.store(true, Ordering::SeqCst);
+            r.server.unblock();
+        }
+        // Requests in flight get "stopped" (their senders drop).
+        self.pending.lock().unwrap().clear();
+    }
+
+    /// The window's reply to request `id`.
+    pub fn respond(&self, id: u64, body: String, session: Option<String>) {
+        if let Some(tx) = self.pending.lock().unwrap().remove(&id) {
+            let _ = tx.send(Reply { body, session });
+        }
+    }
+
+    pub fn status(&self, deliver: &dyn Deliver) -> McpStatus {
+        let running = self.running.lock().unwrap();
+        let r = running.as_ref();
+        let listening = r.is_some_and(|r| r.listening.load(Ordering::SeqCst));
+        let owner = r.map(|r| r.target.lock().unwrap().clone());
+        McpStatus {
+            running: listening,
+            info: r.map(|r| r.info.clone()),
+            owner_alive: owner.as_deref().is_some_and(|o| deliver.window_alive(o)),
+            owner,
+            error: self.last_error.lock().unwrap().clone(),
+            connect_command: r.and_then(|r| connect_command(&r.info)),
+        }
+    }
+}
+
+// ---- files under ~/.sleap-app ----
+
+fn sleap_dir() -> Option<PathBuf> {
+    dirs::home_dir().map(|h| h.join(".sleap-app"))
+}
+
+fn config_path() -> Option<PathBuf> {
+    sleap_dir().map(|d| d.join("mcp.json"))
+}
+
+fn headers_path() -> Option<PathBuf> {
+    sleap_dir().map(|d| d.join("mcp-headers.json"))
+}
+
+fn read_saved_port() -> Option<u16> {
+    let text = std::fs::read_to_string(config_path()?).ok()?;
+    serde_json::from_str::<McpInfo>(&text).ok().map(|i| i.port)
+}
+
+/// Write `text` to `path`, readable only by this user on Unix.
+fn write_private(path: &PathBuf, text: &str) -> Result<(), String> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+    }
+    let mut opts = std::fs::OpenOptions::new();
+    opts.write(true).create(true).truncate(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        opts.mode(0o600);
+    }
+    let mut f = opts.open(path).map_err(|e| e.to_string())?;
+    use std::io::Write;
+    f.write_all(text.as_bytes()).map_err(|e| e.to_string())?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600));
+    }
+    Ok(())
+}
+
+/// The headers Claude Code sends, as its headersHelper prints them.
+pub fn headers_json(token: &str) -> String {
+    serde_json::json!({ "Authorization": format!("Bearer {token}") }).to_string()
+}
+
+/// `claude mcp add-json` with a headersHelper that reads this launch's token.
+pub fn connect_command(info: &McpInfo) -> Option<String> {
+    let headers = headers_path()?;
+    let config = serde_json::json!({
+        "type": "http",
+        "url": info.url,
+        "headersHelper": format!("cat '{}'", headers.display()),
+    });
+    Some(format!("claude mcp add-json --scope user sleap '{config}'"))
 }
 
 fn bridge<R: Runtime>(app: &AppHandle<R>) -> tauri::State<'_, McpBridge> {
@@ -262,92 +508,52 @@ fn bridge<R: Runtime>(app: &AppHandle<R>) -> tauri::State<'_, McpBridge> {
     app.state::<McpBridge>()
 }
 
-/// Start the endpoint (or, if it's running, make this window the one that answers).
+/// Start the endpoint, owned by the calling window (or make it the owner if
+/// running). `new_port`: give up the saved port and pick a free one (the
+/// connect command must then be run again).
 #[tauri::command]
-pub fn mcp_start<R: Runtime>(app: AppHandle<R>, window: tauri::Window<R>) -> Result<McpInfo, String> {
+pub fn mcp_start<R: Runtime>(
+    app: AppHandle<R>,
+    window: tauri::Window<R>,
+    new_port: Option<bool>,
+) -> Result<McpStatus, String> {
     let state = bridge(&app);
-    let mut running = state.running.lock().unwrap();
-    if let Some(r) = running.as_ref() {
-        *r.target.lock().unwrap() = window.label().to_string();
-        return Ok(r.info.clone());
-    }
-
-    // Reuse the saved port and token so `claude mcp add` keeps working.
-    let saved = read_config();
-    let token = match saved.as_ref() {
-        Some(s) if s.token.len() >= 32 => s.token.clone(),
-        _ => new_token()?,
-    };
-    let server = saved
-        .as_ref()
-        .and_then(|s| tiny_http::Server::http(("127.0.0.1", s.port)).ok())
-        .map(Ok)
-        .unwrap_or_else(|| tiny_http::Server::http("127.0.0.1:0"))
-        .map_err(|e| format!("Couldn't start the Claude connector: {e}"))?;
-    let port = server
-        .server_addr()
-        .to_ip()
-        .map(|a| a.port())
-        .ok_or("Couldn't read the connector's port")?;
-    let info = McpInfo {
-        port,
-        url: format!("http://127.0.0.1:{port}/mcp"),
-        token: token.clone(),
-    };
-    write_config(&info);
-
-    let server = Arc::new(server);
-    let target = Arc::new(Mutex::new(window.label().to_string()));
-    {
-        let server = server.clone();
-        let target = target.clone();
-        let pending = state.pending.clone();
-        let next_id = state.next_id.clone();
-        let app = app.clone();
-        std::thread::Builder::new()
-            .name("sleap-mcp".into())
-            .spawn(move || {
-                // recv() errors once mcp_stop unblocks the server.
-                while let Ok(req) = server.recv() {
-                    let (app, token, target, pending, next_id) =
-                        (app.clone(), token.clone(), target.clone(), pending.clone(), next_id.clone());
-                    std::thread::spawn(move || handle(app, req, token, target, pending, next_id));
-                }
-            })
-            .map_err(|e| format!("Couldn't start the Claude connector: {e}"))?;
-    }
-    *running = Some(Running { server, info: info.clone(), target });
-    Ok(info)
+    let deliver: Arc<dyn Deliver> = Arc::new(TauriDeliver(app.clone()));
+    let port = choose_port(read_saved_port(), new_port.unwrap_or(false));
+    let info = state.start(deliver.clone(), window.label(), port)?;
+    let token = state.token()?;
+    let headers = headers_path().ok_or("Couldn't find the home folder")?;
+    write_private(&headers, &headers_json(&token)).map_err(|e| format!("Couldn't write {}: {e}", headers.display()))?;
+    let config = config_path().ok_or("Couldn't find the home folder")?;
+    write_private(&config, &serde_json::to_string_pretty(&info).unwrap_or_default())
+        .map_err(|e| format!("Couldn't write {}: {e}", config.display()))?;
+    Ok(state.status(deliver.as_ref()))
 }
 
 /// Stop the endpoint. Claude's next call fails to connect.
 #[tauri::command]
 pub fn mcp_stop<R: Runtime>(app: AppHandle<R>) {
-    let state = bridge(&app);
-    if let Some(r) = state.running.lock().unwrap().take() {
-        r.server.unblock();
-    }
-    // Requests in flight get "stopped" (their senders drop).
-    state.pending.lock().unwrap().clear();
+    bridge(&app).stop();
 }
 
-/// Whether the endpoint is running, and its address and token.
+/// Whether the endpoint is running, which window owns it, and the connect command.
 #[tauri::command]
-pub fn mcp_status<R: Runtime>(app: AppHandle<R>) -> Option<McpInfo> {
-    bridge(&app).running.lock().unwrap().as_ref().map(|r| r.info.clone())
+pub fn mcp_status<R: Runtime>(app: AppHandle<R>) -> McpStatus {
+    let deliver = TauriDeliver(app.clone());
+    bridge(&app).status(&deliver)
 }
 
-/// The window's reply to request `id` (empty = no response body).
+/// The window's reply to request `id` (empty body = none; `session` = a new
+/// session id to return, on `initialize`).
 #[tauri::command]
-pub fn mcp_response<R: Runtime>(app: AppHandle<R>, id: u64, body: String) {
-    if let Some(tx) = bridge(&app).pending.lock().unwrap().remove(&id) {
-        let _ = tx.send(body);
-    }
+pub fn mcp_response<R: Runtime>(app: AppHandle<R>, id: u64, body: String, session: Option<String>) {
+    bridge(&app).respond(id, body, session);
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io::Write as _;
 
     const TOKEN: &str = "0123456789abcdef0123456789abcdef";
     const AUTH: &str = "Bearer 0123456789abcdef0123456789abcdef";
@@ -368,10 +574,7 @@ mod tests {
     #[test]
     fn refuses_a_missing_or_wrong_token() {
         assert!(matches!(check("POST", Some("127.0.0.1:1"), None, None), Verdict::Reject(401, _)));
-        assert!(matches!(
-            check("POST", Some("127.0.0.1:1"), None, Some("Bearer nope")),
-            Verdict::Reject(401, _)
-        ));
+        assert!(matches!(check("POST", Some("127.0.0.1:1"), None, Some("Bearer nope")), Verdict::Reject(401, _)));
         assert!(matches!(check("POST", Some("127.0.0.1:1"), None, Some(TOKEN)), Verdict::Reject(401, _)));
     }
 
@@ -385,14 +588,8 @@ mod tests {
             check("POST", Some("127.0.0.1:1"), Some("https://evil.com"), Some(AUTH)),
             Verdict::Reject(403, _)
         ));
-        assert!(matches!(
-            check("POST", Some("127.0.0.1:1"), Some("null"), Some(AUTH)),
-            Verdict::Reject(403, _)
-        ));
-        assert_eq!(
-            check("POST", Some("127.0.0.1:1"), Some("http://localhost:1420"), Some(AUTH)),
-            Verdict::Forward
-        );
+        assert!(matches!(check("POST", Some("127.0.0.1:1"), Some("null"), Some(AUTH)), Verdict::Reject(403, _)));
+        assert_eq!(check("POST", Some("127.0.0.1:1"), Some("http://localhost:1420"), Some(AUTH)), Verdict::Forward);
     }
 
     // Why: only POST /mcp is served.
@@ -403,53 +600,156 @@ mod tests {
             Verdict::Reject(404, _)
         ));
         assert!(matches!(check("GET", Some("127.0.0.1:1"), None, Some(AUTH)), Verdict::Reject(405, _)));
+        assert_eq!(check_request("POST", "/mcp?x=1", Some("127.0.0.1:1"), None, Some(AUTH), TOKEN), Verdict::Forward);
+    }
+
+    // Why: the token is new each launch (per bridge) and long and random; the port is never silently changed.
+    #[test]
+    fn tokens_are_per_launch_and_ports_stay_put() {
+        let a = McpBridge::default();
+        let b = McpBridge::default();
+        assert_eq!(a.token().unwrap().len(), 64);
+        assert_eq!(a.token().unwrap(), a.token().unwrap());
+        assert_ne!(a.token().unwrap(), b.token().unwrap());
+        assert_eq!(choose_port(Some(5555), false), Some(5555));
+        assert_eq!(choose_port(Some(5555), true), None);
+        assert_eq!(choose_port(None, false), None);
         assert_eq!(
-            check_request("POST", "/mcp?x=1", Some("127.0.0.1:1"), None, Some(AUTH), TOKEN),
-            Verdict::Forward
+            serde_json::from_str::<serde_json::Value>(&headers_json("t")).unwrap()["Authorization"],
+            "Bearer t"
         );
     }
 
-    // Why: tokens must be long and random.
-    #[test]
-    fn makes_long_random_tokens() {
-        let a = new_token().unwrap();
-        let b = new_token().unwrap();
-        assert_eq!(a.len(), 64);
-        assert_ne!(a, b);
-        assert!(same_secret(&a, &a.clone()));
-        assert!(!same_secret(&a, &b));
+    /// A fake window: answers each request with `reply(body)` (None = never answers).
+    struct FakeWindow {
+        bridge: Mutex<Option<Arc<McpBridge>>>,
+        alive: AtomicBool,
+        reply: fn(&RequestPayload) -> Option<Reply>,
+        seen: Mutex<Vec<RequestPayload>>,
+    }
+    impl Deliver for FakeWindow {
+        fn window_alive(&self, label: &str) -> bool {
+            label == "main" && self.alive.load(Ordering::SeqCst)
+        }
+        fn deliver(&self, _label: &str, payload: RequestPayload) -> Result<(), String> {
+            self.seen.lock().unwrap().push(payload.clone());
+            if let Some(r) = (self.reply)(&payload) {
+                let bridge = self.bridge.lock().unwrap().clone().unwrap();
+                std::thread::spawn(move || bridge.respond(payload.id, r.body, r.session));
+            }
+            Ok(())
+        }
     }
 
-    // Why: the real server must refuse a request without the token, end to end.
-    #[test]
-    fn real_server_refuses_without_token() {
-        let server = tiny_http::Server::http("127.0.0.1:0").unwrap();
-        let port = server.server_addr().to_ip().unwrap().port();
-        let t = std::thread::spawn(move || {
-            let req = server.recv().unwrap();
-            let verdict = check_request(
-                req.method().as_str(),
-                req.url(),
-                header(&req, "Host"),
-                header(&req, "Origin"),
-                header(&req, "Authorization"),
-                TOKEN,
-            );
-            if let Verdict::Reject(status, msg) = verdict {
-                respond(req, status, error_body(msg), true);
-            }
+    fn setup(reply: fn(&RequestPayload) -> Option<Reply>) -> (Arc<McpBridge>, Arc<FakeWindow>, McpInfo) {
+        let bridge = Arc::new(McpBridge::with_timeout(Duration::from_millis(300)));
+        let win = Arc::new(FakeWindow {
+            bridge: Mutex::new(Some(bridge.clone())),
+            alive: AtomicBool::new(true),
+            reply,
+            seen: Mutex::new(Vec::new()),
         });
-        use std::io::{Read as _, Write as _};
+        let info = bridge.start(win.clone(), "main", None).unwrap();
+        (bridge, win, info)
+    }
+
+    /// Send a raw HTTP request; returns the whole response text.
+    fn post(port: u16, host: &str, auth: Option<&str>, extra: &str, body: &str) -> String {
         let mut s = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
+        let auth = auth.map(|a| format!("Authorization: {a}\r\n")).unwrap_or_default();
         write!(
             s,
-            "POST /mcp HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{{}}"
+            "POST /mcp HTTP/1.1\r\nHost: {host}\r\n{auth}{extra}Content-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
         )
         .unwrap();
         let mut out = String::new();
         s.read_to_string(&mut out).unwrap();
-        t.join().unwrap();
+        out
+    }
+
+    fn echo(p: &RequestPayload) -> Option<Reply> {
+        let session = if p.body.contains("initialize") { Some("s-1".to_string()) } else { None };
+        let body = if p.body.contains("notifications/") { String::new() } else { format!("{{\"echo\":{}}}", p.body) };
+        Some(Reply { body, session })
+    }
+
+    // Why: end to end through the real server, handle() and the window seam: a good request is answered.
+    #[test]
+    fn answers_through_the_window_and_returns_the_session() {
+        let (bridge, win, info) = setup(echo);
+        let token = bridge.token().unwrap();
+        let host = format!("127.0.0.1:{}", info.port);
+        let auth = format!("Bearer {token}");
+        let out = post(info.port, &host, Some(&auth), "", r#"{"method":"initialize"}"#);
+        assert!(out.starts_with("HTTP/1.1 200"), "{out}");
+        assert!(out.contains(r#"{"echo":{"method":"initialize"}}"#));
+        assert!(out.contains("Mcp-Session-Id: s-1"));
+        // The client's session reaches the window; a notification gets 202.
+        let out = post(info.port, &host, Some(&auth), "Mcp-Session-Id: s-1\r\n", r#"{"method":"notifications/x"}"#);
+        assert!(out.starts_with("HTTP/1.1 202"), "{out}");
+        assert_eq!(win.seen.lock().unwrap()[1].session.as_deref(), Some("s-1"));
+        bridge.stop();
+    }
+
+    // Why: the token, Host and window checks must hold on the real server, not only in check_request.
+    #[test]
+    fn real_server_refuses_bad_requests_and_a_closed_window() {
+        let (bridge, win, info) = setup(echo);
+        let auth = format!("Bearer {}", bridge.token().unwrap());
+        let host = format!("127.0.0.1:{}", info.port);
+        let out = post(info.port, &host, None, "", "{}");
         assert!(out.starts_with("HTTP/1.1 401"), "{out}");
         assert!(out.contains("WWW-Authenticate: Bearer"));
+        assert!(post(info.port, "evil.com", Some(&auth), "", "{}").starts_with("HTTP/1.1 403"));
+        assert!(win.seen.lock().unwrap().is_empty());
+        // The owner window closes: fail fast with 503, don't wait for the timeout.
+        win.alive.store(false, Ordering::SeqCst);
+        let t = std::time::Instant::now();
+        let out = post(info.port, &host, Some(&auth), "", "{}");
+        assert!(out.starts_with("HTTP/1.1 503"), "{out}");
+        assert!(t.elapsed() < Duration::from_millis(250));
+        assert!(!bridge.status(win.as_ref()).owner_alive);
+        bridge.stop();
+    }
+
+    // Why: a window that never answers must not hang Claude forever.
+    #[test]
+    fn times_out_when_the_window_doesnt_answer() {
+        let (bridge, _win, info) = setup(|_| None);
+        let auth = format!("Bearer {}", bridge.token().unwrap());
+        let out = post(info.port, &format!("127.0.0.1:{}", info.port), Some(&auth), "", "{}");
+        assert!(out.starts_with("HTTP/1.1 504"), "{out}");
+        bridge.stop();
+    }
+
+    // Why: a taken port must fail with a clear message, not move somewhere Claude Code doesn't know.
+    #[test]
+    fn a_taken_port_fails_visibly() {
+        let taken = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = taken.local_addr().unwrap().port();
+        let bridge = McpBridge::default();
+        let win: Arc<dyn Deliver> = Arc::new(FakeWindow {
+            bridge: Mutex::new(None),
+            alive: AtomicBool::new(true),
+            reply: |_| None,
+            seen: Mutex::new(Vec::new()),
+        });
+        let err = bridge.start(win, "main", Some(port)).unwrap_err();
+        assert!(err.starts_with("PORT_IN_USE"), "{err}");
+        assert!(err.contains(&port.to_string()));
+    }
+
+    // Why: once stopped, Claude's next call must fail to connect; starting again re-targets the owner.
+    #[test]
+    fn stop_closes_the_port_and_start_retargets() {
+        let (bridge, win, info) = setup(echo);
+        let again = bridge.start(win.clone(), "main-2", None).unwrap();
+        assert_eq!(again, info);
+        assert_eq!(bridge.status(win.as_ref()).owner.as_deref(), Some("main-2"));
+        bridge.stop();
+        std::thread::sleep(Duration::from_millis(50));
+        assert!(std::net::TcpStream::connect(("127.0.0.1", info.port)).is_err());
+        assert!(!bridge.status(win.as_ref()).running);
     }
 }

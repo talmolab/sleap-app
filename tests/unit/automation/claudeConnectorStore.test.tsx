@@ -1,23 +1,55 @@
-// Why: Claude may only reach SLEAP while the user has the setting on, and turning it off must stop the endpoint.
-import { describe, it, expect, beforeEach, afterEach, vi } from "../../bun-test";
+// Why: Claude may only reach SLEAP while the user has the setting on, through one window, on the port Claude Code knows.
+import { describe, it, expect, beforeEach, afterEach } from "../../bun-test";
 import { render, screen, cleanup, fireEvent, act } from "@testing-library/react";
 import {
   useClaudeConnectorStore,
   setConnectorBackend,
-  claudeMcpAddCommand,
-  type McpInfo,
+  ownsConnector,
+  type McpStatus,
 } from "@/stores/claudeConnectorStore";
 import { ClaudeConnectorSection } from "@/components/panels/ClaudeConnectorSection";
 
-const INFO: McpInfo = { port: 50123, token: "abc123", url: "http://127.0.0.1:50123/mcp" };
-const start = vi.fn(async () => INFO);
-const stop = vi.fn(async () => {});
+const running = (owner: string, port = 50123, alive = true): McpStatus => ({
+  running: true,
+  info: { port, url: `http://127.0.0.1:${port}/mcp` },
+  owner,
+  owner_alive: alive,
+  error: null,
+  connect_command: `claude mcp add-json --scope user sleap '{"type":"http","url":"http://127.0.0.1:${port}/mcp","headersHelper":"cat '/h/.sleap-app/mcp-headers.json'"}'`,
+});
+const OFF: McpStatus = { running: false, info: null, owner: null, owner_alive: false, error: null, connect_command: null };
+
+/** A fake desktop endpoint for one window. */
+function fakeBackend(label: string, opts: { portTaken?: boolean } = {}) {
+  const calls: string[] = [];
+  let status: McpStatus = OFF;
+  setConnectorBackend({
+    start: async ({ newPort }) => {
+      calls.push(newPort ? "start:new" : "start");
+      if (opts.portTaken && !newPort) throw new Error("PORT_IN_USE: Port 50123 is in use by another program.");
+      status = running(label, newPort ? 50999 : 50123);
+      return status;
+    },
+    stop: async () => {
+      calls.push("stop");
+      status = OFF;
+    },
+    status: async () => status,
+    windowLabel: async () => label,
+  });
+  return { calls, setStatus: (s: McpStatus) => (status = s) };
+}
 
 beforeEach(() => {
-  start.mockClear();
-  stop.mockClear();
-  setConnectorBackend({ start: () => start() as Promise<McpInfo>, stop: () => stop() as Promise<void> });
-  useClaudeConnectorStore.setState({ enabled: false, info: null, busy: false, error: null });
+  useClaudeConnectorStore.setState({
+    enabled: false,
+    status: null,
+    windowLabel: null,
+    busy: false,
+    error: null,
+    portInUse: false,
+    portChanged: false,
+  });
 });
 afterEach(cleanup);
 
@@ -27,50 +59,71 @@ describe("Claude connector setting", () => {
     expect(useClaudeConnectorStore.getInitialState().enabled).toBe(false);
   });
 
-  // Why: on starts the endpoint and shows the connect command; off stops it.
+  // Why: on starts the endpoint owned by this window; off stops it.
   it("starts and stops the endpoint", async () => {
+    const b = fakeBackend("main");
     await useClaudeConnectorStore.getState().setEnabled(true);
-    expect(start).toHaveBeenCalledTimes(1);
-    expect(useClaudeConnectorStore.getState()).toMatchObject({ enabled: true, info: INFO });
+    expect(b.calls).toEqual(["start"]);
+    expect(ownsConnector(useClaudeConnectorStore.getState())).toBe(true);
     await useClaudeConnectorStore.getState().setEnabled(false);
-    expect(stop).toHaveBeenCalledTimes(1);
-    expect(useClaudeConnectorStore.getState()).toMatchObject({ enabled: false, info: null });
+    expect(b.calls).toEqual(["start", "stop"]);
+    expect(useClaudeConnectorStore.getState()).toMatchObject({ enabled: false, status: null });
   });
 
-  // Why: if the endpoint can't start, the setting must not claim it's on.
-  it("stays off and shows the error when starting fails", async () => {
-    start.mockImplementationOnce(async () => {
-      throw new Error("port busy");
-    });
+  // Why: a taken port must fail visibly; moving silently would break the command Claude Code saved.
+  it("shows a taken port and only moves when the user asks", async () => {
+    const b = fakeBackend("main", { portTaken: true });
     await useClaudeConnectorStore.getState().setEnabled(true);
-    expect(useClaudeConnectorStore.getState()).toMatchObject({ enabled: false, error: "port busy" });
+    expect(useClaudeConnectorStore.getState()).toMatchObject({ portInUse: true, status: null });
+    expect(useClaudeConnectorStore.getState().error).toContain("Port 50123 is in use");
+    await useClaudeConnectorStore.getState().setEnabled(true, { newPort: true });
+    expect(b.calls).toEqual(["start", "start:new"]);
+    expect(useClaudeConnectorStore.getState()).toMatchObject({ portInUse: false, portChanged: true });
+    expect(useClaudeConnectorStore.getState().status?.info?.port).toBe(50999);
   });
 
-  // Why: a user who left it on gets it back at the next launch, without clicking again.
-  it("resumes at startup only when left on", async () => {
+  // Why: at launch only the first window turns it back on; later windows must not take Claude over.
+  it("resumes only in the launch window", async () => {
+    let b = fakeBackend("main-1700000000");
+    useClaudeConnectorStore.setState({ enabled: true });
     await useClaudeConnectorStore.getState().resume();
-    expect(start).not.toHaveBeenCalled();
-    useClaudeConnectorStore.setState({ enabled: true, info: null });
+    expect(b.calls).toEqual([]);
+    useClaudeConnectorStore.setState({ windowLabel: null });
+    b = fakeBackend("main");
     await useClaudeConnectorStore.getState().resume();
-    expect(start).toHaveBeenCalledTimes(1);
-    expect(useClaudeConnectorStore.getState().info).toEqual(INFO);
+    expect(b.calls).toEqual(["start"]);
   });
 
-  // Why: the command is what the user pastes into a terminal; it must carry the URL and token.
-  it("builds the claude mcp add command", () => {
-    expect(claudeMcpAddCommand(INFO)).toBe(
-      'claude mcp add --scope user --transport http sleap http://127.0.0.1:50123/mcp --header "Authorization: Bearer abc123"',
-    );
+  // Why: a second window shows that Claude is connected elsewhere, and only takes over when the user asks.
+  it("a second window shows the owner and takes over on request", async () => {
+    const b = fakeBackend("main-2");
+    b.setStatus(running("main", 50123, false));
+    useClaudeConnectorStore.setState({ enabled: true });
+    render(<ClaudeConnectorSection />);
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 0));
+    });
+    expect(screen.getByTestId("claude-connector-elsewhere").textContent).toContain("was closed");
+    expect(screen.queryByTestId("claude-mcp-command")).toBeNull();
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "Connect Claude to this window" }));
+      await new Promise((r) => setTimeout(r, 0));
+    });
+    expect(b.calls).toEqual(["start"]);
+    expect(screen.getByTestId("claude-mcp-command").textContent).toContain("headersHelper");
   });
 
-  // Why: the panel shows the command only while the connector is on.
+  // Why: the panel shows the connect command (with the headersHelper, no token) only while this window owns it.
   it("the panel toggles and shows the command", async () => {
+    fakeBackend("main");
     render(<ClaudeConnectorSection />);
     expect(screen.queryByTestId("claude-mcp-command")).toBeNull();
     await act(async () => {
       fireEvent.click(screen.getByRole("checkbox", { name: "Allow Claude to control SLEAP" }));
       await new Promise((r) => setTimeout(r, 0));
     });
-    expect(screen.getByTestId("claude-mcp-command").textContent).toContain("Bearer abc123");
+    const cmd = screen.getByTestId("claude-mcp-command").textContent!;
+    expect(cmd).toContain("claude mcp add-json --scope user sleap");
+    expect(cmd).not.toContain("Bearer");
   });
 });

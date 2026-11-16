@@ -58,21 +58,41 @@ export function createMcpServer(registry: ToolRegistry = defaultRegistry): Serve
   return server;
 }
 
+/** One request from the desktop bridge: its id, the HTTP body, and the client's session. */
+export interface BridgeRequest {
+  id: number;
+  body: string;
+  /** The client's `Mcp-Session-Id` header, if any. */
+  session?: string | null;
+}
+
 /** How the transport talks to the desktop app (injected so tests can fake it). */
 export interface WebviewBridge {
-  /** Subscribe to `mcp:request {id, body}` events; returns an unsubscribe. */
-  listen(onRequest: (req: { id: number; body: string }) => void): Promise<() => void>;
-  /** Reply to request `id`; an empty body means "no response" (a notification). */
-  respond(id: number, body: string): Promise<void>;
+  /** Subscribe to `mcp:request` events; returns an unsubscribe. */
+  listen(onRequest: (req: BridgeRequest) => void): Promise<() => void>;
+  /**
+   * Reply to request `id`; an empty body means "no response" (a
+   * notification). `session` is a new session id to hand the client.
+   */
+  respond(id: number, body: string, session?: string): Promise<void>;
 }
 
 type WithId = { id?: string | number | null };
+type Incoming = JSONRPCMessage & WithId & { method?: string; params?: Record<string, unknown> };
+
+const newSessionId = () =>
+  typeof crypto !== "undefined" && "randomUUID" in crypto
+    ? crypto.randomUUID()
+    : `s-${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
 
 /**
  * An MCP transport over the desktop bridge. Each HTTP POST carries one
- * JSON-RPC message; its reply goes back on the same request. Several Claude
- * sessions can be connected at once and reuse the same JSON-RPC ids, so ids
- * are rewritten to unique ones going in and restored going out.
+ * JSON-RPC message; its reply goes back on the same request.
+ *
+ * Several Claude sessions can be connected at once and reuse the same
+ * JSON-RPC ids, so each `initialize` gets an `Mcp-Session-Id`, ids are
+ * rewritten to unique ones going in and restored going out, and a
+ * `notifications/cancelled` only reaches a request from the same session.
  */
 export class WebviewTransport implements Transport {
   onclose?: () => void;
@@ -81,8 +101,10 @@ export class WebviewTransport implements Transport {
 
   private unlisten: (() => void) | null = null;
   private seq = 0;
-  /** Our id → the bridge request it came in on and the client's original id. */
-  private inflight = new Map<number, { bridgeId: number; clientId: string | number }>();
+  /** Our id → the bridge request it came in on, the client's id, its session. */
+  private inflight = new Map<number, { bridgeId: number; clientId: string | number; session: string; newSession?: string }>();
+  /** `${session}\u0000${clientId}` → our id, for cancellations. */
+  private byClient = new Map<string, number>();
 
   constructor(private bridge: WebviewBridge) {}
 
@@ -90,8 +112,8 @@ export class WebviewTransport implements Transport {
     this.unlisten = await this.bridge.listen((req) => this.receive(req));
   }
 
-  private receive({ id: bridgeId, body }: { id: number; body: string }) {
-    let msg: JSONRPCMessage & WithId & { method?: string };
+  private receive({ id: bridgeId, body, session: sent }: BridgeRequest) {
+    let msg: Incoming;
     try {
       msg = JSON.parse(body);
     } catch {
@@ -108,16 +130,28 @@ export class WebviewTransport implements Transport {
       );
       return;
     }
+    let session = sent ?? "";
     if (msg.method !== undefined && msg.id !== undefined && msg.id !== null) {
       // A request: give it our own id, answer on this bridge request.
+      let newSession: string | undefined;
+      if (msg.method === "initialize" && !sent) session = newSession = newSessionId();
       const ours = ++this.seq;
-      this.inflight.set(ours, { bridgeId, clientId: msg.id });
+      this.inflight.set(ours, { bridgeId, clientId: msg.id, session, newSession });
+      this.byClient.set(`${session}\u0000${msg.id}`, ours);
       this.onmessage?.({ ...msg, id: ours } as JSONRPCMessage);
-    } else {
-      // A notification (or a stray response): nothing to answer.
-      void this.bridge.respond(bridgeId, "");
-      this.onmessage?.(msg);
+      return;
     }
+    // A notification (or a stray response): nothing to answer.
+    void this.bridge.respond(bridgeId, "");
+    if (msg.method === "notifications/cancelled") {
+      // Only this session's own request, under our id; otherwise drop it.
+      const ours = this.byClient.get(`${session}\u0000${String(msg.params?.requestId)}`);
+      if (ours === undefined) return;
+      this.onmessage?.({ ...msg, params: { ...msg.params, requestId: ours } } as JSONRPCMessage);
+      return;
+    }
+    if (msg.id !== undefined) return; // a response from the client: we never asked anything
+    this.onmessage?.(msg);
   }
 
   async send(message: JSONRPCMessage): Promise<void> {
@@ -125,13 +159,19 @@ export class WebviewTransport implements Transport {
     const pending = typeof id === "number" ? this.inflight.get(id) : undefined;
     if (!pending) return; // server-initiated messages have no HTTP request to ride on
     this.inflight.delete(id as number);
-    await this.bridge.respond(pending.bridgeId, JSON.stringify({ ...message, id: pending.clientId }));
+    this.byClient.delete(`${pending.session}\u0000${pending.clientId}`);
+    await this.bridge.respond(
+      pending.bridgeId,
+      JSON.stringify({ ...message, id: pending.clientId }),
+      pending.newSession,
+    );
   }
 
   async close(): Promise<void> {
     this.unlisten?.();
     this.unlisten = null;
     this.inflight.clear();
+    this.byClient.clear();
     this.onclose?.();
   }
 }
@@ -145,10 +185,8 @@ export async function tauriBridge(): Promise<WebviewBridge> {
   return {
     // This window's events only: the endpoint sends each request to one window.
     listen: (onRequest) =>
-      getCurrentWebviewWindow().listen<{ id: number; body: string }>("mcp:request", (e) =>
-        onRequest(e.payload),
-      ),
-    respond: (id, body) => invoke(sleapCmd("mcp_response"), { id, body }),
+      getCurrentWebviewWindow().listen<BridgeRequest>("mcp:request", (e) => onRequest(e.payload)),
+    respond: (id, body, session) => invoke(sleapCmd("mcp_response"), { id, body, session: session ?? null }),
   };
 }
 
