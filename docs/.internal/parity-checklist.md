@@ -240,11 +240,12 @@ Use this to track which PyQt features have been ported to sleap-app.
 - [x] Ctrl+I (add), Ctrl+Backspace (delete), Ctrl+C/V (copy/paste)
 - [x] Ctrl+T (transpose), Ctrl+0 (new track), Ctrl+1-9 (set track)
 - [x] Ctrl+Shift+C/V (copy/paste track)
-- [x] H (instances), Ctrl+Tab (names), Ctrl+Shift+Tab (edges), Ctrl+= (fit)
+- [x] H (instances), Ctrl+Tab (names; sleap-app also T — Ctrl+Tab desktop only, browsers take it), Ctrl+Shift+Tab (edges), Ctrl+= (fit)
+- [x] Ctrl+Alt+arrows (frame ±100; sleap-app also Ctrl+Shift+arrows — on macOS, Ctrl+Alt is desktop only, browsers take ⌥⌘←/→)
 
 ### Different modifiers
 
-- [ ] Frame ±100: PyQt uses Ctrl+Alt+arrows, sleap-app uses Ctrl+Shift+arrows
+- [x] Propagate Track Labels: PyQt uses P, sleap-app uses Shift+P (P is pan mode)
 
 ### Missing in sleap-app
 

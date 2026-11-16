@@ -75,6 +75,9 @@ export const DEFAULT_SHORTCUTS: Record<string, string> = {
 
   // Tracks
   transpose: "$mod+KeyT",
+  // Turns Tracks ▸ Propagate Track Labels on/off. SLEAP uses plain P, but P
+  // is pan mode here, so it's Shift+P.
+  "propagate track labels": "Shift+KeyP",
   "add track": "$mod+Digit0",
   "delete track": "$mod+Shift+Backspace",
 
@@ -107,6 +110,44 @@ export const DEFAULT_SHORTCUTS: Record<string, string> = {
   // Notifications
   "dismiss all toasts": "$mod+Shift+KeyD",
 };
+
+/**
+ * Second keys for an action, on top of its DEFAULT_SHORTCUTS key. These are
+ * legacy SLEAP's keys where sleap-app had already picked a different one, so
+ * both work:
+ * - ±100 frames: SLEAP's Ctrl+Alt+arrows (⌥⌘ on macOS, as SLEAP's Qt maps
+ *   Ctrl to ⌘). Browsers on macOS use ⌥⌘←/→ to switch tabs, so there it only
+ *   works in the desktop app; Ctrl+Shift+arrows works everywhere.
+ * - Show Node Names: SLEAP's Ctrl+Tab. The real Control key on every OS:
+ *   ⌘Tab is macOS's app switcher and never reaches the app. Browsers use
+ *   Ctrl+Tab to switch tabs, so it only works in the desktop app; T works
+ *   everywhere.
+ */
+export const EXTRA_SHORTCUTS: Record<string, string[]> = {
+  "frame next large step": ["$mod+Alt+ArrowRight"],
+  "frame prev large step": ["$mod+Alt+ArrowLeft"],
+  "show labels": ["Control+Tab"],
+};
+
+/** Every key bound to an action: its main key first, then any extras. */
+export function shortcutBindings(action: string): string[] {
+  const main = DEFAULT_SHORTCUTS[action];
+  return [...(main ? [main] : []), ...(EXTRA_SHORTCUTS[action] ?? [])];
+}
+
+/**
+ * A tinykeys binding map with each action's extra keys added, running the
+ * same handler as the action's main key.
+ */
+export function withExtraShortcuts<T>(bindings: Record<string, T>): Record<string, T> {
+  const out = { ...bindings };
+  for (const [action, extras] of Object.entries(EXTRA_SHORTCUTS)) {
+    const handler = bindings[DEFAULT_SHORTCUTS[action]];
+    if (!handler) continue;
+    for (const extra of extras) out[extra] = handler;
+  }
+  return out;
+}
 
 /** Frame step sizes for keyboard navigation. */
 export const STEP_SIZES = {

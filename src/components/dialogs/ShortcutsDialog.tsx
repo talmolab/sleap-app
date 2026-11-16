@@ -5,7 +5,7 @@
  * followed by the Label QC Review window's keys and the canvas's mouse gestures.
  */
 
-import { DEFAULT_SHORTCUTS } from "../../lib/shortcuts";
+import { shortcutBindings } from "../../lib/shortcuts";
 import { formatShortcut } from "@/lib/formatShortcut";
 import { CANVAS_GESTURES } from "@/lib/canvasGestures";
 import { QC_REVIEW_KEYS } from "@/lib/qcReview";
@@ -60,6 +60,7 @@ const CATEGORIES: Record<string, string[]> = {
   View: ["fit", "show instances", "show labels", "show edges", "toggle node visibility", "show non-visible nodes", "toggle pan mode", "toggle place mode"],
   Tracks: [
     "transpose",
+    "propagate track labels",
     "add track",
     "copy track",
     "paste track",
@@ -84,18 +85,24 @@ export function ShortcutsDialog({ open, onOpenChange }: ShortcutsDialogProps) {
               <table className="w-full text-sm">
                 <tbody>
                   {keys.map((key) => {
-                    const binding = DEFAULT_SHORTCUTS[key];
-                    if (!binding) return null;
+                    // Some actions have a second key (legacy SLEAP's): show both.
+                    const bindings = shortcutBindings(key);
+                    if (bindings.length === 0) return null;
                     return (
                       <tr
                         key={key}
                         className="border-b border-border/50 last:border-0"
                       >
                         <td className="py-1 capitalize">{key}</td>
-                        <td className="py-1 text-right">
-                          <kbd className="px-1.5 py-0.5 text-xs bg-muted rounded font-mono">
-                            {formatShortcut(binding)}
-                          </kbd>
+                        <td className="py-1 text-right whitespace-nowrap">
+                          {bindings.map((binding, i) => (
+                            <span key={binding}>
+                              {i > 0 && <span className="mx-1 text-xs text-muted-foreground">or</span>}
+                              <kbd className="px-1.5 py-0.5 text-xs bg-muted rounded font-mono">
+                                {formatShortcut(binding)}
+                              </kbd>
+                            </span>
+                          ))}
                         </td>
                       </tr>
                     );

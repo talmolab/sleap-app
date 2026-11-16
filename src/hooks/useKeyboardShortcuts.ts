@@ -8,7 +8,7 @@
 
 import { useEffect } from "react";
 import { tinykeys } from "tinykeys";
-import { DEFAULT_SHORTCUTS, STEP_SIZES } from "../lib/shortcuts";
+import { DEFAULT_SHORTCUTS, STEP_SIZES, withExtraShortcuts } from "../lib/shortcuts";
 import { useAppStore } from "../stores/appStore";
 import { Track } from "@talmolab/sleap-io.js";
 import { confirmDeleteInstanceAndTrack } from "@/lib/trackDeleteConfirms";
@@ -80,7 +80,8 @@ export function useKeyboardShortcuts() {
 
     // On macOS desktop the native menu owns its ⌘ shortcuts: leave those to
     // it (not preventDefault-ed, so the menu still gets the keystroke).
-    const unsubscribe = tinykeys(window, leaveNativeMenuShortcuts({
+    // withExtraShortcuts adds legacy SLEAP's second keys (EXTRA_SHORTCUTS).
+    const unsubscribe = tinykeys(window, leaveNativeMenuShortcuts(withExtraShortcuts({
       // Frame navigation (direct store for responsiveness). In the Label QC
       // Review window ← / → step through the flags instead.
       [DEFAULT_SHORTCUTS["frame next"]]: (e) => {
@@ -309,6 +310,18 @@ export function useKeyboardShortcuts() {
         e.preventDefault();
         requestTranspose(commandContext);
       },
+      // Tracks ▸ Propagate Track Labels on/off (Shift+P). The setting is
+      // otherwise only visible in the menu, so say which way it went.
+      [DEFAULT_SHORTCUTS["propagate track labels"]]: (e) => {
+        if (isTextInput(e)) return;
+        e.preventDefault();
+        store().toggle("propagateTrackLabels");
+        const on = store().propagateTrackLabels;
+        toast.info(`Propagate Track Labels ${on ? "on" : "off"}`, {
+          id: "propagate-track-labels",
+          duration: 1400,
+        });
+      },
       [DEFAULT_SHORTCUTS["add track"]]: (e) => {
         e.preventDefault();
         commandContext.execute(AddTrack);
@@ -530,7 +543,7 @@ export function useKeyboardShortcuts() {
         const prev = labels.videos[(idx - 1 + labels.videos.length) % labels.videos.length];
         if (prev) store().setVideo(prev);
       },
-    }));
+    })));
 
     // Suggestion navigation fires on Space/Shift+Space *release*, not press,
     // and only if no pan-drag happened while Space was held (see

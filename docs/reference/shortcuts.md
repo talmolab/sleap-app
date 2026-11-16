@@ -24,7 +24,7 @@ this page is the full list.
 |---|---|
 | Next / previous frame | ++right++ / ++left++ |
 | ± 10 frames | ++cmd+right++ / ++cmd+left++ |
-| ± 100 frames | ++cmd+shift+right++ / ++cmd+shift+left++ |
+| ± 100 frames | ++cmd+shift+right++ / ++cmd+shift+left++, or SLEAP's ++cmd+alt+right++ / ++cmd+alt+left++ (desktop app only on macOS: browsers there use it to switch tabs) |
 | First frame | ++home++ |
 | Last frame | ++end++ |
 | Go to frame… | ++cmd+j++ |
@@ -79,6 +79,7 @@ this page is the full list.
 | Action | Shortcut |
 |---|---|
 | Transpose instance tracks | ++cmd+t++ |
+| Turn Propagate Track Labels on / off | ++shift+p++ (SLEAP uses ++p++, which is pan mode here) |
 | New track | ++cmd+0++ |
 | Set instance track 1–9 | ++cmd+1++ … ++cmd+9++ — creates the track (and any before it) if it doesn't exist yet |
 | Delete instance and track | ++cmd+shift+backspace++ |
@@ -95,7 +96,7 @@ this page is the full list.
 | Node placement mode | ++shift+n++ |
 | Next / previous node, in node placement mode | ++tab++ / ++shift+tab++ |
 | Show / hide instances | ++h++ |
-| Show / hide node names | ++t++ |
+| Show / hide node names | ++t++, or SLEAP's ++ctrl+tab++ (the Control key on macOS too; desktop app only: browsers use it to switch tabs) |
 | Show / hide edges | ++cmd+shift+tab++ |
 | Flip the node under the pointer between visible and non-visible | ++v++ |
 | Set all selected nodes visible, or all non-visible (visible unless more than half already are) | ++v++ with nodes selected |
