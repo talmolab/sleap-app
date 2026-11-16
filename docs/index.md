@@ -26,6 +26,9 @@ you want native file dialogs, local GPU training, and offline use.
     - **SLEAP v1.5–1.6** — [docs.sleap.ai](https://docs.sleap.ai)
     - **SLEAP v1.4.1 or earlier** — [legacy.sleap.ai](https://legacy.sleap.ai)
 
+    Switching from the Qt GUI? [New in SLEAP App](whats-new.md) lists what
+    this app adds.
+
 ## Get some SLEAP
 
 === "In the browser"

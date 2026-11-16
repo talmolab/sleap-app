@@ -898,6 +898,47 @@ export function buildPostTrainingInferenceConfig(opts: {
 
 // ── YAML override helper ─────────────────────────────────────────
 
+/**
+ * Keep a top-down pair's `anchorPart` identical. At inference the
+ * centered-instance model gets crops centered on the anchor the CENTROID model
+ * predicts, while it was trained on crops centered on its OWN `anchor_part` —
+ * so the two configs must name the same part, or every crop is off-center
+ * relative to training (legacy SLEAP set both from one field; the UI here has
+ * one Anchor Part picker, shown from the centered-instance config).
+ *
+ * `preferSlot`'s value wins when given (an explicit edit, even back to null);
+ * otherwise centered_instance's, falling back to centroid's. Returns `configs`
+ * itself when there's no pair or it's already in sync. Pure.
+ */
+export function syncTopDownAnchor(configs: ConfigFile[], preferSlot?: string): ConfigFile[] {
+  const ci = configs.find((c) => c.slot === "centered_instance");
+  const ce = configs.find((c) => c.slot === "centroid");
+  if (!ci || !ce) return configs;
+  const preferred = preferSlot === "centroid" ? ce : preferSlot === "centered_instance" ? ci : null;
+  const anchor = preferred
+    ? preferred.hyperparams.anchorPart
+    : (ci.hyperparams.anchorPart ?? ce.hyperparams.anchorPart);
+  if (ci.hyperparams.anchorPart === anchor && ce.hyperparams.anchorPart === anchor) return configs;
+  return configs.map((c) =>
+    c === ci || c === ce ? { ...c, hyperparams: { ...c.hyperparams, anchorPart: anchor } } : c,
+  );
+}
+
+/** Smallest `output_stride` across every sub-head (confmaps, pafs, class
+ *  maps/vectors, …) of a `model_config.head_configs` object. */
+function minHeadOutputStride(headConfigs: Record<string, unknown>): number | null {
+  let min: number | null = null;
+  const visit = (node: unknown) => {
+    if (!node || typeof node !== "object") return;
+    for (const [k, v] of Object.entries(node as Record<string, unknown>)) {
+      if (k === "output_stride" && typeof v === "number") min = min === null ? v : Math.min(min, v);
+      else if (v && typeof v === "object") visit(v);
+    }
+  };
+  visit(headConfigs);
+  return min;
+}
+
 /** Apply ConfigHyperparams overrides to raw YAML config content.
  *
  * `resolvedMaxStride` is used only when `hp.maxStride` is `null` (Auto):
@@ -916,21 +957,6 @@ export function buildPostTrainingInferenceConfig(opts: {
  * `modelStats.ts` — before this function runs. Falls back to 1 (grayscale,
  * matching every baseline profile's default) if the caller can't resolve
  * one. */
-/** Smallest `output_stride` across every sub-head (confmaps, pafs, class
- *  maps/vectors, …) of a `model_config.head_configs` object. */
-function minHeadOutputStride(headConfigs: Record<string, unknown>): number | null {
-  let min: number | null = null;
-  const visit = (node: unknown) => {
-    if (!node || typeof node !== "object") return;
-    for (const [k, v] of Object.entries(node as Record<string, unknown>)) {
-      if (k === "output_stride" && typeof v === "number") min = min === null ? v : Math.min(min, v);
-      else if (v && typeof v === "object") visit(v);
-    }
-  };
-  visit(headConfigs);
-  return min;
-}
-
 export function applyHyperparamsToYaml(
   yamlText: string,
   hp: ConfigHyperparams,
@@ -1156,14 +1182,18 @@ export function applyHyperparamsToYaml(
   for (const [, headVal] of Object.entries(headConfigs)) {
     if (headVal && typeof headVal === "object") {
       const head = headVal as Record<string, unknown>;
+      // anchor_part: a null anchor still clears a key the file already has
+      // (e.g. an imported config's stale part), but never adds the key to a
+      // head whose schema lacks it.
       if (head.confmaps && typeof head.confmaps === "object") {
-        (head.confmaps as Record<string, unknown>).output_stride = hp.outputStride;
-        if (hp.anchorPart !== null) {
-          (head.confmaps as Record<string, unknown>).anchor_part = hp.anchorPart;
+        const confmaps = head.confmaps as Record<string, unknown>;
+        confmaps.output_stride = hp.outputStride;
+        if (hp.anchorPart !== null || "anchor_part" in confmaps) {
+          confmaps.anchor_part = hp.anchorPart;
         }
       } else {
         head.output_stride = hp.outputStride;
-        if (hp.anchorPart !== null) {
+        if (hp.anchorPart !== null || "anchor_part" in head) {
           head.anchor_part = hp.anchorPart;
         }
       }
@@ -1450,17 +1480,23 @@ export const useTrainingStore = create<TrainingState>()((set, get) => ({
 
   setConfig: (key, value) =>
     set((state) => ({
-      config: { ...state.config, [key]: value },
+      config: {
+        ...state.config,
+        [key]: key === "configs" ? syncTopDownAnchor(value as ConfigFile[]) : value,
+      },
     })),
 
   updateConfigHyperparams: (slot, updates) =>
     set((state) => ({
       config: {
         ...state.config,
-        configs: state.config.configs.map((c) =>
-          c.slot === slot
-            ? { ...c, hyperparams: { ...c.hyperparams, ...updates } }
-            : c,
+        configs: syncTopDownAnchor(
+          state.config.configs.map((c) =>
+            c.slot === slot
+              ? { ...c, hyperparams: { ...c.hyperparams, ...updates } }
+              : c,
+          ),
+          "anchorPart" in updates ? slot : undefined,
         ),
       },
     })),
@@ -1469,10 +1505,12 @@ export const useTrainingStore = create<TrainingState>()((set, get) => ({
     set((state) => ({
       config: {
         ...state.config,
-        configs: state.config.configs.map((c) =>
-          c.slot === slot
-            ? { ...c, hyperparams: { ...c.originalHyperparams } }
-            : c,
+        configs: syncTopDownAnchor(
+          state.config.configs.map((c) =>
+            c.slot === slot
+              ? { ...c, hyperparams: { ...c.originalHyperparams } }
+              : c,
+          ),
         ),
       },
     })),
@@ -1491,10 +1529,12 @@ export const useTrainingStore = create<TrainingState>()((set, get) => ({
     set((state) => ({
       config: {
         ...state.config,
-        configs: [
-          ...state.config.configs.filter((c) => c.slot !== file.slot),
-          file,
-        ],
+        configs: syncTopDownAnchor(
+          [...state.config.configs.filter((c) => c.slot !== file.slot), file],
+          // A newly loaded config that names an anchor sets it for the pair;
+          // one without (a stock profile) adopts the partner's.
+          file.hyperparams.anchorPart !== null ? file.slot : undefined,
+        ),
       },
     })),
 
@@ -1868,6 +1908,13 @@ export const useTrainingStore = create<TrainingState>()((set, get) => ({
     const remoteOpts = opts && "remote" in opts ? opts : undefined;
     const localOpts = opts && !("remote" in opts) ? opts as LocalTrainingOptions : undefined;
     const { config } = get();
+
+    // Local sleap-nn reads the labels file from disk; don't let it silently
+    // train on a stale project file while the window holds unsaved labels.
+    if (!remoteOpts) {
+      const { confirmSaveBeforeRun } = await import("@/lib/unsavedGuard");
+      if (!(await confirmSaveBeforeRun(await localTrainingLabelsPath(config), "training"))) return;
+    }
 
     // Build model progress entries from per-config hyperparams
     const slots = getConfigSlots(config.modelType);

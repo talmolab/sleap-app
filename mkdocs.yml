@@ -121,6 +121,7 @@ extra:
 
 nav:
   - Overview: index.md
+  - New in SLEAP App: whats-new.md
   - Installation: installation.md
   - Tutorial:
       - Overview: tutorial/index.md

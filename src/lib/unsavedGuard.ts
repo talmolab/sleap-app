@@ -38,6 +38,47 @@ export function discardPromptMessage(opts: {
 }
 
 /**
+ * True when a local sleap-nn run would read a stale file: it reads `labelsPath`
+ * from DISK, and that path is the open project, which has unsaved edits. A
+ * never-saved project (no `projectPath`) is serialized fresh for the run, and a
+ * separately picked labels file isn't the project, so neither is stale. Pure.
+ */
+export function runReadsStaleProjectFile(opts: {
+  labelsPath: string | null;
+  projectPath: string | null;
+  hasChanges: boolean;
+}): boolean {
+  return opts.hasChanges && !!opts.projectPath && opts.labelsPath === opts.projectPath;
+}
+
+/**
+ * Before a local training/inference run that reads the project file, offer to
+ * save unsaved edits — otherwise the run silently uses the last saved labels
+ * (legacy SLEAP refuses outright: "You have unsaved changes. Please save before
+ * running training or inference."). Resolves true to proceed: nothing to save,
+ * or the save went through. Cancel, or a save that failed / was cancelled,
+ * resolves false.
+ */
+export async function confirmSaveBeforeRun(
+  labelsPath: string | null,
+  action: "training" | "inference",
+): Promise<boolean> {
+  const { hasChanges, projectPath } = useAppStore.getState();
+  if (!runReadsStaleProjectFile({ labelsPath, projectPath, hasChanges })) return true;
+  const save = await confirmDialog({
+    title: "Save before running?",
+    message: `You have unsaved changes. ${action === "training" ? "Training" : "Inference"} reads the saved project file, so unsaved labels would be left out. Save the project and continue?`,
+    confirmLabel: "Save and Continue",
+    cancelLabel: "Cancel",
+  });
+  if (!save) return false;
+  const { commandContext } = await import("@/commands/CommandContext");
+  const { SaveProjectCommand } = await import("@/commands/fileCommands");
+  await commandContext.execute(SaveProjectCommand);
+  return !useAppStore.getState().hasChanges;
+}
+
+/**
  * Prompt (only when there is unsaved work) before replacing the current
  * project; resolves true to proceed. On a confirmed discard, the local labels
  * draft is removed best-effort — BOTH its OPFS file and its manifest entry, so
