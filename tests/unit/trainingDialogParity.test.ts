@@ -7,7 +7,7 @@ import { describe, it, expect } from "../bun-test";
 import yaml from "js-yaml";
 import { Skeleton, Video, Labels, LabeledFrame, Instance } from "@talmolab/sleap-io.js";
 import { applyHyperparamsToYaml, defaultHyperparams, useTrainingStore } from "@/stores/trainingStore";
-import { cropSizeWarnings, isCropHead, usesNegativeFrames } from "@/lib/cropWarnings";
+import { cropSizeWarnings, isCropHead, negativeFramesWarning, usesNegativeFrames } from "@/lib/cropWarnings";
 import {
   POST_TRAINING_TARGET_OPTIONS,
   describeClip,
@@ -111,6 +111,25 @@ describe("negative frames in the sleap-nn config", () => {
       expect(usesNegativeFrames(head)).toBe(false);
       expect(isCropHead(head)).toBe(true);
     }
+  });
+});
+
+describe("negative frames warning (PyQt LearningDialog)", () => {
+  // Turning the option on without any negative frames does nothing; PyQt says so.
+  it("warns when the option is on but no frame is marked negative", () => {
+    const { labels } = makeLabels();
+    expect(negativeFramesWarning(true, labels)).toContain("no frames are marked as negative");
+    expect(negativeFramesWarning(false, labels)).toBeNull();
+    expect(negativeFramesWarning(true, null)).toBeNull();
+  });
+
+  // Once a frame is marked negative the option does something, so the warning goes away.
+  it("is quiet once a frame is marked negative", () => {
+    const { labels, videos } = makeLabels();
+    const neg = new LabeledFrame({ video: videos[0], frameIdx: 5 });
+    neg.isNegative = true;
+    labels.labeledFrames.push(neg);
+    expect(negativeFramesWarning(true, labels)).toBeNull();
   });
 });
 

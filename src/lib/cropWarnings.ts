@@ -81,3 +81,17 @@ export function cropSizeWarnings(
 
   return warnings;
 }
+
+/**
+ * PyQt's warning when "Use Negative Frames" is on but no frame is marked
+ * negative, so the option would do nothing (`LearningDialog`, "Negative
+ * frames enabled but none are marked"). `null` when there is nothing to say.
+ */
+export function negativeFramesWarning(useNegativeFrames: boolean, labels: Labels | null): string | null {
+  if (!useNegativeFrames || !labels) return null;
+  if (labels.labeledFrames.some((lf) => lf.isNegative)) return null;
+  return (
+    'The "Use Negative Frames" option is enabled, but no frames are marked as negative, ' +
+    "so it will have no effect. Mark frames in the labeling window with Labels > Mark Frame as Negative (N)."
+  );
+}
