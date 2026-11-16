@@ -34,6 +34,7 @@ import { diagnosticsReady, getPriorCrashInfo } from "@/lib/diagnostics";
 import { setupLabelsAutosave } from "@/lib/labelsAutosave";
 import { WelcomeScreen } from "./WelcomeScreen";
 import { GoToFrameDialog } from "../dialogs/GoToFrameDialog";
+import { FrameStepSizesDialog } from "../dialogs/FrameStepSizesDialog";
 import { NewProjectDialog } from "../dialogs/NewProjectDialog";
 import { TranscodeProgressDialog } from "../dialogs/TranscodeProgressDialog";
 import { TranscodeConfirmDialog } from "../dialogs/TranscodeConfirmDialog";
@@ -341,6 +342,7 @@ export function AppShell() {
       {/* Global dialogs */}
       <NewProjectDialog />
       <GoToFrameDialog />
+      <FrameStepSizesDialog />
       <ConfirmDialog />
       <ChoiceDialog />
       <PromptDialog />

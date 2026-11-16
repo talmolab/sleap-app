@@ -25,6 +25,7 @@ Every menu and what its items do, in the order they appear in the menu bar.
 | **Export ▸** JSON Package… | The labels as JSON plus a list of the project's videos; no images |
 | **Export ▸** Labeled Clip (Video)… | An MP4 with the poses drawn on |
 | Reveal Project in File Manager | Desktop only |
+| Reset Preferences to Defaults… | Puts display, navigation, panel-layout and text-size settings back to their defaults (asks first). Keeps your update channel, video path fixes and track colors |
 | Open Preferences Directory… | Desktop only |
 | Clear Video Transcode Cache… | Desktop only |
 | Quit | ++cmd+q++ |
@@ -34,6 +35,7 @@ Every menu and what its items do, in the order they appear in the menu bar.
 | Item | Notes |
 |---|---|
 | Go to Frame… / Select to Frame… | ++cmd+j++ / ++cmd+shift+j++ |
+| Frame Step Sizes… | How many frames the medium (++cmd+right++) and large (++cmd+shift+right++) steps jump; 10 and 100 by default |
 | Next / Previous Labeled Frame | ++alt+right++ / ++alt+left++ |
 | Navigate All Frames / Navigate Labeled Frames Only / Navigate Suggested Frames Only / Navigate Imaged Frames Only | Sets what ++right++ / ++left++ step through |
 | Next / Previous Suggestion | ++space++ / ++shift+space++ |

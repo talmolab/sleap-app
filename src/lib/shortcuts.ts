@@ -149,9 +149,21 @@ export function withExtraShortcuts<T>(bindings: Record<string, T>): Record<strin
   return out;
 }
 
-/** Frame step sizes for keyboard navigation. */
+/**
+ * Frame step sizes for keyboard navigation. Medium and large are only the
+ * defaults: the user sets them in Go ▸ Frame Step Sizes… (appStore
+ * `mediumStepSize` / `largeStepSize`, PyQt's "medium/large step size" prefs).
+ */
 export const STEP_SIZES = {
   small: 1,
   medium: 10,
   large: 100,
 };
+
+/** Largest allowed frame step size. */
+export const MAX_STEP_SIZE = 1_000_000;
+
+/** A usable frame step size: a whole number of frames from 1 to MAX_STEP_SIZE. */
+export function isValidStepSize(n: unknown): n is number {
+  return typeof n === "number" && Number.isSafeInteger(n) && n >= 1 && n <= MAX_STEP_SIZE;
+}

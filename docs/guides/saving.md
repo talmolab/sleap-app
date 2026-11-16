@@ -94,3 +94,7 @@ The app will not let you quietly lose labels:
 **File ▸ Open Preferences Directory…** (desktop) opens the folder holding
 settings, transcode cache, and drafts. **File ▸ Clear Video Transcode Cache…**
 clears cached transcodes from there.
+
+**File ▸ Reset Preferences to Defaults…** puts display, navigation, panel-layout
+and text-size settings back to how a fresh install starts. It asks first, and
+keeps your update channel, video path fixes and track colors.

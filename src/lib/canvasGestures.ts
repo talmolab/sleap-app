@@ -72,5 +72,7 @@ export const CANVAS_GESTURES: { modifiers: string; gesture: string; action: stri
   { modifiers: "", gesture: "Double-click a prediction", action: "Accept it as your label" },
   { modifiers: "Shift", gesture: "Double-click a prediction", action: "Accept it, every node complete" },
   { modifiers: "Alt", gesture: "Drag a node", action: "Move the whole instance" },
+  { modifiers: "Alt", gesture: "Drag on empty canvas", action: "Zoom to the box you draw" },
+  { modifiers: "Alt", gesture: "Double-click empty canvas", action: "Reset the zoom" },
   { modifiers: "Ctrl", gesture: "Drag a user instance", action: "Clone it and drag the copy" },
 ];

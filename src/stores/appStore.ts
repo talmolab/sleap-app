@@ -54,6 +54,7 @@ import {
 } from "@/lib/panelLayout";
 import { buildTutorialSteps, type TutorialStep } from "@/lib/tutorial/steps";
 import { isTauri } from "@/platform/index";
+import { STEP_SIZES, isValidStepSize } from "@/lib/shortcuts";
 
 // Required before immer can draft Set/Map fields (hiddenInstances /
 // showNonVisibleOverride). Idempotent global; must run before store creation.
@@ -245,6 +246,10 @@ export interface AppState {
   showInset: boolean;
   trailLength: number;
   trailShade: string;
+  /** Frames moved by Ctrl+Left/Right (PyQt pref "medium step size"). Persisted. */
+  mediumStepSize: number;
+  /** Frames moved by Ctrl+Shift+Left/Right (PyQt pref "large step size"). Persisted. */
+  largeStepSize: number;
   /** Magnifier plays the ±temporalWindow frames around the cursor. Persisted. */
   temporalLoupe: boolean;
   /** The magnifier includes frames before the current one. Persisted. */
@@ -491,6 +496,8 @@ export interface AppState {
   newProjectDialogOpen: boolean;
   goToFrameDialogOpen: boolean;
   selectToFrameDialogOpen: boolean;
+  /** Go ▸ Frame Step Sizes… dialog. */
+  frameStepSizesDialogOpen: boolean;
   deletePredictionsDialogOpen: boolean;
   mergeProjectDialogOpen: boolean;
   /** Path to auto-load into the Merge dialog when it opens (seeded by an .slp drop). */
@@ -736,6 +743,8 @@ export const PERSISTED_KEYS: (keyof AppState)[] = [
   "showLabelingHints",
   "hasSeenLabelingHintsPrompt",
   "trailLength",
+  "mediumStepSize",
+  "largeStepSize",
   "temporalLoupe",
   "neighborFramesEarlier",
   "neighborFramesLater",
@@ -852,6 +861,8 @@ export const useAppStore = create<AppState>()(
       showInset: true,
       trailLength: 0,
       trailShade: "Normal",
+      mediumStepSize: STEP_SIZES.medium,
+      largeStepSize: STEP_SIZES.large,
       temporalLoupe: false,
       neighborFramesEarlier: true,
       neighborFramesLater: true,
@@ -934,6 +945,7 @@ export const useAppStore = create<AppState>()(
       newProjectDialogOpen: false,
       goToFrameDialogOpen: false,
       selectToFrameDialogOpen: false,
+      frameStepSizesDialogOpen: false,
       deletePredictionsDialogOpen: false,
       mergeProjectDialogOpen: false,
       mergeProjectSeedPath: null,
@@ -1937,6 +1949,10 @@ export const useAppStore = create<AppState>()(
           overlayModelPaths: [],
           // Migrate the pre-tri-state #137 boolean to the navigationDomain enum.
           navigationDomain: navigationDomainFromPersisted(p),
+          // A hand-edited or corrupt step size would make Ctrl+arrow jump
+          // nowhere (or NaN frames): fall back to the default.
+          mediumStepSize: isValidStepSize(p.mediumStepSize) ? p.mediumStepSize : current.mediumStepSize,
+          largeStepSize: isValidStepSize(p.largeStepSize) ? p.largeStepSize : current.largeStepSize,
           panelOrder: reconcilePanelOrder(p.panelOrder),
           hiddenPanels: reconcileHiddenPanels(p.hiddenPanels),
           // Seed the open-panel stack: a stored set wins; a legacy single

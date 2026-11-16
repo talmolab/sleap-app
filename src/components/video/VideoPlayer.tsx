@@ -76,6 +76,13 @@ import {
   PLACE_CLICK_MAX_MOVE_PX,
 } from "@/lib/canvasGestures";
 import {
+  isZoomBoxGesture,
+  frameToRotated,
+  isZoomBoxTooSmall,
+  viewForZoomRect,
+  type Rect as ZoomRect,
+} from "@/lib/zoomBox";
+import {
   buildBuilderRenderedInstance,
   renderPenStroke,
 } from "@/canvas/skeletonBuilderRender";
@@ -272,9 +279,11 @@ export function VideoPlayer() {
 
   // Multi-node selection state (local/ephemeral)
   const [selectedNodes, setSelectedNodes] = useState<Set<string>>(new Set());
-  const [interactionMode, setInteractionMode] = useState<"idle" | "marquee" | "dragging" | "roi">("idle");
+  const [interactionMode, setInteractionMode] = useState<"idle" | "marquee" | "dragging" | "roi" | "zoomBox">("idle");
   const [marqueeStart, setMarqueeStart] = useState<{ x: number; y: number } | null>(null);
   const [marqueeEnd, setMarqueeEnd] = useState<{ x: number; y: number } | null>(null);
+  // Alt+drag zoom box (PyQt SLEAP), in video-frame coords while it is drawn.
+  const [zoomBox, setZoomBox] = useState<ZoomRect | null>(null);
   // Image-features ROI rubber-band (image-pixel coords; live only while drawing).
   const [roiStart, setRoiStart] = useState<{ x: number; y: number } | null>(null);
   const [roiEnd, setRoiEnd] = useState<{ x: number; y: number } | null>(null);
@@ -1585,16 +1594,22 @@ export function VideoPlayer() {
       }
     };
 
+    // Alt+drag zoom box, drawn like the selection box. Needs no instances.
+    const paintZoomBox = () => {
+      if (zoomBox) renderMarqueeRect(ctx, zoomBox.x1, zoomBox.y1, zoomBox.x2, zoomBox.y2, baseScale * zoom);
+    };
+
     if (!labeledFrame || !showInstances) {
       renderedInstancesRef.current = [];
       // The ROI + builder overlays are independent of instance rendering — still
       // draw them (persisted region / live rubber-band / scratch skeleton).
       const hasRoi = video ? imageFeatureRois.has(video) : false;
-      if (imageFeatureRoiDrawActive || hasRoi || skeletonBuildMode) {
+      if (imageFeatureRoiDrawActive || hasRoi || skeletonBuildMode || zoomBox) {
         ctx.save();
         applyImageTransform();
         paintRoi();
         paintBuilder();
+        paintZoomBox();
         ctx.restore();
       }
       return;
@@ -1708,6 +1723,7 @@ export function VideoPlayer() {
     if (marqueeStart && marqueeEnd) {
       renderMarqueeRect(ctx, marqueeStart.x, marqueeStart.y, marqueeEnd.x, marqueeEnd.y, baseScale * zoom);
     }
+    paintZoomBox();
 
     // Image-features ROI overlay (also drawn on the early-return path above).
     paintRoi();
@@ -1779,6 +1795,7 @@ export function VideoPlayer() {
     anchorPreviewCropSize,
     marqueeStart,
     marqueeEnd,
+    zoomBox,
     roiStart,
     roiEnd,
     imageFeatureRoiDrawActive,
@@ -2476,6 +2493,12 @@ export function VideoPlayer() {
         );
         if (hit && !instances[hit.instanceIdx]?.isPredicted) {
           // Node hit in pan mode — fall through to normal node drag handling below
+        } else if (isZoomBoxGesture(e)) {
+          // Alt+drag off a node draws a zoom box in pan mode too (PyQt).
+          e.preventDefault();
+          setInteractionMode("zoomBox");
+          setZoomBox({ x1: x, y1: y, x2: x, y2: y });
+          return;
         } else {
           e.preventDefault();
           setIsPanning(true);
@@ -2694,6 +2717,14 @@ export function VideoPlayer() {
         return;
       }
 
+      // No hit + Alt: draw a zoom box (PyQt SLEAP's Alt+drag zoom). Alt+drag
+      // on a node still moves the whole instance (handled above).
+      if (isZoomBoxGesture(e)) {
+        setInteractionMode("zoomBox");
+        setZoomBox({ x1: x, y1: y, x2: x, y2: y });
+        return;
+      }
+
       // No hit: start marquee or deselect
       if (!e.shiftKey) {
         setSelectedNodes(new Set());
@@ -2835,6 +2866,13 @@ export function VideoPlayer() {
       if (interactionMode === "roi") {
         setRoiEnd(canvasToScene(e.clientX, e.clientY));
         useAppStore.getState().bumpOverlayVersion();
+        return;
+      }
+
+      // Zoom box: update the corner under the pointer.
+      if (interactionMode === "zoomBox") {
+        const { x, y } = canvasToScene(e.clientX, e.clientY);
+        setZoomBox((box) => (box ? { ...box, x2: x, y2: y } : box));
         return;
       }
 
@@ -3042,6 +3080,28 @@ export function VideoPlayer() {
       return;
     }
 
+    // Zoom box: zoom so the drawn box fills the view; a click or a sliver of a
+    // box does nothing (PyQt ignores an empty rectangle too).
+    if (interactionMode === "zoomBox") {
+      if (zoomBox) {
+        const a = frameToRotated(zoomBox.x1, zoomBox.y1, rotation, fw, fh);
+        const b = frameToRotated(zoomBox.x2, zoomBox.y2, rotation, fw, fh);
+        const rect = { x1: a.x, y1: a.y, x2: b.x, y2: b.y };
+        const view = isZoomBoxTooSmall(rect, baseScale * zoom)
+          ? null
+          : viewForZoomRect(rect, containerSize[0], containerSize[1], baseScale, offsetX, offsetY);
+        if (view) {
+          viewRef.current = view;
+          setZoom(view.zoom);
+          setPanX(view.panX);
+          setPanY(view.panY);
+        }
+      }
+      setZoomBox(null);
+      setInteractionMode("idle");
+      return;
+    }
+
     if (interactionMode === "marquee" && marqueeStart && marqueeEnd) {
       const instances = renderedInstancesRef.current;
       const newSelection = nodesInRect(instances, marqueeStart.x, marqueeStart.y, marqueeEnd.x, marqueeEnd.y);
@@ -3079,7 +3139,7 @@ export function VideoPlayer() {
         s.bumpOverlayVersion();
       }
     }
-  }, [isDragging, isPanning, isZoomDragging, interactionMode, marqueeStart, marqueeEnd, isAreaDeleting, areaDeleteStart, areaDeleteEnd, roiStart, roiEnd, setImageFeatureRoi]);
+  }, [isDragging, isPanning, isZoomDragging, interactionMode, marqueeStart, marqueeEnd, zoomBox, rotation, fw, fh, baseScale, zoom, containerSize, offsetX, offsetY, isAreaDeleting, areaDeleteStart, areaDeleteEnd, roiStart, roiEnd, setImageFeatureRoi]);
 
   // Zoom with mouse wheel (towards pointer), Alt+Scroll for rotation
   // Use native event listener with { passive: false } so preventDefault() works
@@ -3268,8 +3328,9 @@ export function VideoPlayer() {
         return;
       }
 
-      // No prediction hit - reset zoom/pan only in pan mode
-      if (shouldPan) {
+      // No prediction hit - reset zoom/pan in pan mode, or on Alt+double-click
+      // (PyQt SLEAP's clearZoom) in any mode.
+      if (shouldPan || isZoomBoxGesture(e)) {
         viewRef.current = { zoom: 1, panX: 0, panY: 0 };
         setZoom(1);
         setPanX(0);
@@ -3385,7 +3446,7 @@ export function VideoPlayer() {
         ref={containerRef}
         className={cn(
           "flex-1 relative overflow-hidden bg-background min-h-0",
-          pickingAnchor ? "cursor-crosshair" : instanceSequencePick ? "cursor-crosshair" : skeletonBuildMode ? (skeletonBuildStage === "connect" ? "cursor-crosshair" : "cursor-cell") : imageFeatureRoiDrawActive ? "cursor-crosshair" : isPanning ? "cursor-grabbing" : isZoomDragging ? "cursor-zoom-in" : (shouldPan && isCmdHeld) ? "cursor-zoom-in" : shouldPan ? "cursor-grab" : isDragging ? "cursor-grabbing" : areaDeleteMode ? "cursor-crosshair" : interactionMode === "marquee" ? "cursor-crosshair" : isPlacingNodes ? "cursor-cell" : hoveredNode ? "cursor-pointer" : "cursor-default"
+          pickingAnchor ? "cursor-crosshair" : instanceSequencePick ? "cursor-crosshair" : skeletonBuildMode ? (skeletonBuildStage === "connect" ? "cursor-crosshair" : "cursor-cell") : imageFeatureRoiDrawActive ? "cursor-crosshair" : isPanning ? "cursor-grabbing" : isZoomDragging ? "cursor-zoom-in" : (shouldPan && isCmdHeld) ? "cursor-zoom-in" : shouldPan ? "cursor-grab" : isDragging ? "cursor-grabbing" : areaDeleteMode ? "cursor-crosshair" : interactionMode === "marquee" ? "cursor-crosshair" : interactionMode === "zoomBox" ? "cursor-zoom-in" : isPlacingNodes ? "cursor-cell" : hoveredNode ? "cursor-pointer" : "cursor-default"
         )}
         onMouseMove={crosshairActive ? handleCrosshairMove : undefined}
         onMouseLeave={

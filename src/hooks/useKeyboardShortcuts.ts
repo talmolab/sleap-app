@@ -96,19 +96,19 @@ export function useKeyboardShortcuts() {
       },
       [DEFAULT_SHORTCUTS["frame next medium step"]]: (e) => {
         e.preventDefault();
-        store().incrementFrameIdx(STEP_SIZES.medium);
+        store().incrementFrameIdx(store().mediumStepSize);
       },
       [DEFAULT_SHORTCUTS["frame prev medium step"]]: (e) => {
         e.preventDefault();
-        store().incrementFrameIdx(-STEP_SIZES.medium);
+        store().incrementFrameIdx(-store().mediumStepSize);
       },
       [DEFAULT_SHORTCUTS["frame next large step"]]: (e) => {
         e.preventDefault();
-        store().incrementFrameIdx(STEP_SIZES.large);
+        store().incrementFrameIdx(store().largeStepSize);
       },
       [DEFAULT_SHORTCUTS["frame prev large step"]]: (e) => {
         e.preventDefault();
-        store().incrementFrameIdx(-STEP_SIZES.large);
+        store().incrementFrameIdx(-store().largeStepSize);
       },
 
       // Skip to start/end
