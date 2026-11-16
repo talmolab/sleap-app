@@ -50,6 +50,7 @@ import { useModelOverlayFrame } from "@/hooks/useModelOverlayFrame";
 import { renderModelOverlay, hitTestModelOverlay } from "@/canvas/modelOverlayRenderer";
 import { ModelOverlayLegend } from "./ModelOverlayLegend";
 import { ModelPoseAcceptBar } from "./ModelPoseAcceptBar";
+import { ModelTracesStrip } from "./ModelTracesStrip";
 import { pickModelPose, acceptModelPose, modelClickRoute } from "@/lib/modelOverlay/canvasActions";
 import { useModelOverlayStore } from "@/stores/modelOverlayStore";
 import {
@@ -4102,6 +4103,9 @@ export function VideoPlayer() {
         <TransposePickBar />
       </div>
       </QcReviewFrame>
+
+      {/* Compare Model Predictions: per-node traces (self-guards to open). */}
+      <ModelTracesStrip />
 
       {/* Seekbar */}
       <Seekbar />

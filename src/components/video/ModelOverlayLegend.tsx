@@ -6,7 +6,7 @@
  * it can be moved out of the way of the animals.
  */
 import { useState } from "react";
-import { ChevronDown, ChevronLeft, ChevronRight, Plus, X } from "lucide-react";
+import { Activity, ChevronDown, ChevronLeft, ChevronRight, Plus, X } from "lucide-react";
 import { useAppStore } from "@/stores/appStore";
 import { useModelOverlayStore } from "@/stores/modelOverlayStore";
 import { rgbToCSS } from "@/lib/colorPalettes";
@@ -40,6 +40,8 @@ export function ModelOverlayLegend({ disagreementCount }: { disagreementCount: n
   const setThreshold = useModelOverlayStore((s) => s.setThreshold);
   // The box's own text, so clearing it to type a new value doesn't set 0.
   const [thresholdText, setThresholdText] = useState<string | null>(null);
+  const tracesOpen = useModelOverlayStore((s) => s.tracesOpen);
+  const setTracesOpen = useModelOverlayStore((s) => s.setTracesOpen);
   const [collapsed, setCollapsed] = useState(false);
 
   if (models.length === 0) return null;
@@ -69,6 +71,16 @@ export function ModelOverlayLegend({ disagreementCount }: { disagreementCount: n
           Models ({forVideo.length})
         </button>
         <span className="flex-1" />
+        <button
+          type="button"
+          className={`rounded p-0.5 hover:bg-white/10 hover:text-white ${tracesOpen ? "bg-white/20 text-white" : "text-white/60"}`}
+          onClick={() => setTracesOpen(!tracesOpen)}
+          title={tracesOpen ? "Hide per-node traces" : "Show per-node traces (x/y over time, one line per model)"}
+          aria-label="Traces"
+          aria-pressed={tracesOpen}
+        >
+          <Activity className="h-3 w-3" />
+        </button>
         <button
           type="button"
           className="rounded p-0.5 text-white/60 hover:bg-white/10 hover:text-white"
