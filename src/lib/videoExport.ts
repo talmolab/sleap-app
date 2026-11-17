@@ -342,14 +342,17 @@ export function computeClipOutputDimensions(
   return { width: even(sourceWidth), height: even(sourceHeight) };
 }
 
-/** Minimum / maximum allowed clip scale factor (no upscaling — PyQt parity). */
+/**
+ * Minimum / maximum allowed clip scale factor: PyQt SLEAP's Scale range
+ * (0.1–2.0). Above 1 the video is upscaled but the overlay is drawn at the
+ * higher resolution, so node names and thin lines come out sharper.
+ */
 export const CLIP_SCALE_MIN = 0.1;
-export const CLIP_SCALE_MAX = 1.0;
+export const CLIP_SCALE_MAX = 2.0;
 
 /**
  * Clamp a user-entered scale factor to `[CLIP_SCALE_MIN, CLIP_SCALE_MAX]`.
- * PyQt SLEAP's export never upscales, so values above 1.0 are capped at 1.0 and
- * values below 0.1 are raised to 0.1. A non-finite input falls back to 1.0. Pure.
+ * A non-finite input falls back to 1.0. Pure.
  */
 export function clampClipScale(scale: number): number {
   if (!Number.isFinite(scale)) return 1;
@@ -978,15 +981,15 @@ export async function runClipExport(
         );
       }
 
-      // Overlay in source-pixel space, scaled to output. `zoom: scale` keeps
-      // marker/edge/label sizes visually constant regardless of the scale
-      // factor (renderInstances divides sizes by zoom), matching the on-canvas
-      // look.
+      // Overlay in source-pixel space, scaled to output. Sizes are in source
+      // pixels too (`zoom: 1`), so they scale with the clip, as in sleap-io's
+      // render_video (PyQt): a 2x clip looks like the 1x clip with twice the
+      // pixels (sharper node names), and a 0.5x clip like a smaller copy.
       ctx.setTransform(scale, 0, 0, scale, 0, 0);
-      deps.renderUnderlay?.(ctx as unknown as CanvasRenderingContext2D, frameIdx, scale);
+      deps.renderUnderlay?.(ctx as unknown as CanvasRenderingContext2D, frameIdx, 1);
       render(ctx as unknown as CanvasRenderingContext2D, deps.overlayForFrame(frameIdx), {
         ...params.renderOptions,
-        zoom: scale,
+        zoom: 1,
       });
       ctx.setTransform(1, 0, 0, 1, 0, 0);
 

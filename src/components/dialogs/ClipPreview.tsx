@@ -113,12 +113,11 @@ export function ClipPreview({ video, start, end, overlay, onRangeChange }: ClipP
             projectHasTracks,
             trackColorOverrides,
           });
-          // Overlay in source space scaled to the display; zoom:s keeps marker
-          // sizes visually constant (matches the encoder + the main canvas).
+          // Overlay in source space scaled to the display, like the encoder.
           ctx.setTransform(s, 0, 0, s, 0, 0);
           const trails = clipTrailStyle(overlay);
           if (trails.length > 0) {
-            renderTrails(ctx, labels, frameIdx, video, trails.length, labels.tracks ?? [], overlay.palette, s, trackColorOverrides, trails.style);
+            renderTrails(ctx, labels, frameIdx, video, trails.length, labels.tracks ?? [], overlay.palette, 1, trackColorOverrides, trails.style);
           }
           renderInstances(ctx, instances, {
             edgeStyle,
@@ -126,7 +125,9 @@ export function ClipPreview({ video, start, end, overlay, onRangeChange }: ClipP
             showNonVisibleNodes,
             colorPredicted,
             ...clipOverlayRenderOptions(overlay),
-            zoom: s,
+            // Source-pixel sizes, shrunk with the frame: the overlay's size
+            // relative to the animals is what the clip shows at any scale.
+            zoom: 1,
           });
           ctx.setTransform(1, 0, 0, 1, 0, 0);
         }
