@@ -36,6 +36,10 @@ import {
   type QcQueueEntry,
 } from "@/stores/qcStore";
 import { QC_KIND_LABEL, SOFT_QC_KINDS } from "@/lib/analyze/labelQc";
+import { useQcView } from "@/hooks/useQcView";
+import { videoBasename } from "@/lib/videoFilter";
+import { QcIssueFilter } from "@/components/qc/QcIssueFilter";
+import { QcDetectorSettings } from "@/components/qc/QcDetectorSettings";
 
 export function LabelQcPanel() {
   const labels = useAppStore((s) => s.labels);
@@ -47,9 +51,9 @@ export function LabelQcPanel() {
   const {
     state,
     progress,
-    findings,
-    anomaly,
     threshold,
+    settings,
+    hiddenIssues,
     editedFrames,
     dismissed,
     showDismissed,
@@ -62,11 +66,18 @@ export function LabelQcPanel() {
     unmarkOk,
   } = useQcStore();
 
+  // Switched-off detectors and hidden issue types left out (shared with every view).
+  const view = useQcView();
+  const anomaly = view.anomaly;
+  const cut = view.threshold;
+  const gmmCut = anomaly?.gmmThreshold ?? null;
+  // The run's GMM threshold, even while the GMM is switched off (for the help text).
+  const runGmmCut = useQcStore((s) => s.anomaly?.gmmThreshold ?? null);
   const full = useMemo(
-    () => buildQcQueue(findings, anomaly, threshold, qcIsOk(labels, dismissed)),
+    () => buildQcQueue(view.findings, view.anomaly, view.threshold, qcIsOk(labels, dismissed)),
     // editSeq isn't read, but each edit can change a fingerprint.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [findings, anomaly, threshold, labels, dismissed, editSeq],
+    [view, labels, dismissed, editSeq],
   );
   const queue = useMemo(
     () => sortQcQueue(showDismissed ? full : hideOkFlags(full), reviewOrder),
@@ -77,8 +88,7 @@ export function LabelQcPanel() {
   const videoIdx = labels && video ? labels.videos.indexOf(video) : -1;
   const pos = queue.findIndex((e) => e.videoIdx === videoIdx && e.frameIdx === frameIdx);
   // The current frame's card shows instances re-scored in Review with their new scores.
-  const current =
-    pos >= 0 ? liveQcEntry(queue[pos], rescored, threshold, anomaly?.gmmThreshold ?? null) : null;
+  const current = pos >= 0 ? liveQcEntry(queue[pos], rescored, cut, gmmCut) : null;
   const multiVideo = (labels?.videos.length ?? 0) > 1;
   const nodeNames = skeleton?.nodeNames ?? [];
 
@@ -90,8 +100,12 @@ export function LabelQcPanel() {
       ?.scrollIntoView({ block: "nearest" });
   }, [pos]);
 
+  const videoName = (videoIdx: number) => {
+    const v = labels?.videos[videoIdx];
+    return v ? videoBasename(v.filename) : "";
+  };
   const frameLabel = (e: { videoIdx: number; frameIdx: number }) =>
-    `${multiVideo ? `V${e.videoIdx + 1} · ` : ""}${e.frameIdx}`;
+    `${multiVideo ? `${videoName(e.videoIdx)} · ` : ""}${e.frameIdx}`;
   const isEdited = (e: QcQueueEntry) => editedFrames.has(qcFrameKey(e.videoIdx, e.frameIdx));
 
   /** Mark OK, or (once marked) its "OK" tag and Undo, for one flagged instance. */
@@ -235,8 +249,8 @@ export function LabelQcPanel() {
               <p className="mt-0.5 mb-1 text-[11px] text-muted-foreground">
                 {fixed ? "Looks OK now" : v.issue}
               </p>
-              {scoreBar("Anomaly", a.score, threshold)}
-              {scoreBar("GMM", a.gmmScore, anomaly?.gmmThreshold ?? null)}
+              {scoreBar("Anomaly", a.score, cut)}
+              {scoreBar("GMM", a.gmmScore, gmmCut)}
             </div>
           </div>
         );
@@ -291,7 +305,11 @@ export function LabelQcPanel() {
       <p className="px-2 text-[11px] text-muted-foreground">
         {okCount > 0
           ? "Every flag is ignored."
-          : "Nothing flagged. Lower the threshold to flag more."}
+          : hiddenIssues.size > 0
+            ? "Nothing flagged with these issue types. Change the issue-type filter to see more."
+            : Object.values(settings.enabled).some((on) => !on)
+              ? "Nothing flagged by the detectors that are on. Turn more on in Detector Settings, or lower the threshold."
+              : "Nothing flagged. Lower the threshold to flag more."}
       </p>
     );
   } else {
@@ -327,6 +345,7 @@ export function LabelQcPanel() {
           className="max-h-64 min-h-0 shrink-0 overflow-auto border-y border-border/40"
         >
           <div className="sticky top-0 z-10 flex items-center gap-2 border-b border-border/40 bg-background px-2 py-1 text-[10px] font-medium text-muted-foreground">
+            {multiVideo && <span className="w-20 shrink-0">Video</span>}
             <span className="w-12 shrink-0">Frame</span>
             <span className="min-w-0 flex-1">Issue</span>
             <span className="w-9 shrink-0 text-right">Anomaly</span>
@@ -346,7 +365,12 @@ export function LabelQcPanel() {
                   (isEdited(e) || allOk(e)) && "opacity-50",
                 )}
               >
-                <span className="w-12 shrink-0 font-mono tabular-nums">{frameLabel(e)}</span>
+                {multiVideo && (
+                  <span className="w-20 shrink-0 truncate" title={videoName(e.videoIdx)}>
+                    {videoName(e.videoIdx)}
+                  </span>
+                )}
+                <span className="w-12 shrink-0 font-mono tabular-nums">{e.frameIdx}</span>
                 <span className="flex min-w-0 flex-1 gap-1">
                   <span
                     className={cn(
@@ -365,11 +389,8 @@ export function LabelQcPanel() {
                     </span>
                   )}
                 </span>
-                {scoreCell(maxOf(e.anomalies.map(({ a }) => a.score)), threshold)}
-                {scoreCell(
-                  maxOf(e.anomalies.map(({ a }) => a.gmmScore)),
-                  anomaly?.gmmThreshold ?? null,
-                )}
+                {scoreCell(maxOf(e.anomalies.map(({ a }) => a.score)), cut)}
+                {scoreCell(maxOf(e.anomalies.map(({ a }) => a.gmmScore)), gmmCut)}
               </button>
             );
           })}
@@ -473,7 +494,7 @@ export function LabelQcPanel() {
                     Threshold for the instance anomaly score (how unusual its most unusual
                     pose measurement is, from 0 to 1). Doesn&apos;t filter GMM (Gaussian
                     Mixture Model) scores, which always flag about{" "}
-                    {Math.round((1 - (anomaly?.gmmThreshold ?? 0.95)) * 100)}% of poses, the
+                    {Math.round((1 - (runGmmCut ?? 0.95)) * 100)}% of poses, the
                     least typical ones.
                   </TooltipContent>
                 </Tooltip>
@@ -487,12 +508,19 @@ export function LabelQcPanel() {
               onValueChange={([v]) => setThreshold(v)}
               className="flex-1"
               aria-label="Anomaly score threshold"
+              disabled={!settings.enabled.anomaly}
             />
             <span className="font-mono text-[11px] tabular-nums text-muted-foreground">
               {threshold.toFixed(2)}
             </span>
           </div>
         )}
+        {state === "done" && (
+          <div className="flex items-center gap-2">
+            <QcIssueFilter />
+          </div>
+        )}
+        {labels && <QcDetectorSettings />}
       </div>
       {body}
     </div>

@@ -13,6 +13,10 @@
  * chunked-async (progress + cancel). Results live in qcStore, shared with the
  * Label QC side panel, and survive closing the dialog (clicking a row closes it
  * to show the frame). Pure logic lives in labelQc.ts and lib/analyze/qc/*.
+ *
+ * The issue-type filter and Detector Settings above the tabs are the same
+ * controls (and the same state) as in the panel: what is switched off or
+ * hidden here is gone from the panel, Review and F / Shift+F too.
  */
 import { useMemo, useState } from "react";
 import { toast } from "sonner";
@@ -49,6 +53,10 @@ import { qcResultsCsv } from "@/lib/analyze/qc/csv";
 import { saveQcCsv } from "@/lib/analyze/qc/saveQcCsv";
 import { mergeSuggestions } from "@/lib/suggestionEdits";
 import type { SuggestionFrame } from "@/types";
+import { useQcView } from "@/hooks/useQcView";
+import { videoBasename } from "@/lib/videoFilter";
+import { QcIssueFilter } from "@/components/qc/QcIssueFilter";
+import { QcDetectorSettings } from "@/components/qc/QcDetectorSettings";
 
 export interface LabelQcDialogProps {
   open: boolean;
@@ -73,9 +81,9 @@ export function LabelQcDialog({ open, onOpenChange }: LabelQcDialogProps) {
     labels: qcLabels,
     state: runState,
     progress: anomProgress,
-    findings,
-    anomaly: anomResult,
+    anomaly: rawAnomaly,
     threshold: anomThreshold,
+    settings,
     run,
     cancel: cancelAnomalies,
     setThreshold: setAnomThreshold,
@@ -83,6 +91,10 @@ export function LabelQcDialog({ open, onOpenChange }: LabelQcDialogProps) {
   // Results for another project are cleared by qcStore; this guards the render
   // in between.
   const anomState = qcLabels === labels ? runState : "idle";
+  // Switched-off detectors and hidden issue types left out, as in every view.
+  const view = useQcView();
+  const findings = view.findings;
+  const anomResult = view.anomaly;
 
   // Flagged by either statistical check (anomaly ≥ the slider, or GMM ≥ its
   // fixed least-typical-5% threshold), worst first.
@@ -91,14 +103,17 @@ export function LabelQcDialog({ open, onOpenChange }: LabelQcDialogProps) {
       (anomResult?.instances ?? [])
         .map((a): [AnomalyInstance, AnomalyVerdict] => [
           a,
-          anomalyVerdict(a, anomThreshold, anomResult?.gmmThreshold ?? null),
+          anomalyVerdict(a, view.threshold, anomResult?.gmmThreshold ?? null),
         ])
         .filter(([, v]) => v.flagged)
         .sort(([, x], [, y]) => y.score - x.score),
-    [anomResult, anomThreshold],
+    [anomResult, view.threshold],
   );
 
-  const multiVideo = (labels?.videos.length ?? 0) > 1;
+  const videoName = (videoIdx: number) => {
+    const v = labels?.videos[videoIdx];
+    return v ? videoBasename(v.filename) : "";
+  };
 
   const runQc = () => {
     if (labels) void run(labels);
@@ -147,7 +162,8 @@ export function LabelQcDialog({ open, onOpenChange }: LabelQcDialogProps) {
   };
 
   const exportCsv = () => {
-    const scored = anomResult?.instances ?? [];
+    // Every scored instance, whatever the filters (like PyQt's CSV).
+    const scored = rawAnomaly?.instances ?? [];
     if (scored.length === 0) return;
     const csv = qcResultsCsv(
       scored.map((i) => ({
@@ -162,10 +178,13 @@ export function LabelQcDialog({ open, onOpenChange }: LabelQcDialogProps) {
     void saveQcCsv(csv);
   };
 
-  const frameCell = (videoIdx: number, frameIdx: number, instIdx?: number) =>
-    `${multiVideo ? `V${videoIdx + 1} · ` : ""}${frameIdx}${
-      instIdx !== undefined ? ` · inst ${instIdx + 1}` : ""
-    }`;
+  const frameCell = (frameIdx: number, instIdx?: number) =>
+    `${frameIdx}${instIdx !== undefined ? ` · inst ${instIdx + 1}` : ""}`;
+  const videoCell = (videoIdx: number) => (
+    <TableCell className="max-w-40 truncate whitespace-nowrap" title={videoName(videoIdx)}>
+      {videoName(videoIdx)}
+    </TableCell>
+  );
 
   /** Centered "Run" prompt shown before an analysis has been run. */
   const runPrompt = (label: string, onRun: () => void) => (
@@ -190,6 +209,15 @@ export function LabelQcDialog({ open, onOpenChange }: LabelQcDialogProps) {
           </DialogDescription>
         </DialogHeader>
 
+        <div className="flex flex-col gap-2">
+          {anomState === "done" && (
+            <div className="flex items-center gap-2">
+              <QcIssueFilter />
+            </div>
+          )}
+          {labels && <QcDetectorSettings />}
+        </div>
+
         <Tabs value={tab} onValueChange={(v) => setTab(v as "rules" | "anomalies")}>
           <TabsList>
             <TabsTrigger value="rules">Rules</TabsTrigger>
@@ -206,7 +234,7 @@ export function LabelQcDialog({ open, onOpenChange }: LabelQcDialogProps) {
               </p>
             ) : findings.length === 0 ? (
               <p className="py-8 text-center text-sm text-muted-foreground">
-                No issues found in the current labels.
+                No issues found with the detectors and issue types shown.
               </p>
             ) : (
               <div className="max-h-[50vh] overflow-auto rounded-md border border-border/40">
@@ -214,6 +242,7 @@ export function LabelQcDialog({ open, onOpenChange }: LabelQcDialogProps) {
                   <TableHeader>
                     <TableRow>
                       <TableHead className="text-[11px]">Issue</TableHead>
+                      <TableHead className="text-[11px]">Video</TableHead>
                       <TableHead className="text-[11px]">Frame</TableHead>
                       <TableHead className="text-[11px]">Details</TableHead>
                     </TableRow>
@@ -228,8 +257,9 @@ export function LabelQcDialog({ open, onOpenChange }: LabelQcDialogProps) {
                         <TableCell className="whitespace-nowrap font-medium">
                           {QC_KIND_LABEL[f.kind]}
                         </TableCell>
+                        {videoCell(f.videoIdx)}
                         <TableCell className="whitespace-nowrap font-mono tabular-nums">
-                          {frameCell(f.videoIdx, f.frameIdx, f.instanceIdx)}
+                          {frameCell(f.frameIdx, f.instanceIdx)}
                         </TableCell>
                         <TableCell className="text-muted-foreground">{f.message}</TableCell>
                       </TableRow>
@@ -276,6 +306,7 @@ export function LabelQcDialog({ open, onOpenChange }: LabelQcDialogProps) {
                       onValueChange={([v]) => setAnomThreshold(v)}
                       className="flex-1"
                       aria-label="Anomaly flag threshold"
+                      disabled={!settings.enabled.anomaly}
                     />
                     <span className="whitespace-nowrap font-mono text-[11px] tabular-nums text-muted-foreground">
                       ≥ {anomThreshold.toFixed(2)} · {flagged.length}/
@@ -305,6 +336,7 @@ export function LabelQcDialog({ open, onOpenChange }: LabelQcDialogProps) {
                           <TableHead className="text-[11px]">GMM</TableHead>
                           <TableHead className="text-[11px]">Confidence</TableHead>
                           <TableHead className="text-[11px]">Top issue</TableHead>
+                          <TableHead className="text-[11px]">Video</TableHead>
                           <TableHead className="text-[11px]">Frame</TableHead>
                         </TableRow>
                       </TableHeader>
@@ -331,8 +363,9 @@ export function LabelQcDialog({ open, onOpenChange }: LabelQcDialogProps) {
                               {v.confidence}
                             </TableCell>
                             <TableCell className="text-muted-foreground">{v.issue}</TableCell>
+                            {videoCell(a.videoIdx)}
                             <TableCell className="whitespace-nowrap font-mono tabular-nums">
-                              {frameCell(a.videoIdx, a.frameIdx, a.instIdx)}
+                              {frameCell(a.frameIdx, a.instIdx)}
                             </TableCell>
                           </TableRow>
                         ))}

@@ -67,6 +67,14 @@ export interface QcFinding {
 export interface QcOptions {
   /** Instances with fewer than this many visible nodes are "sparse". Default 2. */
   minVisibleNodes?: number;
+  /** Share of symmetric pairs that must look flipped for a chirality flag. Default 0.5. */
+  chiralityThreshold?: number;
+  /** Bounding-box IoU at which two instances are duplicates. Default 0.5. */
+  duplicateIou?: number;
+  /** Turn (degrees) along a chain that counts as out of order. Default 60. */
+  chainTurnDeg?: number;
+  /** Share of a chain's turns that must be out of order. Default 0.3. */
+  chainInversion?: number;
 }
 
 type SkeletonLike = {
@@ -93,6 +101,10 @@ function skeletonPairs(skel: SkeletonLike): [number, number][] {
 
 export function runLabelQc(labels: Labels, opts: QcOptions = {}): QcFinding[] {
   const minVisible = opts.minVisibleNodes ?? 2;
+  const chiralityThreshold = opts.chiralityThreshold ?? 0.5;
+  const duplicateIou = opts.duplicateIou ?? 0.5;
+  const chainTurnDeg = opts.chainTurnDeg ?? 60;
+  const chainInversion = opts.chainInversion ?? 0.3;
   const findings: QcFinding[] = [];
   const videos = labels.videos;
 
@@ -180,7 +192,7 @@ export function runLabelQc(labels: Labels, opts: QcOptions = {}): QcFinding[] {
 
       const pts = insts.map((inst) => inst.numpy());
 
-      for (const d of detectDuplicates(pts)) {
+      for (const d of detectDuplicates(pts, { iouThreshold: duplicateIou })) {
         const detail =
           d.reason === "iou"
             ? `IoU ${d.iou.toFixed(2)}`
@@ -232,8 +244,8 @@ export function runLabelQc(labels: Labels, opts: QcOptions = {}): QcFinding[] {
           skeleton?: { edgeIndices?: number[][]; nodes?: unknown[] };
         }).skeleton;
         for (const chain of chainsFor(skel)) {
-          const co = chainOrderStats(p, chain);
-          if (co.inversionRate >= 0.3 || co.intersectionCount >= 1) {
+          const co = chainOrderStats(p, chain, chainTurnDeg);
+          if (co.inversionRate >= chainInversion || co.intersectionCount >= 1) {
             findings.push({
               kind: "chain_order",
               message:
@@ -252,7 +264,7 @@ export function runLabelQc(labels: Labels, opts: QcOptions = {}): QcFinding[] {
         const model = skel ? chiralityBySkel.get(skel) ?? null : null;
         if (model) {
           const { wrongFraction, nPairs } = chiralityWrongFraction(p, model);
-          if (nPairs >= 2 && wrongFraction >= 0.5) {
+          if (nPairs >= 2 && wrongFraction >= chiralityThreshold) {
             findings.push({
               kind: "chirality",
               message: `Left/right sides look flipped (${Math.round(wrongFraction * 100)}% of symmetric pairs)`,

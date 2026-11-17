@@ -15,6 +15,11 @@
  * `reviewOrder`, which also orders the panel's list and F / Shift+F. Each step
  * selects the node behind the flag (placing it, if it isn't placed), and an
  * edit there re-scores the instance against the run (`rescored`).
+ *
+ * Detector Settings (qc/settings.ts, saved per project on this computer)
+ * switch checks off and set their thresholds; the issue-type filter hides
+ * flags by issue for the session. Every view reads the results through
+ * `qcView`/`filterQcResults`, so they agree on what is flagged.
  */
 import { create } from "zustand";
 import type { Instance, LabeledFrame, Labels } from "@/types";
@@ -33,6 +38,14 @@ import { dirtyFrameTracker } from "@/lib/autosaveDirty";
 import { toast } from "@/lib/notify";
 import { resolveProjectKey } from "@/lib/trackColorOverrides";
 import { addQcMarks, loadQcMarks, qcMarkKey, removeQcMark } from "@/lib/qcReviewed";
+import {
+  DEFAULT_QC_SETTINGS,
+  filterQcResults,
+  loadQcSettings,
+  saveQcSettings,
+  type QcSettings,
+  type QcView,
+} from "@/lib/analyze/qc/settings";
 
 export type QcRunState = "idle" | "running" | "done";
 
@@ -99,9 +112,20 @@ interface QcState {
    * screen, then clears it.
    */
   nodeFocus: { instance: Instance; node: number } | null;
+  /** Detector Settings for the current project (`threshold` mirrors anomalyThreshold). */
+  settings: QcSettings;
+  /** The settings the current results were computed with (null before a run). */
+  runSettings: QcSettings | null;
+  /** Issue types hidden by the issue-type filter (this session only). */
+  hiddenIssues: ReadonlySet<string>;
   run: (labels: Labels) => Promise<void>;
   cancel: () => void;
   setThreshold: (t: number) => void;
+  /** Change Detector Settings (saved for the project). */
+  setSettings: (patch: Partial<Omit<QcSettings, "enabled">> & { enabled?: Partial<QcSettings["enabled"]> }) => void;
+  /** Put every Detector Setting back to its default. */
+  resetSettings: () => void;
+  setHiddenIssues: (hidden: ReadonlySet<string>) => void;
   setShowDismissed: (show: boolean) => void;
   setReviewOpen: (open: boolean) => void;
   setReviewOrder: (order: QcReviewOrder) => void;
@@ -140,12 +164,17 @@ export const useQcStore = create<QcState>((set, get) => ({
   reviewOrder: "severity",
   rescored: new Map(),
   nodeFocus: null,
+  settings: DEFAULT_QC_SETTINGS,
+  runSettings: null,
+  hiddenIssues: new Set(),
 
   run: async (labels) => {
     abort?.abort();
     const ac = new AbortController();
     abort = ac;
+    const settings = get().settings;
     set({
+      runSettings: settings,
       labels,
       state: "running",
       progress: 0,
@@ -157,7 +186,13 @@ export const useQcStore = create<QcState>((set, get) => ({
     await yieldToEvent(); // paint the progress bar before the sync rule sweep
     let findings: QcFinding[] = [];
     try {
-      findings = runLabelQc(labels);
+      findings = runLabelQc(labels, {
+        minVisibleNodes: settings.minVisibleNodes,
+        chiralityThreshold: settings.chiralityThreshold,
+        duplicateIou: settings.duplicateIou,
+        chainTurnDeg: settings.chainTurnDeg,
+        chainInversion: settings.chainInversion,
+      });
     } catch {
       findings = [];
     }
@@ -165,6 +200,7 @@ export const useQcStore = create<QcState>((set, get) => ({
     set({ findings });
     try {
       const anomaly = await scoreLabelsAnomalyAsync(labels, {
+        config: makeQCConfig({ gmmPercentileThreshold: settings.gmmPercent }),
         onProgress: (progress) => set({ progress }),
         signal: ac.signal,
       });
@@ -186,7 +222,27 @@ export const useQcStore = create<QcState>((set, get) => ({
 
   cancel: () => abort?.abort(),
 
-  setThreshold: (threshold) => set({ threshold }),
+  setThreshold: (threshold) => get().setSettings({ anomalyThreshold: threshold }),
+
+  setSettings: (patch) => {
+    const cur = get().settings;
+    const settings: QcSettings = {
+      ...cur,
+      ...patch,
+      enabled: { ...cur.enabled, ...patch.enabled },
+    };
+    set({ settings, threshold: settings.anomalyThreshold });
+    const project = get().dismissedProject;
+    if (project !== null) saveQcSettings(project, settings);
+  },
+
+  resetSettings: () => {
+    set({ settings: DEFAULT_QC_SETTINGS, threshold: DEFAULT_QC_SETTINGS.anomalyThreshold });
+    const project = get().dismissedProject;
+    if (project !== null) saveQcSettings(project, DEFAULT_QC_SETTINGS);
+  },
+
+  setHiddenIssues: (hiddenIssues) => set({ hiddenIssues }),
 
   setShowDismissed: (showDismissed) => set({ showDismissed }),
 
@@ -217,7 +273,15 @@ export const useQcStore = create<QcState>((set, get) => ({
   },
 
   loadDismissed: async (projectKey) => {
-    set({ dismissed: new Set(), dismissedProject: projectKey });
+    // Settings are per project too (synchronous, so they apply before any run).
+    const settings = projectKey === null ? DEFAULT_QC_SETTINGS : loadQcSettings(projectKey);
+    set({
+      dismissed: new Set(),
+      dismissedProject: projectKey,
+      settings,
+      threshold: settings.anomalyThreshold,
+      hiddenIssues: new Set(),
+    });
     if (projectKey === null) return;
     const keys = await loadQcMarks(projectKey);
     // A different project may have loaded meanwhile.
@@ -239,10 +303,16 @@ export const useQcStore = create<QcState>((set, get) => ({
       progress: 0,
       findings: [],
       anomaly: null,
+      runSettings: null,
       editedFrames: new Set(),
     });
   },
 }));
+
+/** The results with switched-off detectors and hidden issue types left out. */
+export function qcView(qc: Pick<QcState, "findings" | "anomaly" | "settings" | "hiddenIssues"> = useQcStore.getState()): QcView {
+  return filterQcResults(qc.findings, qc.anomaly, qc.settings, qc.hiddenIssues);
+}
 
 export const qcFrameKey = (videoIdx: number, frameIdx: number) => `${videoIdx}:${frameIdx}`;
 export const qcInstKey = (videoIdx: number, frameIdx: number, instIdx: number) =>
@@ -436,10 +506,11 @@ export function qcIsOk(labels: Labels | null, dismissed: ReadonlySet<string>): Q
  */
 export function liveQcQueue(): QcQueueEntry[] {
   const qc = useQcStore.getState();
+  const view = qcView(qc);
   const full = buildQcQueue(
-    qc.findings,
-    qc.anomaly,
-    qc.threshold,
+    view.findings,
+    view.anomaly,
+    view.threshold,
     qcIsOk(useAppStore.getState().labels, qc.dismissed),
   );
   return sortQcQueue(qc.showDismissed ? full : hideOkFlags(full), qc.reviewOrder);
@@ -468,7 +539,8 @@ export function goToQcEntry(labels: Labels, e: QcQueueEntry): void {
  */
 function focusProblemNode(e: QcQueueEntry, instIdx: number | undefined, inst: Instance | null): void {
   const qc = useQcStore.getState();
-  const live = liveQcEntry(e, qc.rescored, qc.threshold, qc.anomaly?.gmmThreshold ?? null);
+  const view = qcView(qc);
+  const live = liveQcEntry(e, qc.rescored, view.threshold, view.anomaly?.gmmThreshold ?? null);
   const node = inst && instIdx !== undefined ? qcProblemNode(live, instIdx) : null;
   useQcStore.setState({ nodeFocus: inst && node !== null ? { instance: inst, node } : null });
   aimQcPlacement(inst && node !== null ? inst : null, node);
@@ -502,9 +574,13 @@ function aimQcPlacementAtSelection(): void {
   const e = liveQcQueue().find((x) => x.videoIdx === videoIdx && x.frameIdx === app.frameIdx);
   const lf = labels.find({ video: app.video, frameIdx: app.frameIdx })[0];
   const instIdx = lf ? lf.userInstances.indexOf(inst) : -1;
+  const view = qcView(qc);
   const node =
     e && instIdx >= 0
-      ? qcProblemNode(liveQcEntry(e, qc.rescored, qc.threshold, qc.anomaly?.gmmThreshold ?? null), instIdx)
+      ? qcProblemNode(
+          liveQcEntry(e, qc.rescored, view.threshold, view.anomaly?.gmmThreshold ?? null),
+          instIdx,
+        )
       : null;
   aimQcPlacement(node !== null ? inst : null, node);
 }
@@ -625,7 +701,8 @@ export function rescoreQcFrame(): void {
   if (!labels || !app.video || !rescore || qc.labels !== labels) return;
   const videoIdx = labels.videos.indexOf(app.video);
   const frameIdx = app.frameIdx;
-  const e = buildQcQueue(qc.findings, qc.anomaly, qc.threshold).find(
+  const view = qcView(qc);
+  const e = buildQcQueue(view.findings, view.anomaly, view.threshold).find(
     (x) => x.videoIdx === videoIdx && x.frameIdx === frameIdx,
   );
   if (!e) return;
@@ -710,8 +787,9 @@ const projectKeyOf = (s: ReturnType<typeof useAppStore.getState>) =>
   s.labels ? resolveProjectKey(s.projectPath, s.filename) : null;
 
 // Results belong to the labels they were computed from: drop them when a
-// different project loads. OK marks belong to the project: load its marks,
-// or after Save As (same labels, new path) copy them to the new key.
+// different project loads. OK marks and Detector Settings belong to the
+// project: load them, or after Save As (same labels, new path) copy them to
+// the new key.
 useAppStore.subscribe((s, prev) => {
   if (s.labels !== prev.labels) useQcStore.getState().reset();
   const key = projectKeyOf(s);
@@ -720,6 +798,7 @@ useAppStore.subscribe((s, prev) => {
   if (s.labels === prev.labels && key !== null && qc.dismissedProject !== null) {
     useQcStore.setState({ dismissedProject: key });
     void addQcMarks(key, [...qc.dismissed]);
+    saveQcSettings(key, qc.settings);
   } else {
     void qc.loadDismissed(key);
   }

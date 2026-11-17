@@ -32,6 +32,8 @@ import { commandContext, DeleteSelectedInstance, MarkQcFlagOk } from "@/commands
 import { QC_KIND_LABEL, SOFT_QC_KINDS } from "@/lib/analyze/labelQc";
 import { qcIssueText } from "@/lib/qcReview";
 import { formatShortcut } from "@/lib/formatShortcut";
+import { useQcView } from "@/hooks/useQcView";
+import { videoBasename } from "@/lib/videoFilter";
 
 const RESCORED_TITLE = "Scored against the last run; Rerun to re-check against all labels.";
 
@@ -92,9 +94,7 @@ function useReviewQueue() {
   const labels = useAppStore((s) => s.labels);
   // Edits change pose fingerprints, so OK marks are re-matched after each.
   const editSeq = useAppStore((s) => s.editSeq);
-  const findings = useQcStore((s) => s.findings);
-  const anomaly = useQcStore((s) => s.anomaly);
-  const threshold = useQcStore((s) => s.threshold);
+  const { findings, anomaly, threshold } = useQcView();
   const dismissed = useQcStore((s) => s.dismissed);
   const showDismissed = useQcStore((s) => s.showDismissed);
   const order = useQcStore((s) => s.reviewOrder);
@@ -116,8 +116,9 @@ function useCurrentEntry() {
   const video = useAppStore((s) => s.video);
   const frameIdx = useAppStore((s) => s.frameIdx);
   const rescored = useQcStore((s) => s.rescored);
-  const threshold = useQcStore((s) => s.threshold);
-  const gmmThreshold = useQcStore((s) => s.anomaly?.gmmThreshold ?? null);
+  const view = useQcView();
+  const threshold = view.threshold;
+  const gmmThreshold = view.anomaly?.gmmThreshold ?? null;
   const videoIdx = labels && video ? labels.videos.indexOf(video) : -1;
   const pos = queue.findIndex((e) => e.videoIdx === videoIdx && e.frameIdx === frameIdx);
   const entry = pos >= 0 ? liveQcEntry(queue[pos], rescored, threshold, gmmThreshold) : null;
@@ -127,7 +128,10 @@ function useCurrentEntry() {
 function ReviewHeader() {
   const { queue, pos, entry, videoIdx, frameIdx } = useCurrentEntry();
   const multiVideo = useAppStore((s) => (s.labels?.videos.length ?? 0) > 1);
-  const threshold = useQcStore((s) => s.threshold);
+  const video = useAppStore((s) => s.video);
+  const videoName = video ? videoBasename(video.filename) : null;
+  const threshold = useQcView().threshold;
+  const hiddenIssues = useQcStore((s) => s.hiddenIssues.size);
   const order = useQcStore((s) => s.reviewOrder);
   const setOrder = useQcStore((s) => s.setReviewOrder);
   const edited = useQcStore((s) => s.editedFrames.has(qcFrameKey(videoIdx, frameIdx)));
@@ -177,7 +181,7 @@ function ReviewHeader() {
         </span>
       )}
       <span className="font-mono tabular-nums text-muted-foreground">
-        {multiVideo && `video ${videoIdx + 1} · `}frame {frameIdx}
+        {multiVideo && videoName && <span title={videoName}>{videoName} · </span>}frame {frameIdx}
       </span>
       {rescored ? (
         <RescoredTag />
@@ -187,6 +191,14 @@ function ReviewHeader() {
           title="Edited since the QC run. Rerun to re-check."
         >
           edited
+        </span>
+      )}
+      {hiddenIssues > 0 && (
+        <span
+          className="rounded bg-muted px-1 text-[10px] text-muted-foreground"
+          title={`${hiddenIssues} issue type${hiddenIssues === 1 ? " is" : "s are"} hidden by the issue-type filter (Label QC panel or dialog)`}
+        >
+          filtered
         </span>
       )}
       <div
@@ -254,8 +266,9 @@ function ReviewFooter() {
   const lf = useAppStore((s) => s.labeledFrame);
   const selected = useAppStore((s) => s.instance);
   const skeleton = useAppStore((s) => s.skeleton);
-  const threshold = useQcStore((s) => s.threshold);
-  const gmmThreshold = useQcStore((s) => s.anomaly?.gmmThreshold ?? null);
+  const view = useQcView();
+  const threshold = view.threshold;
+  const gmmThreshold = view.anomaly?.gmmThreshold ?? null;
 
   // The selected instance's flags (QC indexes userInstances).
   const instIdx = selected && lf ? lf.userInstances.indexOf(selected) : -1;
