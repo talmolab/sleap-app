@@ -16,10 +16,6 @@ import {
   Output,
   Mp4OutputFormat,
   BufferTarget,
-  QUALITY_LOW,
-  QUALITY_MEDIUM,
-  QUALITY_HIGH,
-  QUALITY_VERY_HIGH,
   type VideoCodec,
 } from "mediabunny";
 import type { Video } from "@/types";
@@ -28,6 +24,7 @@ import { clearFullRangeTag, isWebKitEncoder } from "@/lib/h264RangeTag";
 import { frameToCanvas } from "@/lib/frameCanvas";
 import {
   CLIP_EXPORT_CODEC,
+  clipBitrate,
   type ClipDrawContext,
   type ClipEncoder,
   type ClipExportDeps,
@@ -35,13 +32,6 @@ import {
   type CanEncodeVideoProbe,
   type ClipQuality,
 } from "@/lib/videoExport";
-
-const BITRATE: Record<ClipQuality, typeof QUALITY_HIGH> = {
-  low: QUALITY_LOW,
-  medium: QUALITY_MEDIUM,
-  high: QUALITY_HIGH,
-  "very-high": QUALITY_VERY_HIGH,
-};
 
 /**
  * The live `canEncodeVideo` probe, adapted to the {@link CanEncodeVideoProbe}
@@ -74,7 +64,7 @@ export function buildClipExportPipeline(params: {
 
   const source = new CanvasSource(canvas, {
     codec: CLIP_EXPORT_CODEC,
-    bitrate: BITRATE[params.quality ?? "high"],
+    bitrate: clipBitrate(params.quality ?? "high", params.output.width, params.output.height, params.fps),
   });
   const output = new Output({
     format: new Mp4OutputFormat({ fastStart: "in-memory" }),

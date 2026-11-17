@@ -88,6 +88,12 @@ export interface RenderOptions {
   markerShape?: MarkerShape;
   /** Draw node markers. Default on; edges and labels have their own switches. */
   showNodes?: boolean;
+  /**
+   * Dark outline around node names, as track labels have. Exported clips turn
+   * it on: video encoding stores color at half resolution, so thin colored
+   * text on a dark background blurs unless it also differs in brightness.
+   */
+  labelOutline?: boolean;
   zoom: number;
 }
 
@@ -423,9 +429,15 @@ function renderNodeLabel(
     ctx.fillRect(labelX - pad, labelY - fontSize - pad, textWidth + pad * 2, fontSize + pad * 2);
   }
 
-  ctx.fillStyle = rgbToCSS(labelColor, 0.9);
   ctx.textAlign = "left";
   ctx.textBaseline = "bottom";
+  if (opts.labelOutline) {
+    ctx.lineJoin = "round";
+    ctx.lineWidth = Math.max(2, opts.nodeLabelSize * 0.18) / opts.zoom;
+    ctx.strokeStyle = "rgba(0, 0, 0, 0.85)";
+    ctx.strokeText(node.name, labelX, labelY);
+  }
+  ctx.fillStyle = rgbToCSS(labelColor, 0.9);
   ctx.fillText(node.name, labelX, labelY);
 }
 
