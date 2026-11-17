@@ -25,6 +25,7 @@ import {
   type MarkerShape,
 } from "@/canvas/SkeletonRenderer";
 import type { TrailStyle } from "@/canvas/TrailRenderer";
+import { SLEAP_IO_DEFAULT_PALETTE, SLEAP_IO_PALETTES, sleapIoPaletteKey } from "@/lib/sleapIoPalettes";
 import { getInstanceColor, getPaletteColor, resolveColorTarget, type RGB } from "@/lib/colorPalettes";
 import { toImageCoords } from "@/lib/cropTransform";
 import type { ColorTarget, Instance, Labels, Track, Video } from "@/types";
@@ -568,7 +569,7 @@ export type ClipQuality = "low" | "medium" | "high" | "very-high";
 export interface ClipOverlayStyle {
   /** What gets its own color (PyQt's "Color by"). */
   colorBy: ColorTarget;
-  /** A key of `PALETTES`. */
+  /** A sleap-io palette key ({@link sleapIoPaletteKey}), as PyQt's Render Clip uses. */
   palette: string;
   markerShape: MarkerShape;
   markerSize: number;
@@ -631,7 +632,8 @@ export interface ClipOverlayViewSettings {
 export function initialClipOverlayStyle(view: ClipOverlayViewSettings): ClipOverlayStyle {
   return {
     colorBy: view.distinctlyColor,
-    palette: view.palette,
+    // sleap-io's palette of the same name when it has one, else PyQt's default.
+    palette: sleapIoPaletteKey(view.palette in SLEAP_IO_PALETTES ? view.palette : SLEAP_IO_DEFAULT_PALETTE),
     markerShape: "circle",
     markerSize: view.markerSize,
     lineWidth: view.boldLines ? 4 : 2,

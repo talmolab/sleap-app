@@ -15,7 +15,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import type { MarkerShape } from "@/canvas/SkeletonRenderer";
-import { PALETTES } from "@/lib/colorPalettes";
+import { SLEAP_IO_PALETTE_NAMES, sleapIoPaletteKey } from "@/lib/sleapIoPalettes";
 import type { ColorTarget } from "@/types";
 import {
   CLIP_MARKER_SHAPES,
@@ -110,8 +110,8 @@ export function ClipOverlaySettings({ style, nodeNames, hasTracks, disabled, onC
               <SelectValue />
             </SelectTrigger>
             <SelectContent>
-              {Object.keys(PALETTES).map((name) => (
-                <SelectItem key={name} value={name}>
+              {SLEAP_IO_PALETTE_NAMES.map((name) => (
+                <SelectItem key={name} value={sleapIoPaletteKey(name)}>
                   {name}
                 </SelectItem>
               ))}

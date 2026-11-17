@@ -86,7 +86,8 @@ describe("initialClipOverlayStyle", () => {
     expect(s.trailNode).toBe("head");
     expect(s.trailColor).toBeNull();
     expect(s.colorBy).toBe("track");
-    expect(s.palette).toBe("alphabet");
+    // sleap-io has no "alphabet": PyQt's default palette instead.
+    expect(s.palette).toBe("sleap-io/tableau10");
     expect(s.showNodeNames).toBe(true);
     expect(s.nodeLabelSize).toBe(10);
   });
