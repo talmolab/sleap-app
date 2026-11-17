@@ -18,6 +18,7 @@ import {
   clampHandleDrag,
   clipOverlayRenderOptions,
   clipTrailStyle,
+  CLIP_COLOR_PREDICTED,
   type ClipOverlayStyle,
 } from "@/lib/videoExport";
 import { renderInstances } from "@/canvas/SkeletonRenderer";
@@ -45,7 +46,6 @@ export function ClipPreview({ video, start, end, overlay, onRangeChange }: ClipP
   const trackColorOverrides = useAppStore((s) =>
     getActiveTrackOverrides(s.trackColorOverrides, s.projectPath, s.filename),
   );
-  const colorPredicted = useAppStore((s) => s.colorPredicted);
   const showNonVisibleNodes = useAppStore((s) => s.showNonVisibleNodes);
   const showInstances = useAppStore((s) => s.showInstances);
   const edgeStyle = useAppStore((s) => s.edgeStyle);
@@ -106,7 +106,7 @@ export function ClipPreview({ video, start, end, overlay, onRangeChange }: ClipP
           const instances = buildExportRenderedInstances(lf?.instances ?? [], {
             palette: overlay.palette,
             distinctlyColor: overlay.colorBy,
-            colorPredicted,
+            colorPredicted: CLIP_COLOR_PREDICTED,
             showNonVisibleNodes,
             tracks: labels.tracks ?? [],
             video,
@@ -123,7 +123,6 @@ export function ClipPreview({ video, start, end, overlay, onRangeChange }: ClipP
             edgeStyle,
             showInstances,
             showNonVisibleNodes,
-            colorPredicted,
             ...clipOverlayRenderOptions(overlay),
             // Source-pixel sizes, shrunk with the frame: the overlay's size
             // relative to the animals is what the clip shows at any scale.
@@ -141,7 +140,7 @@ export function ClipPreview({ video, start, end, overlay, onRangeChange }: ClipP
       }
     },
     [
-      video, srcW, srcH, showOverlay, labels, frameToLf, colorPredicted,
+      video, srcW, srcH, showOverlay, labels, frameToLf,
       showNonVisibleNodes, showInstances, overlay, edgeStyle, projectHasTracks,
       trackColorOverrides,
     ]

@@ -47,6 +47,7 @@ import {
   initialClipOverlayStyle,
   clipOverlayRenderOptions,
   clipTrailStyle,
+  CLIP_COLOR_PREDICTED,
   type ClipConfig,
   type ClipOverlayStyle,
   type ClipQuality,
@@ -102,7 +103,6 @@ export function ExportClipDialog() {
   const trackColorOverrides = useAppStore((s) =>
     getActiveTrackOverrides(s.trackColorOverrides, s.projectPath, s.filename),
   );
-  const colorPredicted = useAppStore((s) => s.colorPredicted);
   const showNonVisibleNodes = useAppStore((s) => s.showNonVisibleNodes);
   const showInstances = useAppStore((s) => s.showInstances);
   const edgeStyle = useAppStore((s) => s.edgeStyle);
@@ -235,7 +235,7 @@ export function ExportClipDialog() {
         return buildExportRenderedInstances(lf.instances, {
           palette: overlay.palette,
           distinctlyColor: overlay.colorBy,
-          colorPredicted,
+          colorPredicted: CLIP_COLOR_PREDICTED,
           showNonVisibleNodes,
           tracks,
           video: fvideo,
@@ -286,7 +286,6 @@ export function ExportClipDialog() {
             edgeStyle,
             showInstances,
             showNonVisibleNodes,
-            colorPredicted,
             showTrackScore: false,
             ...clipOverlayRenderOptions(overlay),
           },
@@ -297,7 +296,6 @@ export function ExportClipDialog() {
     },
     [
       labels,
-      colorPredicted,
       showNonVisibleNodes,
       showInstances,
       edgeStyle,

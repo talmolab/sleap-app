@@ -655,7 +655,17 @@ export function clipOverlayRenderOptions(
   style: ClipOverlayStyle
 ): Pick<
   RenderOptions,
-  "markerShape" | "markerSize" | "lineWidth" | "boldLines" | "poseOpacity" | "showNodes" | "showEdges" | "showLabels" | "nodeLabelSize"
+  | "markerShape"
+  | "markerSize"
+  | "lineWidth"
+  | "boldLines"
+  | "poseOpacity"
+  | "showNodes"
+  | "showEdges"
+  | "showLabels"
+  | "nodeLabelSize"
+  | "solidPoses"
+  | "colorPredicted"
 > {
   return {
     markerShape: style.markerShape,
@@ -668,8 +678,18 @@ export function clipOverlayRenderOptions(
     showEdges: style.showEdges,
     showLabels: style.showNodeNames,
     nodeLabelSize: style.nodeLabelSize,
+    // sleap-io's render_video look (PyQt's Render Clip): solid markers and
+    // edges, predictions drawn and colored like user instances.
+    solidPoses: true,
+    colorPredicted: CLIP_COLOR_PREDICTED,
   };
 }
+
+/**
+ * Clips color predicted instances like user instances, as sleap-io does,
+ * whatever View ▸ Color Predicted Instances is set to.
+ */
+export const CLIP_COLOR_PREDICTED = true;
 
 /**
  * PyQt's Quality presets: each is a fixed scale factor; any other scale is

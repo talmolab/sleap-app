@@ -33,6 +33,8 @@ const VIEW: ClipOverlayViewSettings = {
 function recordingCtx() {
   const calls: string[] = [];
   const lineWidths: number[] = [];
+  const strokeStyles: string[] = [];
+  const fillStyles: string[] = [];
   const ctx = new Proxy(
     {},
     {
@@ -45,11 +47,13 @@ function recordingCtx() {
       },
       set(_t, prop, value) {
         if (prop === "lineWidth") lineWidths.push(value as number);
+        if (prop === "strokeStyle") strokeStyles.push(String(value));
+        if (prop === "fillStyle") fillStyles.push(String(value));
         return true;
       },
     }
   ) as unknown as CanvasRenderingContext2D;
-  return { ctx, calls, lineWidths };
+  return { ctx, calls, lineWidths, strokeStyles, fillStyles };
 }
 
 function inst(): RenderedInstance {
@@ -169,5 +173,63 @@ describe("clipScalePreset (PyQt's Quality presets)", () => {
     expect(clipScalePreset(0.5)).toBe("draft");
     expect(clipScalePreset(1)).toBe("final");
     expect(clipScalePreset(0.7)).toBe("custom");
+  });
+});
+
+describe("solid poses (sleap-io / PyQt clip look)", () => {
+  const solid = { ...base, solidPoses: true };
+
+  it("is on for every clip, with predictions colored like user instances", () => {
+    const opts = clipOverlayRenderOptions(initialClipOverlayStyle(VIEW));
+    expect(opts.solidPoses).toBe(true);
+    expect(opts.colorPredicted).toBe(true);
+  });
+
+  it("fills markers in the solid instance color with no outline", () => {
+    const { ctx, calls, fillStyles } = recordingCtx();
+    renderInstances(ctx, [inst()], { ...solid, showEdges: false });
+    expect(calls.filter((c) => c === "fill")).toHaveLength(2);
+    expect(calls).not.toContain("stroke");
+    expect(fillStyles.every((f) => f === "rgb(255, 0, 0)" || f === "rgba(255, 0, 0, 1)")).toBe(true);
+  });
+
+  it("draws edges opaque at lineWidth", () => {
+    const { ctx, lineWidths, strokeStyles } = recordingCtx();
+    renderInstances(ctx, [inst()], { ...solid, showNodes: false, lineWidth: 3 });
+    expect(lineWidths).toContain(3);
+    expect(strokeStyles).toContain("rgb(255, 0, 0)");
+  });
+
+  it("skips hidden nodes and the edges touching them", () => {
+    const { ctx, calls } = recordingCtx();
+    const i = inst();
+    i.nodes[1] = { ...i.nodes[1], visible: false };
+    renderInstances(ctx, [i], solid);
+    expect(calls.filter((c) => c === "fill")).toHaveLength(1);
+    expect(calls).not.toContain("lineTo");
+  });
+
+  it("colors an edge like its destination node when nodes have their own colors", () => {
+    const { ctx, strokeStyles } = recordingCtx();
+    renderInstances(ctx, [{ ...inst(), nodeColors: [[0, 0, 255], [0, 255, 0]] }], { ...solid, showNodes: false });
+    expect(strokeStyles).toContain("rgb(0, 255, 0)");
+    expect(strokeStyles).not.toContain("rgb(0, 0, 255)");
+  });
+
+  it("draws predictions like user instances: solid, not dashed", () => {
+    const dashes: number[][] = [];
+    const { ctx, calls } = recordingCtx();
+    (ctx as unknown as { setLineDash: (d: number[]) => void }).setLineDash = (d) => dashes.push(d);
+    renderInstances(ctx, [{ ...inst(), isPredicted: true }], solid);
+    expect(calls.filter((c) => c === "fill")).toHaveLength(2);
+    expect(dashes.filter((d) => d.length > 0)).toHaveLength(0);
+  });
+
+  it("strokes a + cross, as sleap-io does", () => {
+    const { ctx, calls, lineWidths } = recordingCtx();
+    renderInstances(ctx, [{ ...inst(), nodes: [inst().nodes[0]], edges: [] }], { ...solid, markerShape: "cross", markerSize: 5 });
+    expect(calls.filter((c) => c === "stroke")).toHaveLength(1);
+    expect(calls).not.toContain("fill");
+    expect(lineWidths).toContain(2); // 0.4 × marker size
   });
 });
