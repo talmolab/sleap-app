@@ -9,8 +9,9 @@
  *   inference-script.sh  runs the trained models on the post-training target
  *   jobs.yaml            the same jobs, as data
  *
- * Ported from alicup29's talmolab/sleap-app#485 (without its training job
- * package), against the post-training targets `main` offers.
+ * The same files go into a training job package (`selfContained`), pointing
+ * at its `.pkg.slp`. Ported from alicup29's talmolab/sleap-app#485, against
+ * the post-training targets `main` offers.
  */
 import yaml from "js-yaml";
 import type { Labels } from "@talmolab/sleap-io.js";
@@ -41,10 +42,22 @@ export interface TrainingJobInputs {
   configs: ConfigFile[];
   /** The open project (for run names, Auto max stride, input channels, and video paths). */
   labels: Labels | null;
-  /** The labels file the configs and scripts point at (the project's path, or its name in the browser). */
+  /**
+   * The labels file the configs and scripts point at: the project's path (or
+   * its name in the browser) for "Save configuration files...", or the
+   * package's `.pkg.slp` file name for a training job package.
+   */
   labelsPath: string;
   /** Validation labels file (Training panel "Validation Labels"), if any. */
   validationLabelsPath?: string;
+  /**
+   * True when `labelsPath` is a training job package (`.pkg.slp`): it holds
+   * only the labeled videos, in a different order, and only their labeled
+   * (and maybe suggested) frames. Inference on suggested / user-labeled /
+   * predicted frames reads it; a video target can't, so a video with no file
+   * of its own is left out of the script, with a note.
+   */
+  selfContained?: boolean;
   inference: {
     /** A Post-Training Inference Target value: nothing, suggestions, user_labeled,
      *  predicted, video, all_videos, random_video, random. */
@@ -66,6 +79,8 @@ export interface TrainingJobFiles {
   configNames: string[];
   /** The run folder each model trains into (`models/<run name>`), in pipeline order. */
   runDirs: string[];
+  /** Notes for the user (e.g. why an inference line was left out). */
+  notes: string[];
 }
 
 /** Quote one argument for bash: plain words stay bare, anything else is single-quoted. */
@@ -157,6 +172,7 @@ export function buildTrainingJobFiles(inputs: TrainingJobInputs): TrainingJobFil
   const { labels, labelsPath, modelType } = inputs;
   const runTimestamp = inputs.runTimestamp ?? formatRunTimestamp();
   const random = inputs.random ?? Math.random;
+  const notes: string[] = [];
 
   const configs = inPipelineOrder(modelType, inputs.configs);
   const files: TrainingJobFile[] = [];
@@ -209,9 +225,11 @@ export function buildTrainingJobFiles(inputs: TrainingJobInputs): TrainingJobFil
       skipUserLabeled: inputs.inference.skipUserLabeled,
     });
     // A video target reads the original video file, as PyQt does (its
-    // VideoItemForInference uses the video's own path); a video with no file
-    // of its own (embedded frames, image sequence) reads the project .slp
-    // with --video_index instead.
+    // VideoItemForInference uses the video's own path). It can't read a
+    // package instead: the package's video indices differ from the project's,
+    // and sleap-nn on a .slp predicts only frames stored in it. A video with
+    // no file of its own (embedded frames, image sequence) reads the project
+    // .slp with --video_index — or, in a package, is left out with a note.
     const videoFile = (vi: number): string | null => {
       const v = videos[vi];
       const f = v?.filename;
@@ -220,6 +238,13 @@ export function buildTrainingJobFiles(inputs: TrainingJobInputs): TrainingJobFil
     const lines: { args: string[]; dataPath: string; outputPath: string; type: string }[] = [];
     const addLine = (cfg: typeof config, vi: number | null, sampledFrames?: number[]) => {
       const own = vi != null ? videoFile(vi) : null;
+      if (vi != null && !own && inputs.selfContained) {
+        notes.push(
+          `Video ${vi + 1} has no video file of its own (its frames are embedded, or it is an image ` +
+            "sequence), so its inference line was left out of the package's inference script.",
+        );
+        return;
+      }
       const dataPath = own ?? labelsPath;
       const outputPath = `${baseName(dataPath)}${vi != null && !own ? `.video${vi}` : ""}.predictions.slp`;
       const args = buildInferenceArgs(cfg, {
@@ -245,6 +270,7 @@ export function buildTrainingJobFiles(inputs: TrainingJobInputs): TrainingJobFil
       const vi = config.videoIndex === "all" ? 0 : config.videoIndex;
       const n = videos[vi]?.shape?.[0] ?? 0;
       if (n > 0) addLine(config, vi, sampleFrames(n, config.sampleCount, random));
+      else notes.push("The current video's frame count is unknown, so random-sample inference was left out.");
     } else if (config.videoIndex !== "all") {
       addLine(config, config.videoIndex); // "video"
     } else {
@@ -270,7 +296,12 @@ export function buildTrainingJobFiles(inputs: TrainingJobInputs): TrainingJobFil
     text: yaml.dump({ training: trainingJobs, inference: inferenceJobs }, { lineWidth: -1 }),
   });
 
-  return { files, configNames, runDirs };
+  return { files, configNames, runDirs, notes };
+}
+
+/** PyQt's package name: `<labels file>.training_job.zip` (e.g. `labels.v001.slp.training_job.zip`). */
+export function trainingJobZipName(projectFilename: string | null): string {
+  return `${baseName(projectFilename || "labels.slp")}.training_job.zip`;
 }
 
 /**

@@ -13,6 +13,7 @@ import {
   buildTrainingJobFiles,
   shellQuote,
   trainingConfigsClipboardText,
+  trainingJobZipName,
   type TrainingJobInputs,
 } from "@/lib/trainingJobFiles";
 import { browserConfigsReadme } from "@/commands/trainingConfigExport";
@@ -194,6 +195,41 @@ describe("training config files", () => {
   it("names a single-model config after its head", () => {
     const job = buildTrainingJobFiles(inputs({ modelType: "bottom_up", configs: baselineConfigs("bottom_up") }));
     expect(job.configNames).toEqual(["bottomup.yaml"]);
+  });
+});
+
+// Training job package mode: the configs and scripts point at the packaged .pkg.slp.
+describe("training job package files", () => {
+  const pkg = (target = "suggestions") => inputs({ labelsPath: "proj.pkg.slp", selfContained: true }, target);
+
+  it("points the configs and suggestion inference at the package", () => {
+    const job = buildTrainingJobFiles(pkg());
+    const doc = yaml.load(fileText(job, "centroid.yaml")) as { data_config: { train_labels_path: string[] } };
+    expect(doc.data_config.train_labels_path).toEqual(["proj.pkg.slp"]);
+    expect(fileText(job, "inference-script.sh")).toContain("--data_path proj.pkg.slp");
+  });
+
+  // Video targets still read the original video: the package's video indices differ and it holds only labeled frames.
+  it("still reads the original video file for video targets", () => {
+    const line = fileText(buildTrainingJobFiles(pkg("video")), "inference-script.sh");
+    expect(line).toContain("--data_path /data/session1.mp4");
+    expect(line).not.toContain("proj.pkg.slp --");
+  });
+
+  // A video with no file of its own can't be scripted from a package; leave it out with a note.
+  it("leaves out an embedded video's line, with a note", () => {
+    const base = pkg("video");
+    Object.defineProperty(base.labels!.videos[0], "hasEmbeddedImages", { value: true });
+    const job = buildTrainingJobFiles(base);
+    expect(fileText(job, "inference-script.sh")).not.toContain("sleap-nn");
+    expect(job.notes.some((n) => n.includes("no video file of its own"))).toBe(true);
+  });
+
+  // Same name PyQt suggests: `<labels file>.training_job.zip`.
+  it("names the zip after the labels file", () => {
+    expect(trainingJobZipName("labels.v001.slp")).toBe("labels.v001.slp.training_job.zip");
+    expect(trainingJobZipName("/a/b/proj.slp")).toBe("proj.slp.training_job.zip");
+    expect(trainingJobZipName(null)).toBe("labels.slp.training_job.zip");
   });
 });
 

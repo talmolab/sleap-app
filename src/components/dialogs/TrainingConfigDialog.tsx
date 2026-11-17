@@ -34,6 +34,7 @@ import { computeNodeVisibility, visibilityTier, type NodeVisibility } from "@/li
 import { isTauri } from "@/lib/platform";
 import {
   copyTrainingConfigsToClipboard,
+  exportTrainingJobPackage,
   saveTrainingConfigFiles,
   type TrainingConfigRequest,
 } from "@/commands/trainingConfigExport";
@@ -1299,7 +1300,7 @@ export function TrainingConfigDialog({
     return (ai === -1 ? 999 : ai) - (bi === -1 ? 999 : bi);
   });
 
-  // PyQt's footer buttons: Copy to clipboard / Save configuration files...
+  // PyQt's footer buttons: Copy to clipboard / Save configuration files... / Export Training Job Package...
   const [configBusy, setConfigBusy] = useState(false);
   const runConfigAction = async (action: (req: TrainingConfigRequest) => Promise<unknown>) => {
     setConfigBusy(true);
@@ -2078,7 +2079,7 @@ export function TrainingConfigDialog({
               </TabsContent>
             ))}
           </div>
-          {/* Footer: reset (left) · PyQt's Copy / Save buttons · Done (right) */}
+          {/* Footer: reset (left) · PyQt's Copy / Save / Export package buttons · Done (right) */}
           <div className="flex flex-wrap items-center justify-between gap-3 px-6 py-3 border-t shrink-0">
             <button
               type="button"
@@ -2109,6 +2110,15 @@ export function TrainingConfigDialog({
                   className="px-3 h-8 rounded-md border text-sm hover:bg-muted disabled:opacity-50 disabled:pointer-events-none"
                 >
                   Save configuration files…
+                </button>
+                <button
+                  type="button"
+                  disabled={configBusy || sortedConfigs.length === 0 || !labels}
+                  onClick={() => runConfigAction(exportTrainingJobPackage)}
+                  title="Save a .zip with the labeled frames (images included), the configuration files and scripts, to train on another computer"
+                  className="px-3 h-8 rounded-md border text-sm hover:bg-muted disabled:opacity-50 disabled:pointer-events-none"
+                >
+                  Export Training Job Package…
                 </button>
               </div>
             )}
