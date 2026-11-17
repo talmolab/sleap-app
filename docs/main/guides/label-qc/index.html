@@ -1746,6 +1746,45 @@
 </li>
       
         <li class="md-nav__item">
+  <a href="#choosing-what-gets-flagged" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        Choosing what gets flagged
+      </span>
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Choosing what gets flagged">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#showing-only-some-issues" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        Showing only some issues
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#detector-settings" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        Detector Settings
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#anomalies" class="md-nav__link">
     <span class="md-ellipsis">
       <span class="md-typeset">
@@ -2343,6 +2382,45 @@
 </li>
       
         <li class="md-nav__item">
+  <a href="#choosing-what-gets-flagged" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        Choosing what gets flagged
+      </span>
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Choosing what gets flagged">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#showing-only-some-issues" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        Showing only some issues
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#detector-settings" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        Detector Settings
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#anomalies" class="md-nav__link">
     <span class="md-ellipsis">
       <span class="md-typeset">
@@ -2436,6 +2514,10 @@ at once, then look at the results on the dialog's two tabs:</p>
 <p>Click any result row to jump to that frame and instance. After you fix things,
 click <strong>Re-run</strong> to check again. To review the results frame by frame instead,
 use the <a href="#the-label-qc-panel">Label QC panel</a>.</p>
+<p>Above the tabs, <strong>Issue types</strong> shows only the kinds of issue you pick, and
+<strong>Detector Settings</strong> turns checks on or off and sets their thresholds. Both
+are <a href="#choosing-what-gets-flagged">below</a>, and they are the same in the dialog
+and the panel.</p>
 <h2 id="what-it-checks">What it checks<a class="headerlink" href="#what-it-checks" title="Permanent link">&para;</a></h2>
 <h3 id="structural-checks">Structural checks<a class="headerlink" href="#structural-checks" title="Permanent link">&para;</a></h3>
 <table>
@@ -2503,11 +2585,12 @@ so the check doesn't run on it.</p>
 trip them. The Label QC panel lists them as <strong>possible</strong> errors and doesn't
 put them ahead of the anomaly flags.</p>
 <h2 id="working-through-the-results">Working through the results<a class="headerlink" href="#working-through-the-results" title="Permanent link">&para;</a></h2>
-<p>On the <strong>Rules</strong> tab, results are a table of <strong>Issue</strong>, <strong>Frame</strong>, and
-<strong>Details</strong>. Click a row to jump to it and fix it.</p>
-<p><strong>Add flagged frames to Suggestions</strong> pushes every flagged frame into the
-<a href="../suggestions/">Suggestions</a> list, so you can work through them with <span class="keys"><kbd class="key-space">Space</kbd></span>
-like any other labeling pass.</p>
+<p>On the <strong>Rules</strong> tab, results are a table of <strong>Issue</strong>, <strong>Video</strong>, <strong>Frame</strong>,
+and <strong>Details</strong>. Click a row to jump to it and fix it.</p>
+<p><strong>Add flagged frames to Suggestions</strong> pushes every flagged frame on the tab
+into the <a href="../suggestions/">Suggestions</a> list, so you can work through them with
+<span class="keys"><kbd class="key-space">Space</kbd></span> like any other labeling pass. Rule checks you switched off or issue
+types you hid are left out.</p>
 <h2 id="the-label-qc-panel">The Label QC panel<a class="headerlink" href="#the-label-qc-panel" title="Permanent link">&para;</a></h2>
 <p>The <strong>Label QC</strong> panel in the right sidebar (the shield icon) is for working
 through the flags one frame at a time. It shares its results with the dialog:
@@ -2526,6 +2609,9 @@ a run started in either shows up in both.</p>
   from anywhere in the app (also <strong>Go ▸ Next Label QC Flag</strong>). They select the
   worst flagged instance, zoom to it and open the panel.</li>
 <li>The <strong>threshold</strong> slider works as it does in the dialog.</li>
+<li><strong>Issue types</strong> and <strong>Detector Settings</strong> work as they do in the dialog
+  (see <a href="#choosing-what-gets-flagged">Choosing what gets flagged</a>).</li>
+<li>In a project with more than one video, the list has a <strong>Video</strong> column.</li>
 </ul>
 <p>On the video, each flagged instance gets a red dashed box, and on it the
 thing that looks wrong, drawn in red dashes over a dark outline:</p>
@@ -2633,6 +2719,82 @@ file name in the browser. They are not saved in the <code>.slp</code> file, so t
 travel with it to another computer or to someone else, and in the browser
 they're lost if you clear the site's data. They survive <strong>Rerun</strong> and
 reopening the project.</p>
+<h2 id="choosing-what-gets-flagged">Choosing what gets flagged<a class="headerlink" href="#choosing-what-gets-flagged" title="Permanent link">&para;</a></h2>
+<h3 id="showing-only-some-issues">Showing only some issues<a class="headerlink" href="#showing-only-some-issues" title="Permanent link">&para;</a></h3>
+<p>Click <strong>Issue types: all</strong> (above the dialog's tabs, or under the panel's
+threshold) for a list of every kind of issue the run found, with how many
+flags each has: the rule checks (<strong>Duplicate</strong>, <strong>Incomplete frame</strong>…) and
+then the pose issues (<strong>Unusual joint angle</strong>, <strong>Improbable pose</strong>…). Untick
+the ones you don't want to see; <strong>All</strong> and <strong>None</strong> tick or untick them all.
+The button then reads, say, <strong>Issue types: 3 of 7</strong>.</p>
+<p>Hidden issues are gone from the dialog's tables, the panel's list,
+<span class="keys"><kbd class="key-f">F</kbd></span> / <span class="keys"><kbd class="key-shift">Shift</kbd><span>+</span><kbd class="key-f">F</kbd></span>, the <a href="#the-review-window">Review window</a> (its header says
+<strong>filtered</strong>) and the boxes on the video. A frame whose flags are all hidden
+leaves the list. The filter lasts until you open another project; it isn't
+saved.</p>
+<h3 id="detector-settings">Detector Settings<a class="headerlink" href="#detector-settings" title="Permanent link">&para;</a></h3>
+<p>Click <strong>Detector Settings</strong> (in the dialog, or at the top of the panel) to
+open it. Each check has a checkbox, a <strong>?</strong> with what it catches, and its
+thresholds, if any:</p>
+<table>
+<thead>
+<tr>
+<th>Check</th>
+<th>Threshold</th>
+<th>Default</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Anomaly score</strong></td>
+<td><strong>score ≥</strong>: the same as the threshold slider</td>
+<td>0.7</td>
+</tr>
+<tr>
+<td><strong>Improbable pose (GMM)</strong></td>
+<td><strong>least typical</strong>: the share of your labels it flags</td>
+<td>5%</td>
+</tr>
+<tr>
+<td><strong>Whole-instance L/R flip</strong> (listed as Chirality (L/R))</td>
+<td><strong>flip frac ≥</strong>: the share of left/right pairs that must look swapped</td>
+<td>0.5</td>
+</tr>
+<tr>
+<td><strong>Duplicate / split</strong></td>
+<td><strong>IoU ≥</strong>: how much two instances' boxes must overlap</td>
+<td>0.5</td>
+</tr>
+<tr>
+<td><strong>Wrong chain order</strong></td>
+<td><strong>turn ≥</strong>: how sharp a turn along a chain counts as out of order; <strong>inv frac ≥</strong>: the share of turns that must be</td>
+<td>60°, 0.3</td>
+</tr>
+<tr>
+<td><strong>Out of range</strong>, <strong>Empty instance</strong>, <strong>Incomplete frame</strong>, <strong>Negative frame</strong></td>
+<td>none</td>
+<td></td>
+</tr>
+<tr>
+<td><strong>Sparse instance</strong></td>
+<td><strong>nodes &lt;</strong>: fewer visible nodes than this</td>
+<td>2</td>
+</tr>
+</tbody>
+</table>
+<p>All checks start on.</p>
+<ul>
+<li><strong>Checkboxes and the anomaly score apply right away</strong>: unticking a check
+  hides its flags everywhere, without running QC again. Tick it to get them
+  back.</li>
+<li><strong>The other thresholds apply on the next Run</strong>, since they change what a run
+  finds. Until you <strong>Rerun</strong>, the section's title says <strong>Rerun to apply</strong> and
+  the changed boxes are outlined.</li>
+<li><strong>Restore defaults</strong> puts everything back.</li>
+</ul>
+<p>Settings are kept per project on this computer (in the desktop app) or in this
+browser (on the web), like <a href="#ignoring-a-flag">ignored flags</a>: not in the
+<code>.slp</code> file.</p>
 <h2 id="anomalies">Anomalies<a class="headerlink" href="#anomalies" title="Permanent link">&para;</a></h2>
 <p>The <strong>Anomalies</strong> tab scores every instance by how unusual its pose is compared
 with the rest of your labels — an unusual joint angle, edge length, or
@@ -2640,12 +2802,14 @@ visibility pattern, a likely L/R swap, and the like.
 Click <strong>Run QC</strong>; on a large project it shows progress and a <strong>Cancel</strong>
 button.</p>
 <ul>
-<li>The table lists <strong>Score</strong>, <strong>GMM</strong>, <strong>Confidence</strong>, <strong>Top issue</strong>, and
-  <strong>Frame</strong>, worst first. An instance is listed if either score flags it.</li>
+<li>The table lists <strong>Score</strong>, <strong>GMM</strong>, <strong>Confidence</strong>, <strong>Top issue</strong>,
+  <strong>Video</strong>, and <strong>Frame</strong>, worst first. An instance is listed if either score
+  flags it.</li>
 <li>The <strong>Threshold</strong> slider sets the <strong>Score</strong> at which an instance is flagged.
-  Lower it to flag more. The <strong>GMM</strong> column has its own fixed threshold (below).</li>
+  Lower it to flag more. The <strong>GMM</strong> column has its own threshold (below), set
+  in <a href="#detector-settings">Detector Settings</a>.</li>
 <li><strong>Export CSV</strong> saves both scores for every instance, not just the flagged
-  ones.</li>
+  ones, whatever the filters.</li>
 </ul>
 <h3 id="how-the-score-works">How the score works<a class="headerlink" href="#how-the-score-works" title="Permanent link">&para;</a></h3>
 <p>The check learns what a normal pose looks like from your own labels, then
@@ -2678,7 +2842,9 @@ tucked in while the others are spread. The <strong>GMM</strong> column catches t
    score is the share of your labels that look more typical than this one.</li>
 <li>Instances in the least typical 5% (GMM score 0.95 or more) are flagged,
    whatever the <strong>Threshold</strong> slider says. Their <strong>Top issue</strong> reads
-   <em>Improbable pose</em>, followed by the measurement that stands out most.</li>
+   <em>Improbable pose</em>, followed by the measurement that stands out most. To
+   flag a bigger or smaller share, change <strong>least typical</strong> in
+   <a href="#detector-settings">Detector Settings</a> and <strong>Rerun</strong>.</li>
 </ol>
 <p>The GMM needs at least 50 labeled instances; with fewer, the column shows a
 dash and only the <strong>Score</strong> is used. Because it always flags about 5% of your
