@@ -31,6 +31,11 @@ import { getBaselineProfilesForHead, getRecommendedProfileForHead, slotToHeadTyp
 import { computeInstanceSizeStats, recommendMaxStride, recommendBackboneProfile, recommendCentroidScale, resolveEffectiveCropSize, detectVideoChannels, resolveInputChannels } from "@/lib/modelStats";
 import { computeNodeVisibility, visibilityTier, type NodeVisibility } from "@/lib/anchorVisibility";
 import { isTauri } from "@/lib/platform";
+import {
+  copyTrainingConfigsToClipboard,
+  saveTrainingConfigFiles,
+  type TrainingConfigRequest,
+} from "@/commands/trainingConfigExport";
 import { confirmDialog } from "@/stores/confirmStore";
 
 /** Tailwind text color per visibility tier, matching the Training panel's log coloring. */
@@ -1293,6 +1298,17 @@ export function TrainingConfigDialog({
     return (ai === -1 ? 999 : ai) - (bi === -1 ? 999 : bi);
   });
 
+  // PyQt's footer buttons: Copy to clipboard / Save configuration files...
+  const [configBusy, setConfigBusy] = useState(false);
+  const runConfigAction = async (action: (req: TrainingConfigRequest) => Promise<unknown>) => {
+    setConfigBusy(true);
+    try {
+      await action({ modelType, configs: sortedConfigs, inferenceTarget, sampleCount, skipUserLabeled });
+    } finally {
+      setConfigBusy(false);
+    }
+  };
+
   const scrollTo = useCallback((id: string) => {
     const activeRef = activeTab === "pipeline"
       ? pipelineScrollRef.current
@@ -2061,8 +2077,8 @@ export function TrainingConfigDialog({
               </TabsContent>
             ))}
           </div>
-          {/* Footer: reset (left) · Done (right) */}
-          <div className="flex items-center justify-between px-6 py-3 border-t shrink-0">
+          {/* Footer: reset (left) · PyQt's Copy / Save buttons · Done (right) */}
+          <div className="flex flex-wrap items-center justify-between gap-3 px-6 py-3 border-t shrink-0">
             <button
               type="button"
               onClick={handleResetDefaults}
@@ -2071,6 +2087,30 @@ export function TrainingConfigDialog({
               <RotateCcw className="h-3.5 w-3.5" />
               Reset to profile defaults…
             </button>
+            {mode !== "worker-file" && (
+              <div className="flex flex-wrap items-center gap-2 ml-auto">
+                <button
+                  type="button"
+                  disabled={configBusy || sortedConfigs.length === 0}
+                  onClick={() => runConfigAction(copyTrainingConfigsToClipboard)}
+                  title="Copy every model's sleap-nn configuration (YAML) to the clipboard"
+                  className="px-3 h-8 rounded-md border text-sm hover:bg-muted disabled:opacity-50 disabled:pointer-events-none"
+                >
+                  Copy to clipboard
+                </button>
+                <button
+                  type="button"
+                  disabled={configBusy || sortedConfigs.length === 0}
+                  onClick={() => runConfigAction(saveTrainingConfigFiles)}
+                  title={isTauri
+                    ? "Save the configuration files and scripts to run training and inference yourself"
+                    : "Download the configuration files and scripts (as a .zip) to run training and inference yourself. Put your saved .slp file in the same folder before running them."}
+                  className="px-3 h-8 rounded-md border text-sm hover:bg-muted disabled:opacity-50 disabled:pointer-events-none"
+                >
+                  Save configuration files…
+                </button>
+              </div>
+            )}
             <button
               type="button"
               onClick={() => { onClose(); setSearchQuery(""); }}
