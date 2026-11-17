@@ -11,6 +11,8 @@ import { useAppStore } from "./stores/appStore";
 import { commandContext } from "./commands";
 import { loadProjectFromFile } from "./lib/loadProject";
 import { initDiagnostics } from "./lib/diagnostics";
+import { registry as automationRegistry } from "./automation/tools";
+import type { ToolInfo, ToolResult } from "./automation/registry";
 
 // Expose key APIs on window for testing/debugging
 declare global {
@@ -21,10 +23,25 @@ declare global {
       store: typeof useAppStore;
       commandContext: typeof commandContext;
       loadProjectFromFile: typeof loadProjectFromFile;
+      /** Claude connector tools (QC review): list them, or call one by name. */
+      automation: {
+        tools: () => ToolInfo[];
+        call: (name: string, args?: Record<string, unknown>) => Promise<ToolResult>;
+      };
     };
   }
 }
-window.sleap = { loadSlp, Mp4BoxVideoBackend, store: useAppStore, commandContext, loadProjectFromFile };
+window.sleap = {
+  loadSlp,
+  Mp4BoxVideoBackend,
+  store: useAppStore,
+  commandContext,
+  loadProjectFromFile,
+  automation: {
+    tools: () => automationRegistry.list(),
+    call: (name, args) => automationRegistry.call(name, args ?? {}),
+  },
+};
 
 // A window spawned with `?viz=<runDir>` is a standalone visualization window
 // (its own isolated heap) — render just the viz viewer, not the full editor.

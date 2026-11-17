@@ -243,6 +243,43 @@ export const SetPointLocation: Command = {
   },
 };
 
+/**
+ * Batch node edit on the selected instance, as one undo step. Used to apply a
+ * fix Claude proposed and the user accepted (QC review).
+ *
+ * Params:
+ *   nodes: { [nodeIdx]: [x, y] | null } - source-frame coordinates; null marks
+ *     the node not visible (its position is kept, like V does).
+ *   instance?: Instance - the instance to edit (default: the selected one). It
+ *     must be on the frame on screen, which is what the undo snapshot covers.
+ */
+export const SetNodes: Command = {
+  name: "SetNodes",
+  // Instance makes it count as an edit even if Frame/View-only commands stop
+  // being treated as mutating (#468). Same topics as ConvertPredictionToInstance.
+  topics: [UpdateTopic.Frame, UpdateTopic.Instance],
+  execute(ctx: CommandContext, params?: Record<string, unknown>) {
+    const instance = (params?.instance as Instance | undefined) ?? ctx.state.instance;
+    const nodes = params?.nodes as Record<string, [number, number] | null> | undefined;
+    if (!instance || !nodes) return;
+    // An instance off the frame on screen wouldn't be in the undo snapshot.
+    if (params?.instance && !ctx.state.labeledFrame?.instances.includes(instance)) return;
+    for (const [k, v] of Object.entries(nodes)) {
+      const p = instance.points[Number(k)];
+      if (!p) continue;
+      if (v === null) {
+        p.visible = false;
+        continue;
+      }
+      p.xy = [v[0], v[1]];
+      p.visible = true;
+      p.complete = true;
+    }
+    ctx.state.markChanged();
+    ctx.state.bumpOverlayVersion();
+  },
+};
+
 /** Deep-copy a point array. */
 function clonePoints(points: Instance["points"]): Instance["points"] {
   return points.map((p) => ({
