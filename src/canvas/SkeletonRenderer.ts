@@ -82,12 +82,62 @@ export interface RenderOptions {
   focusInstance?: RenderedInstance | null;
   /** Edges and node outlines twice as thick (PyQt `bold lines`). Default off. */
   boldLines?: boolean;
+  /** Width of a user instance's edges in screen pixels (predicted edges are half). Default 2. */
+  lineWidth?: number;
+  /** Node marker shape (PyQt render dialog's `Marker`). Default circle. */
+  markerShape?: MarkerShape;
+  /** Draw node markers. Default on; edges and labels have their own switches. */
+  showNodes?: boolean;
   zoom: number;
 }
 
-/** Edge and node-outline width multiplier: PyQt's `bold lines` doubles its pen widths. */
-export function lineScale(opts: Pick<RenderOptions, "boldLines">): number {
-  return opts.boldLines ? 2 : 1;
+export type MarkerShape = "circle" | "square" | "diamond" | "triangle" | "cross";
+
+/** Width of a user edge when `lineWidth` isn't set; node outlines are half of it. */
+const BASE_LINE_WIDTH = 2;
+
+/**
+ * Edge and node-outline width multiplier: `lineWidth` relative to the default
+ * 2 px, doubled by PyQt's `bold lines`.
+ */
+export function lineScale(opts: Pick<RenderOptions, "boldLines" | "lineWidth">): number {
+  return ((opts.lineWidth ?? BASE_LINE_WIDTH) / BASE_LINE_WIDTH) * (opts.boldLines ? 2 : 1);
+}
+
+/** Trace a marker of `shape` and size `r` (circle radius) centred on (x, y). */
+export function traceMarker(
+  ctx: CanvasRenderingContext2D,
+  x: number,
+  y: number,
+  r: number,
+  shape: MarkerShape = "circle"
+): void {
+  switch (shape) {
+    case "square":
+      ctx.rect(x - r, y - r, 2 * r, 2 * r);
+      break;
+    case "diamond":
+      ctx.moveTo(x, y - r * 1.3);
+      ctx.lineTo(x + r * 1.3, y);
+      ctx.lineTo(x, y + r * 1.3);
+      ctx.lineTo(x - r * 1.3, y);
+      ctx.closePath();
+      break;
+    case "triangle":
+      ctx.moveTo(x, y - r * 1.3);
+      ctx.lineTo(x + r * 1.15, y + r * 0.7);
+      ctx.lineTo(x - r * 1.15, y + r * 0.7);
+      ctx.closePath();
+      break;
+    case "cross":
+      ctx.moveTo(x - r, y - r);
+      ctx.lineTo(x + r, y + r);
+      ctx.moveTo(x + r, y - r);
+      ctx.lineTo(x - r, y + r);
+      break;
+    default:
+      ctx.arc(x, y, r, 0, Math.PI * 2);
+  }
 }
 
 const DEFAULT_OPTIONS: RenderOptions = {
@@ -194,6 +244,7 @@ function renderInstance(
 
   // Draw nodes
   nodes.forEach((node, nIdx) => {
+    if (opts.showNodes === false) return;
     if (!node.visible && !opts.showNonVisibleNodes) return;
     const nodeColor = instance.nodeColors?.[nIdx] ?? color;
     renderNode(ctx, node, nodeColor, isPredicted, opts);
@@ -227,7 +278,9 @@ function renderNode(
     : opts.markerSize / 2;
 
   ctx.beginPath();
-  ctx.arc(node.x, node.y, radius / opts.zoom, 0, Math.PI * 2);
+  traceMarker(ctx, node.x, node.y, radius / opts.zoom, opts.markerShape);
+  // A cross has no inside to fill, so its strokes are drawn as wide as an edge.
+  const outline = (lineScale(opts) * (opts.markerShape === "cross" ? 2 : 1)) / opts.zoom;
 
   if (isPredicted) {
     // Node marker stroke: track/instance color when colorPredicted is on,
@@ -235,20 +288,20 @@ function renderNode(
     // back to plain gray instead (see renderLineEdge/renderNodeLabel).
     const strokeColor = opts.colorPredicted ? color : UNCOLORED_PREDICTED_NODE_COLOR;
     ctx.strokeStyle = rgbToCSS(strokeColor);
-    ctx.lineWidth = lineScale(opts) / opts.zoom;
+    ctx.lineWidth = outline;
     ctx.fillStyle = rgbToCSS(PREDICTED_FILL_COLOR, 0.5);
     ctx.fill();
     ctx.stroke();
   } else if (node.visible) {
     ctx.strokeStyle = rgbToCSS(color);
-    ctx.lineWidth = lineScale(opts) / opts.zoom;
+    ctx.lineWidth = outline;
     ctx.fillStyle = rgbToCSS(color, 0.5);
     ctx.fill();
     ctx.stroke();
   } else {
-    // Non-visible: hollow circle, thin border
+    // Non-visible: hollow marker, thin border
     ctx.strokeStyle = rgbToCSS(color);
-    ctx.lineWidth = (0.5 * lineScale(opts)) / opts.zoom;
+    ctx.lineWidth = 0.5 * outline;
     ctx.fillStyle = "transparent";
     ctx.stroke();
   }

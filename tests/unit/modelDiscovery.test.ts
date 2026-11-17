@@ -10,6 +10,8 @@ import { describe, it, expect } from "../bun-test";
 import {
   findTrainedModels,
   pickModelsForPipeline,
+  pipelineModelsProblem,
+  readModelHeadKey,
   type ModelFsAccess,
   type ModelDirEntry,
 } from "@/lib/modelDiscovery";
@@ -236,5 +238,54 @@ describe("pickModelsForPipeline", () => {
     expect(pickModelsForPipeline(withDupeCentroid, "bottom-up")).toEqual([
       "/proj/models/bottomup_run",
     ]);
+  });
+});
+
+describe("readModelHeadKey", () => {
+  const fs = makeFs({
+    dirs: {},
+    files: { "/m/c/training_config.yaml": CENTROID_CFG },
+    mtimes: {},
+  });
+
+  it("reads the head from training_config.yaml", async () => {
+    expect(await readModelHeadKey("/m/c", fs)).toBe("centroid");
+  });
+
+  it("is null when there is no config", async () => {
+    expect(await readModelHeadKey("/m/missing", fs)).toBeNull();
+  });
+});
+
+describe("pipelineModelsProblem (B15: every head needs a model)", () => {
+  it("blocks top-down with only one model, even if its head is unknown", () => {
+    expect(pipelineModelsProblem("top-down", ["centroid"])).toMatch(/Top-Down needs these models: Centroid \+ Centered Instance/);
+    expect(pipelineModelsProblem("top-down", [null])).toMatch(/Add the missing one/);
+    expect(pipelineModelsProblem("top-down-id", ["centroid"])).toMatch(/Multi-Class Top-Down/);
+  });
+
+  it("names the missing head when two known models don't cover the pipeline", () => {
+    expect(pipelineModelsProblem("top-down", ["centroid", "centroid"])).toMatch(/Missing: Centered Instance\./);
+    expect(pipelineModelsProblem("top-down", ["centroid", "bottomup"])).toMatch(/Missing: Centered Instance/);
+  });
+
+  it("allows a complete set in any order", () => {
+    expect(pipelineModelsProblem("top-down", ["centered_instance", "centroid"])).toBeNull();
+    expect(pipelineModelsProblem("top-down-id", ["centroid", "multi_class_topdown"])).toBeNull();
+    expect(pipelineModelsProblem("bottom-up", ["bottomup"])).toBeNull();
+  });
+
+  it("only counts models when a head is unknown (worker paths)", () => {
+    expect(pipelineModelsProblem("top-down", [null, null])).toBeNull();
+    expect(pipelineModelsProblem("top-down", ["centroid", null])).toBeNull();
+  });
+
+  it("checks the head of single-model pipelines when it is known", () => {
+    expect(pipelineModelsProblem("bottom-up", ["centroid"])).toMatch(/Bottom-Up needs a model: Bottom-Up\. Missing: Bottom-Up/);
+    expect(pipelineModelsProblem("single-animal", [null])).toBeNull();
+  });
+
+  it("leaves an empty list to the existing 'add a model' hint", () => {
+    expect(pipelineModelsProblem("top-down", [])).toBeNull();
   });
 });

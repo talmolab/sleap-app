@@ -22,8 +22,10 @@ import {
   type RenderedInstance,
   type RenderedNode,
   type RenderOptions,
+  type MarkerShape,
 } from "@/canvas/SkeletonRenderer";
-import { getInstanceColor, getPaletteColor, resolveColorTarget } from "@/lib/colorPalettes";
+import type { TrailStyle } from "@/canvas/TrailRenderer";
+import { getInstanceColor, getPaletteColor, resolveColorTarget, type RGB } from "@/lib/colorPalettes";
 import { toImageCoords } from "@/lib/cropTransform";
 import type { Instance, Labels, Track, Video } from "@/types";
 
@@ -553,6 +555,112 @@ export function labeledFramesInRange(
 
 /** Encode quality: mediabunny's bitrate presets (PyQt uses a CRF instead). */
 export type ClipQuality = "low" | "medium" | "high" | "very-high";
+
+/**
+ * How the pose overlay and motion trails are drawn in an exported clip
+ * (PyQt's render dialog: Marker, Marker size, Line width, Opacity, Show
+ * nodes/edges and the Motion Trails group). Seeded from the View settings
+ * each time the dialog opens; changing it doesn't change the View.
+ */
+export interface ClipOverlayStyle {
+  markerShape: MarkerShape;
+  markerSize: number;
+  /** Width of user edges in output pixels (predicted edges are half). */
+  lineWidth: number;
+  /** Opacity of nodes and edges, 0.1–1. */
+  poseOpacity: number;
+  showNodes: boolean;
+  showEdges: boolean;
+  showTrails: boolean;
+  trailLength: number;
+  trailNode: string;
+  trailWidth: number;
+  trailAlpha: number;
+  trailFade: boolean;
+  /** A key of {@link CLIP_TRAIL_COLORS}, or null to match each track's pose color. */
+  trailColor: string | null;
+}
+
+/** PyQt render dialog's uniform trail colors. */
+export const CLIP_TRAIL_COLORS: Record<string, RGB> = {
+  white: [255, 255, 255],
+  black: [0, 0, 0],
+  red: [255, 0, 0],
+  green: [0, 255, 0],
+  blue: [0, 0, 255],
+  yellow: [255, 255, 0],
+  cyan: [0, 255, 255],
+};
+
+export const CLIP_MARKER_SHAPES: MarkerShape[] = ["circle", "square", "diamond", "triangle", "cross"];
+
+/** Trail length PyQt starts from when trails are off in the View. */
+const DEFAULT_CLIP_TRAIL_LENGTH = 10;
+
+/** The View settings a clip's overlay starts from. */
+export interface ClipOverlayViewSettings {
+  markerSize: number;
+  boldLines: boolean;
+  showEdges: boolean;
+  trailLength: number;
+  trailNode: string;
+  trailWidth: number;
+  trailAlpha: number;
+  trailFade: boolean;
+}
+
+/**
+ * The overlay a clip starts with: what the View shows now, drawn solid
+ * (the View's pose opacity is a viewing aid). Bold lines become a 4 px line
+ * width, so the dialog shows the real number.
+ */
+export function initialClipOverlayStyle(view: ClipOverlayViewSettings): ClipOverlayStyle {
+  return {
+    markerShape: "circle",
+    markerSize: view.markerSize,
+    lineWidth: view.boldLines ? 4 : 2,
+    poseOpacity: 1,
+    showNodes: true,
+    showEdges: view.showEdges,
+    showTrails: view.trailLength > 0,
+    trailLength: view.trailLength > 0 ? view.trailLength : DEFAULT_CLIP_TRAIL_LENGTH,
+    trailNode: view.trailNode,
+    trailWidth: view.trailWidth,
+    trailAlpha: view.trailAlpha,
+    trailFade: view.trailFade,
+    trailColor: null,
+  };
+}
+
+/** The renderer options a clip's overlay style sets. */
+export function clipOverlayRenderOptions(
+  style: ClipOverlayStyle
+): Pick<RenderOptions, "markerShape" | "markerSize" | "lineWidth" | "boldLines" | "poseOpacity" | "showNodes" | "showEdges"> {
+  return {
+    markerShape: style.markerShape,
+    markerSize: style.markerSize,
+    lineWidth: style.lineWidth,
+    // lineWidth already carries the View's bold lines (see initialClipOverlayStyle).
+    boldLines: false,
+    poseOpacity: style.poseOpacity,
+    showNodes: style.showNodes,
+    showEdges: style.showEdges,
+  };
+}
+
+/** Trail length (0 = no trails) and style for a clip's overlay. */
+export function clipTrailStyle(style: ClipOverlayStyle): { length: number; style: TrailStyle } {
+  return {
+    length: style.showTrails ? style.trailLength : 0,
+    style: {
+      node: style.trailNode,
+      alpha: style.trailAlpha,
+      fade: style.trailFade,
+      width: style.trailWidth,
+      color: style.trailColor ? (CLIP_TRAIL_COLORS[style.trailColor] ?? null) : null,
+    },
+  };
+}
 
 /** Outcome of probing whether this environment can encode the clip. */
 export interface EncodeSupport {

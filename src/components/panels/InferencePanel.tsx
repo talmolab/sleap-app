@@ -16,6 +16,7 @@ import { useConnectStore } from "@/stores/connectStore";
 import { BackendPicker } from "@/components/common/BackendPicker";
 import { RemoteFileBrowser } from "@/components/dialogs/RemoteFileBrowser";
 import { isTauri } from "../../platform/index";
+import { pipelineModelsProblem, readModelHeadKey } from "@/lib/modelDiscovery";
 import { detectGpu } from "../../platform/backend";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -555,6 +556,22 @@ export function InferencePanel() {
     };
   }, [remoteEnabled, projectPath, pipeline]);
 
+  // Head of each local model directory, so Run can require one per head the
+  // pipeline needs. Worker paths can't be read from here.
+  const [modelHeads, setModelHeads] = useState<Record<string, string | null>>({});
+  useEffect(() => {
+    if (!isTauri || remoteEnabled) return;
+    const unread = modelPaths.filter((p) => !(p in modelHeads));
+    if (unread.length === 0) return;
+    let cancelled = false;
+    Promise.all(unread.map(async (p) => [p, await readModelHeadKey(p)] as const)).then((entries) => {
+      if (!cancelled) setModelHeads((prev) => ({ ...prev, ...Object.fromEntries(entries) }));
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [modelPaths, modelHeads, remoteEnabled]);
+
   const sleapNnAvailable = tools.some(
     (t) => t.name === "sleap-nn" || t.commands?.includes("sleap-nn")
   );
@@ -583,7 +600,10 @@ export function InferencePanel() {
     isNaN(Number(frameEnd))
   );
 
-  const canRun = (remoteEnabled ? (!!selectedWorkerId && connectionStatus === "connected" && !!remoteDataPath) : sleapNnAvailable) && !isRunning && !isDone && (trackOnly || activeModelPaths.length > 0) && !customRangeInvalid;
+  const modelsProblem = trackOnly
+    ? null
+    : pipelineModelsProblem(pipeline, activeModelPaths.map((p) => (remoteEnabled ? null : (modelHeads[p] ?? null))));
+  const canRun = (remoteEnabled ? (!!selectedWorkerId && connectionStatus === "connected" && !!remoteDataPath) : sleapNnAvailable) && !isRunning && !isDone && (trackOnly || (activeModelPaths.length > 0 && !modelsProblem)) && !customRangeInvalid;
   const isTopDown = pipeline === "top-down" || pipeline === "top-down-id";
 
   if (!isTauri && connectionStatus !== "connected") {
@@ -746,6 +766,9 @@ export function InferencePanel() {
                       </button>
                     </div>
                   ))}
+                  {modelsProblem && (
+                    <p className="text-[10px] text-red-400" data-testid="inference-models-problem">{modelsProblem}</p>
+                  )}
                 </div>
               )}
             </Section>

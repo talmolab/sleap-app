@@ -206,7 +206,7 @@ export function summarizeMetrics(m: ModelMetrics | null): MetricsSummary | null 
 
 // ── Training-config parsing ──────────────────────────────────────────────────
 
-const MODEL_TYPE_LABELS: Record<string, string> = {
+export const MODEL_TYPE_LABELS: Record<string, string> = {
   single_instance: "Single Instance",
   centroid: "Centroid",
   centered_instance: "Centered Instance",

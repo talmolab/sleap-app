@@ -16,6 +16,7 @@ import { useConnectStore } from "@/stores/connectStore";
 import { BackendPicker } from "@/components/common/BackendPicker";
 import { RemoteFileBrowser } from "@/components/dialogs/RemoteFileBrowser";
 import { TrainingConfigDialog } from "@/components/dialogs/TrainingConfigDialog";
+import { arborescenceMessage, arborescenceProblems, hasTrackedUserInstances, ID_NO_TRACKS_MESSAGE } from "@/lib/trainingChecks";
 import { RemoteDataSummary } from "@/components/connect/RemoteDataSummary";
 import { RemoteOutputFolder } from "@/components/connect/RemoteOutputFolder";
 import { HiddenVideosDialog } from "@/components/connect/HiddenVideosDialog";
@@ -984,6 +985,18 @@ export function TrainingPanel() {
     (s) => s.setModelMetricsDialogOpen
   );
   const skeletonCompat = useMemo(() => getSkeletonCompatibility(skeleton), [skeleton]);
+  // Skeleton and track edits mutate in place; editSeq changes on every edit,
+  // so the pre-run checks below follow edits made while this panel is open.
+  const editSeq = useAppStore((s) => s.editSeq);
+  // Skeletons with no edges are already disabled for Bottom-Up above.
+  const skeletonTreeProblem = useMemo(() => {
+    if (!skeleton || skeleton.edges.length === 0) return null;
+    const p = arborescenceProblems(skeleton);
+    return p ? arborescenceMessage(p) : null;
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- editSeq: in-place edits
+  }, [skeleton, editSeq]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- editSeq: in-place edits
+  const hasIdTracks = useMemo(() => hasTrackedUserInstances(labels), [labels, editSeq]);
   const pipelineRec = useMemo(() => recommendPipeline(labels as LabelsLike | null), [labels]);
   // No ground truth to train on (or to derive any suggestion from) — e.g. a
   // `labels_pr.*.slp` from inference, which holds predictions only. Every
@@ -1097,7 +1110,18 @@ export function TrainingPanel() {
   // hidden video. RemoteDataSummary's debounce is short, so this only ever
   // gates the brief window right after picking/reconnecting a worker.
   const visibilityPending = remoteEnabled && labelsSource === "window" && visibility === null;
+  // Legacy SLEAP's pre-run checks. Only when training on this window's labels:
+  // a separately picked or worker-side labels file can't be read from here.
+  const trainsOnOpenLabels = remoteEnabled ? labelsSource === "window" : !config.trainingLabelsPath;
+  const pipelineProblem = !trainsOnOpenLabels
+    ? null
+    : (config.modelType === "top_down_id" || config.modelType === "bottom_up_id") && !hasIdTracks
+      ? ID_NO_TRACKS_MESSAGE
+      : config.modelType === "bottom_up"
+        ? skeletonTreeProblem
+        : null;
   const canStart =
+    !pipelineProblem &&
     hasAllConfigs &&
     hasData &&
     hasLabeledFrames &&
@@ -1273,6 +1297,9 @@ export function TrainingPanel() {
             )}
             {isModelTypeIncompatible && (
               <p className="text-[10px] text-red-400">Selected model type is incompatible with the current skeleton</p>
+            )}
+            {pipelineProblem && (
+              <p className="text-[10px] text-red-400" data-testid="training-pipeline-problem">{pipelineProblem}</p>
             )}
           </div>
 
@@ -1649,7 +1676,9 @@ export function TrainingPanel() {
             {dryRun && !remoteEnabled && <DryRunResult dryRun={dryRun} />}
             {!canStart && (
               <p className="text-[10px] text-muted-foreground text-center mt-1">
-                {!hasAllConfigs
+                {pipelineProblem
+                  ? "Fix the problem under Model Type to start"
+                  : !hasAllConfigs
                   ? "Upload config file(s) to begin"
                   : !hasData
                     ? "Select training data"
