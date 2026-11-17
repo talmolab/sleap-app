@@ -71,6 +71,8 @@ export const DEFAULT_SHORTCUTS: Record<string, string> = {
   "toggle node visibility": "KeyV",
   "show non-visible nodes": "Shift+KeyV",
   "toggle pan mode": "KeyP",
+  // B: box tool — drag on the canvas to draw a bounding box (Esc leaves it).
+  "box tool": "KeyB",
   "toggle place mode": "Shift+KeyN",
 
   // Tracks

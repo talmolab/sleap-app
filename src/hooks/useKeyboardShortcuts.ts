@@ -224,6 +224,11 @@ export function useKeyboardShortcuts() {
         e.preventDefault();
         store().toggle("defaultToPan");
       },
+      [DEFAULT_SHORTCUTS["box tool"]]: (e) => {
+        if (isTextInput(e)) return;
+        e.preventDefault();
+        store().toggle("bboxDrawMode");
+      },
 
       // Label QC review queue (F / Shift+F; 3 marks the selected flag OK).
       [DEFAULT_SHORTCUTS["goto next qc flag"]]: (e) => {

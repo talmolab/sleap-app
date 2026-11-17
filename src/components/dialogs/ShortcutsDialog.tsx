@@ -57,7 +57,7 @@ const CATEGORIES: Record<string, string[]> = {
     "copy instance",
     "paste instance",
   ],
-  View: ["fit", "show instances", "show labels", "show edges", "toggle node visibility", "show non-visible nodes", "toggle pan mode", "toggle place mode"],
+  View: ["fit", "show instances", "show labels", "show edges", "toggle node visibility", "show non-visible nodes", "toggle pan mode", "toggle place mode", "box tool"],
   Tracks: [
     "transpose",
     "propagate track labels",

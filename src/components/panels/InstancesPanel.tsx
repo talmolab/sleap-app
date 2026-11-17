@@ -57,6 +57,7 @@ import {
 import { PredictedInstance } from "@talmolab/sleap-io.js";
 import { instanceNamedPoints } from "@/lib/instancePoints";
 import { meanNodeScore } from "@/lib/meanNodeScore";
+import { BboxList } from "./BboxList";
 import type { Instance, Labels } from "../../types";
 
 function isPredicted(instance: Instance): instance is PredictedInstance {
@@ -772,6 +773,8 @@ export function InstancesPanel() {
           </Table>
         )}
       </div>
+
+      <BboxList labeledFrame={labeledFrame} />
 
       {currentInstance && (
         <>
