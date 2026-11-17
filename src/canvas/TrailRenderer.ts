@@ -40,6 +40,8 @@ export interface TrailStyle {
   fade: boolean;
   /** Line width in output (screen) pixels, whatever the zoom. */
   width: number;
+  /** One color for every trail; unset uses each track's pose color (PyQt render dialog's trail `Color`). */
+  color?: RGB | null;
 }
 
 export const DEFAULT_TRAIL_STYLE: TrailStyle = { node: "centroid", alpha: 1, fade: true, width: 4 };
@@ -121,12 +123,9 @@ export function renderTrails(
     const trackIdx = tracks.indexOf(instance.track);
     if (trackIdx === -1) continue;
 
-    const color: RGB = getTrackColor(
-      palette,
-      trackIdx,
-      instance.track.name,
-      trackColorOverrides
-    );
+    const color: RGB =
+      style.color ??
+      getTrackColor(palette, trackIdx, instance.track.name, trackColorOverrides);
 
     // Collect centroids going back trailLength frames
     const trailPoints: Array<{ x: number; y: number; age: number }> = [];

@@ -22,10 +22,13 @@ import {
   type RenderedInstance,
   type RenderedNode,
   type RenderOptions,
+  type MarkerShape,
 } from "@/canvas/SkeletonRenderer";
-import { getInstanceColor, getPaletteColor, resolveColorTarget } from "@/lib/colorPalettes";
+import type { TrailStyle } from "@/canvas/TrailRenderer";
+import { SLEAP_IO_DEFAULT_PALETTE, SLEAP_IO_PALETTES, sleapIoPaletteKey } from "@/lib/sleapIoPalettes";
+import { getInstanceColor, getPaletteColor, resolveColorTarget, type RGB } from "@/lib/colorPalettes";
 import { toImageCoords } from "@/lib/cropTransform";
-import type { Instance, Labels, Track, Video } from "@/types";
+import type { ColorTarget, Instance, Labels, Track, Video } from "@/types";
 
 /** The codec used for clip export. `avc` is H.264 (universally playable mp4). */
 export const CLIP_EXPORT_CODEC = "avc" as const;
@@ -340,14 +343,17 @@ export function computeClipOutputDimensions(
   return { width: even(sourceWidth), height: even(sourceHeight) };
 }
 
-/** Minimum / maximum allowed clip scale factor (no upscaling — PyQt parity). */
+/**
+ * Minimum / maximum allowed clip scale factor: PyQt SLEAP's Scale range
+ * (0.1–2.0). Above 1 the video is upscaled but the overlay is drawn at the
+ * higher resolution, so node names and thin lines come out sharper.
+ */
 export const CLIP_SCALE_MIN = 0.1;
-export const CLIP_SCALE_MAX = 1.0;
+export const CLIP_SCALE_MAX = 2.0;
 
 /**
  * Clamp a user-entered scale factor to `[CLIP_SCALE_MIN, CLIP_SCALE_MAX]`.
- * PyQt SLEAP's export never upscales, so values above 1.0 are capped at 1.0 and
- * values below 0.1 are raised to 0.1. A non-finite input falls back to 1.0. Pure.
+ * A non-finite input falls back to 1.0. Pure.
  */
 export function clampClipScale(scale: number): number {
   if (!Number.isFinite(scale)) return 1;
@@ -553,6 +559,169 @@ export function labeledFramesInRange(
 
 /** Encode quality: mediabunny's bitrate presets (PyQt uses a CRF instead). */
 export type ClipQuality = "low" | "medium" | "high" | "very-high";
+
+/**
+ * How the pose overlay and motion trails are drawn in an exported clip
+ * (PyQt's render dialog: Marker, Marker size, Line width, Opacity, Show
+ * nodes/edges and the Motion Trails group). Seeded from the View settings
+ * each time the dialog opens; changing it doesn't change the View.
+ */
+export interface ClipOverlayStyle {
+  /** What gets its own color (PyQt's "Color by"). */
+  colorBy: ColorTarget;
+  /** A sleap-io palette key ({@link sleapIoPaletteKey}), as PyQt's Render Clip uses. */
+  palette: string;
+  markerShape: MarkerShape;
+  markerSize: number;
+  /** Width of user edges in output pixels (predicted edges are half). */
+  lineWidth: number;
+  /** Opacity of nodes and edges, 0.1–1. */
+  poseOpacity: number;
+  showNodes: boolean;
+  showEdges: boolean;
+  /** Node names next to each node (PyQt clips have none; the View shows them by default). */
+  showNodeNames: boolean;
+  nodeLabelSize: number;
+  showTrails: boolean;
+  trailLength: number;
+  trailNode: string;
+  trailWidth: number;
+  trailAlpha: number;
+  trailFade: boolean;
+  /** A key of {@link CLIP_TRAIL_COLORS}, or null to match each track's pose color. */
+  trailColor: string | null;
+}
+
+/** PyQt render dialog's uniform trail colors. */
+export const CLIP_TRAIL_COLORS: Record<string, RGB> = {
+  white: [255, 255, 255],
+  black: [0, 0, 0],
+  red: [255, 0, 0],
+  green: [0, 255, 0],
+  blue: [0, 0, 255],
+  yellow: [255, 255, 0],
+  cyan: [0, 255, 255],
+};
+
+export const CLIP_MARKER_SHAPES: MarkerShape[] = ["circle", "square", "diamond", "triangle", "cross"];
+
+/** Trail length PyQt starts from when trails are off in the View. */
+const DEFAULT_CLIP_TRAIL_LENGTH = 10;
+
+/** The View settings a clip's overlay starts from. */
+export interface ClipOverlayViewSettings {
+  distinctlyColor: ColorTarget;
+  palette: string;
+  showLabels: boolean;
+  nodeLabelSize: number;
+  markerSize: number;
+  boldLines: boolean;
+  showEdges: boolean;
+  trailLength: number;
+  trailNode: string;
+  trailWidth: number;
+  trailAlpha: number;
+  trailFade: boolean;
+}
+
+/**
+ * The overlay a clip starts with: what the View shows now, drawn solid
+ * (the View's pose opacity is a viewing aid). Bold lines become a 4 px line
+ * width, so the dialog shows the real number.
+ */
+export function initialClipOverlayStyle(view: ClipOverlayViewSettings): ClipOverlayStyle {
+  return {
+    colorBy: view.distinctlyColor,
+    // sleap-io's palette of the same name when it has one, else PyQt's default.
+    palette: sleapIoPaletteKey(view.palette in SLEAP_IO_PALETTES ? view.palette : SLEAP_IO_DEFAULT_PALETTE),
+    markerShape: "circle",
+    markerSize: view.markerSize,
+    lineWidth: view.boldLines ? 4 : 2,
+    poseOpacity: 1,
+    showNodes: true,
+    showEdges: view.showEdges,
+    showNodeNames: view.showLabels,
+    nodeLabelSize: view.nodeLabelSize,
+    showTrails: view.trailLength > 0,
+    trailLength: view.trailLength > 0 ? view.trailLength : DEFAULT_CLIP_TRAIL_LENGTH,
+    trailNode: view.trailNode,
+    trailWidth: view.trailWidth,
+    trailAlpha: view.trailAlpha,
+    trailFade: view.trailFade,
+    trailColor: null,
+  };
+}
+
+/** The renderer options a clip's overlay style sets. */
+export function clipOverlayRenderOptions(
+  style: ClipOverlayStyle
+): Pick<
+  RenderOptions,
+  | "markerShape"
+  | "markerSize"
+  | "lineWidth"
+  | "boldLines"
+  | "poseOpacity"
+  | "showNodes"
+  | "showEdges"
+  | "showLabels"
+  | "nodeLabelSize"
+  | "solidPoses"
+  | "colorPredicted"
+> {
+  return {
+    markerShape: style.markerShape,
+    markerSize: style.markerSize,
+    lineWidth: style.lineWidth,
+    // lineWidth already carries the View's bold lines (see initialClipOverlayStyle).
+    boldLines: false,
+    poseOpacity: style.poseOpacity,
+    showNodes: style.showNodes,
+    showEdges: style.showEdges,
+    showLabels: style.showNodeNames,
+    nodeLabelSize: style.nodeLabelSize,
+    // sleap-io's render_video look (PyQt's Render Clip): solid markers and
+    // edges, predictions drawn and colored like user instances.
+    solidPoses: true,
+    colorPredicted: CLIP_COLOR_PREDICTED,
+  };
+}
+
+/**
+ * Clips color predicted instances like user instances, as sleap-io does,
+ * whatever View ▸ Color Predicted Instances is set to.
+ */
+export const CLIP_COLOR_PREDICTED = true;
+
+/**
+ * PyQt's Quality presets: each is a fixed scale factor; any other scale is
+ * "custom". The preset is derived from the scale, so the two can't disagree.
+ */
+export const CLIP_SCALE_PRESETS = [
+  { id: "preview", label: "Preview (0.25×)", scale: 0.25 },
+  { id: "draft", label: "Draft (0.5×)", scale: 0.5 },
+  { id: "final", label: "Final (1×)", scale: 1 },
+] as const;
+
+export type ClipScalePreset = (typeof CLIP_SCALE_PRESETS)[number]["id"] | "custom";
+
+export function clipScalePreset(scale: number): ClipScalePreset {
+  return CLIP_SCALE_PRESETS.find((p) => Math.abs(p.scale - scale) < 1e-9)?.id ?? "custom";
+}
+
+/** Trail length (0 = no trails) and style for a clip's overlay. */
+export function clipTrailStyle(style: ClipOverlayStyle): { length: number; style: TrailStyle } {
+  return {
+    length: style.showTrails ? style.trailLength : 0,
+    style: {
+      node: style.trailNode,
+      alpha: style.trailAlpha,
+      fade: style.trailFade,
+      width: style.trailWidth,
+      color: style.trailColor ? (CLIP_TRAIL_COLORS[style.trailColor] ?? null) : null,
+    },
+  };
+}
 
 /** Outcome of probing whether this environment can encode the clip. */
 export interface EncodeSupport {
@@ -834,15 +1003,15 @@ export async function runClipExport(
         );
       }
 
-      // Overlay in source-pixel space, scaled to output. `zoom: scale` keeps
-      // marker/edge/label sizes visually constant regardless of the scale
-      // factor (renderInstances divides sizes by zoom), matching the on-canvas
-      // look.
+      // Overlay in source-pixel space, scaled to output. Sizes are in source
+      // pixels too (`zoom: 1`), so they scale with the clip, as in sleap-io's
+      // render_video (PyQt): a 2x clip looks like the 1x clip with twice the
+      // pixels (sharper node names), and a 0.5x clip like a smaller copy.
       ctx.setTransform(scale, 0, 0, scale, 0, 0);
-      deps.renderUnderlay?.(ctx as unknown as CanvasRenderingContext2D, frameIdx, scale);
+      deps.renderUnderlay?.(ctx as unknown as CanvasRenderingContext2D, frameIdx, 1);
       render(ctx as unknown as CanvasRenderingContext2D, deps.overlayForFrame(frameIdx), {
         ...params.renderOptions,
-        zoom: scale,
+        zoom: 1,
       });
       ctx.setTransform(1, 0, 0, 1, 0, 0);
 

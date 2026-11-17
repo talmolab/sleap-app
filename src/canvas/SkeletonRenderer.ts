@@ -82,12 +82,77 @@ export interface RenderOptions {
   focusInstance?: RenderedInstance | null;
   /** Edges and node outlines twice as thick (PyQt `bold lines`). Default off. */
   boldLines?: boolean;
+  /** Width of a user instance's edges in screen pixels (predicted edges are half). Default 2. */
+  lineWidth?: number;
+  /** Node marker shape (PyQt render dialog's `Marker`). Default circle. */
+  markerShape?: MarkerShape;
+  /** Draw node markers. Default on; edges and labels have their own switches. */
+  showNodes?: boolean;
+  /**
+   * Draw poses the way sleap-io's `render_video` (PyQt's Render Clip) does:
+   * solid filled markers with no outline, fully opaque edges with round ends,
+   * predictions drawn like user instances, hidden nodes (and edges touching
+   * them) not drawn, and an edge colored like its destination node when nodes
+   * have their own colors. Exported clips use it; the canvas doesn't.
+   */
+  solidPoses?: boolean;
   zoom: number;
 }
 
-/** Edge and node-outline width multiplier: PyQt's `bold lines` doubles its pen widths. */
-export function lineScale(opts: Pick<RenderOptions, "boldLines">): number {
-  return opts.boldLines ? 2 : 1;
+export type MarkerShape = "circle" | "square" | "diamond" | "triangle" | "cross";
+
+/** Width of a user edge when `lineWidth` isn't set; node outlines are half of it. */
+const BASE_LINE_WIDTH = 2;
+
+/**
+ * Edge and node-outline width multiplier: `lineWidth` relative to the default
+ * 2 px, doubled by PyQt's `bold lines`.
+ */
+export function lineScale(opts: Pick<RenderOptions, "boldLines" | "lineWidth">): number {
+  return ((opts.lineWidth ?? BASE_LINE_WIDTH) / BASE_LINE_WIDTH) * (opts.boldLines ? 2 : 1);
+}
+
+/**
+ * Trace a marker of `shape` and size `r` centred on (x, y), with sleap-io's
+ * geometry (rendering/shapes.py): `r` is the circle radius, the square's
+ * half-width, the diamond's center-to-vertex distance, the triangle's
+ * half-base, and the length of each arm of the "+" cross.
+ */
+export function traceMarker(
+  ctx: CanvasRenderingContext2D,
+  x: number,
+  y: number,
+  r: number,
+  shape: MarkerShape = "circle"
+): void {
+  switch (shape) {
+    case "square":
+      ctx.rect(x - r, y - r, 2 * r, 2 * r);
+      break;
+    case "diamond":
+      ctx.moveTo(x, y - r);
+      ctx.lineTo(x + r, y);
+      ctx.lineTo(x, y + r);
+      ctx.lineTo(x - r, y);
+      ctx.closePath();
+      break;
+    case "triangle": {
+      const h = r * 1.5;
+      ctx.moveTo(x, y - h * 0.6);
+      ctx.lineTo(x + r, y + h * 0.4);
+      ctx.lineTo(x - r, y + h * 0.4);
+      ctx.closePath();
+      break;
+    }
+    case "cross":
+      ctx.moveTo(x - r, y);
+      ctx.lineTo(x + r, y);
+      ctx.moveTo(x, y - r);
+      ctx.lineTo(x, y + r);
+      break;
+    default:
+      ctx.arc(x, y, r, 0, Math.PI * 2);
+  }
 }
 
 const DEFAULT_OPTIONS: RenderOptions = {
@@ -173,8 +238,12 @@ function renderInstance(
   ctx.save();
   ctx.globalAlpha *= opts.poseOpacity ?? 1;
 
+  if (opts.solidPoses) {
+    renderSolidPose(ctx, instance, opts);
+  }
+
   // Draw edges first (behind nodes)
-  if (opts.showEdges) {
+  if (opts.showEdges && !opts.solidPoses) {
     edges.forEach((edge, edgeIdx) => {
       const src = nodes[edge.srcIdx];
       const dst = nodes[edge.dstIdx];
@@ -194,6 +263,7 @@ function renderInstance(
 
   // Draw nodes
   nodes.forEach((node, nIdx) => {
+    if (opts.showNodes === false || opts.solidPoses) return;
     if (!node.visible && !opts.showNonVisibleNodes) return;
     const nodeColor = instance.nodeColors?.[nIdx] ?? color;
     renderNode(ctx, node, nodeColor, isPredicted, opts);
@@ -201,9 +271,9 @@ function renderInstance(
   ctx.restore();
 
   // Draw node labels (skip for predicted unless colorPredicted is on)
-  if (opts.showLabels && (!isPredicted || opts.colorPredicted)) {
+  if (opts.showLabels && (!isPredicted || opts.colorPredicted || opts.solidPoses)) {
     nodes.forEach((node) => {
-      if (!node.visible && !opts.showNonVisibleNodes) return;
+      if (!node.visible && (!opts.showNonVisibleNodes || opts.solidPoses)) return;
       renderNodeLabel(ctx, node, isPredicted, opts);
     });
   }
@@ -213,6 +283,45 @@ function renderInstance(
     renderSelectionBox(ctx, nodes, color, opts);
   }
   // Track labels are drawn in a separate pass in renderInstances (see #316).
+}
+
+/** Edges then markers, the way sleap-io's render_frame draws them (see `solidPoses`). */
+function renderSolidPose(ctx: CanvasRenderingContext2D, instance: RenderedInstance, opts: RenderOptions): void {
+  const { nodes, edges, color } = instance;
+  const nodeColor = (i: number) => instance.nodeColors?.[i] ?? color;
+  if (opts.showEdges) {
+    ctx.lineCap = "round";
+    ctx.lineWidth = ((opts.lineWidth ?? 2) * (opts.boldLines ? 2 : 1)) / opts.zoom;
+    edges.forEach((edge, edgeIdx) => {
+      const src = nodes[edge.srcIdx];
+      const dst = nodes[edge.dstIdx];
+      if (!src?.visible || !dst?.visible) return;
+      const edgeColor = instance.nodeColors ? nodeColor(edge.dstIdx) : (instance.edgeColors?.[edgeIdx] ?? color);
+      ctx.beginPath();
+      ctx.moveTo(src.x, src.y);
+      ctx.lineTo(dst.x, dst.y);
+      ctx.strokeStyle = rgbToCSS(edgeColor);
+      ctx.stroke();
+    });
+  }
+  if (opts.showNodes !== false) {
+    const r = opts.markerSize / opts.zoom;
+    nodes.forEach((node, nIdx) => {
+      if (!node.visible) return;
+      const c = rgbToCSS(nodeColor(nIdx));
+      ctx.beginPath();
+      traceMarker(ctx, node.x, node.y, r, opts.markerShape);
+      if (opts.markerShape === "cross") {
+        ctx.lineCap = "round";
+        ctx.lineWidth = r * 0.4;
+        ctx.strokeStyle = c;
+        ctx.stroke();
+      } else {
+        ctx.fillStyle = c;
+        ctx.fill();
+      }
+    });
+  }
 }
 
 function renderNode(
@@ -227,7 +336,9 @@ function renderNode(
     : opts.markerSize / 2;
 
   ctx.beginPath();
-  ctx.arc(node.x, node.y, radius / opts.zoom, 0, Math.PI * 2);
+  traceMarker(ctx, node.x, node.y, radius / opts.zoom, opts.markerShape);
+  // A cross has no inside to fill, so its strokes are drawn as wide as an edge.
+  const outline = (lineScale(opts) * (opts.markerShape === "cross" ? 2 : 1)) / opts.zoom;
 
   if (isPredicted) {
     // Node marker stroke: track/instance color when colorPredicted is on,
@@ -235,20 +346,20 @@ function renderNode(
     // back to plain gray instead (see renderLineEdge/renderNodeLabel).
     const strokeColor = opts.colorPredicted ? color : UNCOLORED_PREDICTED_NODE_COLOR;
     ctx.strokeStyle = rgbToCSS(strokeColor);
-    ctx.lineWidth = lineScale(opts) / opts.zoom;
+    ctx.lineWidth = outline;
     ctx.fillStyle = rgbToCSS(PREDICTED_FILL_COLOR, 0.5);
     ctx.fill();
     ctx.stroke();
   } else if (node.visible) {
     ctx.strokeStyle = rgbToCSS(color);
-    ctx.lineWidth = lineScale(opts) / opts.zoom;
+    ctx.lineWidth = outline;
     ctx.fillStyle = rgbToCSS(color, 0.5);
     ctx.fill();
     ctx.stroke();
   } else {
-    // Non-visible: hollow circle, thin border
+    // Non-visible: hollow marker, thin border
     ctx.strokeStyle = rgbToCSS(color);
-    ctx.lineWidth = (0.5 * lineScale(opts)) / opts.zoom;
+    ctx.lineWidth = 0.5 * outline;
     ctx.fillStyle = "transparent";
     ctx.stroke();
   }

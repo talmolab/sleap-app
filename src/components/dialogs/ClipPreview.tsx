@@ -16,8 +16,13 @@ import {
   buildExportRenderedInstances,
   pixelToFrame,
   clampHandleDrag,
+  clipOverlayRenderOptions,
+  clipTrailStyle,
+  CLIP_COLOR_PREDICTED,
+  type ClipOverlayStyle,
 } from "@/lib/videoExport";
 import { renderInstances } from "@/canvas/SkeletonRenderer";
+import { renderTrails } from "@/canvas/TrailRenderer";
 import { hasAssignedTracks } from "@/lib/colorPalettes";
 import { getActiveTrackOverrides } from "@/lib/trackColorOverrides";
 
@@ -26,6 +31,8 @@ interface ClipPreviewProps {
   /** 0-based inclusive range for THIS video. */
   start: number;
   end: number;
+  /** The dialog's overlay style, drawn exactly as the encoder will. */
+  overlay: ClipOverlayStyle;
   /** Fired when the user drags an in/out handle. */
   onRangeChange: (start: number, end: number) => void;
 }
@@ -33,21 +40,14 @@ interface ClipPreviewProps {
 const MAX_W = 440;
 const MAX_H = 260;
 
-export function ClipPreview({ video, start, end, onRangeChange }: ClipPreviewProps) {
+export function ClipPreview({ video, start, end, overlay, onRangeChange }: ClipPreviewProps) {
   const labels = useAppStore((s) => s.labels);
   // View settings that shape the overlay (captured for WYSIWYG parity).
-  const palette = useAppStore((s) => s.palette);
-  const distinctlyColor = useAppStore((s) => s.distinctlyColor);
   const trackColorOverrides = useAppStore((s) =>
     getActiveTrackOverrides(s.trackColorOverrides, s.projectPath, s.filename),
   );
-  const colorPredicted = useAppStore((s) => s.colorPredicted);
   const showNonVisibleNodes = useAppStore((s) => s.showNonVisibleNodes);
   const showInstances = useAppStore((s) => s.showInstances);
-  const showLabels = useAppStore((s) => s.showLabels);
-  const showEdges = useAppStore((s) => s.showEdges);
-  const markerSize = useAppStore((s) => s.markerSize);
-  const nodeLabelSize = useAppStore((s) => s.nodeLabelSize);
   const edgeStyle = useAppStore((s) => s.edgeStyle);
 
   const len = video.shape?.[0] ?? 0;
@@ -104,28 +104,29 @@ export function ClipPreview({ video, start, end, onRangeChange }: ClipPreviewPro
         if (showOverlay && labels) {
           const lf = frameToLf.get(frameIdx);
           const instances = buildExportRenderedInstances(lf?.instances ?? [], {
-            palette,
-            distinctlyColor,
-            colorPredicted,
+            palette: overlay.palette,
+            distinctlyColor: overlay.colorBy,
+            colorPredicted: CLIP_COLOR_PREDICTED,
             showNonVisibleNodes,
             tracks: labels.tracks ?? [],
             video,
             projectHasTracks,
             trackColorOverrides,
           });
-          // Overlay in source space scaled to the display; zoom:s keeps marker
-          // sizes visually constant (matches the encoder + the main canvas).
+          // Overlay in source space scaled to the display, like the encoder.
           ctx.setTransform(s, 0, 0, s, 0, 0);
+          const trails = clipTrailStyle(overlay);
+          if (trails.length > 0) {
+            renderTrails(ctx, labels, frameIdx, video, trails.length, labels.tracks ?? [], overlay.palette, 1, trackColorOverrides, trails.style);
+          }
           renderInstances(ctx, instances, {
-            markerSize,
-            nodeLabelSize,
             edgeStyle,
             showInstances,
-            showLabels,
-            showEdges,
             showNonVisibleNodes,
-            colorPredicted,
-            zoom: s,
+            ...clipOverlayRenderOptions(overlay),
+            // Source-pixel sizes, shrunk with the frame: the overlay's size
+            // relative to the animals is what the clip shows at any scale.
+            zoom: 1,
           });
           ctx.setTransform(1, 0, 0, 1, 0, 0);
         }
@@ -133,17 +134,21 @@ export function ClipPreview({ video, start, end, onRangeChange }: ClipPreviewPro
         decodingRef.current = false;
         const next = pendingRef.current;
         pendingRef.current = null;
-        if (next !== null && next !== frameIdx) void drawFrame(next);
+        // Through the ref: a request queued while this draw ran may be for the
+        // same frame with new overlay settings, which this closure doesn't have.
+        if (next !== null) void drawFrameRef.current(next);
       }
     },
     [
-      video, srcW, srcH, showOverlay, labels, frameToLf, palette, distinctlyColor,
-      colorPredicted, showNonVisibleNodes, showInstances, showLabels, showEdges,
-      markerSize, nodeLabelSize, edgeStyle, projectHasTracks, trackColorOverrides,
+      video, srcW, srcH, showOverlay, labels, frameToLf,
+      showNonVisibleNodes, showInstances, overlay, edgeStyle, projectHasTracks,
+      trackColorOverrides,
     ]
   );
 
+  const drawFrameRef = useRef(drawFrame);
   useEffect(() => {
+    drawFrameRef.current = drawFrame;
     void drawFrame(seekFrame);
   }, [seekFrame, drawFrame]);
 

@@ -11,7 +11,7 @@
  * File access is injectable so this is unit-testable without the Tauri runtime.
  */
 
-import { parseTrainingConfig } from "./metrics/loadModelMetrics";
+import { MODEL_TYPE_LABELS, parseTrainingConfig } from "./metrics/loadModelMetrics";
 import type { PipelineType } from "@/stores/inferenceStore";
 
 export interface ModelDirEntry {
@@ -166,4 +166,49 @@ export function pickModelsForPipeline(
     paths.push(match.path);
   }
   return paths;
+}
+
+/**
+ * The head a model directory was trained for, read from its
+ * `training_config.yaml`, or `null` when it can't be read.
+ */
+export async function readModelHeadKey(
+  runDir: string,
+  fs: ModelFsAccess = defaultFs()
+): Promise<string | null> {
+  try {
+    return parseTrainingConfig(await fs.readTextFile(joinPath(runDir, "training_config.yaml"))).headKey;
+  } catch {
+    return null;
+  }
+}
+
+const PIPELINE_LABELS: Record<PipelineType, string> = {
+  "top-down": "Top-Down",
+  "bottom-up": "Bottom-Up",
+  "single-animal": "Single Animal",
+  "top-down-id": "Top-Down + ID",
+  "bottom-up-id": "Bottom-Up + ID",
+};
+
+/**
+ * Why the chosen models can't run `pipeline`, or `null` when they can. Like
+ * legacy SLEAP's `_validate_pipeline`, inference needs a trained model for
+ * every head the pipeline uses. `headKeys` holds each model's head, `null`
+ * where it is unknown (a worker path, or an unreadable config); then only the
+ * number of models is checked.
+ */
+export function pipelineModelsProblem(
+  pipeline: PipelineType,
+  headKeys: (string | null)[]
+): string | null {
+  const required = PIPELINE_HEADS[pipeline];
+  const label = (h: string) => MODEL_TYPE_LABELS[h] ?? h;
+  const needs = `${PIPELINE_LABELS[pipeline]} needs ${required.length === 1 ? "a" : "these"} model${required.length === 1 ? "" : "s"}: ${required.map(label).join(" + ")}.`;
+  if (headKeys.length === 0) return null;
+  if (headKeys.length < required.length) return `${needs} Add the missing one.`;
+  if (headKeys.some((h) => h == null)) return null;
+  const missing = required.filter((h) => !headKeys.includes(h));
+  if (missing.length > 0) return `${needs} Missing: ${missing.map(label).join(", ")}.`;
+  return null;
 }

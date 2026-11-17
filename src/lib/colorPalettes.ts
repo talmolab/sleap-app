@@ -5,6 +5,7 @@
  */
 
 import type { Labels } from "@/types";
+import { SLEAP_IO_PALETTES, sleapIoPaletteName } from "@/lib/sleapIoPalettes";
 
 export type RGB = [number, number, number];
 
@@ -66,7 +67,8 @@ export function getPaletteColor(
   palette: string,
   index: number
 ): RGB {
-  const colors = PALETTES[palette] ?? PALETTES.standard;
+  const sio = sleapIoPaletteName(palette);
+  const colors = (sio ? SLEAP_IO_PALETTES[sio] : PALETTES[palette]) ?? PALETTES.standard;
   return colors[index % colors.length];
 }
 

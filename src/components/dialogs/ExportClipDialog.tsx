@@ -4,8 +4,8 @@
  * Lists the project's videos with a per-video include checkbox and per-video
  * range/fps/scale/background, a scrubbable WYSIWYG preview of the focused video,
  * and encodes each to an H.264 mp4 (skeleton overlay burned in; PyQt parity).
- * Every setting is per-video; overlay appearance follows the current View
- * settings. Export runs SEQUENTIALLY (one encoder at a time) with per-video
+ * Range/fps/scale/background are per-video. The overlay style (markers, lines,
+ * opacity, trails) applies to every clip and starts from the View settings. Export runs SEQUENTIALLY (one encoder at a time) with per-video
  * progress, failure-isolation, and a single Cancel. Desktop writes every clip
  * into one chosen destination folder; the browser downloads them per file.
  */
@@ -44,12 +44,18 @@ import {
   buildInitialClipConfigs,
   clipExportReducer,
   labeledFramesInRange,
+  initialClipOverlayStyle,
+  clipOverlayRenderOptions,
+  clipTrailStyle,
+  CLIP_COLOR_PREDICTED,
   type ClipConfig,
+  type ClipOverlayStyle,
   type ClipQuality,
 } from "@/lib/videoExport";
 import { ClipPreview } from "./ClipPreview";
 import { ClipVideoList, type ClipJobInfo } from "./ClipVideoList";
 import { ClipSettings } from "./ClipSettings";
+import { ClipOverlaySettings } from "./ClipOverlaySettings";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Label } from "@/components/ui/label";
 import {
@@ -93,26 +99,13 @@ export function ExportClipDialog() {
   const labels = useAppStore((s) => s.labels);
   const filename = useAppStore((s) => s.filename);
 
-  // View settings that shape the overlay (captured at export time).
-  const palette = useAppStore((s) => s.palette);
-  const distinctlyColor = useAppStore((s) => s.distinctlyColor);
+  // View settings the dialog doesn't override (captured at export time).
   const trackColorOverrides = useAppStore((s) =>
     getActiveTrackOverrides(s.trackColorOverrides, s.projectPath, s.filename),
   );
-  const colorPredicted = useAppStore((s) => s.colorPredicted);
   const showNonVisibleNodes = useAppStore((s) => s.showNonVisibleNodes);
   const showInstances = useAppStore((s) => s.showInstances);
-  const showLabels = useAppStore((s) => s.showLabels);
-  const showEdges = useAppStore((s) => s.showEdges);
-  const markerSize = useAppStore((s) => s.markerSize);
-  const nodeLabelSize = useAppStore((s) => s.nodeLabelSize);
   const edgeStyle = useAppStore((s) => s.edgeStyle);
-  const trailLength = useAppStore((s) => s.trailLength);
-  const trailNode = useAppStore((s) => s.trailNode);
-  const trailAlpha = useAppStore((s) => s.trailAlpha);
-  const trailFade = useAppStore((s) => s.trailFade);
-  const trailWidth = useAppStore((s) => s.trailWidth);
-  const boldLines = useAppStore((s) => s.boldLines);
 
   const [state, dispatch] = useReducer(clipExportReducer, { configs: [], focused: null });
   const [phase, setPhase] = useState<Phase>("checking");
@@ -124,6 +117,9 @@ export function ExportClipDialog() {
   // Whole-export output options (PyQt's Quality group / "Open video when done").
   const [quality, setQuality] = useState<ClipQuality>("high");
   const [openWhenDone, setOpenWhenDone] = useState(true);
+  const [overlay, setOverlay] = useState<ClipOverlayStyle>(() =>
+    initialClipOverlayStyle(useAppStore.getState())
+  );
 
   const focused = state.focused;
   const focusedConfig = state.configs.find((c) => c.video === focused) ?? null;
@@ -135,6 +131,7 @@ export function ExportClipDialog() {
     setPhase("checking");
     setSupportMessage("");
     setJobs(new Map());
+    setOverlay(initialClipOverlayStyle(useAppStore.getState()));
     dispatch({
       type: "reset",
       state: buildInitialClipConfigs(
@@ -236,9 +233,9 @@ export function ExportClipDialog() {
         const lf = frameToLf.get(frameIdx);
         if (!lf) return [];
         return buildExportRenderedInstances(lf.instances, {
-          palette,
-          distinctlyColor,
-          colorPredicted,
+          palette: overlay.palette,
+          distinctlyColor: overlay.colorBy,
+          colorPredicted: CLIP_COLOR_PREDICTED,
           showNonVisibleNodes,
           tracks,
           video: fvideo,
@@ -247,6 +244,7 @@ export function ExportClipDialog() {
         });
       };
 
+      const trails = clipTrailStyle(overlay);
       const { buildClipExportPipeline, decodeExportFrame } = await import(
         "@/lib/videoExportPipeline"
       );
@@ -256,21 +254,20 @@ export function ExportClipDialog() {
         video: fvideo,
         decodeFrame: (frameIdx) => decodeExportFrame(fvideo, frameIdx),
         overlayForFrame,
-        // Motion trails, as the live view draws them (View → trail length).
         renderUnderlay:
-          trailLength > 0
+          trails.length > 0
             ? (ctx, frameIdx, zoom) =>
                 renderTrails(
                   ctx,
                   labels,
                   frameIdx,
                   fvideo,
-                  trailLength,
+                  trails.length,
                   tracks,
-                  palette,
+                  overlay.palette,
                   zoom,
                   trackColorOverrides,
-                  { node: trailNode, alpha: trailAlpha, fade: trailFade, width: trailWidth }
+                  trails.style
                 )
             : undefined,
         quality,
@@ -286,18 +283,11 @@ export function ExportClipDialog() {
           background: clipBackgroundColor(cfg.background),
           frames,
           renderOptions: {
-            markerSize,
-            nodeLabelSize,
             edgeStyle,
             showInstances,
-            showLabels,
-            showEdges,
             showNonVisibleNodes,
-            colorPredicted,
             showTrackScore: false,
-            boldLines,
-            // Exported clips draw poses solid; the view's opacity is a viewing aid.
-            poseOpacity: 1,
+            ...clipOverlayRenderOptions(overlay),
           },
         },
         deps,
@@ -306,22 +296,10 @@ export function ExportClipDialog() {
     },
     [
       labels,
-      palette,
-      distinctlyColor,
-      colorPredicted,
       showNonVisibleNodes,
       showInstances,
-      showLabels,
-      showEdges,
-      markerSize,
-      nodeLabelSize,
       edgeStyle,
-      trailLength,
-      trailNode,
-      trailAlpha,
-      trailFade,
-      trailWidth,
-      boldLines,
+      overlay,
       trackColorOverrides,
       quality,
     ]
@@ -461,6 +439,7 @@ export function ExportClipDialog() {
                   video={focused}
                   start={focusedConfig.start}
                   end={focusedConfig.end}
+                  overlay={overlay}
                   onRangeChange={(s, e) =>
                     dispatch({ type: "setRange", video: focused, start: s, end: e })
                   }
@@ -487,6 +466,14 @@ export function ExportClipDialog() {
                       includeUnlabeled,
                     })
                   }
+                />
+              )}
+              {!encoding && (
+                <ClipOverlaySettings
+                  style={overlay}
+                  nodeNames={labels.skeletons[0]?.nodes.map((n) => n.name) ?? []}
+                  hasTracks={hasAssignedTracks(labels)}
+                  onChange={(patch) => setOverlay((o) => ({ ...o, ...patch }))}
                 />
               )}
               {!encoding && (
@@ -520,7 +507,9 @@ export function ExportClipDialog() {
                     Open when done
                   </label>
                   <p className="col-span-2 text-xs text-muted-foreground">
-                    Overlay style, including motion trails, follows the View settings.
+                    Quality sets the bitrate. SLEAP&apos;s CRF setting has no
+                    equivalent here: the app&apos;s H.264 encoders are
+                    bitrate-controlled.
                   </p>
                 </div>
               )}

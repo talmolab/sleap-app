@@ -739,14 +739,15 @@ describe("runClipExport (integration, stubbed)", () => {
 });
 
 // ---------------------------------------------------------------------------
-// Pure: scale clamp (no upscaling — PyQt parity)
+// Pure: scale clamp (PyQt's 0.1–2.0 range)
 // ---------------------------------------------------------------------------
 
 describe("clampClipScale", () => {
-  it("caps values above 1.0 at the max (no upscaling)", () => {
-    expect(clampClipScale(2)).toBe(CLIP_SCALE_MAX);
-    expect(clampClipScale(1.5)).toBe(1);
-    expect(clampClipScale(100)).toBe(1);
+  it("allows up to 2.0, as PyQt's Scale field, and caps above it", () => {
+    expect(CLIP_SCALE_MAX).toBe(2);
+    expect(clampClipScale(1.5)).toBe(1.5);
+    expect(clampClipScale(2)).toBe(2);
+    expect(clampClipScale(100)).toBe(2);
   });
 
   it("raises values below 0.1 to the min", () => {
@@ -980,7 +981,7 @@ describe("labeled-frames-only clips (PyQt's default)", () => {
 });
 
 describe("motion trails in clips", () => {
-  it("draws the trail underlay before the skeletons, every frame, at the clip's zoom", async () => {
+  it("draws the trail underlay before the skeletons, every frame, in source-pixel sizes", async () => {
     const calls: string[] = [];
     await runClipExport(
       { ...baseParams, scale: 0.5, output: { width: 50, height: 40 } },
@@ -993,12 +994,14 @@ describe("motion trails in clips", () => {
         renderOverlay: () => calls.push("skeleton"),
       }
     );
+    // zoom 1 at scale 0.5: trail and skeleton sizes shrink with the clip, as in
+    // sleap-io's render_video.
     expect(calls).toEqual([
-      "trail:0@0.5",
+      "trail:0@1",
       "skeleton",
-      "trail:1@0.5",
+      "trail:1@1",
       "skeleton",
-      "trail:2@0.5",
+      "trail:2@1",
       "skeleton",
     ]);
   });
@@ -1020,5 +1023,30 @@ describe("rawFrameToRGBA (grayscale videos' 1-channel frames)", () => {
     expect(rawFrameToRGBA(null)).toBeNull();
     expect(rawFrameToRGBA(new Uint8Array(4))).toBeNull();
     expect(rawFrameToRGBA({ width: 1, height: 1, close() {} })).toBeNull();
+  });
+});
+
+describe("overlay sizes follow the clip scale (sleap-io parity)", () => {
+  it("renders the overlay at zoom 1 inside the scale transform", async () => {
+    const zooms: number[] = [];
+    const transforms: number[][] = [];
+    const ctx = fakeCtx() as unknown as { setTransform: (...a: number[]) => void };
+    const origSet = ctx.setTransform.bind(ctx);
+    ctx.setTransform = (...a: number[]) => {
+      transforms.push(a);
+      origSet(...a);
+    };
+    await runClipExport(
+      { ...baseParams, scale: 2, output: { width: 200, height: 160 } },
+      {
+        decodeFrame: async () => null,
+        overlayForFrame: () => [],
+        ctx: ctx as never,
+        encoder: fakeEncoder(),
+        renderOverlay: (_c, _i, opts) => zooms.push(opts.zoom ?? NaN),
+      }
+    );
+    expect(zooms.every((z) => z === 1)).toBe(true);
+    expect(transforms).toContainEqual([2, 0, 0, 2, 0, 0]);
   });
 });
