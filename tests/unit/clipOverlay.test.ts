@@ -8,12 +8,17 @@ import { describe, it, expect } from "../bun-test";
 import { lineScale, renderInstances, type RenderedInstance } from "@/canvas/SkeletonRenderer";
 import {
   clipOverlayRenderOptions,
+  clipScalePreset,
   clipTrailStyle,
   initialClipOverlayStyle,
   type ClipOverlayViewSettings,
 } from "@/lib/videoExport";
 
 const VIEW: ClipOverlayViewSettings = {
+  distinctlyColor: "track",
+  palette: "alphabet",
+  showLabels: true,
+  nodeLabelSize: 10,
   markerSize: 6,
   boldLines: false,
   showEdges: true,
@@ -76,6 +81,17 @@ describe("initialClipOverlayStyle", () => {
     expect(s.showEdges).toBe(true);
     expect(s.trailNode).toBe("head");
     expect(s.trailColor).toBeNull();
+    expect(s.colorBy).toBe("track");
+    expect(s.palette).toBe("alphabet");
+    expect(s.showNodeNames).toBe(true);
+    expect(s.nodeLabelSize).toBe(10);
+  });
+
+  it("passes node names and their size to the renderer", () => {
+    const s = { ...initialClipOverlayStyle(VIEW), showNodeNames: false, nodeLabelSize: 20 };
+    const opts = clipOverlayRenderOptions(s);
+    expect(opts.showLabels).toBe(false);
+    expect(opts.nodeLabelSize).toBe(20);
   });
 
   it("turns bold lines into a 4 px line width", () => {
@@ -144,5 +160,14 @@ describe("renderer options used by clips", () => {
     const { ctx, lineWidths } = recordingCtx();
     renderInstances(ctx, [inst()], { ...base, showNodes: false, lineWidth: 5 });
     expect(lineWidths).toContain(5);
+  });
+});
+
+describe("clipScalePreset (PyQt's Quality presets)", () => {
+  it("names the preset a scale matches, else custom", () => {
+    expect(clipScalePreset(0.25)).toBe("preview");
+    expect(clipScalePreset(0.5)).toBe("draft");
+    expect(clipScalePreset(1)).toBe("final");
+    expect(clipScalePreset(0.7)).toBe("custom");
   });
 });

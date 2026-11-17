@@ -27,7 +27,7 @@ import {
 import type { TrailStyle } from "@/canvas/TrailRenderer";
 import { getInstanceColor, getPaletteColor, resolveColorTarget, type RGB } from "@/lib/colorPalettes";
 import { toImageCoords } from "@/lib/cropTransform";
-import type { Instance, Labels, Track, Video } from "@/types";
+import type { ColorTarget, Instance, Labels, Track, Video } from "@/types";
 
 /** The codec used for clip export. `avc` is H.264 (universally playable mp4). */
 export const CLIP_EXPORT_CODEC = "avc" as const;
@@ -563,6 +563,10 @@ export type ClipQuality = "low" | "medium" | "high" | "very-high";
  * each time the dialog opens; changing it doesn't change the View.
  */
 export interface ClipOverlayStyle {
+  /** What gets its own color (PyQt's "Color by"). */
+  colorBy: ColorTarget;
+  /** A key of `PALETTES`. */
+  palette: string;
   markerShape: MarkerShape;
   markerSize: number;
   /** Width of user edges in output pixels (predicted edges are half). */
@@ -571,6 +575,9 @@ export interface ClipOverlayStyle {
   poseOpacity: number;
   showNodes: boolean;
   showEdges: boolean;
+  /** Node names next to each node (PyQt clips have none; the View shows them by default). */
+  showNodeNames: boolean;
+  nodeLabelSize: number;
   showTrails: boolean;
   trailLength: number;
   trailNode: string;
@@ -599,6 +606,10 @@ const DEFAULT_CLIP_TRAIL_LENGTH = 10;
 
 /** The View settings a clip's overlay starts from. */
 export interface ClipOverlayViewSettings {
+  distinctlyColor: ColorTarget;
+  palette: string;
+  showLabels: boolean;
+  nodeLabelSize: number;
   markerSize: number;
   boldLines: boolean;
   showEdges: boolean;
@@ -616,12 +627,16 @@ export interface ClipOverlayViewSettings {
  */
 export function initialClipOverlayStyle(view: ClipOverlayViewSettings): ClipOverlayStyle {
   return {
+    colorBy: view.distinctlyColor,
+    palette: view.palette,
     markerShape: "circle",
     markerSize: view.markerSize,
     lineWidth: view.boldLines ? 4 : 2,
     poseOpacity: 1,
     showNodes: true,
     showEdges: view.showEdges,
+    showNodeNames: view.showLabels,
+    nodeLabelSize: view.nodeLabelSize,
     showTrails: view.trailLength > 0,
     trailLength: view.trailLength > 0 ? view.trailLength : DEFAULT_CLIP_TRAIL_LENGTH,
     trailNode: view.trailNode,
@@ -635,7 +650,10 @@ export function initialClipOverlayStyle(view: ClipOverlayViewSettings): ClipOver
 /** The renderer options a clip's overlay style sets. */
 export function clipOverlayRenderOptions(
   style: ClipOverlayStyle
-): Pick<RenderOptions, "markerShape" | "markerSize" | "lineWidth" | "boldLines" | "poseOpacity" | "showNodes" | "showEdges"> {
+): Pick<
+  RenderOptions,
+  "markerShape" | "markerSize" | "lineWidth" | "boldLines" | "poseOpacity" | "showNodes" | "showEdges" | "showLabels" | "nodeLabelSize"
+> {
   return {
     markerShape: style.markerShape,
     markerSize: style.markerSize,
@@ -645,7 +663,25 @@ export function clipOverlayRenderOptions(
     poseOpacity: style.poseOpacity,
     showNodes: style.showNodes,
     showEdges: style.showEdges,
+    showLabels: style.showNodeNames,
+    nodeLabelSize: style.nodeLabelSize,
   };
+}
+
+/**
+ * PyQt's Quality presets: each is a fixed scale factor; any other scale is
+ * "custom". The preset is derived from the scale, so the two can't disagree.
+ */
+export const CLIP_SCALE_PRESETS = [
+  { id: "preview", label: "Preview (0.25×)", scale: 0.25 },
+  { id: "draft", label: "Draft (0.5×)", scale: 0.5 },
+  { id: "final", label: "Final (1×)", scale: 1 },
+] as const;
+
+export type ClipScalePreset = (typeof CLIP_SCALE_PRESETS)[number]["id"] | "custom";
+
+export function clipScalePreset(scale: number): ClipScalePreset {
+  return CLIP_SCALE_PRESETS.find((p) => Math.abs(p.scale - scale) < 1e-9)?.id ?? "custom";
 }
 
 /** Trail length (0 = no trails) and style for a clip's overlay. */

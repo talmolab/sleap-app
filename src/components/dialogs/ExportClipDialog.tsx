@@ -98,17 +98,13 @@ export function ExportClipDialog() {
   const labels = useAppStore((s) => s.labels);
   const filename = useAppStore((s) => s.filename);
 
-  // View settings that shape the overlay (captured at export time).
-  const palette = useAppStore((s) => s.palette);
-  const distinctlyColor = useAppStore((s) => s.distinctlyColor);
+  // View settings the dialog doesn't override (captured at export time).
   const trackColorOverrides = useAppStore((s) =>
     getActiveTrackOverrides(s.trackColorOverrides, s.projectPath, s.filename),
   );
   const colorPredicted = useAppStore((s) => s.colorPredicted);
   const showNonVisibleNodes = useAppStore((s) => s.showNonVisibleNodes);
   const showInstances = useAppStore((s) => s.showInstances);
-  const showLabels = useAppStore((s) => s.showLabels);
-  const nodeLabelSize = useAppStore((s) => s.nodeLabelSize);
   const edgeStyle = useAppStore((s) => s.edgeStyle);
 
   const [state, dispatch] = useReducer(clipExportReducer, { configs: [], focused: null });
@@ -237,8 +233,8 @@ export function ExportClipDialog() {
         const lf = frameToLf.get(frameIdx);
         if (!lf) return [];
         return buildExportRenderedInstances(lf.instances, {
-          palette,
-          distinctlyColor,
+          palette: overlay.palette,
+          distinctlyColor: overlay.colorBy,
           colorPredicted,
           showNonVisibleNodes,
           tracks,
@@ -268,7 +264,7 @@ export function ExportClipDialog() {
                   fvideo,
                   trails.length,
                   tracks,
-                  palette,
+                  overlay.palette,
                   zoom,
                   trackColorOverrides,
                   trails.style
@@ -287,10 +283,8 @@ export function ExportClipDialog() {
           background: clipBackgroundColor(cfg.background),
           frames,
           renderOptions: {
-            nodeLabelSize,
             edgeStyle,
             showInstances,
-            showLabels,
             showNonVisibleNodes,
             colorPredicted,
             showTrackScore: false,
@@ -303,13 +297,9 @@ export function ExportClipDialog() {
     },
     [
       labels,
-      palette,
-      distinctlyColor,
       colorPredicted,
       showNonVisibleNodes,
       showInstances,
-      showLabels,
-      nodeLabelSize,
       edgeStyle,
       overlay,
       trackColorOverrides,

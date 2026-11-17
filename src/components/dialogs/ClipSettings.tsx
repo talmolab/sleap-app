@@ -1,6 +1,7 @@
 /**
- * Per-video export settings for the focused video: start/end/fps/scale/
- * background, and whether frames without instances are written.
+ * Per-video export settings for the focused video: start/end/fps, scale (with
+ * PyQt's Preview/Draft/Final presets), background, and whether frames without
+ * instances are written.
  * All settings are per-video (design); edits dispatch to the dialog's reducer.
  */
 import { Checkbox } from "@/components/ui/checkbox";
@@ -16,6 +17,8 @@ import {
 import {
   CLIP_SCALE_MIN,
   CLIP_SCALE_MAX,
+  CLIP_SCALE_PRESETS,
+  clipScalePreset,
   type ClipBackground,
   type ClipConfig,
 } from "@/lib/videoExport";
@@ -86,6 +89,29 @@ export function ClipSettings({
           }}
           disabled={disabled}
         />
+      </div>
+      <div className="space-y-1">
+        <Label htmlFor="clip-preset">Preset</Label>
+        <Select
+          value={clipScalePreset(config.scale)}
+          onValueChange={(v) => {
+            const preset = CLIP_SCALE_PRESETS.find((p) => p.id === v);
+            if (preset) onScale(preset.scale);
+          }}
+          disabled={disabled}
+        >
+          <SelectTrigger id="clip-preset" className="w-full">
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            {CLIP_SCALE_PRESETS.map((p) => (
+              <SelectItem key={p.id} value={p.id}>
+                {p.label}
+              </SelectItem>
+            ))}
+            <SelectItem value="custom">Custom</SelectItem>
+          </SelectContent>
+        </Select>
       </div>
       <div className="space-y-1">
         <Label htmlFor="clip-scale">Scale factor</Label>

@@ -42,16 +42,12 @@ const MAX_H = 260;
 export function ClipPreview({ video, start, end, overlay, onRangeChange }: ClipPreviewProps) {
   const labels = useAppStore((s) => s.labels);
   // View settings that shape the overlay (captured for WYSIWYG parity).
-  const palette = useAppStore((s) => s.palette);
-  const distinctlyColor = useAppStore((s) => s.distinctlyColor);
   const trackColorOverrides = useAppStore((s) =>
     getActiveTrackOverrides(s.trackColorOverrides, s.projectPath, s.filename),
   );
   const colorPredicted = useAppStore((s) => s.colorPredicted);
   const showNonVisibleNodes = useAppStore((s) => s.showNonVisibleNodes);
   const showInstances = useAppStore((s) => s.showInstances);
-  const showLabels = useAppStore((s) => s.showLabels);
-  const nodeLabelSize = useAppStore((s) => s.nodeLabelSize);
   const edgeStyle = useAppStore((s) => s.edgeStyle);
 
   const len = video.shape?.[0] ?? 0;
@@ -108,8 +104,8 @@ export function ClipPreview({ video, start, end, overlay, onRangeChange }: ClipP
         if (showOverlay && labels) {
           const lf = frameToLf.get(frameIdx);
           const instances = buildExportRenderedInstances(lf?.instances ?? [], {
-            palette,
-            distinctlyColor,
+            palette: overlay.palette,
+            distinctlyColor: overlay.colorBy,
             colorPredicted,
             showNonVisibleNodes,
             tracks: labels.tracks ?? [],
@@ -122,13 +118,11 @@ export function ClipPreview({ video, start, end, overlay, onRangeChange }: ClipP
           ctx.setTransform(s, 0, 0, s, 0, 0);
           const trails = clipTrailStyle(overlay);
           if (trails.length > 0) {
-            renderTrails(ctx, labels, frameIdx, video, trails.length, labels.tracks ?? [], palette, s, trackColorOverrides, trails.style);
+            renderTrails(ctx, labels, frameIdx, video, trails.length, labels.tracks ?? [], overlay.palette, s, trackColorOverrides, trails.style);
           }
           renderInstances(ctx, instances, {
-            nodeLabelSize,
             edgeStyle,
             showInstances,
-            showLabels,
             showNonVisibleNodes,
             colorPredicted,
             ...clipOverlayRenderOptions(overlay),
@@ -146,9 +140,9 @@ export function ClipPreview({ video, start, end, overlay, onRangeChange }: ClipP
       }
     },
     [
-      video, srcW, srcH, showOverlay, labels, frameToLf, palette, distinctlyColor,
-      colorPredicted, showNonVisibleNodes, showInstances, showLabels, overlay,
-      nodeLabelSize, edgeStyle, projectHasTracks, trackColorOverrides,
+      video, srcW, srcH, showOverlay, labels, frameToLf, colorPredicted,
+      showNonVisibleNodes, showInstances, overlay, edgeStyle, projectHasTracks,
+      trackColorOverrides,
     ]
   );
 

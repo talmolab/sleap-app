@@ -6,6 +6,10 @@ import { ClipOverlaySettings } from "@/components/dialogs/ClipOverlaySettings";
 import { initialClipOverlayStyle, type ClipOverlayStyle } from "@/lib/videoExport";
 
 const style = initialClipOverlayStyle({
+  distinctlyColor: "auto",
+  palette: "standard",
+  showLabels: true,
+  nodeLabelSize: 12,
   markerSize: 4,
   boldLines: false,
   showEdges: true,
@@ -43,5 +47,23 @@ describe("ClipOverlaySettings", () => {
     expect(patches).toContainEqual({ showNodes: false });
     fireEvent.change(screen.getByLabelText("Line width (px)"), { target: { value: "3" } });
     expect(patches).toContainEqual({ lineWidth: 3 });
+  });
+
+  it("shows Color by and Palette, starting from the View", () => {
+    render(<ClipOverlaySettings style={style} nodeNames={[]} hasTracks onChange={() => {}} />);
+    expect(screen.getByLabelText("Color by").textContent).toBe("Auto (Node / Track)");
+    expect(screen.getByLabelText("Palette").textContent).toBe("standard");
+  });
+
+  it("turns node names off and greys out their size", () => {
+    const patches: Partial<ClipOverlayStyle>[] = [];
+    const { rerender } = render(
+      <ClipOverlaySettings style={style} nodeNames={[]} hasTracks onChange={(p) => patches.push(p)} />
+    );
+    expect(screen.getByLabelText("Label size (px)")).not.toBeDisabled();
+    fireEvent.click(screen.getByLabelText("Node names"));
+    expect(patches).toContainEqual({ showNodeNames: false });
+    rerender(<ClipOverlaySettings style={{ ...style, showNodeNames: false }} nodeNames={[]} hasTracks onChange={() => {}} />);
+    expect(screen.getByLabelText("Label size (px)")).toBeDisabled();
   });
 });

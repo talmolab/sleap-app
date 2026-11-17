@@ -1,7 +1,8 @@
 /**
  * Overlay and motion-trail options for exported clips (all clips), as in
- * PyQt's render dialog: marker shape and size, line width, opacity, which
- * parts to draw, and the Motion Trails group.
+ * PyQt's render dialog: color by, palette, marker shape and size, line width,
+ * opacity, which parts to draw, and the Motion Trails group. Node names (and
+ * their size) are extra: PyQt clips have none, sleap-app's View shows them.
  */
 import { Checkbox } from "@/components/ui/checkbox";
 import { Label } from "@/components/ui/label";
@@ -14,6 +15,8 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import type { MarkerShape } from "@/canvas/SkeletonRenderer";
+import { PALETTES } from "@/lib/colorPalettes";
+import type { ColorTarget } from "@/types";
 import {
   CLIP_MARKER_SHAPES,
   CLIP_TRAIL_COLORS,
@@ -33,6 +36,15 @@ interface ClipOverlaySettingsProps {
 const MATCH_POSES = "__match__";
 
 const capitalize = (s: string) => s.charAt(0).toUpperCase() + s.slice(1);
+
+/** Same choices and wording as View ▸ Apply Distinct Colors To. */
+const COLOR_BY: [ColorTarget, string][] = [
+  ["auto", "Auto (Node / Track)"],
+  ["track", "Tracks"],
+  ["instance", "Instances"],
+  ["node", "Nodes"],
+  ["edge", "Edges"],
+];
 
 function Field({ id, label, children }: { id: string; label: string; children: React.ReactNode }) {
   return (
@@ -70,6 +82,42 @@ export function ClipOverlaySettings({ style, nodeNames, hasTracks, disabled, onC
     <div className="space-y-3 border-t border-border pt-3">
       <p className="text-sm font-medium">Overlay (all clips)</p>
       <div className="grid grid-cols-2 gap-3">
+        <Field id="clip-color-by" label="Color by">
+          <Select
+            value={style.colorBy}
+            onValueChange={(v) => onChange({ colorBy: v as ColorTarget })}
+            disabled={disabled}
+          >
+            <SelectTrigger id="clip-color-by" className="w-full">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              {COLOR_BY.map(([v, label]) => (
+                <SelectItem key={v} value={v}>
+                  {label}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        </Field>
+        <Field id="clip-palette" label="Palette">
+          <Select
+            value={style.palette}
+            onValueChange={(palette) => onChange({ palette })}
+            disabled={disabled}
+          >
+            <SelectTrigger id="clip-palette" className="w-full">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              {Object.keys(PALETTES).map((name) => (
+                <SelectItem key={name} value={name}>
+                  {name}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        </Field>
         <Field id="clip-marker-shape" label="Marker">
           <Select
             value={style.markerShape}
@@ -137,7 +185,25 @@ export function ClipOverlaySettings({ style, nodeNames, hasTracks, disabled, onC
             disabled={disabled}
             onChange={(showEdges) => onChange({ showEdges })}
           />
+          <Check
+            id="clip-show-node-names"
+            label="Node names"
+            checked={style.showNodeNames}
+            disabled={disabled}
+            onChange={(showNodeNames) => onChange({ showNodeNames })}
+          />
         </div>
+        <Field id="clip-label-size" label="Label size (px)">
+          <NumberInput
+            id="clip-label-size"
+            min={4}
+            max={48}
+            integer
+            value={style.nodeLabelSize}
+            onCommit={(nodeLabelSize) => onChange({ nodeLabelSize })}
+            disabled={disabled || !style.showNodeNames}
+          />
+        </Field>
       </div>
 
       <p className="text-sm font-medium">Motion trails</p>
