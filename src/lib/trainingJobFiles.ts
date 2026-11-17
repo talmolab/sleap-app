@@ -13,6 +13,7 @@
  * at its `.pkg.slp`. Ported from alicup29's talmolab/sleap-app#485, against
  * the post-training targets `main` offers.
  */
+import { resolvePostTrainingTarget } from "@/lib/postTrainingTarget";
 import yaml from "js-yaml";
 import type { Labels } from "@talmolab/sleap-io.js";
 import {
@@ -59,13 +60,16 @@ export interface TrainingJobInputs {
    */
   selfContained?: boolean;
   inference: {
-    /** A Post-Training Inference Target value: nothing, suggestions, user_labeled,
-     *  predicted, video, all_videos, random_video, random. */
+    /** A Post-Training Inference Target value (see postTrainingTarget.ts). */
     target: string;
     sampleCount: number;
     skipUserLabeled: boolean;
     /** The video "current video" targets mean. */
     video: Labels["videos"][number] | null;
+    /** The current frame, for the "Current frame" target. */
+    frameIdx?: number;
+    /** The timeline selection, for the "Selected clip" target. */
+    frameRange?: readonly [number, number] | null;
   };
   /** Shared timestamp for every run name; defaults to now. */
   runTimestamp?: string;
@@ -213,79 +217,98 @@ export function buildTrainingJobFiles(inputs: TrainingJobInputs): TrainingJobFil
   const inferenceJobs: Record<string, unknown>[] = [];
   const { target } = inputs.inference;
   if (target !== "nothing" && runDirs.length > 0) {
-    const videos = labels?.videos ?? [];
-    // "Current video" targets mean the active video, as in a local run.
-    const currentIdx = inputs.inference.video ? Math.max(0, videos.indexOf(inputs.inference.video)) : 0;
-    const config = buildPostTrainingInferenceConfig({
-      modelType,
-      modelPaths: runDirs,
-      inferenceTarget: target,
-      videoIndex: target === "video" || target === "random_video" ? currentIdx : "all",
-      sampleCount: inputs.inference.sampleCount,
-      skipUserLabeled: inputs.inference.skipUserLabeled,
+    // "Current frame" / "Selected clip" resolve against the app state, as a
+    // local run does; a clip with nothing selected is left out with a note.
+    const resolved = resolvePostTrainingTarget(target, {
+      labels,
+      video: inputs.inference.video,
+      frameRange: inputs.inference.frameRange ?? null,
     });
-    // A video target reads the original video file, as PyQt does (its
-    // VideoItemForInference uses the video's own path). It can't read a
-    // package instead: the package's video indices differ from the project's,
-    // and sleap-nn on a .slp predicts only frames stored in it. A video with
-    // no file of its own (embedded frames, image sequence) reads the project
-    // .slp with --video_index — or, in a package, is left out with a note.
-    const videoFile = (vi: number): string | null => {
-      const v = videos[vi];
-      const f = v?.filename;
-      return v && !v.hasEmbeddedImages && typeof f === "string" ? f : null;
-    };
-    const lines: { args: string[]; dataPath: string; outputPath: string; type: string }[] = [];
-    const addLine = (cfg: typeof config, vi: number | null, sampledFrames?: number[]) => {
-      const own = vi != null ? videoFile(vi) : null;
-      if (vi != null && !own && inputs.selfContained) {
-        notes.push(
-          `Video ${vi + 1} has no video file of its own (its frames are embedded, or it is an image ` +
-            "sequence), so its inference line was left out of the package's inference script.",
-        );
-        return;
-      }
-      const dataPath = own ?? labelsPath;
-      const outputPath = `${baseName(dataPath)}${vi != null && !own ? `.video${vi}` : ""}.predictions.slp`;
-      const args = buildInferenceArgs(cfg, {
-        dataPath,
-        outputPath,
-        suppressVideoIndex: own != null,
-        subcommand: "track",
-        sampledFrames,
-      }).filter((a) => a !== "--gui");
-      lines.push({ args, dataPath, outputPath, type: own ? "video" : "labels" });
-    };
-
-    if (config.frameRange === "random") {
-      videos.forEach((v, vi) => {
-        const n = v.shape?.[0] ?? 0;
-        if (n === 0) return;
-        addLine({ ...config, videoIndex: vi, frameRange: "random_video" }, vi, sampleFrames(n, config.sampleCount, random));
-      });
-    } else if (config.frameRange === "all_videos") {
-      // One line per video, as PyQt's "All videos" makes one item per video.
-      videos.forEach((_v, vi) => addLine({ ...config, videoIndex: vi, frameRange: "video" }, vi));
-    } else if (config.frameRange === "random_video") {
-      const vi = config.videoIndex === "all" ? 0 : config.videoIndex;
-      const n = videos[vi]?.shape?.[0] ?? 0;
-      if (n > 0) addLine(config, vi, sampleFrames(n, config.sampleCount, random));
-      else notes.push("The current video's frame count is unknown, so random-sample inference was left out.");
-    } else if (config.videoIndex !== "all") {
-      addLine(config, config.videoIndex); // "video"
+    if ("skip" in resolved) {
+      notes.push(resolved.skip);
     } else {
-      addLine(config, null); // suggestions / user_labeled / predicted
-    }
-
-    for (const line of lines) {
-      inferenceScript += `sleap-nn ${line.args.map(shellQuote).join(" ")}\n`;
-      inferenceJobs.push({
-        data_path: line.dataPath,
-        models: runDirs,
-        output_path: line.outputPath,
-        type: line.type,
-        only_suggested_frames: config.frameRange === "suggestions",
+      const videos = labels?.videos ?? [];
+      const config = buildPostTrainingInferenceConfig({
+        modelType,
+        modelPaths: runDirs,
+        inferenceTarget: resolved.frameRange,
+        videoIndex: resolved.videoIndex,
+        sampleCount: inputs.inference.sampleCount,
+        skipUserLabeled: inputs.inference.skipUserLabeled,
       });
+      // A video target reads the original video file, as PyQt does (its
+      // VideoItemForInference uses the video's own path). It can't read a
+      // package instead: the package's video indices differ from the project's,
+      // and sleap-nn on a .slp predicts only frames stored in it. A video with
+      // no file of its own (embedded frames, image sequence) reads the project
+      // .slp with --video_index — or, in a package, is left out with a note.
+      const videoFile = (vi: number): string | null => {
+        const v = videos[vi];
+        const f = v?.filename;
+        return v && !v.hasEmbeddedImages && typeof f === "string" ? f : null;
+      };
+      const lines: { args: string[]; dataPath: string; outputPath: string; type: string }[] = [];
+      const addLine = (
+        cfg: typeof config,
+        vi: number | null,
+        extra: { sampledFrames?: number[]; currentFrameIdx?: number } = {},
+      ) => {
+        const own = vi != null ? videoFile(vi) : null;
+        if (vi != null && !own && inputs.selfContained) {
+          notes.push(
+            `Video ${vi + 1} has no video file of its own (its frames are embedded, or it is an image ` +
+              "sequence), so its inference line was left out of the package's inference script.",
+          );
+          return;
+        }
+        const dataPath = own ?? labelsPath;
+        const outputPath = `${baseName(dataPath)}${vi != null && !own ? `.video${vi}` : ""}.predictions.slp`;
+        const args = buildInferenceArgs(cfg, {
+          dataPath,
+          outputPath,
+          suppressVideoIndex: own != null,
+          subcommand: "track",
+          ...extra,
+        }).filter((a) => a !== "--gui");
+        lines.push({ args, dataPath, outputPath, type: own ? "video" : "labels" });
+      };
+
+      if (config.frameRange === "random") {
+        videos.forEach((v, vi) => {
+          const n = v.shape?.[0] ?? 0;
+          if (n === 0) return;
+          addLine({ ...config, videoIndex: vi, frameRange: "random_video" }, vi, {
+            sampledFrames: sampleFrames(n, config.sampleCount, random),
+          });
+        });
+      } else if (config.frameRange === "all_videos") {
+        // One line per video, as PyQt's "All videos" makes one item per video.
+        videos.forEach((_v, vi) => addLine({ ...config, videoIndex: vi, frameRange: "video" }, vi));
+      } else if (config.frameRange === "random_video") {
+        const vi = config.videoIndex === "all" ? 0 : config.videoIndex;
+        const n = videos[vi]?.shape?.[0] ?? 0;
+        if (n > 0) addLine(config, vi, { sampledFrames: sampleFrames(n, config.sampleCount, random) });
+        else notes.push("The current video's frame count is unknown, so random-sample inference was left out.");
+      } else if (config.frameRange === "frame") {
+        addLine(config, config.videoIndex === "all" ? 0 : config.videoIndex, {
+          currentFrameIdx: inputs.inference.frameIdx ?? 0,
+        });
+      } else if (config.videoIndex !== "all") {
+        addLine(config, config.videoIndex); // "video" or a selected clip
+      } else {
+        addLine(config, null); // suggestions / user_labeled / predicted
+      }
+
+      for (const line of lines) {
+        inferenceScript += `sleap-nn ${line.args.map(shellQuote).join(" ")}\n`;
+        inferenceJobs.push({
+          data_path: line.dataPath,
+          models: runDirs,
+          output_path: line.outputPath,
+          type: line.type,
+          only_suggested_frames: config.frameRange === "suggestions",
+        });
+      }
     }
   }
 

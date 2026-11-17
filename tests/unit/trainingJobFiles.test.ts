@@ -159,6 +159,29 @@ describe("training config files", () => {
     }
   });
 
+  // "Current frame" reads the video file at the current frame (#479's targets).
+  it("scripts the current frame against the original video", () => {
+    const base = inputs({}, "frame");
+    const line = fileText(
+      buildTrainingJobFiles({ ...base, inference: { ...base.inference, frameIdx: 7 } }),
+      "inference-script.sh",
+    );
+    expect(line).toContain("--data_path /data/session1.mp4");
+    expect(line).toContain("--frames 7");
+    expect(line).not.toContain("--video_index");
+  });
+
+  // "Selected clip" becomes a frame range; with nothing selected it's left out with a note.
+  it("scripts a selected clip as a frame range", () => {
+    const base = inputs({}, "clip");
+    const job = buildTrainingJobFiles({ ...base, inference: { ...base.inference, frameRange: [20, 10] } });
+    expect(fileText(job, "inference-script.sh")).toContain("--frames 10-20");
+
+    const none = buildTrainingJobFiles(inputs({}, "clip"));
+    expect(fileText(none, "inference-script.sh")).not.toContain("sleap-nn");
+    expect(none.notes).toHaveLength(1);
+  });
+
   // A video with no file of its own reads the project .slp with --video_index.
   it("uses the project file and --video_index for an embedded video", () => {
     const base = inputs({}, "video");
