@@ -53,6 +53,7 @@ import {
 import { requestToggleNegativeFrame } from "@/lib/negativeFrame";
 import { isNativeMenuShortcut } from "@/lib/menu/nativeMenuOwnership";
 import { handleQcReviewKey } from "@/stores/qcStore";
+import { handleProposalKey } from "@/lib/proposalReview";
 
 type Bindings = Record<string, (e: KeyboardEvent) => void>;
 
@@ -244,6 +245,15 @@ export function useKeyboardShortcuts() {
       Digit0: (e) => {
         if (isTextInput(e)) return;
         if (handleQcReviewKey("refit")) e.preventDefault();
+      },
+      // Label QC Review only: A / X accept / reject Claude's suggestion on screen.
+      KeyA: (e) => {
+        if (isTextInput(e)) return;
+        if (handleProposalKey("accept")) e.preventDefault();
+      },
+      KeyX: (e) => {
+        if (isTextInput(e)) return;
+        if (handleProposalKey("reject")) e.preventDefault();
       },
 
       // Mark Frame as Negative (N, as in SLEAP) — asks first if it would remove instances.

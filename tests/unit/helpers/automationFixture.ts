@@ -10,14 +10,13 @@ import { useAppStore } from "@/stores/appStore";
 
 export const NODE_NAMES = ["nose", "head", "tail"];
 
-export function makeAutomationProject(opts: { cropRect?: [number, number, number, number] } = {}) {
+export function makeAutomationProject() {
   const skeleton = new Skeleton({ nodes: NODE_NAMES, edges: [["nose", "head"], ["head", "tail"]] });
   const video = new Video({
     filename: "clip.mp4",
     openBackend: false,
     backendMetadata: { shape: [100, 480, 640, 1] },
   });
-  if (opts.cropRect) (video as unknown as { cropRect: number[] }).cropRect = opts.cropRect;
   const inst = (dx: number) =>
     Instance.fromNumpy({
       pointsData: [
@@ -39,9 +38,9 @@ export function makeAutomationProject(opts: { cropRect?: [number, number, number
 }
 
 /** Load the project into the store, select frame 10's instance, return a CommandContext. */
-export function loadFixtureWithOneInstance(opts?: Parameters<typeof makeAutomationProject>[0]) {
+export function loadFixtureWithOneInstance() {
   useAppStore.setState(useAppStore.getInitialState());
-  const project = makeAutomationProject(opts);
+  const project = makeAutomationProject();
   useAppStore.getState().setLabels(project.labels, "clip.slp");
   const ctx = new CommandContext();
   const app = useAppStore.getState();

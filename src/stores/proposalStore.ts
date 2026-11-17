@@ -16,6 +16,7 @@ import { useQcStore } from "@/stores/qcStore";
 import { SetNodes } from "@/commands/editCommands";
 import type { CommandContext } from "@/commands/CommandContext";
 import { AutomationError } from "@/automation/errors";
+import { qcMarkKey } from "@/lib/qcReviewed";
 import type { Instance } from "@/types";
 
 /** Node index → source-frame position, or null = not visible. */
@@ -96,6 +97,25 @@ export function isOutdated(p: Proposal): boolean {
   return !inst || poseFingerprint(inst) !== p.fingerprint;
 }
 
+/**
+ * Where a proposal stands now: its status, or "outdated" (pending, but the
+ * instance changed since), or "undone" (an accepted fix the user took back
+ * with ⌘Z, so the pose is as it was when proposed; it can be accepted again).
+ */
+export type ProposalStanding = ProposalStatus | "outdated" | "undone";
+
+export function proposalState(p: Proposal): ProposalStanding {
+  if (p.status === "pending") return isOutdated(p) ? "outdated" : "pending";
+  if (p.status === "accepted" && p.kind === "fix" && !isOutdated(p)) return "undone";
+  return p.status;
+}
+
+/** Whether the user can accept it now (pending or undone; not outdated). */
+export const canAccept = (p: Proposal) => {
+  const st = proposalState(p);
+  return st === "pending" || st === "undone";
+};
+
 function requireInstance(t: ProposalTarget): Instance {
   const inst = proposalInstance(t);
   if (!inst) {
@@ -122,9 +142,13 @@ export const useProposalStore = create<ProposalState>((set, get) => {
   };
   const setStatus = (id: string, status: ProposalStatus) =>
     set({ proposals: get().proposals.map((p) => (p.id === id ? { ...p, status } : p)) });
-  const pending = (id: string): Proposal => {
+  const find = (id: string): Proposal => {
     const p = get().proposals.find((x) => x.id === id);
     if (!p) throw new AutomationError("UNKNOWN_PROPOSAL", `No proposal "${id}".`);
+    return p;
+  };
+  const pending = (id: string): Proposal => {
+    const p = find(id);
     if (p.status !== "pending") throw new AutomationError("NOT_PENDING", `Proposal "${id}" was already ${p.status}.`);
     return p;
   };
@@ -165,15 +189,28 @@ export const useProposalStore = create<ProposalState>((set, get) => {
     },
 
     accept: async (id, ctx) => {
-      const p = pending(id);
-      if (isOutdated(p)) {
+      const p = find(id);
+      const st = proposalState(p);
+      if (st === "accepted" || st === "rejected") {
+        throw new AutomationError("NOT_PENDING", `Proposal "${id}" was already ${st}.`);
+      }
+      if (st === "outdated") {
         throw new AutomationError(
           "OUTDATED",
           "This instance changed after Claude's suggestion, so it can't be applied. Ask Claude to look again.",
         );
       }
       if (p.kind === "ignore") {
+        const inst = proposalInstance(p)!;
         useQcStore.getState().markOk(p.videoIdx, p.frameIdx, p.instIdx);
+        // markOk does nothing when the project's marks aren't loaded (no
+        // project key yet): don't claim the flag was ignored.
+        if (!useQcStore.getState().dismissed.has(qcMarkKey(p.videoIdx, p.frameIdx, p.instIdx, inst))) {
+          throw new AutomationError(
+            "IGNORE_FAILED",
+            "SLEAP couldn't mark this instance OK because the project's Label QC marks aren't loaded yet. Try again in a moment.",
+          );
+        }
         setStatus(id, "accepted");
         return;
       }
@@ -181,11 +218,12 @@ export const useProposalStore = create<ProposalState>((set, get) => {
       // the instance and running the command, or the selection could change.
       const cc = ctx ?? (await import("@/commands/CommandContext")).commandContext;
       // Re-check after the await: a second Accept, or an edit, may have landed.
-      if (get().proposals.find((x) => x.id === id)?.status !== "pending") {
-        throw new AutomationError("NOT_PENDING", `Proposal "${id}" was already decided.`);
-      }
-      if (isOutdated(p)) {
-        throw new AutomationError("OUTDATED", "This instance changed after Claude's suggestion, so it can't be applied.");
+      const now = get().proposals.find((x) => x.id === id);
+      if (!now || !canAccept(now)) {
+        throw new AutomationError(
+          now && proposalState(now) === "outdated" ? "OUTDATED" : "NOT_PENDING",
+          `Proposal "${id}" can't be applied any more (it was decided, or the instance changed).`,
+        );
       }
       const inst = proposalInstance(p)!;
       const app = useAppStore.getState();
