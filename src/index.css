@@ -285,6 +285,16 @@ button,
   opacity: 1;
 }
 
+/* Toasts stay clickable while a modal dialog is open. Radix sets
+   `pointer-events: none` on <body> for a modal, and toasts inherit it — so a
+   toast raised from inside a dialog (e.g. "Configuration files saved" from
+   the Training Configuration window) had dead "Show in folder" / "Copy path"
+   buttons. Dialogs pair this with `keepOpenOnToastClick` (lib/dialogToasts.ts)
+   so the click doesn't also close them. */
+[data-sonner-toast] {
+  pointer-events: auto;
+}
+
 /* Loading overlay progress bar: a forward-sweeping shimmer that signals active
    work even between progress ticks. */
 @keyframes progress-shimmer {

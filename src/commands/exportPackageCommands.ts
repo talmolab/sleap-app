@@ -232,7 +232,7 @@ export function frameCountForLevel(labels: Labels, level: ExportPackageLevel): n
 }
 
 /** Is the streaming desktop write (worker + native file writes) available? */
-async function canStreamPackage(): Promise<boolean> {
+export async function canStreamPackage(): Promise<boolean> {
   return (
     (await getPlatform()).isTauri &&
     typeof SharedArrayBuffer !== "undefined" &&
@@ -251,7 +251,7 @@ async function canStreamPackage(): Promise<boolean> {
  * spends 90% on the first and the last 10% on the second, so it never jumps
  * back; the streamed export has one pass and uses the whole bar.
  */
-async function withEmbedProgress<T>(
+export async function withEmbedProgress<T>(
   twoPasses: boolean,
   work: (
     onProgress: (current: number, total: number, message?: string) => boolean
@@ -283,7 +283,7 @@ async function withEmbedProgress<T>(
   }
 }
 
-function warnUnembedded(): void {
+export function warnUnembedded(): void {
   toast.warning("Frames from continuous videos were not embedded", {
     description:
       "This project references a source video (e.g. .mp4) and its frame " +
@@ -316,8 +316,18 @@ export async function exportLabelsPackage(
   } = {}
 ): Promise<string | null> {
   if (!labels) return null;
-  // One package export at a time: a second would race the first for the
-  // progress overlay and the native file handle (and halve both's speed).
+  return withExportLock(() => exportLabelsPackageNow(labels, filename, level, options));
+}
+
+let exportRunning = false;
+
+/**
+ * Run one package-building export at a time: a second would race the first
+ * for the progress overlay and the native file handle (and halve both's
+ * speed). Returns null (with a note) when another export is still running.
+ * Shared with the training job package export (trainingJobExport.ts).
+ */
+export async function withExportLock<T>(work: () => Promise<T | null>): Promise<T | null> {
   if (exportRunning) {
     toast.info("An export is already running", {
       description: "Wait for it to finish, or cancel it, before starting another.",
@@ -326,13 +336,54 @@ export async function exportLabelsPackage(
   }
   exportRunning = true;
   try {
-    return await exportLabelsPackageNow(labels, filename, level, options);
+    return await work();
   } finally {
     exportRunning = false;
   }
 }
 
-let exportRunning = false;
+/**
+ * Write a package of `labels` at `level` straight to `destPath` on desktop,
+ * with no Save dialog — the streaming write when the source videos are
+ * continuous, else built in memory and written. Used by the training job
+ * package export, which writes the package to a temp file before zipping it.
+ * Call inside {@link withEmbedProgress} (pass its `onProgress`).
+ * Returns true when a video's frames could not be embedded.
+ */
+export async function writeLabelsPackageToPath(
+  labels: Labels,
+  level: ExportPackageLevel,
+  destPath: string,
+  onProgress: (current: number, total: number, message?: string) => boolean
+): Promise<boolean> {
+  const mode = embedModeForLevel(level);
+  const exportLabels = labelsForLevel(labels, level);
+  const embedVideos = videosToEmbed(exportLabels, level);
+  await prepareVideosForFrameReads(embedVideos);
+  if ((await canStreamPackage()) && !exportLabels.videos.some((v) => v.hasEmbeddedImages)) {
+    const extractDeps = createTauriExtractFramesDeps();
+    await saveEmbeddedPkgStreaming(exportLabels, destPath, null, {
+      embed: mode,
+      onProgress,
+      frameReader: (video, frames) => createFfmpegFrameReader(video, frames, extractDeps),
+    });
+    return embedVideos.some((v) => !v.backend);
+  }
+  const bytes = await saveSlpToBytes(exportLabels, { embed: mode, onProgress });
+  await (await getPlatform()).writeFile(destPath, bytes);
+  return packageLeavesFramesUnembedded(labels, bytes).catch(() => false);
+}
+
+/** Build a package of `labels` at `level` in memory (browser path of the training job package). */
+export async function labelsPackageBytes(
+  labels: Labels,
+  level: ExportPackageLevel,
+  onProgress: (current: number, total: number, message?: string) => boolean
+): Promise<Uint8Array> {
+  const exportLabels = labelsForLevel(labels, level);
+  await prepareVideosForFrameReads(videosToEmbed(exportLabels, level));
+  return saveSlpToBytes(exportLabels, { embed: embedModeForLevel(level), onProgress });
+}
 
 async function exportLabelsPackageNow(
   labels: Labels,

@@ -591,6 +591,11 @@ export function emptyMetrics(): RuntimeMetrics {
   return { meanEpochTimeSec: null, etaNext10Min: null, epochsInPlateau: 0, inPlateau: false, bestValEpoch: null };
 }
 
+/** The run `error` that marks a user Cancel. Local and remote runs both end
+ *  "unsuccessfully" when cancelled; this is how they tell it apart from a
+ *  real failure. */
+export const TRAINING_CANCELLED = "Training cancelled";
+
 export interface ModelProgress {
   label: string;
   epoch: number;
@@ -598,7 +603,8 @@ export interface ModelProgress {
   loss: number | null;
   valLoss: number | null;
   bestValLoss: number | null;
-  status: "pending" | "running" | "completed" | "failed";
+  /** "cancelled": the user's Cancel stopped this model mid-run (not a failure). */
+  status: "pending" | "running" | "completed" | "failed" | "cancelled";
   epochSamples: EpochSample[];
   batchSamples: BatchSample[];
   epochSize: number;        // batches-per-epoch (learned: max seen last_batch+1); PyQt parity
@@ -1408,6 +1414,33 @@ function prepareLocalRun(
 }
 
 /** The local labels file training reads: the picked file, else the project. */
+/** Whether `path` exists on disk (desktop). False if it can't be checked. */
+async function pathExists(path: string): Promise<boolean> {
+  try {
+    const { exists } = await import("@tauri-apps/plugin-fs");
+    return await exists(path);
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Delete a cancelled run's folder, recursively. Returns true when deleted,
+ * false when it couldn't be, null when there was nothing to delete (sleap-nn
+ * was killed before it created the folder).
+ */
+async function removeRunFolder(path: string): Promise<boolean | null> {
+  if (!(await pathExists(path))) return null;
+  try {
+    const { remove } = await import("@tauri-apps/plugin-fs");
+    await remove(path, { recursive: true });
+    return true;
+  } catch (e) {
+    console.warn("[training] Couldn't delete the cancelled run's folder:", path, e);
+    return false;
+  }
+}
+
 async function localTrainingLabelsPath(config: TrainingConfig): Promise<string> {
   return (
     config.trainingLabelsPath ||
@@ -2163,9 +2196,9 @@ export const useTrainingStore = create<TrainingState>()((set, get) => ({
         logFlusher.flush();
 
         if (!result.success) {
-          // The user's own Cancel already set "Training cancelled"; the run
+          // The user's own Cancel already set TRAINING_CANCELLED; the run
           // ending is that cancel landing, not a failure to report.
-          if (get().error === "Training cancelled") return;
+          if (get().error === TRAINING_CANCELLED) return;
           const message = result.error || "Training failed";
           set((s) => ({
             status: "error",
@@ -2304,7 +2337,7 @@ export const useTrainingStore = create<TrainingState>()((set, get) => ({
             } catch (e) {
               logFlusher.flush();
               // The user's own Cancel ended the inference job: not a failure.
-              const canceled = get().error === "Training cancelled";
+              const canceled = get().error === TRAINING_CANCELLED;
               const message = canceled
                 ? "Post-training inference canceled"
                 : `Post-training inference failed: ${e instanceof Error ? e.message : String(e)}`;
@@ -2476,9 +2509,13 @@ export const useTrainingStore = create<TrainingState>()((set, get) => ({
       const { useAppStore } = await import("@/stores/appStore");
       const localLabels = useAppStore.getState().labels;
       const localSizeStats = computeInstanceSizeStats(localLabels);
+      const cancelled = () => get().error === TRAINING_CANCELLED;
 
       try {
         for (let i = 0; i < slots.length; i++) {
+          // A Cancel that lands between two models (top-down) has no process
+          // to kill — don't start the next one.
+          if (cancelled()) return;
           const cf = config.configs.find((c) => c.slot === slots[i]);
           if (!cf) continue;
 
@@ -2491,10 +2528,15 @@ export const useTrainingStore = create<TrainingState>()((set, get) => ({
           }));
 
           const { configYaml, runName } = prepareLocalRun(cf, localLabels, localSizeStats);
+          const runDir = `${modelDir}/${runName}`;
+          // Whether this run's folder is ours to delete on Cancel: only if it
+          // didn't exist yet. (A reused custom run name can point at an earlier,
+          // finished run; sleap-nn then writes to "<name>-1" instead.)
+          const runDirExisted = await pathExists(runDir);
 
           set((s) => ({
             models: s.models.map((m, j) =>
-              j === i ? { ...m, runDir: `${modelDir}/${runName}` } : m,
+              j === i ? { ...m, runDir } : m,
             ),
           }));
 
@@ -2550,6 +2592,33 @@ export const useTrainingStore = create<TrainingState>()((set, get) => ({
 
           if (result.modelPath) trainedModelPaths.push(result.modelPath);
 
+          // Cancel kills sleap-nn, so the run exits non-zero; that's the
+          // user's Cancel landing, not a failure (no error output to show).
+          if (cancelled()) {
+            set((s) => ({
+              models: s.models.map((m, j) =>
+                j === i ? { ...m, status: "cancelled" as const } : m,
+              ),
+            }));
+            // Like PyQt SLEAP ("Deleting canceled run data", runners.py
+            // run_gui_training): remove the cancelled model's partial run
+            // folder. Models that finished keep theirs.
+            if (!runDirExisted) {
+              const removed = await removeRunFolder(runDir);
+              if (removed !== null) {
+                set((s) => ({
+                  log: appendLog(
+                    s.log,
+                    removed
+                      ? `— Deleted the cancelled run's folder: ${runDir}`
+                      : `— Couldn't delete the cancelled run's folder: ${runDir}`,
+                  ),
+                }));
+              }
+            }
+            return;
+          }
+
           const wasStopped = get()._stopRequested;
           console.log("[training] Model %d finished: success=%s, wasStopped=%s, modelPath=%s", i, result.success, wasStopped, result.modelPath);
           if (result.success || wasStopped) {
@@ -2581,6 +2650,7 @@ export const useTrainingStore = create<TrainingState>()((set, get) => ({
         }
 
         set({ modelOutputDirs: trainedModelPaths });
+        if (cancelled()) return;
 
         // ── Post-training model export (ONNX / TensorRT) ──────
         // Auto-export the trained model to a portable runtime when the user picked a
@@ -2627,6 +2697,8 @@ export const useTrainingStore = create<TrainingState>()((set, get) => ({
           const { detectGpu } = await import("@/platform/backend");
           exportDevice = (await detectGpu()) === "cuda" ? "cuda" : "cpu";
         }
+
+        if (cancelled()) return;
 
         // ── Post-training inference ───────────────────────────
         const inferenceTarget = localOpts?.inferenceTarget;
@@ -2708,29 +2780,42 @@ export const useTrainingStore = create<TrainingState>()((set, get) => ({
                 set((s) => ({ log: appendLog(s.log, `— Inference: video ${vi + 1}/${videos.length}...`) }));
                 const perVideoConfig = { ...inferenceConfig, videoIndex: vi as number | "all", frameRange: "random_video" as typeof inferenceConfig.frameRange };
                 const result = await runInferenceWithFallback(perVideoConfig);
+                if (cancelled()) break;
                 if (result.success && result.outputPath) {
                   await mergeOutputSlp(result.outputPath);
                 }
               }
             } else {
               const result = await runInferenceWithFallback(inferenceConfig);
-              if (result.success && result.outputPath) {
+              if (cancelled()) {
+                // Cancel killed the inference run: nothing to merge, not a failure.
+              } else if (result.success && result.outputPath) {
                 await mergeOutputSlp(result.outputPath);
               } else if (!result.success) {
                 set((s) => ({ log: appendLog(s.log, "— Post-training inference failed (non-zero exit).") }));
               }
             }
-            set((s) => ({ log: appendLog(s.log, "— Predictions merged into project.") }));
+            set((s) => ({
+              log: appendLog(s.log, cancelled() ? "— Post-training inference cancelled." : "— Predictions merged into project."),
+            }));
           } catch (e) {
             console.error("[training] Post-training inference failed:", e);
             set((s) => ({
-              log: appendLog(s.log, `— Post-training inference failed: ${e instanceof Error ? e.message : String(e)}`),
+              log: appendLog(
+                s.log,
+                cancelled()
+                  ? "— Post-training inference cancelled."
+                  : `— Post-training inference failed: ${e instanceof Error ? e.message : String(e)}`,
+              ),
             }));
           }
         }
 
+        // A Cancel during export/inference leaves "Training cancelled" in place.
+        if (cancelled()) return;
         set({ status: "completed" });
       } catch (e) {
+        if (cancelled()) return;
         set({
           status: "error",
           error: `Local training error: ${e instanceof Error ? e.message : String(e)}`,
@@ -2777,6 +2862,10 @@ export const useTrainingStore = create<TrainingState>()((set, get) => ({
   },
 
   cancelTraining: async () => {
+    // Mark the run cancelled BEFORE ending it: killing sleap-nn makes the
+    // local run exit non-zero, and the training loop must already see that
+    // this was the user's Cancel — not report it as "failed at epoch N".
+    set({ status: "error", error: TRAINING_CANCELLED });
     if (get()._isRemote) {
       // Remote: jobs.cancel(mode: "cancel")
       const { useConnectStore } = await import("@/stores/connectStore");
@@ -2786,7 +2875,6 @@ export const useTrainingStore = create<TrainingState>()((set, get) => ({
       // Local: kill subprocess
       await cancelCommand();
     }
-    set({ status: "error", error: "Training cancelled" });
   },
 
   startDryRun: async () => {

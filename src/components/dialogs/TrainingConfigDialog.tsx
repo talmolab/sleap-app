@@ -8,6 +8,7 @@ import {
 import { Input } from "@/components/ui/input";
 import { NumberInput } from "@/components/NumberInput";
 import { toast } from "@/lib/notify";
+import { keepOpenOnToastClick } from "@/lib/dialogToasts";
 import { LogNumberInput } from "@/components/LogNumberInput";
 import { Separator } from "@/components/ui/separator";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
@@ -31,6 +32,12 @@ import { getBaselineProfilesForHead, getRecommendedProfileForHead, slotToHeadTyp
 import { computeInstanceSizeStats, recommendMaxStride, recommendBackboneProfile, recommendCentroidScale, resolveEffectiveCropSize, detectVideoChannels, resolveInputChannels } from "@/lib/modelStats";
 import { computeNodeVisibility, visibilityTier, type NodeVisibility } from "@/lib/anchorVisibility";
 import { isTauri } from "@/lib/platform";
+import {
+  copyTrainingConfigsToClipboard,
+  exportTrainingJobPackage,
+  saveTrainingConfigFiles,
+  type TrainingConfigRequest,
+} from "@/commands/trainingConfigExport";
 import { confirmDialog } from "@/stores/confirmStore";
 
 /** Tailwind text color per visibility tier, matching the Training panel's log coloring. */
@@ -1293,6 +1300,17 @@ export function TrainingConfigDialog({
     return (ai === -1 ? 999 : ai) - (bi === -1 ? 999 : bi);
   });
 
+  // PyQt's footer buttons: Copy to clipboard / Save configuration files... / Export Training Job Package...
+  const [configBusy, setConfigBusy] = useState(false);
+  const runConfigAction = async (action: (req: TrainingConfigRequest) => Promise<unknown>) => {
+    setConfigBusy(true);
+    try {
+      await action({ modelType, configs: sortedConfigs, inferenceTarget, sampleCount, skipUserLabeled });
+    } finally {
+      setConfigBusy(false);
+    }
+  };
+
   const scrollTo = useCallback((id: string) => {
     const activeRef = activeTab === "pipeline"
       ? pipelineScrollRef.current
@@ -1359,7 +1377,7 @@ export function TrainingConfigDialog({
 
   return (
     <Dialog open={open} onOpenChange={(isOpen) => { if (!isOpen) { onClose(); setSearchQuery(""); } }}>
-      <DialogContent showCloseButton={false} className="w-[92vw] h-[90vh] min-w-[640px] min-h-[480px] max-w-[96vw] sm:max-w-[96vw] max-h-[94vh] resize overflow-hidden p-0 inset-0 translate-x-0 translate-y-0 m-auto flex flex-col" onKeyDown={(e) => e.stopPropagation()}>
+      <DialogContent showCloseButton={false} className="w-[92vw] h-[90vh] min-w-[640px] min-h-[480px] max-w-[96vw] sm:max-w-[96vw] max-h-[94vh] resize overflow-hidden p-0 inset-0 translate-x-0 translate-y-0 m-auto flex flex-col" onKeyDown={(e) => e.stopPropagation()} onInteractOutside={keepOpenOnToastClick}>
         <Tabs value={activeTab} onValueChange={setActiveTab} className="flex flex-col flex-1 min-h-0 gap-0">
           {/* Compact header: title (left) · flat centered tabs · saved indicator (right) */}
           <div className="relative flex items-center justify-between gap-4 px-6 py-2.5 border-b shrink-0">
@@ -2061,8 +2079,8 @@ export function TrainingConfigDialog({
               </TabsContent>
             ))}
           </div>
-          {/* Footer: reset (left) · Done (right) */}
-          <div className="flex items-center justify-between px-6 py-3 border-t shrink-0">
+          {/* Footer: reset (left) · PyQt's Copy / Save / Export package buttons · Done (right) */}
+          <div className="flex flex-wrap items-center justify-between gap-3 px-6 py-3 border-t shrink-0">
             <button
               type="button"
               onClick={handleResetDefaults}
@@ -2071,6 +2089,39 @@ export function TrainingConfigDialog({
               <RotateCcw className="h-3.5 w-3.5" />
               Reset to profile defaults…
             </button>
+            {mode !== "worker-file" && (
+              <div className="flex flex-wrap items-center gap-2 ml-auto">
+                <button
+                  type="button"
+                  disabled={configBusy || sortedConfigs.length === 0}
+                  onClick={() => runConfigAction(copyTrainingConfigsToClipboard)}
+                  title="Copy every model's sleap-nn configuration (YAML) to the clipboard"
+                  className="px-3 h-8 rounded-md border text-sm hover:bg-muted disabled:opacity-50 disabled:pointer-events-none"
+                >
+                  Copy to clipboard
+                </button>
+                <button
+                  type="button"
+                  disabled={configBusy || sortedConfigs.length === 0}
+                  onClick={() => runConfigAction(saveTrainingConfigFiles)}
+                  title={isTauri
+                    ? "Save the configuration files and scripts to run training and inference yourself"
+                    : "Download the configuration files and scripts (as a .zip) to run training and inference yourself. Put your saved .slp file in the same folder before running them."}
+                  className="px-3 h-8 rounded-md border text-sm hover:bg-muted disabled:opacity-50 disabled:pointer-events-none"
+                >
+                  Save configuration files…
+                </button>
+                <button
+                  type="button"
+                  disabled={configBusy || sortedConfigs.length === 0 || !labels}
+                  onClick={() => runConfigAction(exportTrainingJobPackage)}
+                  title="Save a .zip with the labeled frames (images included), the configuration files and scripts, to train on another computer"
+                  className="px-3 h-8 rounded-md border text-sm hover:bg-muted disabled:opacity-50 disabled:pointer-events-none"
+                >
+                  Export Training Job Package…
+                </button>
+              </div>
+            )}
             <button
               type="button"
               onClick={() => { onClose(); setSearchQuery(""); }}
