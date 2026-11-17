@@ -20,7 +20,15 @@ let behavior: "untilKilled" | "fail" | "succeed" = "untilKilled";
 let kill: (() => void) | null = null;
 let started: (() => void) | null = null;
 
+/** Fake disk: folders that exist, and what got deleted. */
+const dirs = new Set<string>();
+const removedDirs: string[] = [];
+let lastRunDir = "";
+
 const runTrainingMock = vi.fn(async (...args: RunTrainingArgs) => {
+  // sleap-nn creates <ckpt_dir>/<run_name> when it starts.
+  lastRunDir = `${args[4]}/${args[2]}`;
+  dirs.add(lastRunDir);
   const onEvent = args[3];
   onEvent({ event: "stdout", data: { line: "Epoch 2/100" } });
   onEvent({ event: "stderr", data: { line: "UserWarning: something noisy" } });
@@ -40,6 +48,13 @@ const cancelCommandMock = vi.fn(async () => {
 });
 
 vi.mock("@/platform", () => ({ isTauri: true, getPlatform: async () => ({}) }));
+vi.mock("@tauri-apps/plugin-fs", () => ({
+  exists: async (p: string) => dirs.has(p),
+  remove: async (p: string) => {
+    removedDirs.push(p);
+    dirs.delete(p);
+  },
+}));
 vi.mock("@/platform/backend", () => ({
   runTraining: runTrainingMock,
   cancelCommand: cancelCommandMock,
@@ -72,6 +87,9 @@ beforeEach(() => {
   cancelCommandMock.mockClear();
   behavior = "untilKilled";
   kill = null;
+  dirs.clear();
+  removedDirs.length = 0;
+  lastRunDir = "";
   const s = useTrainingStore.getState();
   s.setConfig("modelType", "top_down");
   s.addConfigFile(s.parseYamlConfig(profile("baseline_medium_rf.centroid.yaml"), "c.yaml", "centroid")!);
@@ -121,5 +139,39 @@ describe("cancelling local top-down training", () => {
     expect(s.error).toContain("Training failed for centroid");
     expect(s.error).toContain("CUDA out of memory");
     expect(s.models[0].status).toBe("failed");
+    // A failed run keeps its folder (only Cancel deletes it, as PyQt).
+    expect(removedDirs).toEqual([]);
+  });
+});
+
+// PyQt SLEAP deletes the cancelled model's run folder ("Deleting canceled run
+// data", runners.py run_gui_training); models that finished keep theirs.
+describe("cancelled run folder", () => {
+  it("deletes the cancelled model's run folder", async () => {
+    const running = runStarted();
+    const training = useTrainingStore.getState().startTraining({});
+    await running;
+    await useTrainingStore.getState().cancelTraining();
+    await training;
+
+    expect(lastRunDir).toMatch(/^\/data\/models\/.+centroid/);
+    expect(removedDirs).toEqual([lastRunDir]);
+    expect(useTrainingStore.getState().log.some((l) => l.includes("Deleted the cancelled run's folder"))).toBe(true);
+  });
+
+  it("never deletes a folder that existed before the run (a reused run name)", async () => {
+    // The run name is resolved inside startTraining; make every name "exist" up front.
+    const realHas = dirs.has.bind(dirs);
+    dirs.has = (p: string) => p.startsWith("/data/models/") || realHas(p);
+    try {
+      const running = runStarted();
+      const training = useTrainingStore.getState().startTraining({});
+      await running;
+      await useTrainingStore.getState().cancelTraining();
+      await training;
+    } finally {
+      dirs.has = realHas;
+    }
+    expect(removedDirs).toEqual([]);
   });
 });

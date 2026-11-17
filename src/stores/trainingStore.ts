@@ -1414,6 +1414,33 @@ function prepareLocalRun(
 }
 
 /** The local labels file training reads: the picked file, else the project. */
+/** Whether `path` exists on disk (desktop). False if it can't be checked. */
+async function pathExists(path: string): Promise<boolean> {
+  try {
+    const { exists } = await import("@tauri-apps/plugin-fs");
+    return await exists(path);
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Delete a cancelled run's folder, recursively. Returns true when deleted,
+ * false when it couldn't be, null when there was nothing to delete (sleap-nn
+ * was killed before it created the folder).
+ */
+async function removeRunFolder(path: string): Promise<boolean | null> {
+  if (!(await pathExists(path))) return null;
+  try {
+    const { remove } = await import("@tauri-apps/plugin-fs");
+    await remove(path, { recursive: true });
+    return true;
+  } catch (e) {
+    console.warn("[training] Couldn't delete the cancelled run's folder:", path, e);
+    return false;
+  }
+}
+
 async function localTrainingLabelsPath(config: TrainingConfig): Promise<string> {
   return (
     config.trainingLabelsPath ||
@@ -2501,10 +2528,15 @@ export const useTrainingStore = create<TrainingState>()((set, get) => ({
           }));
 
           const { configYaml, runName } = prepareLocalRun(cf, localLabels, localSizeStats);
+          const runDir = `${modelDir}/${runName}`;
+          // Whether this run's folder is ours to delete on Cancel: only if it
+          // didn't exist yet. (A reused custom run name can point at an earlier,
+          // finished run; sleap-nn then writes to "<name>-1" instead.)
+          const runDirExisted = await pathExists(runDir);
 
           set((s) => ({
             models: s.models.map((m, j) =>
-              j === i ? { ...m, runDir: `${modelDir}/${runName}` } : m,
+              j === i ? { ...m, runDir } : m,
             ),
           }));
 
@@ -2568,6 +2600,22 @@ export const useTrainingStore = create<TrainingState>()((set, get) => ({
                 j === i ? { ...m, status: "cancelled" as const } : m,
               ),
             }));
+            // Like PyQt SLEAP ("Deleting canceled run data", runners.py
+            // run_gui_training): remove the cancelled model's partial run
+            // folder. Models that finished keep theirs.
+            if (!runDirExisted) {
+              const removed = await removeRunFolder(runDir);
+              if (removed !== null) {
+                set((s) => ({
+                  log: appendLog(
+                    s.log,
+                    removed
+                      ? `— Deleted the cancelled run's folder: ${runDir}`
+                      : `— Couldn't delete the cancelled run's folder: ${runDir}`,
+                  ),
+                }));
+              }
+            }
             return;
           }
 
