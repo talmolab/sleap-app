@@ -24,6 +24,7 @@
 import { create } from "zustand";
 import type { Instance, LabeledFrame, Labels } from "@/types";
 import { runLabelQc, SOFT_QC_KINDS, type QcFinding } from "@/lib/analyze/labelQc";
+import { hasMultipleSkeletons, multiSkeletonBlock } from "@/lib/multiSkeleton";
 import {
   anomalyVerdict,
   scoreLabelsAnomalyAsync,
@@ -169,6 +170,8 @@ export const useQcStore = create<QcState>((set, get) => ({
   hiddenIssues: new Set(),
 
   run: async (labels) => {
+    // The scorer fits one model per skeleton; per-skeleton QC is a later slice.
+    if (multiSkeletonBlock(labels, "Label QC")) return;
     abort?.abort();
     const ac = new AbortController();
     abort = ac;
@@ -792,6 +795,19 @@ const projectKeyOf = (s: ReturnType<typeof useAppStore.getState>) =>
 // the new key.
 useAppStore.subscribe((s, prev) => {
   if (s.labels !== prev.labels) useQcStore.getState().reset();
+  // Results were scored on one skeleton: once the project starts using a
+  // second, different skeleton (one added, or instances of it labeled), drop
+  // them rather than keep showing flags QC can no longer stand behind.
+  else if (
+    s.labels &&
+    useQcStore.getState().state !== "idle" &&
+    (s.editSeq !== prev.editSeq ||
+      s.skeleton !== prev.skeleton ||
+      s.overlayVersion !== prev.overlayVersion) &&
+    hasMultipleSkeletons(s.labels, s.skeleton)
+  ) {
+    useQcStore.getState().reset();
+  }
   const key = projectKeyOf(s);
   const qc = useQcStore.getState();
   if (key === qc.dismissedProject) return;

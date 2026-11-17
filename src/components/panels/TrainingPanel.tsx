@@ -75,6 +75,7 @@ import { TUTORIAL_FIRST_TRAINING_STEP_IDS } from "@/lib/tutorial/steps";
 import { projectTag } from "@/lib/projectTag";
 import { formatDuration } from "@/lib/timestamp";
 import { classifyVisibility, type VideoVisibility } from "@/lib/remoteVisibility";
+import { SingleSkeletonGate } from "./SingleSkeletonGate";
 
 // ── Constants ────────────────────────────────────────────────────────────────
 
@@ -718,7 +719,20 @@ function HyperparamsFields({
 
 // ── Panel ────────────────────────────────────────────────────────────────────
 
+/** Gated: needs a single-skeleton project (see SingleSkeletonGate). */
 export function TrainingPanel() {
+  // A job that's running (or finished and showing results) stays visible.
+  const busy = useTrainingStore(
+    (s) => s.status !== "idle" || s.dryRun?.status === "running"
+  );
+  return (
+    <SingleSkeletonGate feature="Training" configRequest="training" busy={busy}>
+      <TrainingPanelContent />
+    </SingleSkeletonGate>
+  );
+}
+
+function TrainingPanelContent() {
   const config = useTrainingStore((s) => s.config);
   const status = useTrainingStore((s) => s.status);
   const _isRemote = useTrainingStore((s) => s._isRemote);

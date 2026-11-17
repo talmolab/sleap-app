@@ -581,6 +581,8 @@ export class CommandContext {
     const redoSnapshot = this.restoreSnapshot(snapshot);
     redoSnapshot.label = snapshot.label;
     this.redoStack.push(redoSnapshot);
+    // Undoing "Add skeleton" removes the active skeleton from the project.
+    this.state.reconcileActiveSkeleton();
     // restoreSnapshot reverts the data, but the canvas instance overlay repaints
     // only when `overlayVersion` changes (VideoPlayer's draw effect depends on it)
     // — nothing in the undo path bumped it, so instances a merge added to the
@@ -609,6 +611,7 @@ export class CommandContext {
     const undoSnapshot = this.restoreSnapshot(snapshot);
     undoSnapshot.label = snapshot.label;
     this.undoStack.push(undoSnapshot);
+    this.state.reconcileActiveSkeleton();
     this.state.bumpOverlayVersion();
     this.signalUpdate([
       UpdateTopic.Labels,

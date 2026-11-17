@@ -49,6 +49,7 @@ import {
 } from "lucide-react";
 import { InferenceConfigDialog } from "@/components/dialogs/InferenceConfigDialog";
 import { LogTerminalDialog } from "@/components/monitors/LogTerminalDialog";
+import { SingleSkeletonGate } from "./SingleSkeletonGate";
 
 // ── Types & Constants ─────────────────────────────────────────────────────────
 
@@ -384,7 +385,18 @@ const DEFAULTS: Omit<InferenceConfig, "modelPaths" | "videoIndex" | "frameRange"
 
 // ── Panel ─────────────────────────────────────────────────────────────────────
 
+/** Gated: needs a single-skeleton project (see SingleSkeletonGate). */
 export function InferencePanel() {
+  // A job that's running (or finished and showing results) stays visible.
+  const busy = useInferenceStore((s) => s.status !== "idle");
+  return (
+    <SingleSkeletonGate feature="Running inference" configRequest="inference" busy={busy}>
+      <InferencePanelContent />
+    </SingleSkeletonGate>
+  );
+}
+
+function InferencePanelContent() {
   const video = useAppStore((s) => s.video);
   const projectPath = useAppStore((s) => s.projectPath);
   const skeleton = useAppStore((s) => s.skeleton);

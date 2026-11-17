@@ -39,6 +39,7 @@ import { getPlatform } from "../../platform/index";
 import { toast } from "@/lib/notify";
 import type { Skeleton } from "@talmolab/sleap-io.js";
 import { ReplaceSkeletonDialog } from "./ReplaceSkeletonDialog";
+import { SkeletonPicker } from "./SkeletonPicker";
 import {
   validDestinationNames,
   initialEdgeSelection,
@@ -561,16 +562,9 @@ export function SkeletonPanel() {
 
   return (
     <div className="flex flex-col h-full">
-      {/* Skeleton info header */}
-      <div className="px-2 py-1.5 border-b border-border">
-        <div className="text-xs font-medium text-foreground">
-          {skeleton.name || "Unnamed skeleton"}
-        </div>
-        <div className="text-xs text-muted-foreground">
-          {nodes.length} node{nodes.length !== 1 ? "s" : ""},{" "}
-          {edges.length} edge{edges.length !== 1 ? "s" : ""}
-        </div>
-      </div>
+      {/* Skeleton info header: active skeleton + Add / Rename (a project can
+          hold several skeletons; everything below edits the active one). */}
+      <SkeletonPicker />
 
       {/* Visual skeleton builder launch */}
       <div className="px-2 py-1.5 border-b border-border">

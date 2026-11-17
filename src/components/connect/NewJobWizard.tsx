@@ -41,6 +41,12 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { toast } from "@/lib/notify";
+import {
+  distinctSkeletonCount,
+  hasMultipleSkeletons,
+  multiSkeletonBlock,
+  multiSkeletonMessage,
+} from "@/lib/multiSkeleton";
 import type { Labels } from "@talmolab/sleap-io.js";
 import type { JobStatus, JobSummary, WorkerClient } from "@/lib/protocolV1/client";
 import { useConnectStore, pathRulesFor } from "@/stores/connectStore";
@@ -656,6 +662,7 @@ export function NewJobWizard({ workerId, workerLabel, seed, onClose, onSubmitted
 
   const handleSubmit = async () => {
     if (!labels || !labelsPath) return;
+    if (multiSkeletonBlock(labels, "Training")) return;
     setSubmitting(true);
     try {
       let labelsContent: string | null = null;
@@ -701,6 +708,7 @@ export function NewJobWizard({ workerId, workerLabel, seed, onClose, onSubmitted
   /** Submits standalone track job(s) against `modelDirs` — unlike `handleSubmit`'s `post_inference` (chained by the worker once training finishes), these model dirs are already known, so this calls `submitJobsOn` directly per spec `buildRunInferenceSpecs` returns (one, except "random sample", which returns one per video — see its own doc). */
   const handleSubmitInference = async () => {
     if (!labels || !labelsPath || modelDirs.length === 0) return;
+    if (multiSkeletonBlock(labels, "Running inference")) return;
     setSubmitting(true);
     try {
       const config = buildPostTrainingInferenceConfig({
@@ -819,9 +827,16 @@ export function NewJobWizard({ workerId, workerLabel, seed, onClose, onSubmitted
               {labelsError && <p className="text-xs text-red-400">{labelsError}</p>}
               {labels && !loadingLabels && (
                 <p className="text-xs text-muted-foreground">
-                  {labels.skeletons[0]?.name ?? "Skeleton"} · {labels.videos.length} video
+                  {hasMultipleSkeletons(labels)
+                    ? `${distinctSkeletonCount(labels)} skeletons`
+                    : (labels.skeletons[0]?.name ?? "Skeleton")} · {labels.videos.length} video
                   {labels.videos.length === 1 ? "" : "s"} · {labels.labeledFrames.length} labeled frame
                   {labels.labeledFrames.length === 1 ? "" : "s"}
+                </p>
+              )}
+              {labels && !loadingLabels && hasMultipleSkeletons(labels) && (
+                <p className="text-xs text-amber-500">
+                  {multiSkeletonMessage("Training")}
                 </p>
               )}
               {videoCheck && !loadingLabels && (

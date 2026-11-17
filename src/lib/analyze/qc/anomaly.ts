@@ -26,6 +26,7 @@ import {
   type AsyncComputeOptions,
 } from "./detector";
 import { analyzerFromSkeleton } from "./skeletonIo";
+import { distinctSkeletonCount } from "@/lib/skeletonStructure";
 import { makeQCConfig, type QcConfig } from "./config";
 import { topIssue, confidence, issueForFeature, DIRECTIONAL_FEATURES } from "./explain";
 import type { AttributionEntry } from "./baseline";
@@ -279,6 +280,17 @@ function fitMaskFor(config: QcConfig, n: number): boolean[] | null {
   return n > max ? capReference(n, max) : null;
 }
 
+/** The scorer fits one pose model on one skeleton's poses; with several
+ *  skeletons it would mix e.g. mouse and pellet poses, so refuse clearly. */
+function assertSingleSkeleton(labels: Labels): void {
+  if (!labels.skeletons?.length)
+    throw new Error("Labels must have at least one skeleton");
+  // Identical duplicate skeleton objects (old files) are fine: points are
+  // positional, so skeletons[0] describes them all.
+  if (distinctSkeletonCount(labels) > 1)
+    throw new Error("Label QC with several skeletons isn't supported yet.");
+}
+
 /** Fit the QC detector over `labels` and score every (selected) instance.
  *  Synchronous — fine for small projects and unit tests; large projects should
  *  use {@link scoreLabelsAnomalyAsync} to keep the UI responsive. */
@@ -286,8 +298,7 @@ export function scoreLabelsAnomaly(
   labels: Labels,
   { config = makeQCConfig(), getInstances }: AnomalyOptions = {},
 ): AnomalyResult {
-  if (!labels.skeletons?.length)
-    throw new Error("Labels must have at least one skeleton");
+  assertSingleSkeleton(labels);
   const analyzer = analyzerFromSkeleton(labels.skeletons[0]);
   const pick = getInstances ?? ((lf: LabeledFrame) => lf.userInstances);
   const { frames, allPoses } = gather(labels, pick);
@@ -333,8 +344,7 @@ export async function scoreLabelsAnomalyAsync(
     batchSize = 256,
   }: AnomalyOptions & AsyncComputeOptions = {},
 ): Promise<AnomalyResult> {
-  if (!labels.skeletons?.length)
-    throw new Error("Labels must have at least one skeleton");
+  assertSingleSkeleton(labels);
   const analyzer = analyzerFromSkeleton(labels.skeletons[0]);
   const pick = getInstances ?? ((lf: LabeledFrame) => lf.userInstances);
   const { frames, allPoses } = gather(labels, pick);

@@ -7,6 +7,7 @@ import { getPlatform } from "@/platform";
 import { commandContext } from "@/commands";
 import { MergePredictions, MergeTracks, type ExistingPredictionsMode } from "@/commands/editCommands";
 import { useAppStore } from "@/stores/appStore";
+import { multiSkeletonBlock } from "@/lib/multiSkeleton";
 import { appendLogLine, subprocessFailureMessage } from "@/lib/processLog";
 import { buildRemoteTrackSpecs } from "@/lib/remoteTrackSpec";
 
@@ -364,6 +365,13 @@ export const useInferenceStore = create<InferenceState>()((set) => ({
   },
 
   startInference: async (config: InferenceConfig, remoteOpts?: RemoteInferenceOptions) => {
+    // Predictions merge into the open project, whose skeleton they must match:
+    // refuse a project that really uses several different skeletons.
+    {
+      const { labels, skeleton } = useAppStore.getState();
+      if (multiSkeletonBlock(labels, "Running inference", { active: skeleton })) return;
+    }
+
     // Local inference reads the saved project file (see runInference); a run
     // on it while the window holds unsaved labels would predict the wrong
     // frames and miss newly labeled ones for "exclude user labeled".

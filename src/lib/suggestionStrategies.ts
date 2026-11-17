@@ -13,6 +13,30 @@
 import type { Labels, Video, SuggestionFrame } from "../types";
 import { PredictedInstance } from "@talmolab/sleap-io.js";
 import { primaryPointDisplacementSeries } from "./statisticSeries";
+import { distinctSkeletonCount } from "./skeletonStructure";
+
+/**
+ * velocity applies one node index to every instance, and max_displacement
+ * compares instances through one (n_instances × n_nodes) array: both assume
+ * every instance shares one skeleton. On a project that really uses several
+ * different skeletons, refuse instead of mixing e.g. a mouse's node 2 with a
+ * pellet's (nonexistent) node 2.
+ */
+export function poseSuggestionBlockedMessage(
+  labels: Labels,
+  method: GenerateParams["method"],
+): string | null {
+  if (method !== "velocity" && method !== "max_displacement") return null;
+  if (distinctSkeletonCount(labels) <= 1) return null;
+  return method === "velocity"
+    ? "Velocity suggestions with several skeletons aren't supported yet."
+    : "Max-displacement suggestions with several skeletons aren't supported yet.";
+}
+
+function assertPoseSuggestionSupported(labels: Labels, params: GenerateParams): void {
+  const msg = poseSuggestionBlockedMessage(labels, params.method);
+  if (msg) throw new Error(msg);
+}
 
 export type GenerationMethod =
   | "stride"
@@ -544,6 +568,7 @@ export function generateSuggestionFrames(
   labels: Labels,
   params: GenerateParams,
 ): SuggestionFrame[] {
+  assertPoseSuggestionSupported(labels, params);
   const p = resolveParams(params);
   const collector = createCollector();
   for (const video of params.videos) {
@@ -611,6 +636,7 @@ export async function runSuggestionGeneration(
     chunkBudgetMs = 24,
   } = opts;
 
+  assertPoseSuggestionSupported(labels, params);
   const p = resolveParams(params);
   const videos = params.videos;
   const videoCount = videos.length;

@@ -77,6 +77,10 @@ export async function checkMergeCompat(
 
   const result = await project.match(predictions, { video: "basename", track: "name" });
   const skeletonOk = result.allSkeletonsMatched;
+  // Node counts only describe a mismatch when each side has one skeleton;
+  // with several, don't quote "the" skeleton's count (it'd be the first's).
+  const singleEach =
+    predictions.skeletons.length <= 1 && project.skeletons.length <= 1;
   const predictionsNodeCount = predictions.skeletons[0]?.nodes.length ?? 0;
   const projectNodeCount = project.skeletons[0]?.nodes.length ?? 0;
 
@@ -90,7 +94,9 @@ export async function checkMergeCompat(
     skeletonOk,
     skeletonDetail: skeletonOk
       ? "Skeleton matches"
-      : `Skeleton doesn't match the open project (${predictionsNodeCount} vs ${projectNodeCount} node(s))`,
+      : singleEach
+        ? `Skeleton doesn't match the open project (${predictionsNodeCount} vs ${projectNodeCount} node(s))`
+        : `Skeletons don't all match the open project (${predictions.skeletons.length} vs ${project.skeletons.length} skeleton(s))`,
     videos,
     matchedCount: videos.filter((v) => v.matched).length,
     total: videos.length,

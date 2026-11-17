@@ -259,7 +259,7 @@ function UnplacedHint() {
   if (node === null) return null;
   return (
     <div className="pointer-events-none absolute bottom-2 left-1/2 z-30 -translate-x-1/2 rounded-md bg-black/75 px-2.5 py-1 text-xs text-amber-400">
-      <b>{skeleton?.nodeNames[node] ?? `node ${node + 1}`}</b> isn&apos;t placed (click to place it)
+      <b>{(selected?.skeleton ?? skeleton)?.nodeNames[node] ?? `node ${node + 1}`}</b> isn&apos;t placed (click to place it)
     </div>
   );
 }
@@ -283,7 +283,7 @@ function ReviewFooter() {
   const issue = looksOk
     ? "Looks OK now"
     : flagged
-      ? qcIssueText(flagged.a, flagged.v, skeleton?.nodeNames ?? [])
+      ? qcIssueText(flagged.a, flagged.v, (selected?.skeleton ?? skeleton)?.nodeNames ?? [])
       : rules[0]
         ? rules[0].message
         : entry
