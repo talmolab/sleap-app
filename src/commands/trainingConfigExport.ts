@@ -63,7 +63,7 @@ function projectLabelsPath(): string {
 }
 
 function buildJob(req: TrainingConfigRequest, labelsPath: string, selfContained = false): TrainingJobFiles {
-  const { labels, video } = useAppStore.getState();
+  const { labels, video, frameIdx, frameRange } = useAppStore.getState();
   return buildTrainingJobFiles({
     modelType: req.modelType,
     configs: req.configs,
@@ -79,6 +79,8 @@ function buildJob(req: TrainingConfigRequest, labelsPath: string, selfContained 
       sampleCount: req.sampleCount,
       skipUserLabeled: req.skipUserLabeled,
       video,
+      frameIdx,
+      frameRange,
     },
   });
 }
