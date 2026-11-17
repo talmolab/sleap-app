@@ -7,7 +7,6 @@
 import { describe, it, expect } from "../bun-test";
 import { lineScale, renderInstances, type RenderedInstance } from "@/canvas/SkeletonRenderer";
 import {
-  clipBitrate,
   clipOverlayRenderOptions,
   clipScalePreset,
   clipTrailStyle,
@@ -39,7 +38,7 @@ function recordingCtx() {
     {
       get(_t, prop) {
         if (prop === "measureText") return () => ({ width: 20 }) as TextMetrics;
-        if (typeof prop === "string" && ["arc", "rect", "lineTo", "moveTo", "fill", "stroke", "strokeText", "fillText"].includes(prop)) {
+        if (typeof prop === "string" && ["arc", "rect", "lineTo", "moveTo", "fill", "stroke"].includes(prop)) {
           return () => calls.push(prop);
         }
         return () => {};
@@ -170,49 +169,5 @@ describe("clipScalePreset (PyQt's Quality presets)", () => {
     expect(clipScalePreset(0.5)).toBe("draft");
     expect(clipScalePreset(1)).toBe("final");
     expect(clipScalePreset(0.7)).toBe("custom");
-  });
-});
-
-describe("node name outline in clips", () => {
-  it("is on in every clip", () => {
-    expect(clipOverlayRenderOptions(initialClipOverlayStyle(VIEW)).labelOutline).toBe(true);
-  });
-
-  it("strokes a dark outline under each name only when asked", () => {
-    const plain = recordingCtx();
-    renderInstances(plain.ctx, [inst()], { showLabels: true, zoom: 1 });
-    expect(plain.calls.filter((c) => c === "fillText")).toHaveLength(2);
-    expect(plain.calls).not.toContain("strokeText");
-
-    const outlined = recordingCtx();
-    renderInstances(outlined.ctx, [inst()], { showLabels: true, zoom: 1, labelOutline: true });
-    const calls = outlined.calls.filter((c) => c === "strokeText" || c === "fillText");
-    expect(calls).toEqual(["strokeText", "fillText", "strokeText", "fillText"]);
-  });
-});
-
-describe("clipBitrate", () => {
-  it("scales with pixels and frame rate", () => {
-    expect(clipBitrate("high", 1024, 1024, 25)).toBe(Math.round(0.15 * 1024 * 1024 * 25));
-    expect(clipBitrate("high", 512, 512, 25)).toBe(Math.round(0.15 * 512 * 512 * 25));
-    expect(clipBitrate("high", 1024, 1024, 50)).toBe(2 * clipBitrate("high", 1024, 1024, 25));
-  });
-
-  it("orders the presets low < medium < high < very-high", () => {
-    const b = (q: Parameters<typeof clipBitrate>[0]) => clipBitrate(q, 1024, 1024, 25);
-    expect(b("low")).toBeLessThan(b("medium"));
-    expect(b("medium")).toBeLessThan(b("high"));
-    expect(b("high")).toBeLessThan(b("very-high"));
-  });
-
-  it("puts High near 4 Mbit/s for a 1024×1024, 25 fps clip", () => {
-    const high = clipBitrate("high", 1024, 1024, 25);
-    expect(high).toBeGreaterThan(3_500_000);
-    expect(high).toBeLessThan(4_500_000);
-  });
-
-  it("stays within a floor and a ceiling", () => {
-    expect(clipBitrate("low", 64, 64, 1)).toBe(500_000);
-    expect(clipBitrate("very-high", 3840, 2160, 60)).toBe(50_000_000);
   });
 });

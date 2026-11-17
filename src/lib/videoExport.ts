@@ -553,30 +553,8 @@ export function labeledFramesInRange(
     .sort((a, b) => a - b);
 }
 
-/** Encode quality: a bitrate preset (PyQt uses a CRF instead). */
+/** Encode quality: mediabunny's bitrate presets (PyQt uses a CRF instead). */
 export type ClipQuality = "low" | "medium" | "high" | "very-high";
-
-/**
- * Bits per pixel per frame for each quality. mediabunny's own presets came out
- * near 1.5 Mbit/s for a 1024×1024, 25 fps clip ("high"), a quarter of what the
- * source videos use, which blurred thin overlay lines and node names. These
- * put "high" near 3.9 Mbit/s and "very-high" near 7.9 Mbit/s at that size.
- */
-const CLIP_BITS_PER_PIXEL: Record<ClipQuality, number> = {
-  low: 0.04,
-  medium: 0.08,
-  high: 0.15,
-  "very-high": 0.3,
-};
-
-const CLIP_MIN_BITRATE = 500_000;
-const CLIP_MAX_BITRATE = 50_000_000;
-
-/** Target bitrate (bits/s) for a clip of this size and frame rate. */
-export function clipBitrate(quality: ClipQuality, width: number, height: number, fps: number): number {
-  const bps = CLIP_BITS_PER_PIXEL[quality] * width * height * fps;
-  return Math.round(Math.min(CLIP_MAX_BITRATE, Math.max(CLIP_MIN_BITRATE, bps)));
-}
 
 /**
  * How the pose overlay and motion trails are drawn in an exported clip
@@ -674,16 +652,7 @@ export function clipOverlayRenderOptions(
   style: ClipOverlayStyle
 ): Pick<
   RenderOptions,
-  | "markerShape"
-  | "markerSize"
-  | "lineWidth"
-  | "boldLines"
-  | "poseOpacity"
-  | "showNodes"
-  | "showEdges"
-  | "showLabels"
-  | "nodeLabelSize"
-  | "labelOutline"
+  "markerShape" | "markerSize" | "lineWidth" | "boldLines" | "poseOpacity" | "showNodes" | "showEdges" | "showLabels" | "nodeLabelSize"
 > {
   return {
     markerShape: style.markerShape,
@@ -696,8 +665,6 @@ export function clipOverlayRenderOptions(
     showEdges: style.showEdges,
     showLabels: style.showNodeNames,
     nodeLabelSize: style.nodeLabelSize,
-    // Keeps node names readable after H.264 encoding (see RenderOptions.labelOutline).
-    labelOutline: true,
   };
 }
 
