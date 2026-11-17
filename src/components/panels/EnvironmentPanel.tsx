@@ -40,6 +40,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { isTauri } from "../../platform/index";
+import { ClaudeConnectorSection } from "./ClaudeConnectorSection";
 import {
   classifyVersion,
   releaseNotesUrlFor,
@@ -1520,6 +1521,8 @@ export function EnvironmentPanel() {
             </Actions>
           </Section>
         )}
+        {/* Claude connector: lets Claude Code review Label QC flags (desktop only). */}
+        {isTauri && <ClaudeConnectorSection />}
         {/* Install log (shared for all install operations) */}
         <InstallLog
           lines={installLog}

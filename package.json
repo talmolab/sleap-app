@@ -26,6 +26,7 @@
     "fetch:ffmpeg": "bash scripts/fetch-ffmpeg.sh"
   },
   "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.32.2",
     "@talmolab/sleap-io.js": "0.5.15",
     "@tanstack/react-table": "^8.21.0",
     "@tauri-apps/api": "^2.11.0",

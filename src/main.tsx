@@ -11,6 +11,7 @@ import { useAppStore } from "./stores/appStore";
 import { commandContext } from "./commands";
 import { loadProjectFromFile } from "./lib/loadProject";
 import { initDiagnostics } from "./lib/diagnostics";
+import { isTauri } from "./platform/index";
 import { registry as automationRegistry } from "./automation/tools";
 import type { ToolInfo, ToolResult } from "./automation/registry";
 
@@ -52,6 +53,10 @@ const vizRunDir = vizParams.get("viz");
 // the viz window is a short-lived isolated heap. Best-effort; never blocks boot.
 if (!vizRunDir) {
   void initDiagnostics();
+  // "Allow Claude to control SLEAP" was left on: start the connector again.
+  if (isTauri) {
+    void import("./stores/claudeConnectorStore").then((m) => m.useClaudeConnectorStore.getState().resume());
+  }
 }
 
 ReactDOM.createRoot(document.getElementById("root")!).render(
