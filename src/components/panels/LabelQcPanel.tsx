@@ -40,6 +40,7 @@ import { useQcView } from "@/hooks/useQcView";
 import { videoBasename } from "@/lib/videoFilter";
 import { QcIssueFilter } from "@/components/qc/QcIssueFilter";
 import { QcDetectorSettings } from "@/components/qc/QcDetectorSettings";
+import { qcProgress, qcTiles } from "@/lib/qcTriage";
 import { SingleSkeletonGate } from "./SingleSkeletonGate";
 
 /** Gated: needs a single-skeleton project (see SingleSkeletonGate). */
@@ -95,6 +96,7 @@ function LabelQcPanelContent() {
   );
   const openCount = useMemo(() => full.filter(hasOpenFlags).length, [full]);
   const okCount = useMemo(() => full.reduce((n, e) => n + e.ok.length, 0), [full]);
+  const reviewProgress = useMemo(() => qcProgress(qcTiles(full, editedFrames), String), [full, editedFrames]);
   const videoIdx = labels && video ? labels.videos.indexOf(video) : -1;
   const pos = queue.findIndex((e) => e.videoIdx === videoIdx && e.frameIdx === frameIdx);
   // The current frame's card shows instances re-scored in Review with their new scores.
@@ -455,6 +457,17 @@ function LabelQcPanelContent() {
                 Review
               </Button>
             )}
+            {state === "done" && (
+              <Button
+                size="sm"
+                variant="outline"
+                className="h-6 text-[11px]"
+                onClick={() => useQcStore.getState().setTriageOpen(true)}
+                title="See every flagged instance as a thumbnail, and mark OK or delete many at once"
+              >
+                Grid
+              </Button>
+            )}
             <Button
               size="sm"
               variant={state === "done" ? "outline" : "default"}
@@ -487,6 +500,21 @@ function LabelQcPanelContent() {
                 {showDismissed ? <EyeOff className="h-3.5 w-3.5" /> : <Eye className="h-3.5 w-3.5" />}
               </Button>
             )}
+          </div>
+        )}
+        {state === "done" && reviewProgress.total > 0 && (
+          <div
+            className="flex items-center gap-2 text-[11px] text-muted-foreground"
+            title="Flagged instances not yet ignored or edited since the run. Grid has the breakdown."
+            data-testid="qc-panel-progress"
+          >
+            <div className="h-1 w-20 overflow-hidden rounded bg-muted" aria-hidden>
+              <div
+                className="h-full bg-emerald-500"
+                style={{ width: `${((reviewProgress.total - reviewProgress.left) / reviewProgress.total) * 100}%` }}
+              />
+            </div>
+            {reviewProgress.left} of {reviewProgress.total} flagged instance{reviewProgress.total === 1 ? "" : "s"} left
           </div>
         )}
         {state === "done" && (anomaly?.instances.length ?? 0) > 0 && (
