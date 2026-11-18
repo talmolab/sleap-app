@@ -128,9 +128,14 @@ interface FrameScoreInfo {
  * Summarize a suggested frame's predicted-instance scores, or `null` when the
  * frame has no scored predictions.
  */
-function computeFrameScore(
+export function computeFrameScore(
   suggestion: SuggestionFrame,
-  labels: { find: (opts: { video: Video; frameIdx: number }) => { instances: { score?: number }[] }[] } | null
+  labels: {
+    find: (opts: { video: Video; frameIdx: number }) => {
+      instances: { score?: number }[];
+      bboxes?: { score?: number; isPredicted?: boolean }[];
+    }[];
+  } | null
 ): FrameScoreInfo | null {
   if (!labels) return null;
 
@@ -140,9 +145,13 @@ function computeFrameScore(
   });
   if (frames.length === 0) return null;
 
-  const predicted = frames[0].instances.filter(
+  // Predicted poses; on a frame a box detector predicted (boxes, no poses),
+  // the predicted boxes' scores instead.
+  const poses = frames[0].instances.filter(
     (inst) => inst instanceof PredictedInstance
   );
+  const predicted: { score?: number }[] =
+    poses.length > 0 ? poses : (frames[0].bboxes ?? []).filter((b) => b.isPredicted);
   if (predicted.length === 0) return null;
 
   const scores: number[] = [];

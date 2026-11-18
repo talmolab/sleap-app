@@ -66,7 +66,7 @@ import {
 import { getActiveTrackOverrides } from "../../lib/trackColorOverrides";
 import { COLORMAPS } from "../../lib/colormaps";
 import { renderTrails } from "../../canvas/TrailRenderer";
-import { buildRenderedBboxes, renderBboxes, renderBboxHandles, renderBboxPreview, type RenderedBbox } from "../../canvas/BboxRenderer";
+import { bboxColor, buildRenderedBboxes, renderBboxes, renderBboxHandles, renderBboxPreview, type RenderedBbox } from "../../canvas/BboxRenderer";
 import { dragRect, handleCursor, hitTestBbox, MIN_BBOX_SIZE, rectFromPoints, rectOfCorners, type BboxHandle } from "@/lib/bboxEditing";
 import { AddBbox, DeleteBbox, SetBboxGeometry, posesToBboxes } from "@/commands/bboxCommands";
 import { instanceInsideRect } from "@/lib/bboxLinking";
@@ -1529,16 +1529,22 @@ export function VideoPlayer() {
       const ri = renderedInstances[i];
       if (ri) instanceColor.set(inst, ri.color);
     });
-    const boxTracks = boxes.map((b) => b.track);
+    const colorTarget = resolveColorTarget(distinctlyColor, projectHasTracks);
     return buildRenderedBboxes(boxes, {
       selected: selectedBboxIdx !== null ? boxes[selectedBboxIdx] ?? null : null,
       toImage: (x, y) => toImageCoords(video, x, y),
       colorFor: (box, idx) =>
-        (box.instance && instanceColor.get(box.instance)) ||
-        getInstanceColor(
-          palette, distinctlyColor, idx, box.track, tracks, box instanceof PredictedBoundingBox,
-          colorPredicted, projectHasTracks, boxTracks, trackColorOverrides
-        ),
+        bboxColor({
+          index: idx,
+          isPredicted: box instanceof PredictedBoundingBox,
+          colorPredicted,
+          colorTarget,
+          linkedInstanceColor: box.instance ? instanceColor.get(box.instance) ?? null : null,
+          track: box.track ?? box.instance?.track ?? null,
+          tracks,
+          palette,
+          trackColorOverrides,
+        }),
     });
   }, [
     labeledFrame,
