@@ -1025,15 +1025,44 @@ function TrainingPanelContent() {
   }, [skeleton, editSeq]);
   // eslint-disable-next-line react-hooks/exhaustive-deps -- editSeq: in-place edits
   const hasIdTracks = useMemo(() => hasTrackedUserInstances(labels), [labels, editSeq]);
-  const pipelineRec = useMemo(() => recommendPipeline(labels as LabelsLike | null), [labels]);
+  const poseRec = useMemo(() => recommendPipeline(labels as LabelsLike | null), [labels]);
   // No ground truth to train on (or to derive any suggestion from) — e.g. a
   // `labels_pr.*.slp` from inference, which holds predictions only. Every
   // suggester returns null in that case and the config falls back to its
   // baseline preset, so say why rather than letting the defaults look derived.
-  const noLabeledData = useMemo(
-    () => labels != null && !hasUserLabeledInstances(labels),
-    [labels]
+  // Drawn boxes are training data for a box detector; for a pose model they
+  // aren't, which deserves its own message rather than "no labeled frames".
+  const hasUserBoxes = useMemo(
+    () => !!labels?.labeledFrames.some((lf) => (lf.bboxes ?? []).some((b) => !b.isPredicted)),
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- editSeq: in-place edits
+    [labels, editSeq]
   );
+  const hasUserPoses = useMemo(
+    () => labels != null && hasUserLabeledInstances(labels),
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- editSeq: in-place edits
+    [labels, editSeq]
+  );
+  // Only drawn boxes, no poses: a box detector is the one model these labels
+  // can train, so it's the only model type on offer.
+  const boxesOnly = labels != null && hasUserBoxes && !hasUserPoses;
+  const pipelineRec: PipelineRecommendation | null = boxesOnly
+    ? {
+        recommended: "bbox",
+        reason: "Only bounding boxes are labeled, so a box detector is the model these labels can train. The other model types learn poses: label some poses to use them.",
+        alternatives: [],
+      }
+    : poseRec;
+  const noLabeledData =
+    labels != null && !hasUserPoses && !(hasUserBoxes && config.modelType === "bbox");
+  const boxesOnlyForPoseModel =
+    noLabeledData && hasUserBoxes && config.modelType !== "bbox";
+  // Switch a boxes-only project to Box Detector (never under a running job).
+  const trainingStatus = useTrainingStore((s) => s.status);
+  useEffect(() => {
+    if (boxesOnly && config.modelType !== "bbox" && trainingStatus === "idle") {
+      useTrainingStore.getState().setConfig("modelType", "bbox");
+    }
+  }, [boxesOnly, config.modelType, trainingStatus]);
 
   // Auto-select the recommended model type for a freshly-loaded project —
   // mirrors the RF-preset/max_stride auto-select pattern: it only applies
@@ -1115,9 +1144,10 @@ function TrainingPanelContent() {
   // A box detector can also learn from drawn boxes alone (no poses).
   const hasLabeledFrames = remoteEnabled
     ? true
-    : (countUserLabeledFrames(labels) ?? 0) > 0 ||
-      (config.modelType === "bbox" &&
-        !!labels?.labeledFrames.some((lf) => lf.bboxes.some((b) => !b.isPredicted)));
+    : (countUserLabeledFrames(labels, {
+        includeBoxes: config.modelType === "bbox",
+        version: editSeq,
+      }) ?? 0) > 0;
   const remoteUnsupported = remoteEnabled && isBboxModelType(config.modelType);
   const hasValidLossWeights = config.configs.every((cf) =>
     cf.hyperparams.confmapsLossWeight > 0 &&
@@ -1280,9 +1310,19 @@ function TrainingPanelContent() {
         <div className="mx-3 mt-2 flex items-start gap-2 rounded-md border border-yellow-500/50 bg-yellow-500/10 px-2 py-1.5">
           <AlertTriangle className="h-3.5 w-3.5 shrink-0 mt-0.5 text-yellow-500" />
           <p className="text-xs text-yellow-500">
-            No labeled frames in this project — predicted instances aren&apos;t
-            training data. The settings below are a baseline preset; label some
-            frames to get suggestions tailored to your data.
+            {boxesOnlyForPoseModel ? (
+              <>
+                This project has bounding boxes but no pose labels. To train on
+                the boxes, choose <strong>Box Detector</strong> under Model Type;
+                the other model types learn poses, so label some poses first.
+              </>
+            ) : (
+              <>
+                No labeled frames in this project — predicted instances aren&apos;t
+                training data. The settings below are a baseline preset; label some
+                frames to get suggestions tailored to your data.
+              </>
+            )}
           </p>
         </div>
       )}
@@ -1305,11 +1345,13 @@ function TrainingPanelContent() {
               </SelectTrigger>
               <SelectContent>
                 {MODEL_TYPE_OPTIONS.map((o) => {
-                  const isDisabled = skeletonCompat.disabledTypes.has(o.value);
+                  const needsPoses = boxesOnly && o.value !== "bbox";
+                  const needsEdges = skeletonCompat.disabledTypes.has(o.value);
+                  const isDisabled = needsPoses || needsEdges;
                   const isRecommended = pipelineRec?.recommended === o.value;
                   return (
                     <SelectItem key={o.value} value={o.value} disabled={isDisabled}>
-                      {o.label}{isDisabled ? " (requires edges)" : ""}
+                      {o.label}{needsPoses ? " (needs pose labels)" : needsEdges ? " (requires edges)" : ""}
                       {isRecommended && !isDisabled ? " ★" : ""}
                       {skeletonCompat.warnings.has(o.value) ? " ⚠" : ""}
                     </SelectItem>

@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach } from "../bun-test";
 import { readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import yaml from "js-yaml";
-import { Skeleton, Video, Labels, LabeledFrame, Instance, PredictedInstance } from "@talmolab/sleap-io.js";
+import { Skeleton, Video, Labels, LabeledFrame, Instance, PredictedInstance, UserBoundingBox, PredictedBoundingBox } from "@talmolab/sleap-io.js";
 import { useTrainingStore } from "@/stores/trainingStore";
 import { getConfigSlots, getSlotLabel, defaultHyperparams, applyHyperparamsToYaml, mergeStdoutIntoLog, countUserLabeledFrames } from "@/stores/trainingStore";
 import type { ConfigFile } from "@/stores/trainingStore";
@@ -2261,7 +2261,29 @@ describe("markEpochBegin / epochStartedAt", () => {
       expect(countUserLabeledFrames(labels)).toBe(2);
     });
 
-    it("caches by labels reference so it isn't re-scanned every render", () => {
+    it("counts frames with a user box only when asked (box detectors)", () => {
+      const boxFrame = new LabeledFrame({ video, frameIdx: 0 });
+      boxFrame.bboxes.push(new UserBoundingBox({ x1: 0, y1: 0, x2: 10, y2: 10 }));
+      const predBoxFrame = new LabeledFrame({ video, frameIdx: 1 });
+      predBoxFrame.bboxes.push(new PredictedBoundingBox({ x1: 0, y1: 0, x2: 10, y2: 10, score: 0.9 }));
+      const labels = new Labels({ videos: [video], skeletons: [skeleton], labeledFrames: [boxFrame, predBoxFrame] });
+      expect(countUserLabeledFrames(labels)).toBe(0);
+      expect(countUserLabeledFrames(labels, { includeBoxes: true })).toBe(1);
+    });
+
+    it("re-counts after an in-place edit when the version changes", () => {
+      const frame = new LabeledFrame({ video, frameIdx: 0 });
+      const labels = new Labels({ videos: [video], skeletons: [skeleton], labeledFrames: [frame] });
+      expect(countUserLabeledFrames(labels, { includeBoxes: true, version: 1 })).toBe(0);
+      // Draw a box: same Labels object, edited in place, new editSeq.
+      frame.bboxes.push(new UserBoundingBox({ x1: 0, y1: 0, x2: 10, y2: 10 }));
+      expect(countUserLabeledFrames(labels, { includeBoxes: true, version: 1 })).toBe(0); // same version: cached
+      expect(countUserLabeledFrames(labels, { includeBoxes: true, version: 2 })).toBe(1);
+      // Without a version the count is always fresh.
+      expect(countUserLabeledFrames(labels, { includeBoxes: true })).toBe(1);
+    });
+
+    it("caches per labels + version so it isn't re-scanned every render", () => {
       const frame = new LabeledFrame({ video, frameIdx: 0 });
       frame.instances.push(Instance.empty({ skeleton }));
       const labels = new Labels({ videos: [video], skeletons: [skeleton], labeledFrames: [frame] });
@@ -2279,8 +2301,8 @@ describe("markEpochBegin / epochStartedAt", () => {
         },
       });
       try {
-        expect(countUserLabeledFrames(labels)).toBe(1);
-        expect(countUserLabeledFrames(labels)).toBe(1);
+        expect(countUserLabeledFrames(labels, { version: 7 })).toBe(1);
+        expect(countUserLabeledFrames(labels, { version: 7 })).toBe(1);
       } finally {
         Object.defineProperty(proto, "userInstances", orig);
       }
