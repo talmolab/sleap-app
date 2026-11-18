@@ -1530,6 +1530,7 @@ export function VideoPlayer() {
       if (ri) instanceColor.set(inst, ri.color);
     });
     const colorTarget = resolveColorTarget(distinctlyColor, projectHasTracks);
+    const boxTrack = (b: (typeof boxes)[number]) => b.track ?? b.instance?.track ?? null;
     return buildRenderedBboxes(boxes, {
       selected: selectedBboxIdx !== null ? boxes[selectedBboxIdx] ?? null : null,
       toImage: (x, y) => toImageCoords(video, x, y),
@@ -1540,7 +1541,7 @@ export function VideoPlayer() {
           colorPredicted,
           colorTarget,
           linkedInstanceColor: box.instance ? instanceColor.get(box.instance) ?? null : null,
-          track: box.track ?? box.instance?.track ?? null,
+          track: boxTrack(box),
           tracks,
           palette,
           trackColorOverrides,
