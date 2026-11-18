@@ -197,15 +197,20 @@ export function renderBboxPreview(
   ctx.restore();
 }
 
+/** Color of every box without a track: a bright blue that stands out on greyscale video. */
+export const UNTRACKED_BBOX_COLOR: RGB = [56, 189, 248];
+
 /**
- * Color of one box. Boxes have no nodes, so they can't use the pose rule's
- * per-node colouring (whose instance color is a neutral grey) or its grey for
- * untracked instances; every box gets a real color:
+ * Color of one box, following the pose rule (`getInstanceColor`) so boxes and
+ * poses read the same way:
  *
  * - a predicted box with "Color predicted" off: yellow, like predicted nodes;
- * - "color by instance" and linked to a pose instance: that instance's color;
+ * - coloring by instance: the linked pose instance's color, else the palette
+ *   color for the box's position (as an unlinked instance would get);
  * - on a track (its own, or its linked instance's): the track's color;
- * - otherwise: the palette color for its position among the frame's boxes.
+ * - no track: one bright blue for every box ({@link UNTRACKED_BBOX_COLOR}).
+ *   Not the grey untracked poses get: most videos are greyscale, and a thin
+ *   grey outline disappears into them.
  */
 export function bboxColor(opts: {
   index: number;
@@ -221,10 +226,12 @@ export function bboxColor(opts: {
   trackColorOverrides?: Record<string, string> | null;
 }): RGB {
   if (opts.isPredicted && !opts.colorPredicted) return UNCOLORED_PREDICTED_NODE_COLOR;
-  if (opts.colorTarget === "instance" && opts.linkedInstanceColor) return opts.linkedInstanceColor;
+  if (opts.colorTarget === "instance") {
+    return opts.linkedInstanceColor ?? getPaletteColor(opts.palette, opts.index);
+  }
   if (opts.track) {
     const idx = opts.tracks.indexOf(opts.track);
     return getTrackColor(opts.palette, idx >= 0 ? idx : opts.index, opts.track.name ?? null, opts.trackColorOverrides);
   }
-  return getPaletteColor(opts.palette, opts.index);
+  return UNTRACKED_BBOX_COLOR;
 }

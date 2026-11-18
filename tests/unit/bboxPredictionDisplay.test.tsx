@@ -16,7 +16,7 @@ import {
   PredictedInstance,
   SuggestionFrame,
 } from "@talmolab/sleap-io.js";
-import { bboxColor, captionTextColor } from "@/canvas/BboxRenderer";
+import { bboxColor, captionTextColor, UNTRACKED_BBOX_COLOR } from "@/canvas/BboxRenderer";
 import { UNCOLORED_PREDICTED_NODE_COLOR } from "@/canvas/SkeletonRenderer";
 import { getPaletteColor, getTrackColor } from "@/lib/colorPalettes";
 import { computeFrameScore } from "@/components/panels/SuggestionsPanel";
@@ -39,19 +39,17 @@ const base = {
 };
 
 describe("bboxColor", () => {
-  it("never greys out a drawn box: no track → palette color by position", () => {
-    const c = bboxColor(base);
-    expect(c).toEqual(getPaletteColor("standard", 1));
-    expect(c).not.toEqual([180, 180, 180]);
-    expect(bboxColor({ ...base, index: 0 })).not.toEqual(bboxColor({ ...base, index: 1 }));
+  it("every untracked box is the same bright blue, not grey", () => {
+    expect(bboxColor(base)).toEqual(UNTRACKED_BBOX_COLOR);
+    expect(bboxColor({ ...base, index: 0 })).toEqual(bboxColor({ ...base, index: 3 }));
+    const [r, g, b] = UNTRACKED_BBOX_COLOR;
+    expect(r === g && g === b).toBe(false);
   });
 
   it("predicted boxes are yellow when 'Color predicted' is off, like predicted nodes", () => {
     expect(bboxColor({ ...base, isPredicted: true })).toEqual(UNCOLORED_PREDICTED_NODE_COLOR);
     // With it on, they're colored like any box.
-    expect(bboxColor({ ...base, isPredicted: true, colorPredicted: true })).toEqual(
-      getPaletteColor("standard", 1),
-    );
+    expect(bboxColor({ ...base, isPredicted: true, colorPredicted: true })).toEqual(UNTRACKED_BBOX_COLOR);
   });
 
   it("a tracked box takes its track's color", () => {
@@ -65,10 +63,11 @@ describe("bboxColor", () => {
     expect(captionTextColor([0, 0, 180])).toBe("white");
   });
 
-  it("with color-by-instance, a linked box takes its instance's color", () => {
+  it("with color-by-instance, a linked box takes its instance's color, else a palette color", () => {
     expect(
       bboxColor({ ...base, colorTarget: "instance", linkedInstanceColor: [1, 2, 3] }),
     ).toEqual([1, 2, 3]);
+    expect(bboxColor({ ...base, colorTarget: "instance" })).toEqual(getPaletteColor("standard", 1));
   });
 });
 
@@ -124,5 +123,21 @@ describe("Frames panel", () => {
     render(<FramesPanel />);
     // Mean of 0.71 and 0.68 → 0.70 (rounded to 2 places).
     expect(await screen.findByText("0.70")).toBeTruthy();
+  });
+});
+
+describe("Boxes list", () => {
+  it("has column headers, each with a tip", async () => {
+    const { labels } = boxOnlyProject();
+    const { BboxList } = await import("@/components/panels/BboxList");
+    useAppStore.getState().setLabels(labels, "p.slp");
+    render(<BboxList labeledFrame={labels.labeledFrames[0]} />);
+    for (const h of ["#", "Type", "Score", "Review", "Category", "Track", "Linked instance"]) {
+      const cell = screen.getByRole("columnheader", { name: h });
+      expect(cell.getAttribute("title")).toBeTruthy();
+    }
+    // One row per box, under the headers.
+    expect(screen.getAllByRole("row")).toHaveLength(3);
+    expect(screen.getByText("0.71")).toBeTruthy();
   });
 });
