@@ -4,11 +4,11 @@
  * linked pose instance; delete it. Every edit is one undo step.
  */
 import { useEffect, useState } from "react";
-import { X } from "lucide-react";
+import { Check, X } from "lucide-react";
 import { PredictedBoundingBox, type BoundingBox } from "@talmolab/sleap-io.js";
 import { useAppStore } from "@/stores/appStore";
 import { commandContext } from "@/commands";
-import { DeleteBbox, SetBboxProps } from "@/commands/bboxCommands";
+import { AcceptBbox, AcceptFrameBboxes, DeleteBbox, SetBboxProps } from "@/commands/bboxCommands";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
@@ -34,7 +34,7 @@ function CategoryInput({ box, index }: { box: BoundingBox; index: number }) {
       value={value}
       placeholder="category"
       aria-label={`Box ${index + 1} category`}
-      className="h-6 w-24 px-1.5 text-xs"
+      className="h-6 w-24 shrink-0 px-1.5 text-xs"
       onChange={(e) => setValue(e.target.value)}
       onBlur={commit}
       onKeyDown={(e) => {
@@ -58,13 +58,35 @@ export function BboxList({ labeledFrame }: { labeledFrame: LabeledFrame | null }
   const boxes = labeledFrame?.bboxes ?? [];
   if (boxes.length === 0 && !bboxDrawMode) return null;
   const tracks = labels?.tracks ?? [];
-  const select = "h-6 rounded border border-input bg-background px-1 text-xs";
+  const select = "h-6 shrink-0 rounded border border-input bg-background px-1 text-xs";
 
   return (
     <div className="shrink-0 border-t">
-      <div className="flex items-center justify-between px-2 pt-1.5 pb-1 text-xs text-muted-foreground">
+      <div className="flex items-center gap-1.5 px-2 pt-1.5 pb-1 text-xs text-muted-foreground">
         <span>Boxes ({boxes.length})</span>
         {bboxDrawMode && <span className="text-[11px]">Box tool on: drag on the frame</span>}
+        <span className="ml-auto flex gap-1">
+          {boxes.some((b) => b instanceof PredictedBoundingBox) && (
+            <Button
+              variant="subtle"
+              size="xs"
+              title="Turn every predicted box on this frame into a user box"
+              onClick={() => commandContext.execute(AcceptFrameBboxes)}
+            >
+              Accept all
+            </Button>
+          )}
+          {(labeledFrame?.userInstances.length ?? 0) > 0 && (
+            <Button
+              variant="subtle"
+              size="xs"
+              title="Add a box around each user instance"
+              onClick={() => useAppStore.getState().set("bboxFromPosesOpen", true)}
+            >
+              From poses…
+            </Button>
+          )}
+        </span>
       </div>
       {boxes.length === 0 ? (
         <p className="px-2 pb-2 text-xs text-muted-foreground">No boxes on this frame.</p>
@@ -79,7 +101,7 @@ export function BboxList({ labeledFrame }: { labeledFrame: LabeledFrame | null }
                 role="row"
                 aria-selected={selectedBboxIdx === i}
                 className={cn(
-                  "flex items-center gap-1.5 px-2 py-0.5 text-xs cursor-pointer hover:bg-muted/60",
+                  "flex min-w-max items-center gap-1.5 px-2 py-0.5 text-xs cursor-pointer hover:bg-muted/60",
                   selectedBboxIdx === i && "bg-muted",
                 )}
                 onClick={() => useAppStore.getState().set("selectedBboxIdx", i)}
@@ -89,6 +111,36 @@ export function BboxList({ labeledFrame }: { labeledFrame: LabeledFrame | null }
                 <span className="w-9 text-right tabular-nums">
                   {predicted ? (box as PredictedBoundingBox).score.toFixed(2) : "—"}
                 </span>
+                {predicted ? (
+                  <Button
+                    variant="ghost"
+                    size="icon-xs"
+                    aria-label={`Accept box ${i + 1}`}
+                    title="Accept: make it a user box"
+                    className="shrink-0"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      commandContext.execute(AcceptBbox, { index: i });
+                    }}
+                  >
+                    <Check />
+                  </Button>
+                ) : (
+                  <span className="w-6 shrink-0" />
+                )}
+                <Button
+                  variant="ghost"
+                  size="icon-xs"
+                  aria-label={`${predicted ? "Reject" : "Delete"} box ${i + 1}`}
+                  title={predicted ? "Reject: delete this predicted box" : "Delete box"}
+                  className="shrink-0"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    commandContext.execute(DeleteBbox, { index: i });
+                  }}
+                >
+                  <X />
+                </Button>
                 <CategoryInput box={box} index={i} />
                 <select
                   aria-label={`Box ${i + 1} track`}
@@ -127,18 +179,6 @@ export function BboxList({ labeledFrame }: { labeledFrame: LabeledFrame | null }
                     </option>
                   ))}
                 </select>
-                <Button
-                  variant="ghost"
-                  size="icon-xs"
-                  aria-label={`Delete box ${i + 1}`}
-                  className="ml-auto"
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    commandContext.execute(DeleteBbox, { index: i });
-                  }}
-                >
-                  <X />
-                </Button>
               </div>
             );
           })}

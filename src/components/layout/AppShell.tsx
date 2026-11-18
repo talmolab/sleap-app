@@ -45,6 +45,7 @@ import { ChoiceDialog } from "../dialogs/ChoiceDialog";
 import { PromptDialog } from "../dialogs/PromptDialog";
 import { SelectToFrameDialog } from "../dialogs/SelectToFrameDialog";
 import { DeletePredictionsDialog } from "../dialogs/DeletePredictionsDialog";
+import { BboxesFromPosesDialog } from "../dialogs/BboxesFromPosesDialog";
 import { MergeProjectDialog } from "../dialogs/MergeProjectDialog";
 import { ExportModelDialog } from "../dialogs/ExportModelDialog";
 import { AddVideoUrlDialog } from "../dialogs/AddVideoUrlDialog";
@@ -354,6 +355,7 @@ export function AppShell() {
       <MergeProjectDialog />
       <AddVideoUrlDialog />
       <ExportModelDialog />
+      <BboxesFromPosesDialog />
       <DeletePredictionsDialog
         open={deletePredictionsDialogOpen}
         onOpenChange={setDeletePredictionsDialogOpen}
