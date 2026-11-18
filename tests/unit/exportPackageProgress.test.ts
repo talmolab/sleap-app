@@ -38,6 +38,8 @@ vi.mock("@talmolab/sleap-io.js", () => ({
     return saveImpl(labels, opts);
   },
   loadSlp: async () => ({ videos: [] }),
+  // Imported by @/lib/slpRead alongside loadSlp; unused here.
+  readSlpStreaming: async () => ({ videos: [] }),
 }));
 vi.mock("@/lib/saveEmbeddedPkgStreaming", () => ({
   saveEmbeddedPkgStreaming: (labels: unknown, dest: string, source: unknown, opts: SaveOpts) => {

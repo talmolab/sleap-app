@@ -15,12 +15,12 @@
  */
 import {
   openH5Worker,
-  readSlpStreaming,
   StreamingHdf5VideoBackend,
   type Labels,
   type RangeSource,
   type StreamingH5File,
 } from "@talmolab/sleap-io.js";
+import { readSlpStreaming } from "@/lib/slpRead";
 import { frameToBitmap } from "@/lib/frameBitmap";
 import type { WorkerClient } from "@/lib/protocolV1/client";
 import { WorkerProtocolError, FS_NOT_FOUND, FS_FORBIDDEN, PROTO_UNKNOWN_METHOD } from "@/lib/protocolV1/errors";

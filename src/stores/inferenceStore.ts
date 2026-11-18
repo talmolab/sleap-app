@@ -1,5 +1,5 @@
 import { create } from "zustand";
-import { loadSlp, readSlpStreaming } from "@talmolab/sleap-io.js";
+import { loadSlp, readSlpStreaming } from "@/lib/slpRead";
 import type { JobResult } from "@/lib/sleapConnect";
 import type { ProcessEvent } from "@/platform/backend";
 import { cancelCommand, runInference } from "@/platform/backend";

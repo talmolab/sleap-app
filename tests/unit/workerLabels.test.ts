@@ -30,6 +30,8 @@ class FakeStreamingHdf5VideoBackend {
 }
 vi.mock("@talmolab/sleap-io.js", () => ({
   readSlpStreaming: readSlpStreamingMock,
+  // Imported by @/lib/slpRead alongside readSlpStreaming; unused here.
+  loadSlp: async () => ({ videos: [] }),
   openH5Worker: async () => {
     embeddedCalls.opened++;
     return {

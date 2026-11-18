@@ -10,8 +10,6 @@
  */
 
 import {
-  loadSlp,
-  readSlpStreaming,
   setImageBytesReader,
   loadAnalysisH5,
   loadNwb,
@@ -25,6 +23,7 @@ import {
   type Labels,
   type DlcFileSystem,
 } from "@talmolab/sleap-io.js";
+import { loadSlp, readSlpStreaming } from "@/lib/slpRead";
 import { useAppStore } from "../stores/appStore";
 import { useEnvironmentStore } from "../stores/environmentStore";
 import {

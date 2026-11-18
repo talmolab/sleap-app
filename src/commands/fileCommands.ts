@@ -576,7 +576,7 @@ async function exportAnalysisFiles(
 
 /**
  * Export SLEAP Analysis CSV via sleap-io's canonical `labelsToCsv` (wide
- * format: one row per instance per frame, alphabetical `{node}.x/.y/.score`
+ * format: one row per animal per frame (a user instance replaces the prediction it was made from; hidden nodes are empty), alphabetical `{node}.x/.y/.score`
  * columns), one file per video — parity with Python SLEAP's analysis CSV.
  * `params.allVideos` exports every video with labeled frames (PyQt's
  * "All Videos..."); otherwise the current video. `params.includeEmpty`

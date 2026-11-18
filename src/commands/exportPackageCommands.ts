@@ -54,7 +54,8 @@
  */
 
 import type { Labels, Video } from "@talmolab/sleap-io.js";
-import { ExportCancelled, saveSlpToBytes, loadSlp } from "@talmolab/sleap-io.js";
+import { ExportCancelled, saveSlpToBytes } from "@talmolab/sleap-io.js";
+import { loadSlp } from "@/lib/slpRead";
 import type { Command } from "./types";
 import type { CommandContext } from "./CommandContext";
 import { saveBytesFile } from "./fileCommands";
