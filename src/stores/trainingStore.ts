@@ -815,22 +815,49 @@ export function getSlotLabel(slot: string): string {
  * Count of frames with a user instance or marked negative — the JS
  * equivalent of sleap-io's `Labels.user_labeled_frames` (which includes
  * negative/background frames as trainable data, not just positively-labeled
- * ones). Used for the `n=` suffix in a default run name; `null` with no
- * project loaded.
+ * ones). With `includeBoxes`, a frame with a user-drawn bounding box counts
+ * too: that's what a box detector trains on (sleap-nn counts a detector's
+ * frames the same way). Used for the `n=` suffix in a default run name and
+ * the Training panel's "has labels" checks; `null` with no project loaded.
+ *
+ * `version` (the app store's `editSeq`) lets a caller that runs on every
+ * render reuse the last result until the labels change. Labels are edited in
+ * place, so the `labels` reference alone can't tell when to re-count; without
+ * a `version` the count is always fresh.
  */
-let _userLabeledFramesCache: { labels: Labels; result: number } | null = null;
+let _userLabeledFramesCache: {
+  labels: Labels;
+  version: number;
+  includeBoxes: boolean;
+  result: number;
+} | null = null;
 
-export function countUserLabeledFrames(labels: Labels | null): number | null {
+export function countUserLabeledFrames(
+  labels: Labels | null,
+  opts?: { includeBoxes?: boolean; version?: number },
+): number | null {
   if (!labels) return null;
-  // Called on every TrainingPanel render; cache by `labels` reference so it
-  // isn't re-scanned (allocating `lf.userInstances` per frame) each time.
-  if (_userLabeledFramesCache && _userLabeledFramesCache.labels === labels) {
-    return _userLabeledFramesCache.result;
+  const includeBoxes = !!opts?.includeBoxes;
+  const version = opts?.version;
+  const c = _userLabeledFramesCache;
+  if (
+    version !== undefined &&
+    c &&
+    c.labels === labels &&
+    c.version === version &&
+    c.includeBoxes === includeBoxes
+  ) {
+    return c.result;
   }
   const result = labels.labeledFrames.filter(
-    (lf) => lf.userInstances.length > 0 || lf.isNegative,
+    (lf) =>
+      lf.userInstances.length > 0 ||
+      lf.isNegative ||
+      (includeBoxes && (lf.bboxes ?? []).some((b) => !b.isPredicted)),
   ).length;
-  _userLabeledFramesCache = { labels, result };
+  if (version !== undefined) {
+    _userLabeledFramesCache = { labels, version, includeBoxes, result };
+  }
   return result;
 }
 
@@ -860,11 +887,12 @@ export function resolveRemoteRunName(
   // multi-model pipeline) passes a shared `runTimestamp` so every model's
   // run name carries the exact same timestamp, computed only once for the
   // whole batch — not a fresh one per model (which real time passing
-  // between calls could otherwise let drift by a second). No such override
-  // is needed for the frame count: `countUserLabeledFrames` already caches
-  // its result by `labels` reference.
+  // between calls could otherwise let drift by a second). The frame count is
+  // computed fresh; labels don't change during one submission.
   const runTimestamp = opts?.runTimestamp ?? formatRunTimestamp();
-  const userLabeledFrameCount = countUserLabeledFrames(labels);
+  const userLabeledFrameCount = countUserLabeledFrames(labels, {
+    includeBoxes: isBboxHeadKey(modelType),
+  });
   return userLabeledFrameCount !== null
     ? `${runTimestamp}.${modelType}.n=${userLabeledFrameCount}`
     : `${runTimestamp}.${modelType}`;
@@ -1526,7 +1554,7 @@ export function prepareLocalRun(
   // used how much data" comparisons useful across a project's history.
   let runName = cf.hyperparams.runName;
   if (!runName) {
-    const n = countUserLabeledFrames(labels);
+    const n = countUserLabeledFrames(labels, { includeBoxes: isBboxHeadKey(cf.modelType) });
     const ts = formatRunTimestamp();
     runName = n !== null ? `${ts}.${cf.modelType}.n=${n}` : `${ts}.${cf.modelType}`;
   }
