@@ -1,35 +1,29 @@
 /**
  * The Compare Model Predictions panel, in the canvas's top-right corner.
  *
- * Title and a one-line summary (video, models shown, frames with 2+ models,
- * frames where they disagree); the disagreement threshold with ◀ ▶; a
- * button that hides the project's own instances (same as H) so the models
- * can be compared alone; and one row per loaded model (show/hide, colour,
- * name, poses on this frame, remove). "–" folds the whole panel into a small
+ * Title; the disagreement threshold with ◀ ▶; a button that hides the
+ * project's own instances (same as H) so the models can be compared alone;
+ * and one row per loaded model (show/hide, colour, name, poses on this
+ * frame, remove). Clicking a model's name selects it: its poses on this
+ * frame get dashed boxes in its colour, or the row says it has none here;
+ * clicking again or Esc deselects. "–" folds the whole panel into a small
  * pill in the same corner; the models stay drawn. Hidden when no model is
  * loaded.
  */
-import { useMemo, useState } from "react";
+import { useEffect, useState } from "react";
 import { ChevronLeft, ChevronRight, CircleHelp, Eye, EyeOff, LineChart, Minus, Plus, X } from "lucide-react";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { useAppStore } from "@/stores/appStore";
 import { useModelOverlayStore } from "@/stores/modelOverlayStore";
 import { rgbToCSS } from "@/lib/colorPalettes";
 import { toast } from "@/lib/notify";
-import { compareSummary, findDisagreementFrame } from "@/hooks/useModelOverlayFrame";
+import { findDisagreementFrame } from "@/hooks/useModelOverlayFrame";
+import { useModelOverlayUiStore } from "@/stores/modelOverlayUiStore";
 import { DISAGREEMENT_COLOR } from "@/canvas/modelOverlayRenderer";
 import { toggleProjectInstances } from "@/lib/modelOverlay/canvasActions";
 
-/** The panel's summary line, e.g. "mice.mp4 · 3 models · 1,200 frames with 2+ · 87 disagree". */
-export function summaryLine(s: ReturnType<typeof compareSummary>, highlight: boolean): string {
-  const parts = [
-    s.videoName,
-    `${s.shown} model${s.shown === 1 ? "" : "s"} shown`,
-    `${s.overlapFrames.toLocaleString()} frame${s.overlapFrames === 1 ? "" : "s"} with 2+`,
-  ];
-  if (highlight && s.overlapFrames > 0) parts.push(`${s.disagreeFrames.toLocaleString()} disagree`);
-  return parts.filter((p) => p !== "").join(" · ");
-}
+/** Shown under a selected model's row when it has no pose on this frame. */
+export const NO_POSES_ON_FRAME = "No predicted instances on this frame";
 
 const RMS_HELP =
   "How far apart the models put the same body part: the average distance of each model's point from their middle (the RMS spread, in pixels). Nodes above this get a red ring.";
@@ -65,11 +59,19 @@ export function ModelOverlayLegend({ disagreementCount }: { disagreementCount: n
   const minimized = useModelOverlayStore((s) => s.legendMinimized);
   const setMinimized = useModelOverlayStore((s) => s.setLegendMinimized);
   const showInstances = useAppStore((s) => s.showInstances);
-  // Counts over every frame: recomputed only when the models, video or threshold change.
-  const summary = useMemo(
-    () => compareSummary(models, video, threshold, highlight),
-    [models, video, threshold, highlight]
-  );
+  const selectedModelId = useModelOverlayUiStore((s) => s.selectedModelId);
+  const toggleSelectedModel = useModelOverlayUiStore((s) => s.toggleSelectedModel);
+  const clearSelectedModel = useModelOverlayUiStore((s) => s.clearSelectedModel);
+
+  // Esc deselects the selected model row.
+  useEffect(() => {
+    if (!selectedModelId) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") clearSelectedModel();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [selectedModelId, clearSelectedModel]);
 
   if (models.length === 0) return null;
   const forVideo = models.filter((m) => m.video === video);
@@ -134,9 +136,6 @@ export function ModelOverlayLegend({ disagreementCount }: { disagreementCount: n
         >
           <Minus className="h-3 w-3" />
         </button>
-      </div>
-      <div className="text-[10px] text-white/60" data-testid="model-overlay-summary">
-        {summaryLine(summary, highlight)}
       </div>
       <div className="mt-1 space-y-0.5">
         {forVideo.length === 0 && (
@@ -213,34 +212,52 @@ export function ModelOverlayLegend({ disagreementCount }: { disagreementCount: n
         )}
         {forVideo.map((m) => {
           const onFrame = m.frames.get(frameIdx)?.length ?? 0;
+          const selected = selectedModelId === m.id;
           return (
-            <div key={m.id} className="flex items-center gap-1.5" data-testid="model-overlay-row">
-              <input
-                type="checkbox"
-                className="h-3 w-3 accent-white"
-                checked={m.visible}
-                onChange={(e) => setVisible(m.id, e.target.checked)}
-                aria-label={`Show ${m.name}`}
-              />
-              <span
-                className="inline-block h-2.5 w-2.5 shrink-0 rounded-full"
-                style={{ backgroundColor: rgbToCSS(m.color) }}
-              />
-              <span className="min-w-0 flex-1 truncate" title={m.source}>
-                {m.name}
-              </span>
-              <span className="text-white/50 tabular-nums" title="Poses on this frame">
-                {onFrame}
-              </span>
-              <button
-                type="button"
-                className="rounded p-0.5 text-white/50 hover:bg-white/10 hover:text-white"
-                onClick={() => removeModel(m.id)}
-                title={`Remove ${m.name}`}
-                aria-label={`Remove ${m.name}`}
+            <div key={m.id}>
+              <div
+                className={`flex items-center gap-1.5 rounded px-0.5 ${selected ? "bg-white/20 ring-1 ring-white/40" : ""}`}
+                data-testid="model-overlay-row"
+                data-selected={selected || undefined}
               >
-                <X className="h-3 w-3" />
-              </button>
+                <input
+                  type="checkbox"
+                  className="h-3 w-3 accent-white"
+                  checked={m.visible}
+                  onChange={(e) => setVisible(m.id, e.target.checked)}
+                  aria-label={`Show ${m.name}`}
+                />
+                <span
+                  className="inline-block h-2.5 w-2.5 shrink-0 rounded-full"
+                  style={{ backgroundColor: rgbToCSS(m.color) }}
+                />
+                <button
+                  type="button"
+                  className="min-w-0 flex-1 truncate text-left hover:text-white"
+                  onClick={() => toggleSelectedModel(m.id)}
+                  aria-pressed={selected}
+                  title={`${selected ? "Deselect" : "Select"} ${m.name}: outline its poses on this frame (Esc deselects)\n${m.source}`}
+                >
+                  {m.name}
+                </button>
+                <span className="text-white/50 tabular-nums" title="Poses on this frame">
+                  {onFrame}
+                </span>
+                <button
+                  type="button"
+                  className="rounded p-0.5 text-white/50 hover:bg-white/10 hover:text-white"
+                  onClick={() => removeModel(m.id)}
+                  title={`Remove ${m.name}`}
+                  aria-label={`Remove ${m.name}`}
+                >
+                  <X className="h-3 w-3" />
+                </button>
+              </div>
+              {selected && onFrame === 0 && (
+                <div className="pl-6 text-[10px] text-white/60" data-testid="model-overlay-no-poses">
+                  {NO_POSES_ON_FRAME}
+                </div>
+              )}
             </div>
           );
         })}

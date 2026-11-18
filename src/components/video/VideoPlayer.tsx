@@ -47,7 +47,9 @@ import { useQcFrameFlags } from "@/hooks/useQcFrameFlags";
 import { useQcStore } from "@/stores/qcStore";
 import { QcReviewFrame } from "./QcReviewFrame";
 import { useModelOverlayFrame } from "@/hooks/useModelOverlayFrame";
-import { renderModelOverlay, hitTestModelOverlay } from "@/canvas/modelOverlayRenderer";
+import { renderModelOverlay, hitTestModelOverlay, hoverTestModelOverlay } from "@/canvas/modelOverlayRenderer";
+import { useModelOverlayUiStore } from "@/stores/modelOverlayUiStore";
+import { ModelPoseHoverLabel } from "./ModelPoseHoverLabel";
 import { ModelOverlayLegend } from "./ModelOverlayLegend";
 import { ModelPoseAcceptBar } from "./ModelPoseAcceptBar";
 import { ModelTracesStrip } from "./ModelTracesStrip";
@@ -255,6 +257,31 @@ export function VideoPlayer() {
   // Click handlers read the latest overlay without re-binding on every frame.
   const modelOverlayRef = useRef(modelOverlay);
   modelOverlayRef.current = modelOverlay;
+  const selectedModelId = useModelOverlayUiStore((s) => s.selectedModelId);
+  const modelHover = useModelOverlayUiStore((s) => s.hover);
+  /**
+   * Hover over model poses (Compare Model Predictions): node first, else body,
+   * tested like project instances. Returns the hover (or null) for the UI
+   * store. Hover only — clicks are routed separately (Alt+click for models).
+   */
+  const hoverModelPose = useCallback(
+    (x: number, y: number, nodeThreshold: number, bodyThreshold: number, clientX: number, clientY: number) => {
+      const { layers } = modelOverlayRef.current;
+      if (layers.length === 0) return null;
+      const st = useAppStore.getState();
+      const hit = hoverTestModelOverlay(
+        layers,
+        st.skeleton?.edgeIndices ?? [],
+        x,
+        y,
+        nodeThreshold,
+        bodyThreshold,
+        (sx, sy) => toImageCoords(st.video, sx, sy)
+      );
+      return hit ? { modelId: layers[hit.layer].modelId, pose: hit.pose, node: hit.node, clientX, clientY } : null;
+    },
+    []
+  );
   /** The model node under scene point (x, y), or null (none shown / none near). */
   const hitModelPose = useCallback((x: number, y: number, threshold: number) => {
     const { layers } = modelOverlayRef.current;
@@ -1641,7 +1668,16 @@ export function VideoPlayer() {
         edgeStyle,
         zoom: baseScale * zoom,
         toImage: (x, y) => toImageCoords(video, x, y),
-      }, { selected: modelOverlay.selected, disagreements: modelOverlay.disagreements });
+      }, {
+        selected: modelOverlay.selected,
+        disagreements: modelOverlay.disagreements,
+        selectedModelId,
+        hover: (() => {
+          if (!modelHover) return null;
+          const layer = modelLayers.findIndex((l) => l.modelId === modelHover.modelId);
+          return layer >= 0 ? { layer, pose: modelHover.pose, node: modelHover.node } : null;
+        })(),
+      });
     };
 
     if (!labeledFrame || !showInstances) {
@@ -1874,6 +1910,8 @@ export function VideoPlayer() {
     proposalGhosts,
     modelLayers,
     modelOverlay,
+    selectedModelId,
+    modelHover,
   ]);
 
   // Check if we're in explicit placement mode
@@ -3076,6 +3114,7 @@ export function VideoPlayer() {
           clientY: e.clientY,
         });
         if (hoveredInstanceIdx) setHoveredInstanceIdx(null);
+        if (useModelOverlayUiStore.getState().hover) useModelOverlayUiStore.getState().setHover(null);
       } else {
         if (hoveredNode) {
           setHoveredNode(null);
@@ -3085,14 +3124,24 @@ export function VideoPlayer() {
         // elsewhere in this file).
         const instanceThreshold = 30 / (baseScale * zoom);
         const instHit = hitTestInstance(instances, x, y, instanceThreshold);
-        if (instHit !== null) {
-          setHoveredInstanceIdx({ idx: instHit, clientX: e.clientX, clientY: e.clientY });
-        } else if (hoveredInstanceIdx) {
-          setHoveredInstanceIdx(null);
+        // Compare Model Predictions: a model's node beats a project body; a
+        // project body beats a model's body (project nodes win above).
+        const modelHit = hoverModelPose(x, y, nodeThreshold, instanceThreshold, e.clientX, e.clientY);
+        const ui = useModelOverlayUiStore.getState();
+        if (modelHit && (modelHit.node !== null || instHit === null)) {
+          ui.setHover(modelHit);
+          if (hoveredInstanceIdx) setHoveredInstanceIdx(null);
+        } else {
+          if (ui.hover) ui.setHover(null);
+          if (instHit !== null) {
+            setHoveredInstanceIdx({ idx: instHit, clientX: e.clientX, clientY: e.clientY });
+          } else if (hoveredInstanceIdx) {
+            setHoveredInstanceIdx(null);
+          }
         }
       }
     },
-    [isDragging, isPanning, isZoomDragging, dragNodeInfo, canvasToScene, panStart, constrainPan, zoom, baseScale, interactionMode, selectedNodes, markerSize, nodeLabelSize, showLabels, hoveredNode, hoveredInstanceIdx, offsetX, offsetY, isPlacingNodes, isShiftHeld, isAreaDeleting, areaDeleteStart, skeletonBuildMode, skeleton, builderRI]
+    [isDragging, isPanning, isZoomDragging, dragNodeInfo, canvasToScene, panStart, constrainPan, zoom, baseScale, interactionMode, selectedNodes, markerSize, nodeLabelSize, showLabels, hoveredNode, hoveredInstanceIdx, offsetX, offsetY, isPlacingNodes, isShiftHeld, isAreaDeleting, areaDeleteStart, skeletonBuildMode, skeleton, builderRI, hoverModelPose]
   );
 
   const handleMouseUp = useCallback(() => {
@@ -3590,7 +3639,7 @@ export function VideoPlayer() {
           onMouseDown={handleMouseDown}
           onMouseMove={handleMouseMove}
           onMouseUp={handleMouseUp}
-          onMouseLeave={() => { pendingPlace.current = null; handleMouseUp(); setHoveredNode(null); setHoveredInstanceIdx(null); cursorScene.current = null; }}
+          onMouseLeave={() => { pendingPlace.current = null; handleMouseUp(); setHoveredNode(null); setHoveredInstanceIdx(null); useModelOverlayUiStore.getState().setHover(null); cursorScene.current = null; }}
           onDoubleClick={handleDoubleClick}
           onContextMenu={handleContextMenu}
         />
@@ -3794,6 +3843,9 @@ export function VideoPlayer() {
             </div>
           );
         })()}
+
+        {/* Compare Model Predictions: hover label for a model pose. */}
+        {!hoveredNode && !hoveredInstanceIdx && <ModelPoseHoverLabel containerRef={containerRef} />}
 
         {/* View controls overlay: reset-view button + zoom-level readout. The
             frame counter lives in the status bar only (was previously

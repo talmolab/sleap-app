@@ -20,7 +20,6 @@ import {
   type Disagreement,
 } from "@/lib/modelOverlay/matching";
 import type { Video } from "@/types";
-import { pathBaseName, videoPath } from "@/lib/modelOverlay/core";
 
 /** Pure: the layers for `video` at `frameIdx`. */
 export function modelOverlayLayers(
@@ -117,39 +116,3 @@ export function findDisagreementFrame(
   return null;
 }
 
-/** The one-line summary under the Compare Model Predictions panel's title. */
-export interface CompareSummary {
-  /** File name of the video on screen. */
-  videoName: string;
-  /** Models shown (ticked) for this video. */
-  shown: number;
-  /** Frames where two or more shown models have a pose. */
-  overlapFrames: number;
-  /** Of those, frames where the shown models disagree on at least one node. */
-  disagreeFrames: number;
-}
-
-/**
- * Pure: counts for the panel summary. `disagreeFrames` uses the current
- * threshold (and is 0 while the highlight is off).
- */
-export function compareSummary(
-  models: readonly OverlayModel[],
-  video: Video | null,
-  threshold: number,
-  highlight: boolean
-): CompareSummary {
-  const shownModels = models.filter((m) => m.visible && m.video === video);
-  const videoName = video ? pathBaseName(videoPath(video)) : "";
-  const counts = new Map<number, number>();
-  for (const m of shownModels) for (const f of m.frames.keys()) counts.set(f, (counts.get(f) ?? 0) + 1);
-  const overlap = [...counts.entries()].filter(([, n]) => n >= 2).map(([f]) => f);
-  let disagreeFrames = 0;
-  if (highlight && overlap.length > 0) {
-    const byTrack = shownModelsShareTracks(models, video);
-    for (const f of overlap) {
-      if (frameDisagreements(modelOverlayLayers(shownModels, video, f), byTrack, threshold).length > 0) disagreeFrames++;
-    }
-  }
-  return { videoName, shown: shownModels.length, overlapFrames: overlap.length, disagreeFrames };
-}

@@ -1,17 +1,19 @@
 /**
- * The Compare Model Predictions corner panel after hand-testing: title and
- * summary counts, folding it into a pill, the "Hide project instances (H)"
- * button, and models drawn in the app's predicted-instance style.
+ * The Compare Model Predictions corner panel after hand-testing: title,
+ * folding it into a pill, the "Hide project instances (H)" button, selecting
+ * a model's row, models drawn in the app's predicted-instance style, and
+ * hovering a model pose.
  */
 import { describe, it, expect, beforeEach, beforeAll, afterEach } from "../bun-test";
 import { render, renderHook, screen, fireEvent, cleanup, act } from "@testing-library/react";
 import { Labels } from "@talmolab/sleap-io.js";
-import { ModelOverlayLegend, summaryLine } from "@/components/video/ModelOverlayLegend";
-import { compareSummary } from "@/hooks/useModelOverlayFrame";
+import { ModelOverlayLegend, NO_POSES_ON_FRAME } from "@/components/video/ModelOverlayLegend";
+import { modelHoverLines } from "@/components/video/ModelPoseHoverLabel";
+import { useModelOverlayUiStore } from "@/stores/modelOverlayUiStore";
 import { useKeyboardShortcuts } from "@/hooks/useKeyboardShortcuts";
 import { useAppStore } from "@/stores/appStore";
 import { useModelOverlayStore, type OverlayModel } from "@/stores/modelOverlayStore";
-import { modelPoseToRendered } from "@/canvas/modelOverlayRenderer";
+import { modelPoseToRendered, modelRenderOptions, hoverTestModelOverlay } from "@/canvas/modelOverlayRenderer";
 import { MODEL_COLORS, type OverlayPose } from "@/lib/modelOverlay/core";
 import { makeVideo, poseAt } from "./modelOverlayTestData";
 
@@ -51,30 +53,12 @@ function twoModels(video = makeVideo("/data/mouse.mp4")) {
   return { video, a, b };
 }
 
-describe("compareSummary", () => {
-  // The header's counts: video name, models shown, frames with 2+ models, frames they disagree on.
-  it("counts shown models, overlapping frames and disagreeing frames", () => {
-    const { video, a, b } = twoModels();
-    const s = compareSummary([a, b], video, 10, true);
-    expect(s).toEqual({ videoName: "mouse.mp4", shown: 2, overlapFrames: 3, disagreeFrames: 1 });
-    expect(summaryLine(s, true)).toBe("mouse.mp4 · 2 models shown · 3 frames with 2+ · 1 disagree");
-  });
-
-  // A hidden model doesn't count, and with the highlight off there's no "disagree" part.
-  it("leaves out hidden models and the disagree count when the highlight is off", () => {
-    const { video, a, b } = twoModels();
-    const s = compareSummary([a, { ...b, visible: false }], video, 10, true);
-    expect(s.shown).toBe(1);
-    expect(s.overlapFrames).toBe(0);
-    expect(summaryLine(compareSummary([a, b], video, 10, false), false)).toBe("mouse.mp4 · 2 models shown · 3 frames with 2+");
-  });
-});
-
 describe("ModelOverlayLegend", () => {
   beforeEach(() => {
     useAppStore.setState(useAppStore.getInitialState());
     useModelOverlayStore.getState().clear();
     useModelOverlayStore.setState({ legendMinimized: false });
+    useModelOverlayUiStore.setState({ selectedModelId: null, hover: null });
   });
   afterEach(() => cleanup());
 
@@ -88,12 +72,40 @@ describe("ModelOverlayLegend", () => {
     ]);
   }
 
-  // Hand-test: the panel needs a clear title so it's obvious what it is.
-  it("shows the title and the summary line", () => {
+  // Hand-test: a clear title, and (round 2) no summary line under it.
+  it("shows the title without a summary line", () => {
     showTwo();
     render(<ModelOverlayLegend disagreementCount={0} />);
     expect(screen.getByTestId("model-overlay-title").textContent).toBe("Compare Model Predictions");
-    expect(screen.getByTestId("model-overlay-summary").textContent).toContain("3 frames with 2+");
+    expect(screen.queryByTestId("model-overlay-summary")).toBeNull();
+  });
+
+  // Hand-test round 2: clicking a model's name selects its row; again (or Esc) deselects.
+  it("selects a model row by its name and deselects on a second click or Esc", () => {
+    showTwo();
+    render(<ModelOverlayLegend disagreementCount={0} />);
+    const id = useModelOverlayStore.getState().models[0].id;
+    fireEvent.click(screen.getByRole("button", { name: "a" }));
+    expect(useModelOverlayUiStore.getState().selectedModelId).toBe(id);
+    expect(screen.getAllByTestId("model-overlay-row")[0].getAttribute("data-selected")).toBe("true");
+    fireEvent.click(screen.getByRole("button", { name: "a" }));
+    expect(useModelOverlayUiStore.getState().selectedModelId).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "a" }));
+    act(() => {
+      window.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+    });
+    expect(useModelOverlayUiStore.getState().selectedModelId).toBeNull();
+  });
+
+  // Hand-test round 2: a selected model with nothing on this frame says so in its row.
+  it("says when the selected model has no poses on this frame", () => {
+    showTwo();
+    act(() => useAppStore.setState({ frameIdx: 3 })); // model b has nothing on frame 3, a does
+    render(<ModelOverlayLegend disagreementCount={0} />);
+    fireEvent.click(screen.getByRole("button", { name: "a" }));
+    expect(screen.queryByTestId("model-overlay-no-poses")).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "b" }));
+    expect(screen.getByTestId("model-overlay-no-poses").textContent).toBe(NO_POSES_ON_FRAME);
   });
 
   // Hand-test: "–" folds the whole panel into a pill; clicking the pill brings it back. Models stay loaded.
@@ -145,5 +157,43 @@ describe("modelPoseToRendered", () => {
     expect(r.trackName).toBeNull();
     expect(r.nodes.map((n) => n.visible)).toEqual([true, false, true]);
     expect(r.showNonVisible).toBe(false);
+  });
+});
+
+describe("model pose drawing strength and hover", () => {
+  // Hand-test round 2: a low pose-opacity setting must not make model poses fainter than full strength.
+  it("never draws model poses below full opacity", () => {
+    const o = modelRenderOptions({ markerSize: 4, poseOpacity: 0.3, showEdges: true, zoom: 1, toImage: (x, y) => [x, y] });
+    expect(o.poseOpacity).toBe(1);
+    expect(o.colorPredicted).toBe(true);
+  });
+
+  const id = (x: number, y: number): [number, number] => [x, y];
+  const layers = [
+    { modelId: "a", color: MODEL_COLORS[0], poses: [pose(poseAt(100, 100))] },
+    { modelId: "b", color: MODEL_COLORS[1], poses: [pose(poseAt(300, 300))] },
+  ];
+
+  // Hovering a model's node finds that model, pose and node (like a project prediction).
+  it("hit-tests a model node", () => {
+    expect(hoverTestModelOverlay(layers, [[0, 1]], 301, 290, 5, 30, id)).toEqual({ layer: 1, pose: 0, node: 0 });
+  });
+
+  // Off the nodes but on the pose's body, hover still finds the pose (node null), like a project instance.
+  it("hit-tests a model pose's body", () => {
+    expect(hoverTestModelOverlay(layers, [[0, 1]], 108, 104, 2, 30, id)).toEqual({ layer: 0, pose: 0, node: null });
+  });
+
+  // Far from every pose: no hover.
+  it("finds nothing away from the poses", () => {
+    expect(hoverTestModelOverlay(layers, [[0, 1]], 600, 600, 5, 30, id)).toBeNull();
+  });
+
+  // The hover label names the model, like "Predicted Instance" for a project prediction.
+  it("labels a hovered model pose with the model's name and the node", () => {
+    const lines = modelHoverLines("bottomup", pose(poseAt(10, 20)), 1, ["head", "thorax", "abdomen"]);
+    expect(lines?.[0]).toBe("Predicted Instance · bottomup");
+    expect(lines?.[1]).toBe("thorax · x: 10.0, y: 20.0");
+    expect(modelHoverLines("m", undefined, null, [])).toBeNull();
   });
 });
