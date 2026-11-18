@@ -6,12 +6,27 @@
  * it can be moved out of the way of the animals.
  */
 import { useState } from "react";
-import { ChevronDown, ChevronRight, Plus, X } from "lucide-react";
+import { ChevronDown, ChevronLeft, ChevronRight, Plus, X } from "lucide-react";
 import { useAppStore } from "@/stores/appStore";
 import { useModelOverlayStore } from "@/stores/modelOverlayStore";
 import { rgbToCSS } from "@/lib/colorPalettes";
+import { toast } from "@/lib/notify";
+import { findDisagreementFrame } from "@/hooks/useModelOverlayFrame";
+import { DISAGREEMENT_COLOR } from "@/canvas/modelOverlayRenderer";
 
-export function ModelOverlayLegend() {
+/** The typed threshold in px, or null for empty / not a number / negative (then ignored). */
+export function parseThreshold(text: string): number | null {
+  if (text.trim() === "") return null;
+  const v = Number(text);
+  return Number.isFinite(v) && v >= 0 ? v : null;
+}
+
+/**
+ * `disagreementCount` is the number of flagged nodes on this frame, passed in
+ * by the canvas so the per-frame matching runs once (VideoPlayer already
+ * computes it to draw the rings).
+ */
+export function ModelOverlayLegend({ disagreementCount }: { disagreementCount: number }) {
   const models = useModelOverlayStore((s) => s.models);
   const setVisible = useModelOverlayStore((s) => s.setVisible);
   const removeModel = useModelOverlayStore((s) => s.removeModel);
@@ -19,10 +34,23 @@ export function ModelOverlayLegend() {
   const setDialogOpen = useModelOverlayStore((s) => s.setDialogOpen);
   const video = useAppStore((s) => s.video);
   const frameIdx = useAppStore((s) => s.frameIdx);
+  const highlight = useModelOverlayStore((s) => s.highlightDisagreement);
+  const setHighlight = useModelOverlayStore((s) => s.setHighlightDisagreement);
+  const threshold = useModelOverlayStore((s) => s.threshold);
+  const setThreshold = useModelOverlayStore((s) => s.setThreshold);
+  // The box's own text, so clearing it to type a new value doesn't set 0.
+  const [thresholdText, setThresholdText] = useState<string | null>(null);
   const [collapsed, setCollapsed] = useState(false);
 
   if (models.length === 0) return null;
   const forVideo = models.filter((m) => m.video === video);
+  const shownCount = forVideo.filter((m) => m.visible).length;
+
+  const jump = (dir: 1 | -1) => {
+    const f = findDisagreementFrame(models, video, threshold, frameIdx, dir);
+    if (f === null) toast.info(dir === 1 ? "No disagreement after this frame" : "No disagreement before this frame");
+    else useAppStore.getState().setFrameIdx(f);
+  };
 
   return (
     <div
@@ -65,6 +93,65 @@ export function ModelOverlayLegend() {
           {forVideo.length === 0 && (
             <div className="text-white/60">No model loaded for this video.</div>
           )}
+          {forVideo.length > 0 && (
+            <div className="mb-1 flex items-center gap-1.5 border-b border-white/15 pb-1" data-testid="model-overlay-disagreement">
+              <input
+                type="checkbox"
+                className="h-3 w-3 accent-white"
+                checked={highlight}
+                onChange={(e) => setHighlight(e.target.checked)}
+                aria-label="Highlight disagreement"
+              />
+              <span
+                className="inline-block h-2.5 w-2.5 shrink-0 rounded-full border-2"
+                style={{ borderColor: rgbToCSS(DISAGREEMENT_COLOR) }}
+              />
+              <span title="Ring nodes where the models' positions spread by more than this many pixels: the RMS distance of the models' points from their mean, sqrt(var x + var y)">
+                RMS spread &gt;
+              </span>
+              <input
+                type="number"
+                min={0}
+                step={1}
+                className="w-10 rounded bg-white/10 px-1 text-right tabular-nums"
+                value={thresholdText ?? String(threshold)}
+                onChange={(e) => {
+                  setThresholdText(e.target.value);
+                  const v = parseThreshold(e.target.value);
+                  if (v !== null) setThreshold(v);
+                }}
+                onBlur={() => setThresholdText(null)}
+                aria-label="Disagreement threshold in pixels"
+              />
+              <span className="text-white/60">px</span>
+              <span className="flex-1" />
+              {highlight && shownCount >= 2 && (
+                <span className="tabular-nums text-white/70" title="Nodes flagged on this frame">
+                  {disagreementCount}
+                </span>
+              )}
+              <button
+                type="button"
+                className="rounded p-0.5 text-white/60 hover:bg-white/10 hover:text-white disabled:opacity-30"
+                onClick={() => jump(-1)}
+                disabled={shownCount < 2}
+                title="Previous frame where the models disagree"
+                aria-label="Previous disagreement"
+              >
+                <ChevronLeft className="h-3 w-3" />
+              </button>
+              <button
+                type="button"
+                className="rounded p-0.5 text-white/60 hover:bg-white/10 hover:text-white disabled:opacity-30"
+                onClick={() => jump(1)}
+                disabled={shownCount < 2}
+                title="Next frame where the models disagree"
+                aria-label="Next disagreement"
+              >
+                <ChevronRight className="h-3 w-3" />
+              </button>
+            </div>
+          )}
           {forVideo.map((m) => {
             const onFrame = m.frames.get(frameIdx)?.length ?? 0;
             return (
@@ -98,6 +185,11 @@ export function ModelOverlayLegend() {
               </div>
             );
           })}
+          {forVideo.length > 0 && (
+            <div className="pt-0.5 text-[10px] text-white/50" data-testid="model-overlay-accept-hint">
+              Alt+click a model's pose to accept it
+            </div>
+          )}
         </div>
       )}
     </div>

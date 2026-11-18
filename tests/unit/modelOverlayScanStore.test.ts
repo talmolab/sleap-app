@@ -96,7 +96,7 @@ describe("modelOverlayLayers", () => {
   it("picks visible models for this video and frame", () => {
     const v1 = makeVideo("/v1.mp4");
     const v2 = makeVideo("/v2.mp4");
-    const base = { source: "", color: MODEL_COLORS[0], visible: true };
+    const base = { source: "", color: MODEL_COLORS[0], visible: true, trackNames: new Set<string>() };
     const layers = modelOverlayLayers(
       [
         { ...base, id: "a", name: "a", video: v1, frames: new Map([[4, [pose(1, 2)]]]) },
