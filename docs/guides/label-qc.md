@@ -29,7 +29,7 @@ and the panel.
 | Issue | What it means |
 |---|---|
 | **Duplicate** | Two instances on the same frame that are really the same animal — overlapping bounding boxes, or nodes sitting within a few pixels of each other |
-| **Incomplete frame** | Fewer instances than the project's typical (median) count — an animal was probably missed |
+| **Incomplete frame** | Fewer instances than the project's typical (median) count — an animal was probably missed. Negative frames are never incomplete, and don't count toward the median |
 | **Negative frame** | A frame marked as containing no animals that nevertheless has instances on it |
 | **Sparse instance** | An instance with almost no visible nodes |
 | **Empty instance** | An instance with no visible nodes at all |
@@ -156,6 +156,13 @@ to zoom.
   next one, as [below](#ignoring-a-flag).
 - **Delete instance** deletes the selected instance, for a duplicate. ++cmd+z++
   brings it back.
+- A green button fixes what's flagged in one click, when there's a fix for
+  it (see [one-click fixes](#one-click-fixes) below).
+- **Typical pose** draws the project's typical pose, fitted onto the selected
+  instance, as thin teal dashed lines. It's the typical shape of all your
+  labeled instances (each node at its median spot), turned, sized and moved to sit on this one, so the node
+  that's off stands out from where it usually is. It stays on until you turn
+  it off.
 - ++esc++, the **×** button, or a click on the dimmed area closes the window.
 
 When you edit a flagged instance in the Review window (drag a node, place
@@ -177,6 +184,21 @@ The tabs at the top right choose the order of the flagged frames:
 
 The order you pick also orders the panel's list and ++f++ / ++shift+f++.
 Switching keeps you on the frame you're on.
+
+#### One-click fixes
+
+Each is one ++cmd+z++.
+
+| Button | Shows for | What it does |
+|---|---|---|
+| **Swap L/R** | A **Chirality (L/R)** flag, or an anomaly whose issue is *Likely L/R swap* | Swaps every left/right node pair of the instance (also **Labels ▸ Swap Left/Right Nodes**) |
+| **Merge duplicate** | Either instance of a **Duplicate** pair | Merges the other instance into the selected one, as **Labels ▸ Merge Instance** does |
+| **Hide outside points** | An **Out of range** flag | Marks the points outside the frame not visible |
+| **Add instance** | An **Incomplete frame** | Adds an instance to the frame |
+
+Rule flags aren't checked again until you **Rerun**, so once you've edited the
+frame their buttons go (except **Swap L/R** for an anomaly, which is re-scored
+as you edit).
 
 ### Ignoring a flag
 
