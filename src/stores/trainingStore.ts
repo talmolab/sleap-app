@@ -2765,7 +2765,7 @@ export const useTrainingStore = create<TrainingState>()((set, get) => ({
 
           const { runInference } = await import("@/platform/backend");
           const { useAppStore } = await import("@/stores/appStore");
-          const { loadSlp } = await import("@talmolab/sleap-io.js");
+          const { loadSlp } = await import("@/lib/slpRead");
           const { commandContext } = await import("@/commands");
           const { MergePredictions } = await import("@/commands/editCommands");
           const getPlatform = (await import("@/platform")).getPlatform;

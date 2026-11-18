@@ -30,10 +30,9 @@
  * import("@/lib/draftRestore")}.
  */
 import {
-  loadSlp,
-  readSlpStreaming,
   type Labels,
 } from "@talmolab/sleap-io.js";
+import { loadSlp, readSlpStreaming } from "@/lib/slpRead";
 import { useAppStore } from "@/stores/appStore";
 import { toast } from "@/lib/notify";
 import {

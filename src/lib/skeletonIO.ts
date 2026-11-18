@@ -12,11 +12,11 @@
  */
 
 import {
-  loadSlp,
   readSkeletonJson,
   decodeYamlSkeleton,
   encodeYamlSkeleton,
 } from "@talmolab/sleap-io.js";
+import { loadSlp } from "@/lib/slpRead";
 import type { Skeleton, Instance, Node } from "@talmolab/sleap-io.js";
 import { distinctSkeletonCount } from "./skeletonStructure";
 

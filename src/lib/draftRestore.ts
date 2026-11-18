@@ -9,7 +9,8 @@
  * straight from the original, exactly like a normal open. The user keeps editing
  * (⌘S / auto-save update the same draft) and Exports to disk when ready.
  */
-import { loadSlp, type Labels } from "@talmolab/sleap-io.js";
+import { type Labels } from "@talmolab/sleap-io.js";
+import { loadSlp } from "@/lib/slpRead";
 import { useAppStore } from "@/stores/appStore";
 import { reportParseProgress } from "@/lib/loadProject";
 import { resolveExternalVideos } from "@/lib/resolveVideos";

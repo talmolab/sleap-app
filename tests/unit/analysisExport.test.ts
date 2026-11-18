@@ -9,6 +9,7 @@ import {
   Instance,
   LabeledFrame,
   Labels,
+  PredictedInstance,
   Skeleton,
   Video,
 } from "@talmolab/sleap-io.js";
@@ -187,6 +188,46 @@ describe("Export Analysis HDF5 / CSV commands (desktop)", () => {
     expect(aCsv.length).toBe(1 + 10);
     expect(cCsv.length).toBe(1 + 10);
     expect(aCsv.join("\n")).not.toBe(cCsv.join("\n"));
+  });
+
+  // #464: an accepted prediction and its user instance are one animal, so one
+  // row; a hidden node's stored coordinates are left out (sleap-io.js 0.5.16).
+  it("writes one row per animal and leaves hidden nodes empty", async () => {
+    const skeleton = new Skeleton({ nodes: ["head", "tail"] });
+    const video = new Video({
+      filename: "/data/a.mp4",
+      backendMetadata: { shape: [1, 4, 4, 1] },
+      openBackend: false,
+    });
+    const pred = new PredictedInstance({
+      points: { head: [1, 2], tail: [3, 4] },
+      skeleton,
+      score: 0.9,
+    });
+    const user = new Instance({
+      points: [
+        { xy: [1, 2], visible: true, complete: true },
+        { xy: [3, 4], visible: false, complete: false },
+      ],
+      skeleton,
+      fromPredicted: pred,
+    });
+    const labels = new Labels({
+      labeledFrames: [new LabeledFrame({ video, frameIdx: 0, instances: [user, pred] })],
+      videos: [video],
+      skeletons: [skeleton],
+    });
+    saveDialogResult = "/out/a.csv";
+    await ExportCSVCommand.execute(ctx(labels, video, "/p/l.slp"));
+
+    const [header, ...rows] = written[0].text.trim().split("\n").map((r) => r.split(","));
+    const frameCol = header.indexOf("frame_idx");
+    const tailX = header.indexOf("tail.x");
+    const headX = header.indexOf("head.x");
+    const frame0 = rows.filter((r) => r[frameCol] === "0");
+    expect(frame0.length).toBe(1);
+    expect(frame0[0][headX]).toBe("1");
+    expect(frame0[0][tailX]).toBe("");
   });
 
   it("does nothing when nothing is labeled in the chosen video", async () => {
