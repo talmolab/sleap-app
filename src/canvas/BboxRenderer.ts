@@ -141,3 +141,52 @@ export function renderBboxes(
   }
   ctx.restore();
 }
+
+/** Resize handles on the selected (axis-aligned) box. */
+export function renderBboxHandles(
+  ctx: CanvasRenderingContext2D,
+  rect: { x1: number; y1: number; x2: number; y2: number },
+  color: RGB,
+  zoom: number,
+): void {
+  const px = 1 / Math.max(zoom, 1e-6);
+  const half = 4 * px;
+  const cx = (rect.x1 + rect.x2) / 2;
+  const cy = (rect.y1 + rect.y2) / 2;
+  const pts: [number, number][] = [
+    [rect.x1, rect.y1], [cx, rect.y1], [rect.x2, rect.y1], [rect.x2, cy],
+    [rect.x2, rect.y2], [cx, rect.y2], [rect.x1, rect.y2], [rect.x1, cy],
+  ];
+  ctx.save();
+  ctx.setLineDash([]);
+  ctx.lineWidth = 1.5 * px;
+  ctx.fillStyle = "white";
+  ctx.strokeStyle = css(color);
+  for (const [x, y] of pts) {
+    ctx.fillRect(x - half, y - half, half * 2, half * 2);
+    ctx.strokeRect(x - half, y - half, half * 2, half * 2);
+  }
+  ctx.restore();
+}
+
+/** Outline of a box being drawn, moved or resized. */
+export function renderBboxPreview(
+  ctx: CanvasRenderingContext2D,
+  corners: [number, number][],
+  zoom: number,
+): void {
+  if (corners.length < 2) return;
+  const px = 1 / Math.max(zoom, 1e-6);
+  ctx.save();
+  ctx.beginPath();
+  ctx.moveTo(corners[0][0], corners[0][1]);
+  for (const [x, y] of corners.slice(1)) ctx.lineTo(x, y);
+  ctx.closePath();
+  ctx.fillStyle = "rgba(255, 255, 255, 0.08)";
+  ctx.fill();
+  ctx.lineWidth = 2 * px;
+  ctx.setLineDash([5 * px, 3 * px]);
+  ctx.strokeStyle = "rgba(255, 255, 255, 0.95)";
+  ctx.stroke();
+  ctx.restore();
+}

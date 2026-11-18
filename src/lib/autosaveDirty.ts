@@ -87,6 +87,11 @@ const FRAME_LEVEL_COMMANDS: ReadonlySet<string> = new Set([
   "SetInstanceTrack",
   "TransposeInstances",
   "PropagateTrackLabels",
+  // Bounding-box edits (bboxCommands.ts): one box on the current frame.
+  "AddBbox",
+  "SetBboxGeometry",
+  "DeleteBbox",
+  "SetBboxProps",
 ]);
 
 /**

@@ -600,6 +600,12 @@ export interface AppState {
   // === Area delete mode ===
   areaDeleteMode: boolean;
 
+  // === Bounding boxes ===
+  /** Box tool: dragging on the canvas draws a new user bounding box. */
+  bboxDrawMode: boolean;
+  /** Index into the current frame's `bboxes` of the selected box, or null. */
+  selectedBboxIdx: number | null;
+
   // === Debug ===
   debugMode: boolean;
 
@@ -1064,6 +1070,8 @@ export const useAppStore = create<AppState>()(
 
       // Area delete mode
       areaDeleteMode: false,
+      bboxDrawMode: false,
+      selectedBboxIdx: null,
 
       // Debug
       debugMode: false,

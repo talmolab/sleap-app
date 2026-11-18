@@ -66,7 +66,10 @@ import {
 import { getActiveTrackOverrides } from "../../lib/trackColorOverrides";
 import { COLORMAPS } from "../../lib/colormaps";
 import { renderTrails } from "../../canvas/TrailRenderer";
-import { buildRenderedBboxes, renderBboxes, type RenderedBbox } from "../../canvas/BboxRenderer";
+import { buildRenderedBboxes, renderBboxes, renderBboxHandles, renderBboxPreview, type RenderedBbox } from "../../canvas/BboxRenderer";
+import { dragRect, handleCursor, hitTestBbox, MIN_BBOX_SIZE, rectFromPoints, rectOfCorners, type BboxHandle } from "@/lib/bboxEditing";
+import { AddBbox, DeleteBbox, SetBboxGeometry } from "@/commands/bboxCommands";
+import { instanceInsideRect } from "@/lib/bboxLinking";
 import {
   commandContext,
   ConvertPredictionToInstance,
@@ -143,7 +146,7 @@ import { actualSizeView, fitPointsView, type CanvasFit, type CanvasView } from "
 import { useFollowSelection } from "@/hooks/useFollowSelection";
 import { getPlatform, isTauri } from "@/platform/index";
 import { spawnOverlayServe, killOverlayServe, detectGpu } from "@/platform/backend";
-import { Film, Frame, Hand, ImageOff, MousePointer2, Tag, ZoomIn } from "lucide-react";
+import { Film, Frame, Hand, ImageOff, MousePointer2, SquareDashed, Tag, ZoomIn } from "lucide-react";
 import { renderProposalGhosts } from "@/canvas/proposalGhost";
 import { useProposalGhosts } from "@/hooks/useProposalGhosts";
 
@@ -296,6 +299,8 @@ export function VideoPlayer() {
   const resetViewNonce = useAppStore((s) => s.resetViewNonce);
   const userViewNonce = useAppStore((s) => s.userViewNonce);
   const areaDeleteMode = useAppStore((s) => s.areaDeleteMode);
+  const bboxDrawMode = useAppStore((s) => s.bboxDrawMode);
+  const selectedBboxIdx = useAppStore((s) => s.selectedBboxIdx);
   const showCrosshair = useAppStore((s) => s.showCrosshair);
   // Image-features ROI crop tool (shared with the Suggestions panel).
   const imageFeatureRoiDrawActive = useAppStore((s) => s.imageFeatureRoiDrawActive);
@@ -516,6 +521,17 @@ export function VideoPlayer() {
 
   // Rendered instances cache
   const renderedInstancesRef = useRef<RenderedInstance[]>([]);
+  // Bounding boxes as last drawn (image coords), for hit-testing.
+  const renderedBboxesRef = useRef<RenderedBbox[]>([]);
+  // In-progress box gesture: drawing a new box, or moving/resizing one.
+  const bboxGestureRef = useRef<
+    | { kind: "draw"; start: { x: number; y: number } }
+    | { kind: "edit"; start: { x: number; y: number }; index: number; handle: BboxHandle; corners: [number, number][] }
+    | null
+  >(null);
+  // Live outline of that gesture (image coords), and the hover cursor over a box.
+  const [bboxPreview, setBboxPreview] = useState<[number, number][] | null>(null);
+  const [bboxHoverCursor, setBboxHoverCursor] = useState<string | null>(null);
 
   // Store frame as ImageBitmap so we can re-draw with transforms
   const frameBitmapRef = useRef<OffscreenCanvas | null>(null);
@@ -729,6 +745,13 @@ export function VideoPlayer() {
       if (e.metaKey || e.ctrlKey) return;
       const tag = (e.target as HTMLElement)?.tagName;
       if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") return;
+      // A selected bounding box takes Delete/Backspace first.
+      const selBox = useAppStore.getState().selectedBboxIdx;
+      if (selBox !== null) {
+        e.preventDefault();
+        commandContext.execute(DeleteBbox, { index: selBox });
+        return;
+      }
       if (selectedNodes.size === 0) return;
 
       const lf = useAppStore.getState().labeledFrame;
@@ -1507,6 +1530,7 @@ export function VideoPlayer() {
     });
     const boxTracks = boxes.map((b) => b.track);
     return buildRenderedBboxes(boxes, {
+      selected: selectedBboxIdx !== null ? boxes[selectedBboxIdx] ?? null : null,
       toImage: (x, y) => toImageCoords(video, x, y),
       colorFor: (box, idx) =>
         (box.instance && instanceColor.get(box.instance)) ||
@@ -1528,7 +1552,31 @@ export function VideoPlayer() {
     projectHasTracks,
     trackColorOverrides,
     overlayVersion,
+    selectedBboxIdx,
   ]);
+  renderedBboxesRef.current = renderedBboxes;
+
+  // A box selection belongs to one frame.
+  useEffect(() => {
+    useAppStore.getState().set("selectedBboxIdx", null);
+  }, [frameIdx, video]);
+
+  // Esc leaves the box tool, else drops the box selection.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== "Escape") return;
+      const st = useAppStore.getState();
+      if (st.bboxDrawMode) {
+        st.set("bboxDrawMode", false);
+        bboxGestureRef.current = null;
+        setBboxPreview(null);
+      } else if (st.selectedBboxIdx !== null) {
+        st.set("selectedBboxIdx", null);
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
 
   // Neighbor-frame poses for the magnifier: each neighbor frame's poses,
   // colored the way that frame would color them, drawn by the loupe over the
@@ -1727,13 +1775,15 @@ export function VideoPlayer() {
       // The ROI + builder overlays are independent of instance rendering — still
       // draw them (persisted region / live rubber-band / scratch skeleton).
       const hasRoi = video ? imageFeatureRois.has(video) : false;
-      if (imageFeatureRoiDrawActive || hasRoi || skeletonBuildMode || zoomBox || modelLayers.length > 0) {
+      if (imageFeatureRoiDrawActive || hasRoi || skeletonBuildMode || zoomBox || modelLayers.length > 0 || bboxPreview) {
         ctx.save();
         applyImageTransform();
         paintModelOverlay();
         paintRoi();
         paintBuilder();
         paintZoomBox();
+        // A box being drawn on a frame with no labels yet (e.g. a new video).
+        if (bboxPreview) renderBboxPreview(ctx, bboxPreview, baseScale * zoom);
         ctx.restore();
       }
       return;
@@ -1782,6 +1832,11 @@ export function VideoPlayer() {
       opacity: poseOpacity / 100,
       showLabels,
     });
+    const selectedRb = renderedBboxes.find((b) => b.isSelected);
+    if (selectedRb && !selectedRb.isRotated && !bboxPreview) {
+      renderBboxHandles(ctx, rectOfCorners(selectedRb.corners), selectedRb.color, baseScale * zoom);
+    }
+    if (bboxPreview) renderBboxPreview(ctx, bboxPreview, baseScale * zoom);
     paintModelOverlay();
 
     const renderOpts = {
@@ -1897,6 +1952,7 @@ export function VideoPlayer() {
   }, [
     renderedInstances,
     renderedBboxes,
+    bboxPreview,
     labeledFrame,
     selectedInstance,
     showInstances,
@@ -2641,6 +2697,39 @@ export function VideoPlayer() {
 
       const { x, y } = canvasToScene(e.clientX, e.clientY);
 
+      // Bounding boxes (#488): the box tool draws a new box; otherwise a press
+      // on a box's border (or the selected box's handles/inside) selects it and
+      // starts a move/resize. Nodes win over box borders.
+      {
+        const st = useAppStore.getState();
+        if (st.bboxDrawMode && st.labels && st.video) {
+          e.preventDefault();
+          bboxGestureRef.current = { kind: "draw", start: { x, y } };
+          setBboxPreview(null);
+          return;
+        }
+        const nodeHit = hitTestNode(
+          renderedInstancesRef.current, x, y, (markerSize * 2) / (baseScale * zoom)
+        );
+        const boxHit = nodeHit
+          ? null
+          : hitTestBbox(renderedBboxesRef.current, x, y, 6 / (baseScale * zoom), st.selectedBboxIdx);
+        if (boxHit) {
+          e.preventDefault();
+          const rb = renderedBboxesRef.current.find((b) => b.index === boxHit.index)!;
+          st.set("selectedBboxIdx", boxHit.index);
+          bboxGestureRef.current = {
+            kind: "edit",
+            start: { x, y },
+            index: boxHit.index,
+            handle: rb.isRotated ? "move" : boxHit.handle,
+            corners: rb.corners,
+          };
+          return;
+        }
+        if (st.selectedBboxIdx !== null) st.set("selectedBboxIdx", null);
+      }
+
       // In pan mode, check for node hits first so nodes are still draggable
       if (shouldPan && !areaDeleteMode) {
         const instances = renderedInstancesRef.current;
@@ -3025,6 +3114,40 @@ export function VideoPlayer() {
         return;
       }
 
+      // Bounding boxes: update the live outline of a draw / move / resize.
+      const boxGesture = bboxGestureRef.current;
+      if (boxGesture) {
+        const p = canvasToScene(e.clientX, e.clientY);
+        if (boxGesture.kind === "draw") {
+          const r = rectFromPoints(boxGesture.start, p);
+          setBboxPreview([[r.x1, r.y1], [r.x2, r.y1], [r.x2, r.y2], [r.x1, r.y2]]);
+        } else {
+          const dx = p.x - boxGesture.start.x;
+          const dy = p.y - boxGesture.start.y;
+          if (boxGesture.handle === "move") {
+            setBboxPreview(boxGesture.corners.map(([cx, cy]) => [cx + dx, cy + dy] as [number, number]));
+          } else {
+            const r = dragRect(rectOfCorners(boxGesture.corners), boxGesture.handle, dx, dy);
+            setBboxPreview([[r.x1, r.y1], [r.x2, r.y1], [r.x2, r.y2], [r.x1, r.y2]]);
+          }
+        }
+        return;
+      }
+      // Hovering a box: show the move/resize cursor for what a press would grab.
+      if (!isDragging && !isPanning) {
+        const st = useAppStore.getState();
+        if (st.bboxDrawMode) {
+          if (bboxHoverCursor !== "crosshair") setBboxHoverCursor("crosshair");
+        } else if (renderedBboxesRef.current.length > 0) {
+          const p = canvasToScene(e.clientX, e.clientY);
+          const hit = hitTestBbox(renderedBboxesRef.current, p.x, p.y, 6 / (baseScale * zoom), st.selectedBboxIdx);
+          const cursor = hit ? handleCursor(hit.handle) : null;
+          if (cursor !== bboxHoverCursor) setBboxHoverCursor(cursor);
+        } else if (bboxHoverCursor !== null) {
+          setBboxHoverCursor(null);
+        }
+      }
+
       // Area-delete mode: update end point
       if (isAreaDeleting && areaDeleteStart) {
         const { x, y } = canvasToScene(e.clientX, e.clientY);
@@ -3190,7 +3313,7 @@ export function VideoPlayer() {
         }
       }
     },
-    [isDragging, isPanning, isZoomDragging, dragNodeInfo, canvasToScene, panStart, constrainPan, zoom, baseScale, interactionMode, selectedNodes, markerSize, nodeLabelSize, showLabels, hoveredNode, hoveredInstanceIdx, offsetX, offsetY, isPlacingNodes, isShiftHeld, isAreaDeleting, areaDeleteStart, skeletonBuildMode, skeleton, builderRI, hoverModelPose]
+    [bboxHoverCursor, isDragging, isPanning, isZoomDragging, dragNodeInfo, canvasToScene, panStart, constrainPan, zoom, baseScale, interactionMode, selectedNodes, markerSize, nodeLabelSize, showLabels, hoveredNode, hoveredInstanceIdx, offsetX, offsetY, isPlacingNodes, isShiftHeld, isAreaDeleting, areaDeleteStart, skeletonBuildMode, skeleton, builderRI, hoverModelPose]
   );
 
   const handleMouseUp = useCallback(() => {
@@ -3208,6 +3331,47 @@ export function VideoPlayer() {
     const pend = pendingPlace.current;
     pendingPlace.current = null;
     if (pend && isPlacementClick(pend.moved, performance.now() - pend.t)) placeQcReviewNode(pend.x, pend.y);
+
+    // Bounding boxes: commit a draw / move / resize as one undo step.
+    const boxGesture = bboxGestureRef.current;
+    if (boxGesture) {
+      bboxGestureRef.current = null;
+      const preview = bboxPreview;
+      setBboxPreview(null);
+      const st = useAppStore.getState();
+      if (!preview || !st.video) return;
+      const r = rectOfCorners(preview);
+      const [sx1, sy1] = toSourceCoords(st.video, r.x1, r.y1);
+      const [sx2, sy2] = toSourceCoords(st.video, r.x2, r.y2);
+      if (boxGesture.kind === "draw") {
+        if (r.x2 - r.x1 < MIN_BBOX_SIZE || r.y2 - r.y1 < MIN_BBOX_SIZE) return;
+        // Link the box to the pose instance it encloses, if exactly one does.
+        const inside = (st.labeledFrame?.instances ?? []).filter((inst) =>
+          instanceInsideRect(inst, { x1: sx1, y1: sy1, x2: sx2, y2: sy2 })
+        );
+        commandContext.execute(AddBbox, {
+          x1: sx1, y1: sy1, x2: sx2, y2: sy2,
+          instance: inside.length === 1 ? inside[0] : null,
+        });
+        return;
+      }
+      const box = st.labeledFrame?.bboxes[boxGesture.index];
+      if (!box) return;
+      const orig = rectOfCorners(boxGesture.corners);
+      const dx = r.x1 - orig.x1;
+      const dy = r.y1 - orig.y1;
+      if (boxGesture.handle === "move") {
+        if (Math.abs(dx) < 0.5 && Math.abs(dy) < 0.5) return; // a click just selects
+        commandContext.execute(SetBboxGeometry, {
+          index: boxGesture.index,
+          x1: box.x1 + dx, y1: box.y1 + dy, x2: box.x2 + dx, y2: box.y2 + dy,
+        });
+      } else {
+        if (r.x2 - r.x1 < MIN_BBOX_SIZE || r.y2 - r.y1 < MIN_BBOX_SIZE) return;
+        commandContext.execute(SetBboxGeometry, { index: boxGesture.index, x1: sx1, y1: sy1, x2: sx2, y2: sy2 });
+      }
+      return;
+    }
 
     // Area-delete mode: execute the delete command
     if (isAreaDeleting && areaDeleteStart && areaDeleteEnd) {
@@ -3332,7 +3496,7 @@ export function VideoPlayer() {
         s.bumpOverlayVersion();
       }
     }
-  }, [isDragging, isPanning, isZoomDragging, interactionMode, marqueeStart, marqueeEnd, zoomBox, rotation, fw, fh, baseScale, zoom, containerSize, offsetX, offsetY, isAreaDeleting, areaDeleteStart, areaDeleteEnd, roiStart, roiEnd, setImageFeatureRoi]);
+  }, [bboxPreview, isDragging, isPanning, isZoomDragging, interactionMode, marqueeStart, marqueeEnd, zoomBox, rotation, fw, fh, baseScale, zoom, containerSize, offsetX, offsetY, isAreaDeleting, areaDeleteStart, areaDeleteEnd, roiStart, roiEnd, setImageFeatureRoi]);
 
   // Zoom with mouse wheel (towards pointer), Alt+Scroll for rotation
   // Use native event listener with { passive: false } so preventDefault() works
@@ -3660,6 +3824,7 @@ export function VideoPlayer() {
           "flex-1 relative overflow-hidden bg-background min-h-0",
           pickingAnchor ? "cursor-crosshair" : instanceSequencePick ? "cursor-crosshair" : skeletonBuildMode ? (skeletonBuildStage === "connect" ? "cursor-crosshair" : "cursor-cell") : imageFeatureRoiDrawActive ? "cursor-crosshair" : isPanning ? "cursor-grabbing" : isZoomDragging ? "cursor-zoom-in" : (shouldPan && isCmdHeld) ? "cursor-zoom-in" : shouldPan ? "cursor-grab" : isDragging ? "cursor-grabbing" : areaDeleteMode ? "cursor-crosshair" : interactionMode === "marquee" ? "cursor-crosshair" : interactionMode === "zoomBox" ? "cursor-zoom-in" : isPlacingNodes ? "cursor-cell" : hoveredNode ? "cursor-pointer" : "cursor-default"
         )}
+        style={bboxHoverCursor && !isPanning && !shouldPan ? { cursor: bboxHoverCursor } : undefined}
         onMouseMove={crosshairActive ? handleCrosshairMove : undefined}
         onMouseLeave={
           crosshairActive
@@ -3907,6 +4072,27 @@ export function VideoPlayer() {
             {/* Node-name label toggle (leftmost). Flips `showLabels` (the same
                 View → Show Labels state), so node names show/hide next to the
                 keypoints. Dimmed when off. Press T to toggle (see shortcuts). */}
+            {/* Box tool (B): drag on the canvas to draw a bounding box. */}
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Button
+                  variant="secondary"
+                  size="icon-xs"
+                  className={cn(
+                    "pointer-events-auto rounded-md bg-black/60 border-none hover:bg-black/70 hover:text-white",
+                    bboxDrawMode ? "text-white ring-1 ring-white/70" : "text-white/40",
+                  )}
+                  aria-label="Box tool"
+                  aria-pressed={bboxDrawMode}
+                  onClick={() => useAppStore.getState().toggle("bboxDrawMode")}
+                >
+                  <SquareDashed />
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent side="top">
+                <p>{bboxDrawMode ? "Box tool on: drag to draw a box (B or Esc to stop)" : "Draw bounding boxes (B)"}</p>
+              </TooltipContent>
+            </Tooltip>
             <Tooltip>
               <TooltipTrigger asChild>
                 <Button
