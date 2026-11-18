@@ -91,6 +91,7 @@ export {
   AddInstance,
   ToggleNegativeFrame,
   DeleteSelectedInstance,
+  DeleteInstances,
   SetPointLocation,
   SetNodes,
   CopyInstance,

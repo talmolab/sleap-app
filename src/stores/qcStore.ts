@@ -25,6 +25,7 @@ import { create } from "zustand";
 import type { Instance, LabeledFrame, Labels } from "@/types";
 import { runLabelQc, SOFT_QC_KINDS, type QcFinding } from "@/lib/analyze/labelQc";
 import { hasMultipleSkeletons, multiSkeletonBlock } from "@/lib/multiSkeleton";
+import { qcFlagTotal } from "@/lib/qcTriage";
 import {
   anomalyVerdict,
   scoreLabelsAnomalyAsync,
@@ -103,6 +104,13 @@ interface QcState {
   reviewOrder: QcReviewOrder;
   /** Review window: draw the typical pose fitted onto the selected instance. */
   showTypicalPose: boolean;
+  /** The Grid (triage) window is open. */
+  triageOpen: boolean;
+  /**
+   * Flags (flagged instances plus frame-level findings) the previous run on
+   * this project found, for "last run → this run". Null before a second run.
+   */
+  prevRunFlags: number | null;
   /**
    * Instances re-scored after an edit in Review (qcInstKey → the new scores),
    * against the run's fitted model. Shown in place of the run's scores; the
@@ -133,6 +141,9 @@ interface QcState {
   setReviewOpen: (open: boolean) => void;
   setReviewOrder: (order: QcReviewOrder) => void;
   setShowTypicalPose: (show: boolean) => void;
+  setTriageOpen: (open: boolean) => void;
+  /** Mark several flagged instances OK at once (the Grid's Mark OK). */
+  markOkMany: (items: readonly { videoIdx: number; frameIdx: number; instIdx: number }[]) => void;
   /** Mark a user instance OK with its current pose, or take that back. */
   markOk: (videoIdx: number, frameIdx: number, userInstIdx: number) => void;
   unmarkOk: (videoIdx: number, frameIdx: number, userInstIdx: number) => void;
@@ -167,6 +178,8 @@ export const useQcStore = create<QcState>((set, get) => ({
   reviewOpen: false,
   reviewOrder: "severity",
   showTypicalPose: false,
+  triageOpen: false,
+  prevRunFlags: null,
   rescored: new Map(),
   nodeFocus: null,
   settings: DEFAULT_QC_SETTINGS,
@@ -180,8 +193,17 @@ export const useQcStore = create<QcState>((set, get) => ({
     const ac = new AbortController();
     abort = ac;
     const settings = get().settings;
+    const prev = get();
+    const prevView = qcView(prev);
+    const prevRunFlags =
+      prev.state === "done" && prev.labels === labels
+        ? qcFlagTotal(buildQcQueue(prevView.findings, prevView.anomaly, prev.threshold))
+        : prev.labels === labels
+          ? prev.prevRunFlags
+          : null;
     set({
       runSettings: settings,
+      prevRunFlags,
       labels,
       state: "running",
       progress: 0,
@@ -257,6 +279,25 @@ export const useQcStore = create<QcState>((set, get) => ({
 
   setReviewOrder: (reviewOrder) => set({ reviewOrder }),
   setShowTypicalPose: (showTypicalPose) => set({ showTypicalPose }),
+  setTriageOpen: (triageOpen) => set({ triageOpen }),
+
+  markOkMany: (items) => {
+    const project = get().dismissedProject;
+    if (project === null) return;
+    const dismissed = new Set(get().dismissed);
+    const added: string[] = [];
+    for (const { videoIdx, frameIdx, instIdx } of items) {
+      const inst = userInstanceAt(videoIdx, frameIdx, instIdx);
+      if (!inst) continue;
+      const key = qcMarkKey(videoIdx, frameIdx, instIdx, inst);
+      if (dismissed.has(key)) continue;
+      dismissed.add(key);
+      added.push(key);
+    }
+    if (added.length === 0) return;
+    set({ dismissed });
+    void addQcMarks(project, added);
+  },
 
   markOk: (videoIdx, frameIdx, userInstIdx) => {
     const inst = userInstanceAt(videoIdx, frameIdx, userInstIdx);
@@ -301,9 +342,11 @@ export const useQcStore = create<QcState>((set, get) => ({
   reset: () => {
     abort?.abort();
     abort = null;
-    if (get().labels === null && get().state === "idle" && !get().reviewOpen) return;
+    if (get().labels === null && get().state === "idle" && !get().reviewOpen && !get().triageOpen) return;
     set({
       reviewOpen: false,
+      triageOpen: false,
+      prevRunFlags: null,
       rescored: new Map(),
       nodeFocus: null,
       labels: null,
@@ -842,3 +885,28 @@ dirtyFrameTracker.onFrameEdit(({ video, frameIdx }) => {
   if (qc.editedFrames.has(key)) return;
   useQcStore.setState({ editedFrames: new Set(qc.editedFrames).add(key) });
 });
+
+/**
+ * Open Review on one flagged instance (the Grid's double-click): its frame,
+ * with it selected and zoomed to. Its flags show even if it was marked OK.
+ */
+export function openQcReviewAt(videoIdx: number, frameIdx: number, instIdx: number): void {
+  const app = useAppStore.getState();
+  const qc = useQcStore.getState();
+  const labels = app.labels;
+  if (!labels || qc.state !== "done" || qc.labels !== labels) return;
+  const view = qcView(qc);
+  const e = buildQcQueue(view.findings, view.anomaly, view.threshold, qcIsOk(labels, qc.dismissed)).find(
+    (x) => x.videoIdx === videoIdx && x.frameIdx === frameIdx,
+  );
+  if (!e) return;
+  useQcStore.setState({ triageOpen: false });
+  useQcStore.getState().setReviewOpen(true);
+  goToQcEntry(labels, e);
+  const video = labels.videos[videoIdx];
+  const inst = video ? labels.find({ video, frameIdx })[0]?.userInstances[instIdx] : undefined;
+  if (inst && useAppStore.getState().instance !== inst) {
+    useAppStore.getState().setInstance(inst);
+    useAppStore.getState().set("fitSelection", true);
+  }
+}
