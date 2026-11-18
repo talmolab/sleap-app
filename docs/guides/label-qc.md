@@ -103,6 +103,9 @@ a run started in either shows up in both.
 - **Issue types** and **Detector Settings** work as they do in the dialog
   (see [Choosing what gets flagged](#choosing-what-gets-flagged)).
 - In a project with more than one video, the list has a **Video** column.
+- A **progress line** under the buttons says how many flagged instances are
+  left (**42 of 120 flagged instances left**): not yet ignored, and not on a
+  frame edited since the run. The [Grid](#the-grid) has the breakdown.
 
 On the video, each flagged instance gets a red dashed box, and on it the
 thing that looks wrong, drawn in red dashes over a dark outline:
@@ -199,6 +202,31 @@ Each is one ++cmd+z++.
 Rule flags aren't checked again until you **Rerun**, so once you've edited the
 frame their buttons go (except **Swap L/R** for an anomaly, which is re-scored
 as you edit).
+
+### The Grid
+
+With many flags, going one by one is slow. Click **Grid** (next to **Review**)
+to see every flagged instance as a thumbnail: a crop of the frame around the
+instance, with its pose and the node(s) QC blames ringed in red, the frame,
+what flagged it and its score.
+
+- Click a thumbnail to select it, ++shift++-click to select a range, or
+  **Select all**.
+- **Mark OK** ignores the selected instances' flags, as
+  [Ignore](#ignoring-a-flag) does.
+- **Delete** deletes the selected instances (one ++cmd+z++ brings them all
+  back). Label QC runs again afterwards, since those frames changed.
+- Double-click a thumbnail to look at it in the
+  [Review window](#the-review-window).
+- **Show ignored and edited** shows the instances you've ignored and the ones
+  on frames edited since the run, faded.
+
+The summary at the top counts the flagged instances left, ignored and edited,
+with a count per issue type (and per video, with several videos) as
+*left/total*. Frame-level flags (an incomplete or negative frame) have no
+instance to show, so they're counted apart. After a **Rerun**, it also shows
+**last run → this run**: every flag the run before found against this one,
+ignored flags included, so you can see how much the review fixed.
 
 ### Ignoring a flag
 

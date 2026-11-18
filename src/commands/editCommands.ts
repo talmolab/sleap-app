@@ -212,6 +212,33 @@ export const DeleteSelectedInstance: Command = {
 };
 
 /**
+ * Delete several instances, on any frames, as one undo step (Label QC's Grid:
+ * delete the selected tiles). Instances are given by identity; ones no longer
+ * in the project are skipped.
+ *
+ * Params:
+ *   instances: Instance[]
+ */
+export const DeleteInstances: Command = {
+  name: "DeleteInstances",
+  topics: [UpdateTopic.Frame, UpdateTopic.Instance],
+  skipAutoSnapshot: true,
+  execute(ctx: CommandContext, params?: Record<string, unknown>) {
+    const { labels } = ctx.state;
+    const doomed = new Set((params?.instances as Instance[] | undefined) ?? []);
+    if (!labels || doomed.size === 0) return;
+    const frames = labels.labeledFrames.filter((lf) => lf.instances.some((i) => doomed.has(i)));
+    if (frames.length === 0) return;
+    ctx.pushUndoSnapshot(ctx.takeAllFramesSnapshot("DeleteInstances"));
+    for (const lf of frames) lf.instances = lf.instances.filter((i) => !doomed.has(i));
+    if (ctx.state.instance && doomed.has(ctx.state.instance)) ctx.state.setInstance(null);
+    ctx.state.markChanged();
+    ctx.state.touchFrame();
+    ctx.state.bumpOverlayVersion();
+  },
+};
+
+/**
  * Update a point's x,y coordinates on the selected instance.
  *
  * Params:

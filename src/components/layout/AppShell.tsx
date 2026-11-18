@@ -52,6 +52,7 @@ import { ExportClipDialog } from "../dialogs/ExportClipDialog";
 import { ModelMetricsDialog } from "../dialogs/ModelMetricsDialog";
 import { SizeDistributionDialog } from "../dialogs/SizeDistributionDialog";
 import { LabelQcDialog } from "../dialogs/LabelQcDialog";
+import { QcTriageDialog } from "../qc/QcTriageDialog";
 import { OverlayModelsDialog } from "../dialogs/OverlayModelsDialog";
 import { CompareModelsDialog } from "../dialogs/CompareModelsDialog";
 import { ExportPackageDialog } from "../dialogs/ExportPackageDialog";
@@ -372,6 +373,7 @@ export function AppShell() {
         open={labelQcDialogOpen}
         onOpenChange={setLabelQcDialogOpen}
       />
+      <QcTriageDialog />
       <OverlayModelsDialog
         open={overlayModelsDialogOpen}
         onOpenChange={setOverlayModelsDialogOpen}
