@@ -9,7 +9,8 @@
  * cropped `pkg.slp` videos line up.
  */
 import { PredictedBoundingBox, type BoundingBox } from "@talmolab/sleap-io.js";
-import type { RGB } from "@/lib/colorPalettes";
+import { getPaletteColor, getTrackColor, type RGB } from "@/lib/colorPalettes";
+import { UNCOLORED_PREDICTED_NODE_COLOR } from "./SkeletonRenderer";
 
 /** One box, ready to draw. */
 export interface RenderedBbox {
@@ -96,6 +97,11 @@ export interface BboxRenderOptions {
 
 const css = ([r, g, b]: RGB, a = 1) => `rgba(${r}, ${g}, ${b}, ${a})`;
 
+/** Caption text color that stays readable on a tag of `bg` (dark on light colors like yellow). */
+export function captionTextColor([r, g, b]: RGB): string {
+  return 0.299 * r + 0.587 * g + 0.114 * b > 150 ? "black" : "white";
+}
+
 /** Paint boxes. Assumes the image transform is already applied to `ctx`. */
 export function renderBboxes(
   ctx: CanvasRenderingContext2D,
@@ -134,7 +140,7 @@ export function renderBboxes(
       const y = top[1] - 2 * px;
       ctx.fillStyle = css(box.color, 0.85);
       ctx.fillRect(x, y - fontPx - 2 * px, w + 6 * px, fontPx + 3 * px);
-      ctx.fillStyle = "white";
+      ctx.fillStyle = captionTextColor(box.color);
       ctx.textBaseline = "bottom";
       ctx.fillText(caption, x + 3 * px, y);
     }
@@ -189,4 +195,36 @@ export function renderBboxPreview(
   ctx.strokeStyle = "rgba(255, 255, 255, 0.95)";
   ctx.stroke();
   ctx.restore();
+}
+
+/**
+ * Color of one box. Boxes have no nodes, so they can't use the pose rule's
+ * per-node colouring (whose instance color is a neutral grey) or its grey for
+ * untracked instances; every box gets a real color:
+ *
+ * - a predicted box with "Color predicted" off: yellow, like predicted nodes;
+ * - "color by instance" and linked to a pose instance: that instance's color;
+ * - on a track (its own, or its linked instance's): the track's color;
+ * - otherwise: the palette color for its position among the frame's boxes.
+ */
+export function bboxColor(opts: {
+  index: number;
+  isPredicted: boolean;
+  colorPredicted: boolean;
+  /** Resolved color target ("track" | "instance" | "node" | "edge"). */
+  colorTarget: string;
+  /** Color of the linked pose instance, when there is one on this frame. */
+  linkedInstanceColor?: RGB | null;
+  track: { name?: string | null } | null;
+  tracks: readonly unknown[];
+  palette: string;
+  trackColorOverrides?: Record<string, string> | null;
+}): RGB {
+  if (opts.isPredicted && !opts.colorPredicted) return UNCOLORED_PREDICTED_NODE_COLOR;
+  if (opts.colorTarget === "instance" && opts.linkedInstanceColor) return opts.linkedInstanceColor;
+  if (opts.track) {
+    const idx = opts.tracks.indexOf(opts.track);
+    return getTrackColor(opts.palette, idx >= 0 ? idx : opts.index, opts.track.name ?? null, opts.trackColorOverrides);
+  }
+  return getPaletteColor(opts.palette, opts.index);
 }

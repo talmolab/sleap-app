@@ -10,7 +10,7 @@ import { useAppStore } from "../../stores/appStore";
 import { computeVirtualWindow } from "../../lib/virtualWindow";
 import { cn } from "@/lib/utils";
 import { isUserLabeledFrame } from "@/lib/frameLabeling";
-import { Instance } from "@talmolab/sleap-io.js";
+import { Instance, PredictedBoundingBox } from "@talmolab/sleap-io.js";
 import type { Video } from "../../types";
 import {
   Table,
@@ -499,10 +499,20 @@ export function FramesPanel() {
       // — e.g. a user-placed centroid with no skeleton instance. Skip only TRULY
       // empty frames (no instances and not user-labeled), e.g. pkg.slp leftovers
       // after removing predictions.
-      .filter((lf) => lf.instances.length > 0 || isUserLabeledFrame(lf))
+      .filter(
+        (lf) =>
+          lf.instances.length > 0 ||
+          isUserLabeledFrame(lf) ||
+          (lf.bboxes ?? []).some((b) => b.isPredicted),
+      )
       .map((lf) => {
       const userInstances = lf.userInstances;
-      const predicted = lf.predictedInstances;
+      // Predicted poses; on a frame a box detector predicted (boxes, no
+      // poses), its predicted boxes count as the frame's predictions.
+      const predicted: { score: number }[] =
+        lf.predictedInstances.length > 0
+          ? lf.predictedInstances
+          : (lf.bboxes ?? []).filter((b): b is PredictedBoundingBox => b instanceof PredictedBoundingBox);
 
       const score =
         predicted.length > 0
