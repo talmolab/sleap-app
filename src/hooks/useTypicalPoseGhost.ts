@@ -8,19 +8,13 @@ import { Instance, PredictedInstance } from "@talmolab/sleap-io.js";
 import { useAppStore } from "@/stores/appStore";
 import { useQcStore } from "@/stores/qcStore";
 import { toImageCoords } from "@/lib/cropTransform";
+import { visiblePose } from "@/lib/keypointReview";
 import { alignTypicalPose, typicalPose, type Pose } from "@/lib/analyze/qc/typicalPose";
 import type { TypicalPoseGhost } from "@/canvas/typicalPoseGhost";
 import type { Labels } from "@/types";
 
 const isUser = (i: unknown): i is Instance =>
   i instanceof Instance && !(i instanceof PredictedInstance);
-
-/** Visible, placed nodes as `[x, y]`; the rest NaN. */
-export function visiblePose(inst: Instance): Pose {
-  return inst.points.map((p) =>
-    p.visible && Number.isFinite(p.xy[0]) && Number.isFinite(p.xy[1]) ? [p.xy[0], p.xy[1]] : [NaN, NaN],
-  );
-}
 
 /** The typical shape of every user instance of `skeleton` in the project. */
 export function projectTypicalPose(labels: Labels, skeleton: object): Pose | null {

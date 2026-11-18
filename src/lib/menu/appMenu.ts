@@ -9,6 +9,7 @@
 import type { NavigationDomain } from "@/stores/appStore";
 import { useAppStore } from "@/stores/appStore";
 import { useExportStore } from "@/stores/exportStore";
+import { openKeypointReview } from "@/stores/keypointReviewStore";
 import { PANELS } from "@/components/layout/panelRegistry";
 import { DEFAULT_SHORTCUTS } from "@/lib/shortcuts";
 import { getDocsUrl } from "@/lib/docsUrl";
@@ -660,6 +661,13 @@ function labelsMenu(s: MenuSnapshot): TopMenu {
         // (a second user instance, or which one to merge in).
         enabled: s.hasInstance,
         run: exec(MergeInstance),
+      },
+      {
+        kind: "item",
+        id: "labels.reviewNode",
+        label: "Review One Node…",
+        enabled: loaded,
+        run: () => openKeypointReview(),
       },
       {
         kind: "item",

@@ -61,7 +61,7 @@ The **Skeleton** panel has three tabs, each with its own buttons:
 
 | Tab | Buttons |
 |---|---|
-| **Nodes** | **New Node**, **Delete Node**, **Delete Skeleton** (clear it and start again) |
+| **Nodes** | **New Node**, **Delete Node**, **Review Node** ([check that node across your labels](label-qc.md#reviewing-one-node-at-a-time)), **Delete Skeleton** (clear it and start again) |
 | **Edges** | **New Edge** (pick a source and destination node), **Delete Edge** |
 | **Symmetries** | **New Symmetry** (declare a left/right pair), **Delete Symmetry** |
 

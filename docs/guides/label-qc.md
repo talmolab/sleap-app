@@ -346,6 +346,45 @@ borderline ones can change.
     - **Re-run it after you fix things**, and after proofreading, to confirm
       the fixes.
 
+## Reviewing one node at a time
+
+To check one node across all your labels (say, every **nose**), use
+**Labels ▸ Review One Node…**, or pick the node in the
+[Skeleton panel](skeletons.md) and click **Review Node**. Your eye only has to
+judge one thing per frame, so it's quicker and more consistent than checking
+whole skeletons, and a node that drifted between labeling sessions stands out
+when you see it many times in a row.
+
+A bar at the top of the video shows the node, which instances you're going
+through, and where you are (**12 / 140**). Each step selects the next labeled
+instance, zooms to the node (about one body length around it, so your eye stays
+in the same spot), dims the other animals, and rings the node in amber. A small
+teal dot shows where the node usually sits on this animal: the
+[typical pose](#one-click-fixes) fitted on its other nodes.
+
+| Input | Action |
+|---|---|
+| Click the image | Move the node there and go to the next instance |
+| ++enter++ or ++right++ | Keep it as it is and go on |
+| ++v++ | Mark it not visible and go on |
+| ++left++ or ++backspace++ | Go back |
+| Drag | Pan |
+| ++cmd+z++ | Undo the last change (each click or ++v++ is one step) |
+| ++esc++ | Stop |
+
+Choose which instances to go through in the bar:
+
+| Choice | Instances |
+|---|---|
+| **All labels** | Every labeled instance, in frame order |
+| **Suggestions** | Instances on [suggested frames](suggestions.md) only |
+| **QC blames it** | Instances the last Label QC run flagged with this node behind the flag |
+| **Worst first** | Furthest from where the node usually sits relative to the rest of the body first (the bar shows how far, in body sizes); instances where it isn't placed come last |
+
+Only your labels are reviewed, not predictions. With several animals on a
+frame you go through them one by one before moving to the next frame. With
+several skeletons, it reviews the selected instance's skeleton.
+
 ## When to run it
 
 - **Before your first training run** — cheapest possible model improvement
