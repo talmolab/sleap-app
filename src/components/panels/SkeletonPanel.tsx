@@ -39,6 +39,7 @@ import { downloadFile } from "../../lib/exportUtils";
 import { getPlatform } from "../../platform/index";
 import { toast } from "@/lib/notify";
 import { handleSlpFormatError } from "@/lib/slpFormatRefusal";
+import { openKeypointReview } from "@/stores/keypointReviewStore";
 import type { Skeleton } from "@talmolab/sleap-io.js";
 import { ReplaceSkeletonDialog } from "./ReplaceSkeletonDialog";
 import { SkeletonPicker } from "./SkeletonPicker";
@@ -190,6 +191,7 @@ function TemplatePreview({
 
 export function SkeletonPanel() {
   const skeleton = useAppStore((s) => s.skeleton);
+  const labels = useAppStore((s) => s.labels);
   // A video (i.e. a frame to draw on) is required to launch the visual builder.
   const video = useAppStore((s) => s.video);
   // Re-render when the skeleton's structure changes. The skeleton commands AND
@@ -717,6 +719,17 @@ export function SkeletonPanel() {
               disabled={selectedNodeIdx === null}
             >
               Delete Node
+            </Button>
+            <Button
+              variant="subtle"
+              size="xs"
+              onClick={() =>
+                selectedNodeIdx !== null && openKeypointReview({ node: selectedNodeIdx, skeleton })
+              }
+              disabled={selectedNodeIdx === null || !labels}
+              title="Go through the labels checking only this node, one instance at a time"
+            >
+              Review Node
             </Button>
             <Button
               variant="subtle"

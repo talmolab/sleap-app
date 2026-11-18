@@ -155,6 +155,10 @@ import { renderProposalGhosts } from "@/canvas/proposalGhost";
 import { useProposalGhosts } from "@/hooks/useProposalGhosts";
 import { renderTypicalPoseGhost } from "@/canvas/typicalPoseGhost";
 import { useTypicalPoseGhost } from "@/hooks/useTypicalPoseGhost";
+import { placeKeypointReviewNode, useKeypointReviewStore } from "@/stores/keypointReviewStore";
+import { renderKeypointReviewMark } from "@/canvas/keypointReviewOverlay";
+import { useKeypointReviewMark } from "@/hooks/useKeypointReviewMark";
+import { KeypointReviewBar } from "./KeypointReviewBar";
 
 /**
  * First unused `node_${k}` name (k = 0, 1, 2, …) for a fresh builder node, so
@@ -269,6 +273,8 @@ export function VideoPlayer() {
   // Claude's pending fixes on this frame (QC Review), drawn as ghost poses.
   const proposalGhosts = useProposalGhosts();
   const typicalPose = useTypicalPoseGhost();
+  const keypointMark = useKeypointReviewMark();
+  const keypointFitNonce = useKeypointReviewStore((s) => s.fitNonce);
   // Compare Model Predictions: other models' poses on this frame (view only).
   const modelOverlay = useModelOverlayFrame();
   const modelLayers = modelOverlay.layers;
@@ -1985,7 +1991,10 @@ export function VideoPlayer() {
     };
 
     // Label QC: with a flagged instance selected, dim the poses around it.
-    const qcFocus = qcOverlay.focusIdx !== null ? instances[qcOverlay.focusIdx] : null;
+    // Keypoint review dims every instance but the one under review the same way.
+    const qcFocus =
+      keypointMark ? (instances[keypointMark.instanceIdx] ?? null)
+      : qcOverlay.focusIdx !== null ? instances[qcOverlay.focusIdx] : null;
     renderInstances(ctx, instances, { ...renderOpts, focusInstance: qcFocus });
 
     // Label QC: dashed boxes around flagged instances, circles on their nodes.
@@ -1993,6 +2002,9 @@ export function VideoPlayer() {
 
     // Label QC Review: the typical pose fitted onto the selected instance.
     if (typicalPose) renderTypicalPoseGhost(ctx, instances, typicalPose, renderOpts);
+
+    // Keypoint review: the node under review and where it usually sits.
+    if (keypointMark) renderKeypointReviewMark(ctx, instances, keypointMark, renderOpts);
 
     // Claude's proposed fixes: the pose after each, dashed, over the instance.
     if (proposalGhosts.length > 0) renderProposalGhosts(ctx, instances, proposalGhosts, renderOpts);
@@ -2151,6 +2163,7 @@ export function VideoPlayer() {
     qcOverlay,
     proposalGhosts,
     typicalPose,
+    keypointMark,
     modelLayers,
     modelOverlay,
     selectedModelId,
@@ -2570,6 +2583,42 @@ export function VideoPlayer() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [fitSelection, renderedInstances]);
 
+  // Keypoint review: each step zooms to a fixed crop centred on the node under
+  // review (or the instance's centre while the node isn't placed), sized to
+  // the instance, so the eye stays in one spot from frame to frame. Waits for
+  // the step's frame to render, like fitSelection.
+  const keypointFitDone = useRef(0);
+  useEffect(() => {
+    const kp = useKeypointReviewStore.getState();
+    if (!kp.active || keypointFitNonce === keypointFitDone.current) return;
+    if (!selectedInstance || !labeledFrame?.instances.includes(selectedInstance)) return;
+    const ri = renderedInstances.find((r) => r.isSelected);
+    if (!ri) return;
+    keypointFitDone.current = keypointFitNonce;
+    const placed = ri.nodes.filter((n) => Number.isFinite(n.x) && Number.isFinite(n.y));
+    if (placed.length === 0) return;
+    const xs = placed.map((n) => n.x);
+    const ys = placed.map((n) => n.y);
+    const at = ri.nodes[kp.node];
+    const centre =
+      at && Number.isFinite(at.x) && Number.isFinite(at.y)
+        ? at
+        : { x: (Math.min(...xs) + Math.max(...xs)) / 2, y: (Math.min(...ys) + Math.max(...ys)) / 2 };
+    // About one body length either side: enough of the animal to judge the node by.
+    const half = Math.max(40, Math.max(Math.max(...xs) - Math.min(...xs), Math.max(...ys) - Math.min(...ys)));
+    applyView(
+      fitPointsView(
+        [
+          { x: centre.x - half, y: centre.y - half },
+          { x: centre.x + half, y: centre.y + half },
+        ],
+        canvasFit,
+        0,
+      ),
+    );
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [keypointFitNonce, renderedInstances]);
+
   // View ▸ Fit View to Selection (toggle): fit on frame change only, never
   // mid-drag (see useFollowSelection).
   useFollowSelection({
@@ -2770,6 +2819,18 @@ export function VideoPlayer() {
           penStrokeRef.current = [p];
           penLastRef.current = hitTestNode([ri], p.x, p.y, threshold)?.nodeIdx ?? null;
         }
+        return;
+      }
+
+      // Keypoint review: a click (not a drag or a long press) moves the node
+      // under review there and goes on (on release, placeKeypointReviewNode);
+      // a drag pans.
+      if (useKeypointReviewStore.getState().active) {
+        e.preventDefault();
+        const p = canvasToScene(e.clientX, e.clientY);
+        pendingPlace.current = { clientX: e.clientX, clientY: e.clientY, t: performance.now(), x: p.x, y: p.y, moved: 0 };
+        setIsPanning(true);
+        setPanStart({ x: e.clientX - panX, y: e.clientY - panY });
         return;
       }
 
@@ -3468,7 +3529,10 @@ export function VideoPlayer() {
     // Label QC Review placement: a click (not a drag or long press) places the node.
     const pend = pendingPlace.current;
     pendingPlace.current = null;
-    if (pend && isPlacementClick(pend.moved, performance.now() - pend.t)) placeQcReviewNode(pend.x, pend.y);
+    if (pend && isPlacementClick(pend.moved, performance.now() - pend.t)) {
+      if (useKeypointReviewStore.getState().active) placeKeypointReviewNode(pend.x, pend.y);
+      else placeQcReviewNode(pend.x, pend.y);
+    }
 
     // Bounding boxes: commit a draw / move / resize as one undo step.
     const boxGesture = bboxGestureRef.current;
@@ -4529,6 +4593,8 @@ export function VideoPlayer() {
         <AnchorPickBar />
         {/* Multi-instance transpose picker prompt (self-guards to pick mode). */}
         <TransposePickBar />
+        {/* Keypoint review bar (self-guards to the mode). */}
+        <KeypointReviewBar />
       </div>
       </QcReviewFrame>
 
