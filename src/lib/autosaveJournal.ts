@@ -10,7 +10,7 @@
  * Fidelity: a delta captures ONE frame's imageless annotation state at exactly
  * the fidelity the app's own undo system preserves (mirrors CommandContext's
  * `cloneInstances`: skeleton, points {xy, visible, complete, name, score},
- * track, predicted + score, isNegative). A recovered edited frame therefore
+ * track, predicted + score, isNegative), plus the frame's bounding boxes. A recovered edited frame therefore
  * matches what an undo would have produced. Instances reference the base's
  * videos/tracks/skeletons BY INDEX — valid because any structural change (new/
  * removed/renamed track, skeleton edit, new video, merge) rewrites the base and
@@ -25,6 +25,9 @@ import {
   Instance,
   PredictedInstance,
   LabeledFrame,
+  UserBoundingBox,
+  PredictedBoundingBox,
+  type BoundingBox,
   type Labels,
   type Video,
   type Track,
@@ -58,6 +61,30 @@ export interface InstanceDelta {
   pts: PointDelta[];
 }
 
+/** One bounding box's state. */
+export interface BboxDelta {
+  x1: number;
+  y1: number;
+  x2: number;
+  y2: number;
+  /** Rotation (radians); 0 for axis-aligned. */
+  a: number;
+  /** Predicted box? */
+  p: boolean;
+  /** Score (predicted only); null otherwise. */
+  s: number | null;
+  /** Index into base.tracks, or -1 if untracked. */
+  t: number;
+  /** Tracking score; null if unrecorded. */
+  ts: number | null;
+  /** Index of the linked instance in this frame's `ins`, or -1. */
+  i: number;
+  /** Category, name, source. */
+  c: string;
+  n: string;
+  src: string;
+}
+
 /** One frame's full imageless state. */
 export interface FrameDelta {
   /** Index into base.videos. */
@@ -67,6 +94,11 @@ export interface FrameDelta {
   /** isNegative flag. */
   neg: boolean;
   ins: InstanceDelta[];
+  /**
+   * Bounding boxes. Absent in journals written before boxes were recorded;
+   * replay then leaves the base frame's boxes as they are.
+   */
+  bb?: BboxDelta[];
 }
 
 /** Reverse lookups from base entities to their array indices (built per tick). */
@@ -94,6 +126,26 @@ export function encodeFrameDelta(frame: LabeledFrame, index: BaseIndex): FrameDe
     f: frame.frameIdx,
     neg: frame.isNegative,
     ins: frame.instances.map((inst) => encodeInstance(inst, index)),
+    bb: (frame.bboxes ?? []).map((box) => encodeBbox(box, frame, index)),
+  };
+}
+
+function encodeBbox(box: BoundingBox, frame: LabeledFrame, index: BaseIndex): BboxDelta {
+  const predicted = box instanceof PredictedBoundingBox;
+  return {
+    x1: box.x1,
+    y1: box.y1,
+    x2: box.x2,
+    y2: box.y2,
+    a: box.angle ?? 0,
+    p: predicted,
+    s: predicted ? (box as PredictedBoundingBox).score ?? null : null,
+    t: box.track ? index.tracks.get(box.track) ?? -1 : -1,
+    ts: box.trackingScore ?? null,
+    i: box.instance ? frame.instances.indexOf(box.instance) : -1,
+    c: box.category ?? "",
+    n: box.name ?? "",
+    src: box.source ?? "",
   };
 }
 
@@ -200,18 +252,40 @@ export function applyDeltas(base: Labels, deltas: FrameDelta[]): void {
       base.labeledFrames.push(lf);
       m.set(delta.f, lf);
     }
-    const instances: Instance[] = [];
-    for (const ins of delta.ins) {
-      const rebuilt = rebuildInstance(ins, base);
-      if (rebuilt) instances.push(rebuilt);
-    }
-    lf.instances = instances;
+    // Keep a slot per delta instance (null when it can't be rebuilt) so box
+    // `i` indices still line up.
+    const slots = delta.ins.map((ins) => rebuildInstance(ins, base));
+    lf.instances = slots.filter((inst): inst is Instance => inst !== null);
     lf.isNegative = delta.neg;
+    if (delta.bb) lf.bboxes = delta.bb.map((b) => rebuildBbox(b, base, slots));
   }
 
   // We mutated `labeledFrames`/`instances` directly, so io's count-guarded
   // indices are stale — rebuild once (as CommandContext.restoreSnapshot does).
   base.reindex();
+}
+
+function rebuildBbox(
+  b: BboxDelta,
+  base: Labels,
+  instances: (Instance | null)[],
+): BoundingBox {
+  const opts = {
+    x1: b.x1 ?? Number.NaN,
+    y1: b.y1 ?? Number.NaN,
+    x2: b.x2 ?? Number.NaN,
+    y2: b.y2 ?? Number.NaN,
+    angle: b.a ?? 0,
+    track: b.t >= 0 ? base.tracks[b.t] ?? null : null,
+    trackingScore: b.ts,
+    instance: b.i >= 0 ? instances[b.i] ?? null : null,
+    category: b.c,
+    name: b.n,
+    source: b.src,
+  };
+  return b.p
+    ? new PredictedBoundingBox({ ...opts, score: b.s ?? 0 })
+    : new UserBoundingBox(opts);
 }
 
 function rebuildInstance(ins: InstanceDelta, base: Labels): Instance | null {

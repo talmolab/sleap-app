@@ -64,6 +64,7 @@ function Toggle({
     | "showInstances"
     | "showLabels"
     | "showEdges"
+    | "showBboxes"
     | "showNonVisibleNodes"
     | "colorPredicted"
     | "showInset"
@@ -424,6 +425,7 @@ export function ViewPanel() {
         <Toggle label="Show instances" storeKey="showInstances" />
         <Toggle label="Show labels" storeKey="showLabels" />
         <Toggle label="Show edges" storeKey="showEdges" />
+        <Toggle label="Show bounding boxes" storeKey="showBboxes" />
         <Toggle label="Show non-visible nodes" storeKey="showNonVisibleNodes" />
         <DisplayModeSelect />
       </Section>

@@ -29,6 +29,21 @@ interface SingleFrameData {
   instances: Instance[];
   /** Negative (background) flag, so Mark-Frame-as-Negative is undoable. */
   isNegative: boolean;
+  /**
+   * The frame's non-pose annotations (bounding boxes, centroids, masks, label
+   * images, ROIs). Without these, restoring a frame wiped them (#487). Each is
+   * a shallow clone whose `instance` link points into `instances` above.
+   */
+  annotations: FrameAnnotations;
+}
+
+/** Per-frame annotation arrays other than `instances`. */
+interface FrameAnnotations {
+  bboxes: LabeledFrame["bboxes"];
+  centroids: LabeledFrame["centroids"];
+  masks: LabeledFrame["masks"];
+  labelImages: LabeledFrame["labelImages"];
+  rois: LabeledFrame["rois"];
 }
 
 /** Snapshot of frame state for undo/redo. */
@@ -127,6 +142,62 @@ function cloneInstances(instances: Instance[]): Instance[] {
   });
 }
 
+/**
+ * Shallow-clone an annotation (box, centroid, mask, ...) keeping its class, and
+ * re-point its `instance` link at the cloned instance. Annotation payloads
+ * (mask RLE, label-image pixels) are shared, never mutated in place.
+ */
+function cloneAnnotation<T extends object>(ann: T, instanceMap: Map<Instance, Instance>): T {
+  const copy = Object.assign(Object.create(Object.getPrototypeOf(ann)), ann) as T & {
+    instance?: Instance | null;
+  };
+  if (copy.instance) copy.instance = instanceMap.get(copy.instance) ?? copy.instance;
+  return copy;
+}
+
+/**
+ * Clone a frame's instances and annotations together, so annotation→instance
+ * links (e.g. a box's `instance`) follow the clones instead of the originals.
+ */
+function cloneFrameContents(
+  instances: Instance[],
+  annotations: FrameAnnotations,
+): { instances: Instance[]; annotations: FrameAnnotations } {
+  const cloned = cloneInstances(instances);
+  const map = new Map<Instance, Instance>();
+  instances.forEach((inst, i) => map.set(inst, cloned[i]));
+  const each = <T extends object>(arr: T[] | undefined) =>
+    (arr ?? []).map((a) => cloneAnnotation(a, map));
+  return {
+    instances: cloned,
+    annotations: {
+      bboxes: each(annotations.bboxes),
+      centroids: each(annotations.centroids),
+      masks: each(annotations.masks),
+      labelImages: each(annotations.labelImages),
+      rois: each(annotations.rois),
+    },
+  };
+}
+
+/** Snapshot one labeled frame. */
+function captureFrame(lf: LabeledFrame, videoRef: Video, frameIdx: number): SingleFrameData {
+  const { instances, annotations } = cloneFrameContents(lf.instances, lf);
+  return { videoRef, frameIdx, instances, isNegative: lf.isNegative, annotations };
+}
+
+/** Write a snapshotted frame back into `lf` (cloned, so the snapshot stays reusable). */
+function applyFrame(lf: LabeledFrame, data: SingleFrameData): void {
+  const { instances, annotations } = cloneFrameContents(data.instances, data.annotations);
+  lf.instances = instances;
+  lf.isNegative = data.isNegative;
+  lf.bboxes = annotations.bboxes;
+  lf.centroids = annotations.centroids;
+  lf.masks = annotations.masks;
+  lf.labelImages = annotations.labelImages;
+  lf.rois = annotations.rois;
+}
+
 /** Callbacks that can be registered to react to update topics. */
 type UpdateListener = (topics: UpdateTopic[]) => void;
 
@@ -184,12 +255,7 @@ export class CommandContext {
       const frames = labels.find({ video, frameIdx });
       if (frames.length > 0) {
         const lf = frames[0];
-        frame = {
-          videoRef: video,
-          frameIdx,
-          instances: cloneInstances(lf.instances),
-          isNegative: lf.isNegative,
-        };
+        frame = captureFrame(lf, video, frameIdx);
         if (instance) {
           selectedIdx = lf.instances.indexOf(instance);
         }
@@ -220,12 +286,7 @@ export class CommandContext {
 
     if (labels) {
       for (const lf of labels.labeledFrames) {
-        allFrames.push({
-          videoRef: lf.video,
-          frameIdx: lf.frameIdx,
-          instances: cloneInstances(lf.instances),
-          isNegative: lf.isNegative,
-        });
+        allFrames.push(captureFrame(lf, lf.video, lf.frameIdx));
       }
       if (video && instance) {
         const frames = labels.find({ video, frameIdx });
@@ -281,12 +342,7 @@ export class CommandContext {
       for (const lf of labels.labeledFrames) {
         if (lf.video !== video || lf.frameIdx <= minFrameIdx) continue;
         if (maxFrameIdx !== undefined && lf.frameIdx > maxFrameIdx) continue;
-        scopedFrames.push({
-          videoRef: lf.video,
-          frameIdx: lf.frameIdx,
-          instances: cloneInstances(lf.instances),
-          isNegative: lf.isNegative,
-        });
+        scopedFrames.push(captureFrame(lf, lf.video, lf.frameIdx));
         frames.push(lf);
       }
       frames.sort((a, b) => a.frameIdx - b.frameIdx);
@@ -397,8 +453,7 @@ export class CommandContext {
           video: frameData.videoRef,
           frameIdx: frameData.frameIdx,
         });
-        lf.instances = cloneInstances(frameData.instances);
-        lf.isNegative = frameData.isNegative;
+        applyFrame(lf, frameData);
         labels.labeledFrames.push(lf);
       }
       // We rebuilt `labeledFrames` in place (not via io's mutators), so io's
@@ -438,9 +493,7 @@ export class CommandContext {
       for (const frameData of snapshot.scopedFrames) {
         const frames = labels.find({ video: frameData.videoRef, frameIdx: frameData.frameIdx });
         if (frames.length === 0) continue;
-        const lf = frames[0];
-        lf.instances = cloneInstances(frameData.instances);
-        lf.isNegative = frameData.isNegative;
+        applyFrame(frames[0], frameData);
       }
 
       // Restore view to the active frame (same as the `allFrames` branch).
@@ -468,8 +521,7 @@ export class CommandContext {
       if (frames.length > 0) {
         // Restore instances on existing frame
         const lf = frames[0];
-        lf.instances = cloneInstances(snapshot.frame.instances);
-        lf.isNegative = snapshot.frame.isNegative;
+        applyFrame(lf, snapshot.frame);
         this.state.setLabeledFrame(lf);
 
         // Restore selection
@@ -487,8 +539,7 @@ export class CommandContext {
           video,
           frameIdx: snapshot.frame.frameIdx,
         });
-        lf.instances = cloneInstances(snapshot.frame.instances);
-        lf.isNegative = snapshot.frame.isNegative;
+        applyFrame(lf, snapshot.frame);
         labels.labeledFrames.push(lf);
         this.state.setLabeledFrame(lf);
         this.state.setInstance(null);

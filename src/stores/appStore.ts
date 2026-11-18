@@ -184,6 +184,8 @@ export interface AppState {
   showInstances: boolean;
   showLabels: boolean;
   showEdges: boolean;
+  /** Draw bounding boxes (`LabeledFrame.bboxes`) on the canvas. */
+  showBboxes: boolean;
   showNonVisibleNodes: boolean;
   /**
    * Currently-visible portion of the video frame, in frame/scene pixel
@@ -803,6 +805,7 @@ export const PERSISTED_KEYS: (keyof AppState)[] = [
   "nodeLabelSize",
   "showLabels",
   "showEdges",
+  "showBboxes",
   "showNonVisibleNodes",
   "showCrosshair",
   "colorPredicted",
@@ -910,6 +913,7 @@ export const useAppStore = create<AppState>()(
       showInstances: true,
       showLabels: true,
       showEdges: true,
+      showBboxes: true,
       showNonVisibleNodes: true,
       visibleSceneRect: null,
       showCrosshair: false,

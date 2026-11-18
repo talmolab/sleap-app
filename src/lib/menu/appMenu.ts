@@ -122,6 +122,7 @@ export interface MenuSnapshot {
   qcDisplayMode: string;
   showLabels: boolean;
   showEdges: boolean;
+  showBboxes: boolean;
   showCrosshair: boolean;
   showInset: boolean;
   temporalLoupe: boolean;
@@ -451,6 +452,7 @@ function viewMenu(s: MenuSnapshot): TopMenu {
       { kind: "check", id: "view.showLabels", label: "Show Node Names", shortcut: DEFAULT_SHORTCUTS["show labels"], checked: s.showLabels, run: toggle("showLabels") },
       { kind: "check", id: "view.showEdges", label: "Show Edges", checked: s.showEdges, run: toggle("showEdges") },
       { kind: "check", id: "view.showMeanNodeScore", label: "Show Mean Node Score", checked: s.showMeanNodeScore, run: toggle("showMeanNodeScore") },
+      { kind: "check", id: "view.showBboxes", label: "Show Bounding Boxes", checked: s.showBboxes, run: toggle("showBboxes") },
       { kind: "check", id: "view.crosshair", label: "Crosshair When Zoomed", checked: s.showCrosshair, run: toggle("showCrosshair") },
       { kind: "check", id: "view.magnifier", label: "Magnifier When Moving Nodes", checked: s.showInset, run: toggle("showInset") },
       { kind: "check", id: "view.temporalLoupe", label: "Play Neighboring Frames in Magnifier", checked: s.temporalLoupe, run: toggle("temporalLoupe") },

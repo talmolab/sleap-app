@@ -10,7 +10,8 @@
  */
 
 import { useRef, useEffect, useCallback, useState, useMemo } from "react";
-import { PredictedInstance } from "@talmolab/sleap-io.js";
+import { PredictedBoundingBox, PredictedInstance } from "@talmolab/sleap-io.js";
+import type { RGB } from "@/lib/colorPalettes";
 import { useAppStore } from "../../stores/appStore";
 import { debugFlags } from "../panels/DebugPanel";
 import { Seekbar } from "./Seekbar";
@@ -65,6 +66,7 @@ import {
 import { getActiveTrackOverrides } from "../../lib/trackColorOverrides";
 import { COLORMAPS } from "../../lib/colormaps";
 import { renderTrails } from "../../canvas/TrailRenderer";
+import { buildRenderedBboxes, renderBboxes, type RenderedBbox } from "../../canvas/BboxRenderer";
 import {
   commandContext,
   ConvertPredictionToInstance,
@@ -109,6 +111,7 @@ import {
 } from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
 import { toImageCoords, toSourceCoords } from "@/lib/cropTransform";
+import { frameHasContent } from "@/lib/frameLabeling";
 import { shouldPrefetch, shouldDecodeAhead } from "@/lib/videoPrefetch";
 import { expandFrameBytesToRGBA, inferFrameChannels } from "@/lib/videoExport";
 import { frameToCanvas } from "@/lib/frameCanvas";
@@ -206,6 +209,7 @@ export function VideoPlayer() {
   const showInstances = useAppStore((s) => s.showInstances);
   const showLabels = useAppStore((s) => s.showLabels);
   const showEdges = useAppStore((s) => s.showEdges);
+  const showBboxes = useAppStore((s) => s.showBboxes);
   const showNonVisibleNodes = useAppStore((s) => s.showNonVisibleNodes);
   const hiddenInstances = useAppStore((s) => s.hiddenInstances);
   const viewOnlyInstance = useAppStore((s) => s.viewOnlyInstance);
@@ -771,7 +775,7 @@ export function VideoPlayer() {
       if (store.instance && !lf.instances.includes(store.instance)) {
         store.setInstance(null);
       }
-      store.setLabeledFrame(lf.instances.length > 0 ? lf : null);
+      store.setLabeledFrame(frameHasContent(lf) ? lf : null);
       store.markChanged();
       store.touchFrame();
       store.bumpOverlayVersion();
@@ -1488,6 +1492,44 @@ export function VideoPlayer() {
     overlayVersion,
   ]);
 
+  // Bounding boxes on this frame, in image coordinates. A box linked to a pose
+  // instance on the frame takes that instance's color; otherwise it's colored
+  // like an instance would be (by track, else by position among the boxes).
+  const renderedBboxes = useMemo<RenderedBbox[]>(() => {
+    if (!labeledFrame || !showInstances || !showBboxes || !video) return [];
+    const boxes = labeledFrame.bboxes ?? [];
+    if (boxes.length === 0) return [];
+    const tracks = labels?.tracks ?? [];
+    const instanceColor = new Map<unknown, RGB>();
+    labeledFrame.instances.forEach((inst, i) => {
+      const ri = renderedInstances[i];
+      if (ri) instanceColor.set(inst, ri.color);
+    });
+    const boxTracks = boxes.map((b) => b.track);
+    return buildRenderedBboxes(boxes, {
+      toImage: (x, y) => toImageCoords(video, x, y),
+      colorFor: (box, idx) =>
+        (box.instance && instanceColor.get(box.instance)) ||
+        getInstanceColor(
+          palette, distinctlyColor, idx, box.track, tracks, box instanceof PredictedBoundingBox,
+          colorPredicted, projectHasTracks, boxTracks, trackColorOverrides
+        ),
+    });
+  }, [
+    labeledFrame,
+    showInstances,
+    showBboxes,
+    video,
+    labels,
+    renderedInstances,
+    palette,
+    distinctlyColor,
+    colorPredicted,
+    projectHasTracks,
+    trackColorOverrides,
+    overlayVersion,
+  ]);
+
   // Neighbor-frame poses for the magnifier: each neighbor frame's poses,
   // colored the way that frame would color them, drawn by the loupe over the
   // frame it is showing. A frame with user instances shows only those (its
@@ -1734,6 +1776,12 @@ export function VideoPlayer() {
       );
     }
 
+    // Bounding boxes sit behind the poses they enclose.
+    renderBboxes(ctx, renderedBboxes, {
+      zoom: baseScale * zoom,
+      opacity: poseOpacity / 100,
+      showLabels,
+    });
     paintModelOverlay();
 
     const renderOpts = {
@@ -1848,6 +1896,7 @@ export function VideoPlayer() {
     ctx.restore();
   }, [
     renderedInstances,
+    renderedBboxes,
     labeledFrame,
     selectedInstance,
     showInstances,
