@@ -11,6 +11,7 @@ import { create } from "zustand";
 import type { Labels, Video } from "@/types";
 import type { RGB } from "@/lib/colorPalettes";
 import { nextModelColor, uniqueModelName, type OverlayPose } from "@/lib/modelOverlay/core";
+import type { TraceTarget } from "@/lib/modelOverlay/traces";
 import { useAppStore } from "@/stores/appStore";
 
 export interface OverlayModel {
@@ -61,6 +62,17 @@ interface ModelOverlayState {
   /** The model pose clicked on the canvas (Accept bar), if any. */
   selected: SelectedModelPose | null;
   setSelected: (sel: SelectedModelPose | null) => void;
+  /** The corner panel folded into a small pill (models stay drawn). */
+  legendMinimized: boolean;
+  setLegendMinimized: (minimized: boolean) => void;
+  /** The per-node traces strip under the video. */
+  tracesOpen: boolean;
+  setTracesOpen: (open: boolean) => void;
+  /** Node (project node index) and animal the traces show. */
+  traceNode: number;
+  traceTarget: TraceTarget;
+  setTraceNode: (node: number) => void;
+  setTraceTarget: (target: TraceTarget) => void;
   /** Add models (a source already shown is replaced in place, keeping its colour). */
   addModels: (labels: Labels, models: NewOverlayModel[]) => void;
   removeModel: (id: string) => void;
@@ -88,6 +100,14 @@ export const useModelOverlayStore = create<ModelOverlayState>()((set) => ({
   setThreshold: (px) => set((s) => ({ threshold: Number.isFinite(px) && px >= 0 ? px : s.threshold })),
   selected: null,
   setSelected: (sel) => set({ selected: sel }),
+  legendMinimized: false,
+  setLegendMinimized: (minimized) => set({ legendMinimized: minimized }),
+  tracesOpen: false,
+  setTracesOpen: (open) => set({ tracesOpen: open }),
+  traceNode: 0,
+  traceTarget: { kind: "animal", index: 0 },
+  setTraceNode: (node) => set({ traceNode: node }),
+  setTraceTarget: (target) => set({ traceTarget: target }),
   addModels: (labels, added) =>
     set((s) => {
       const models = s.labels === labels ? [...s.models] : [];
@@ -128,7 +148,7 @@ export const useModelOverlayStore = create<ModelOverlayState>()((set) => ({
       models: s.models.map((m) => (m.id === id ? { ...m, visible } : m)),
       selected: s.selected?.modelId === id && !visible ? null : s.selected,
     })),
-  clear: () => set({ models: [], labels: null, selected: null }),
+  clear: () => set({ models: [], labels: null, selected: null, tracesOpen: false }),
 }));
 
 // A different project: its videos aren't the ones these poses were matched to.

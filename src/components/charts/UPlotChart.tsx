@@ -2,6 +2,7 @@ import { useEffect, useRef, forwardRef, useImperativeHandle } from "react";
 import uPlot from "uplot";
 import "uplot/dist/uPlot.min.css";
 import { formatCompactNumber } from "@/lib/formatNumber";
+import { createClickGate } from "@/lib/plotClickGate";
 
 export interface UPlotChartProps {
   data: uPlot.AlignedData;
@@ -13,7 +14,16 @@ export interface UPlotChartProps {
   className?: string;
   /** Show a value-readout tooltip at the cursor (x + each series' value). */
   tooltip?: boolean;
+  /** Word before the x value in the tooltip (default "batch"). */
+  xLabel?: string;
+  /** Called with the x value under the pointer on a click (not a drag-zoom). */
+  onClickX?: (x: number) => void;
+  /** Draw a vertical marker at this x (e.g. the current frame); null for none. */
+  markerX?: number | null;
 }
+
+/** How long a click on the plot waits for a second click (a double-click zooms out instead). */
+const CLICK_DELAY_MS = 250;
 
 /** Imperative controls exposed to the parent (zoom reset + PNG capture). */
 export interface UPlotChartHandle {
@@ -32,10 +42,16 @@ export interface UPlotChartHandle {
  * - Series/scales changes recreate the instance (they change rarely).
  */
 export const UPlotChart = forwardRef<UPlotChartHandle, UPlotChartProps>(function UPlotChart(
-  { data, series, scales, axes, height = 240, showLegend = true, className, tooltip = false },
+  { data, series, scales, axes, height = 240, showLegend = true, className, tooltip = false, xLabel = "batch", onClickX, markerX = null },
   ref,
 ) {
   const containerRef = useRef<HTMLDivElement>(null);
+  // Read by uPlot hooks/listeners set up once per instance, so they always see the latest.
+  const markerRef = useRef<number | null>(markerX);
+  const onClickRef = useRef(onClickX);
+  const xLabelRef = useRef(xLabel);
+  onClickRef.current = onClickX;
+  xLabelRef.current = xLabel;
   const tooltipRef = useRef<HTMLDivElement>(null);
   const plotRef = useRef<uPlot | null>(null);
 
@@ -84,7 +100,7 @@ export const UPlotChart = forwardRef<UPlotChartHandle, UPlotChartProps>(function
         tt.style.display = "none";
         return;
       }
-      let html = `<div style="opacity:.6;margin-bottom:2px">batch ${u.data[0][idx]}</div>`;
+      let html = `<div style="opacity:.6;margin-bottom:2px">${xLabelRef.current} ${u.data[0][idx]}</div>`;
       let any = false;
       for (let si = 1; si < u.series.length; si++) {
         const s = u.series[si];
@@ -117,6 +133,26 @@ export const UPlotChart = forwardRef<UPlotChartHandle, UPlotChartProps>(function
       axes,
       legend: { show: showLegend },
       cursor: { drag: { x: true, y: false } },
+      hooks: {
+        // Vertical marker (e.g. the current frame), drawn on top of the series.
+        draw: [
+          (u: uPlot) => {
+            const mx = markerRef.current;
+            if (mx == null || !Number.isFinite(mx)) return;
+            const x = u.valToPos(mx, "x", true);
+            if (!Number.isFinite(x) || x < u.bbox.left || x > u.bbox.left + u.bbox.width) return;
+            const ctx = u.ctx;
+            ctx.save();
+            ctx.strokeStyle = "rgba(239, 68, 68, 0.9)";
+            ctx.lineWidth = Math.max(1, devicePixelRatio);
+            ctx.beginPath();
+            ctx.moveTo(x, u.bbox.top);
+            ctx.lineTo(x, u.bbox.top + u.bbox.height);
+            ctx.stroke();
+            ctx.restore();
+          },
+        ],
+      },
     };
     const u = new uPlot(opts, data, el);
     plotRef.current = u;
@@ -135,6 +171,28 @@ export const UPlotChart = forwardRef<UPlotChartHandle, UPlotChartProps>(function
     if (onMove) u.over.addEventListener("mousemove", onMove);
     if (onLeave) u.over.addEventListener("mouseleave", onLeave);
 
+    // Click (no drag) → onClickX with the x value under the pointer. A drag is
+    // uPlot's x-zoom, so a pointer that moved more than a few pixels is ignored.
+    // The call waits out the double-click time: a double-click (uPlot's zoom
+    // out) cancels it, so it never fires for either of its two clicks.
+    let downAt: number | null = null;
+    const gate = createClickGate(CLICK_DELAY_MS, (x) => onClickRef.current?.(x));
+    const cancelClick = () => gate.doubleClick();
+    const onDown = (e: MouseEvent) => {
+      downAt = e.clientX;
+    };
+    const onUp = (e: MouseEvent) => {
+      const start = downAt;
+      downAt = null;
+      if (start === null || Math.abs(e.clientX - start) > 3 || !onClickRef.current) return;
+      const left = e.clientX - u.over.getBoundingClientRect().left;
+      const x = u.posToVal(left, "x");
+      if (Number.isFinite(x)) gate.click(x);
+    };
+    u.over.addEventListener("mousedown", onDown);
+    u.over.addEventListener("mouseup", onUp);
+    u.over.addEventListener("dblclick", cancelClick);
+
     const ro = new ResizeObserver(() => {
       if (plotRef.current) plotRef.current.setSize({ width: el.clientWidth || 320, height });
     });
@@ -144,6 +202,10 @@ export const UPlotChart = forwardRef<UPlotChartHandle, UPlotChartProps>(function
       ro.disconnect();
       if (onMove) u.over.removeEventListener("mousemove", onMove);
       if (onLeave) u.over.removeEventListener("mouseleave", onLeave);
+      u.over.removeEventListener("mousedown", onDown);
+      u.over.removeEventListener("mouseup", onUp);
+      u.over.removeEventListener("dblclick", cancelClick);
+      gate.cancel();
       if (throttleTimer.current) clearTimeout(throttleTimer.current);
       u.destroy();
       plotRef.current = null;
@@ -151,6 +213,12 @@ export const UPlotChart = forwardRef<UPlotChartHandle, UPlotChartProps>(function
     // Recreate only when the chart shape changes.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [series, scales, axes, height, showLegend, tooltip]);
+
+  // Move the marker without recreating the chart (a cheap redraw, no rescale).
+  useEffect(() => {
+    markerRef.current = markerX;
+    plotRef.current?.redraw(false, false);
+  }, [markerX]);
 
   // Throttled data updates (≈500ms trailing edge).
   useEffect(() => {
