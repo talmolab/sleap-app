@@ -46,6 +46,9 @@ import { useQcVisibility } from "@/hooks/useQcVisibility";
 import { useQcFrameFlags } from "@/hooks/useQcFrameFlags";
 import { useQcStore } from "@/stores/qcStore";
 import { QcReviewFrame } from "./QcReviewFrame";
+import { useModelOverlayFrame } from "@/hooks/useModelOverlayFrame";
+import { renderModelOverlay } from "@/canvas/modelOverlayRenderer";
+import { ModelOverlayLegend } from "./ModelOverlayLegend";
 import {
   getPaletteColor,
   getInstanceColor,
@@ -242,6 +245,8 @@ export function VideoPlayer() {
   const qcOverlay = useQcFrameFlags();
   // Claude's pending fixes on this frame (QC Review), drawn as ghost poses.
   const proposalGhosts = useProposalGhosts();
+  // Compare Model Predictions: other models' poses on this frame (view only).
+  const modelLayers = useModelOverlayFrame();
   const resetViewNonce = useAppStore((s) => s.resetViewNonce);
   const userViewNonce = useAppStore((s) => s.userViewNonce);
   const areaDeleteMode = useAppStore((s) => s.areaDeleteMode);
@@ -1609,14 +1614,29 @@ export function VideoPlayer() {
       if (zoomBox) renderMarqueeRect(ctx, zoomBox.x1, zoomBox.y1, zoomBox.x2, zoomBox.y2, baseScale * zoom);
     };
 
+    // Compare Model Predictions: each loaded model's poses in its own colour,
+    // behind the project's instances. Drawn even with instances hidden, so the
+    // models can be compared on their own. Assumes the image transform is applied.
+    const paintModelOverlay = () => {
+      if (modelLayers.length === 0) return;
+      renderModelOverlay(ctx, modelLayers, skeleton?.edgeIndices ?? [], {
+        markerSize,
+        poseOpacity: poseOpacity / 100,
+        showEdges,
+        zoom: baseScale * zoom,
+        toImage: (x, y) => toImageCoords(video, x, y),
+      });
+    };
+
     if (!labeledFrame || !showInstances) {
       renderedInstancesRef.current = [];
       // The ROI + builder overlays are independent of instance rendering — still
       // draw them (persisted region / live rubber-band / scratch skeleton).
       const hasRoi = video ? imageFeatureRois.has(video) : false;
-      if (imageFeatureRoiDrawActive || hasRoi || skeletonBuildMode || zoomBox) {
+      if (imageFeatureRoiDrawActive || hasRoi || skeletonBuildMode || zoomBox || modelLayers.length > 0) {
         ctx.save();
         applyImageTransform();
+        paintModelOverlay();
         paintRoi();
         paintBuilder();
         paintZoomBox();
@@ -1661,6 +1681,8 @@ export function VideoPlayer() {
         { node: trailNode, alpha: trailAlpha, fade: trailFade, width: trailWidth }
       );
     }
+
+    paintModelOverlay();
 
     const renderOpts = {
       markerSize,
@@ -1834,6 +1856,7 @@ export function VideoPlayer() {
     skeleton,
     qcOverlay,
     proposalGhosts,
+    modelLayers,
   ]);
 
   // Check if we're in explicit placement mode
@@ -4026,6 +4049,8 @@ export function VideoPlayer() {
           </div>
         )}
 
+        {/* Compare Model Predictions legend (self-guards to loaded models). */}
+        <ModelOverlayLegend />
         {/* Visual skeleton builder control bar (self-guards to build mode). */}
         <SkeletonBuildBar />
         {/* Anchor-part picker prompt (self-guards to pick mode). */}
