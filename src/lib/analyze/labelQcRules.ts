@@ -157,11 +157,17 @@ export function isEmptyInstance(points: number[][]): boolean {
 
 /** Whether any visible point lies outside the frame bounds `[0,width] x [0,height]`. */
 export function hasOutOfRangePoints(points: number[][], width: number, height: number): boolean {
-  for (const p of points) {
-    if (!isVisible(p)) continue;
-    if (p[0] < 0 || p[0] > width || p[1] < 0 || p[1] > height) return true;
-  }
-  return false;
+  return outOfRangeNodes(points, width, height).length > 0;
+}
+
+/** Indices of the visible points outside a `width`×`height` frame. */
+export function outOfRangeNodes(points: number[][], width: number, height: number): number[] {
+  const out: number[] = [];
+  points.forEach((p, i) => {
+    if (!isVisible(p)) return;
+    if (p[0] < 0 || p[0] > width || p[1] < 0 || p[1] > height) out.push(i);
+  });
+  return out;
 }
 
 // ── Split-duplicate (Tier 3, features/duplicate_split.py) ────────────────────

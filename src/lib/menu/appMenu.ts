@@ -65,6 +65,7 @@ import {
   AddInstance,
   DeleteSelectedInstance,
   MergeInstance,
+  SwapSymmetricNodes,
   CopyInstance,
   PasteInstance,
   DeleteFramePredictions,
@@ -673,6 +674,13 @@ function labelsMenu(s: MenuSnapshot): TopMenu {
       },
       // PyQt's place for it: right after Merge Instance (app.py:911).
       { kind: "item", id: "labels.customDelete", label: "Custom Instance Delete...", enabled: loaded, run: () => useCustomDeleteDialog.getState().setOpen(true) },
+      {
+        kind: "item",
+        id: "labels.swapLeftRight",
+        label: "Swap Left/Right Nodes",
+        enabled: s.hasInstance,
+        run: exec(SwapSymmetricNodes),
+      },
       ...clipboardItems(s),
       {
         kind: "check",

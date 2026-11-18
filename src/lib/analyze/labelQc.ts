@@ -62,6 +62,8 @@ export interface QcFinding {
   frameIdx: number;
   /** Present for instance-level findings (and duplicates, anchored to the first). */
   instanceIdx?: number;
+  /** Duplicates only: the other instance of the pair (also a `userInstances` index). */
+  otherInstanceIdx?: number;
 }
 
 export interface QcOptions {
@@ -77,7 +79,7 @@ export interface QcOptions {
   chainInversion?: number;
 }
 
-type SkeletonLike = {
+export type SkeletonLike = {
   symmetries?: { nodes?: Iterable<object> }[];
   nodeNames?: string[];
   nodes?: unknown[];
@@ -86,7 +88,7 @@ type SkeletonLike = {
 
 /** Symmetric node-index pairs of a skeleton: its declared symmetries, else
  *  inferred from L/R node names. */
-function skeletonPairs(skel: SkeletonLike): [number, number][] {
+export function symmetricNodePairs(skel: SkeletonLike): [number, number][] {
   const pairs: [number, number][] = [];
   for (const sym of skel.symmetries ?? []) {
     const members = [...(sym.nodes ?? [])];
@@ -148,7 +150,7 @@ export function runLabelQc(labels: Labels, opts: QcOptions = {}): QcFinding[] {
   const chiralityBySkel = new Map<object, ChiralityModel | null>();
   for (const [skel, pts] of pointsBySkel) {
     const s = skel as SkeletonLike;
-    const pairs = skeletonPairs(s);
+    const pairs = symmetricNodePairs(s);
     chiralityBySkel.set(
       skel,
       pairs.length > 0 ? buildChiralityModel(pts, pairs, s.nodes?.length ?? 0) : null,
@@ -159,8 +161,14 @@ export function runLabelQc(labels: Labels, opts: QcOptions = {}): QcFinding[] {
     const video = videos[v];
     const frames = [...labels.find({ video })];
 
-    // Per-video expected instance count = median over labeled frames (user only).
-    const expected = medianCount(frames.map((f) => f.userInstances.length));
+    // Per-video expected instance count = median over labeled frames (user
+    // only). Negative (background) frames are meant to be empty, so they'd only
+    // drag the median down.
+    const isNegativeFrame = (lf: (typeof frames)[number]) =>
+      Boolean((lf as unknown as { isNegative?: boolean }).isNegative);
+    const expected = medianCount(
+      frames.filter((f) => !isNegativeFrame(f)).map((f) => f.userInstances.length),
+    );
 
     // Frame bounds for out-of-range (video.shape = [frames, height, width, channels]).
     const shape = (video as unknown as { shape: number[] | null }).shape;
@@ -170,7 +178,7 @@ export function runLabelQc(labels: Labels, opts: QcOptions = {}): QcFinding[] {
     for (const lf of frames) {
       const insts = lf.userInstances;
       const count = insts.length;
-      const isNegative = Boolean((lf as unknown as { isNegative?: boolean }).isNegative);
+      const isNegative = isNegativeFrame(lf);
 
       if (isNegativeFrameWithInstances(isNegative, count)) {
         findings.push({
@@ -180,7 +188,7 @@ export function runLabelQc(labels: Labels, opts: QcOptions = {}): QcFinding[] {
           videoIdx: v,
           frameIdx: lf.frameIdx,
         });
-      } else if (Number.isFinite(expected) && isIncompleteFrame(count, expected)) {
+      } else if (!isNegative && Number.isFinite(expected) && isIncompleteFrame(count, expected)) {
         findings.push({
           kind: "incomplete_frame",
           message: `${count} instance(s); expected ~${expected} for this video`,
@@ -206,6 +214,7 @@ export function runLabelQc(labels: Labels, opts: QcOptions = {}): QcFinding[] {
           videoIdx: v,
           frameIdx: lf.frameIdx,
           instanceIdx: d.indexA,
+          otherInstanceIdx: d.indexB,
         });
       }
 
