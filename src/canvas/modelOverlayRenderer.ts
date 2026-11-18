@@ -1,18 +1,22 @@
 /**
  * Draws other models' poses (Compare Model Predictions) over the frame.
  *
- * Kept apart from SkeletonRenderer on purpose: these poses aren't project
- * instances (no selection, hover, labels or track names), and each model has
- * one flat colour so the legend reads at a glance. Nodes are filled dots,
- * edges thin solid lines in the model's colour; missing nodes and the edges
- * touching them are skipped. Coordinates are source-frame pixels, mapped
- * through the video's crop like everything else on the canvas.
+ * Each model's poses are drawn exactly the way the app draws the project's
+ * own predicted instances (SkeletonRenderer's predicted style: gray-filled
+ * markers outlined in the colour, thin dashed edges, edge style and marker
+ * size from the View settings) — only coloured in that model's colour, as
+ * if "colour predicted instances" were on. No node names or track labels,
+ * so several models stay readable on top of each other. Missing nodes are
+ * skipped. Coordinates are source-frame pixels, mapped through the video's
+ * crop like everything else on the canvas.
  */
 
 import type { RGB } from "@/lib/colorPalettes";
 import { rgbToCSS } from "@/lib/colorPalettes";
 import type { OverlayPose } from "@/lib/modelOverlay/core";
 import type { Disagreement } from "@/lib/modelOverlay/matching";
+import { renderInstances, type RenderedInstance } from "@/canvas/SkeletonRenderer";
+import type { EdgeStyle } from "@/types";
 
 /** One visible model's poses on the current frame. */
 export interface ModelOverlayLayer {
@@ -26,6 +30,8 @@ export interface ModelOverlayRenderOptions {
   /** 0–1, the user's pose opacity. */
   poseOpacity: number;
   showEdges: boolean;
+  /** Line or Wedge, as for the project's instances. */
+  edgeStyle?: EdgeStyle;
   /** Canvas scale (fit × zoom), so strokes stay one screen pixel wide. */
   zoom: number;
   /** Source-frame → displayed image coords (crop). */
@@ -34,6 +40,39 @@ export interface ModelOverlayRenderOptions {
 
 /** Disagreement rings: red, sized by the spread (at least a marker). */
 export const DISAGREEMENT_COLOR: RGB = [255, 40, 40];
+
+/**
+ * A model pose as a predicted {@link RenderedInstance} in the model's colour.
+ * Missing nodes are marked not visible (and the renderer is told not to draw
+ * non-visible nodes), so they and their edges are skipped.
+ */
+export function modelPoseToRendered(
+  pose: OverlayPose,
+  color: RGB,
+  edges: readonly (readonly [number, number])[],
+  toImage: (x: number, y: number) => [number, number]
+): RenderedInstance {
+  const n = pose.xy.length / 2;
+  const nodes = new Array(n);
+  for (let i = 0; i < n; i++) {
+    const x = pose.xy[2 * i];
+    const y = pose.xy[2 * i + 1];
+    const ok = Number.isFinite(x) && Number.isFinite(y);
+    const [ix, iy] = ok ? toImage(x, y) : [0, 0];
+    nodes[i] = { x: ix, y: iy, visible: ok, complete: false, name: "" };
+  }
+  return {
+    nodes,
+    edges: edges.map(([srcIdx, dstIdx]) => ({ srcIdx, dstIdx })),
+    color,
+    isPredicted: true,
+    isSelected: false,
+    trackName: null,
+    score: pose.score ?? undefined,
+    visible: true,
+    showNonVisible: false,
+  };
+}
 
 /**
  * Draw every layer's poses. `edges` are node-index pairs in the project's node
@@ -52,46 +91,23 @@ export function renderModelOverlay(
   } = {}
 ): void {
   if (layers.length === 0) return;
-  const r = Math.max(1.5, opts.markerSize * 0.8) / opts.zoom;
-  ctx.save();
-  ctx.globalAlpha *= opts.poseOpacity;
+  const rendered: RenderedInstance[] = [];
   for (const layer of layers) {
-    const stroke = rgbToCSS(layer.color, 0.85);
-    const fill = rgbToCSS(layer.color, 0.9);
-    for (const pose of layer.poses) {
-      const n = pose.xy.length / 2;
-      const pts: ([number, number] | null)[] = new Array(n);
-      for (let i = 0; i < n; i++) {
-        const x = pose.xy[2 * i];
-        const y = pose.xy[2 * i + 1];
-        pts[i] = Number.isFinite(x) && Number.isFinite(y) ? opts.toImage(x, y) : null;
-      }
-      if (opts.showEdges) {
-        ctx.beginPath();
-        for (const [a, b] of edges) {
-          const pa = pts[a];
-          const pb = pts[b];
-          if (!pa || !pb) continue;
-          ctx.moveTo(pa[0], pa[1]);
-          ctx.lineTo(pb[0], pb[1]);
-        }
-        ctx.strokeStyle = stroke;
-        ctx.lineWidth = 1.5 / opts.zoom;
-        ctx.stroke();
-      }
-      ctx.fillStyle = fill;
-      ctx.strokeStyle = "rgba(0, 0, 0, 0.6)";
-      ctx.lineWidth = 0.75 / opts.zoom;
-      for (const p of pts) {
-        if (!p) continue;
-        ctx.beginPath();
-        ctx.arc(p[0], p[1], r, 0, Math.PI * 2);
-        ctx.fill();
-        ctx.stroke();
-      }
-    }
+    for (const pose of layer.poses) rendered.push(modelPoseToRendered(pose, layer.color, edges, opts.toImage));
   }
-  ctx.restore();
+  renderInstances(ctx, rendered, {
+    markerSize: opts.markerSize,
+    poseOpacity: opts.poseOpacity,
+    edgeStyle: opts.edgeStyle ?? "Line",
+    showInstances: true,
+    showEdges: opts.showEdges,
+    showLabels: false,
+    showNonVisibleNodes: false,
+    // Predicted style, but in the model's colour instead of the uncoloured yellow/gray.
+    colorPredicted: true,
+    showTrackScore: false,
+    zoom: opts.zoom,
+  });
 
   const sel = extras.selected;
   const selPose = sel ? layers[sel.layer]?.poses[sel.pose] : undefined;

@@ -1638,6 +1638,7 @@ export function VideoPlayer() {
         markerSize,
         poseOpacity: poseOpacity / 100,
         showEdges,
+        edgeStyle,
         zoom: baseScale * zoom,
         toImage: (x, y) => toImageCoords(video, x, y),
       }, { selected: modelOverlay.selected, disagreements: modelOverlay.disagreements });

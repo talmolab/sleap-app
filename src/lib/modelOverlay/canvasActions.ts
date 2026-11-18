@@ -36,6 +36,14 @@ export function modelClickRoute(
   return altOnly && modelNodeHit && projectNodeHit !== "user" ? "model" : "project";
 }
 
+/**
+ * Hide or show the project's own instances (the models stay drawn) — the
+ * exact store action the H key runs (useKeyboardShortcuts "show instances").
+ */
+export function toggleProjectInstances(): void {
+  useAppStore.getState().toggle("showInstances");
+}
+
 export function pickModelPose(layers: readonly ModelOverlayLayer[], layer: number, pose: number): void {
   const l = layers[layer];
   const { video, frameIdx } = useAppStore.getState();

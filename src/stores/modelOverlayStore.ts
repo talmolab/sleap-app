@@ -62,6 +62,9 @@ interface ModelOverlayState {
   /** The model pose clicked on the canvas (Accept bar), if any. */
   selected: SelectedModelPose | null;
   setSelected: (sel: SelectedModelPose | null) => void;
+  /** The corner panel folded into a small pill (models stay drawn). */
+  legendMinimized: boolean;
+  setLegendMinimized: (minimized: boolean) => void;
   /** The per-node traces strip under the video. */
   tracesOpen: boolean;
   setTracesOpen: (open: boolean) => void;
@@ -97,6 +100,8 @@ export const useModelOverlayStore = create<ModelOverlayState>()((set) => ({
   setThreshold: (px) => set((s) => ({ threshold: Number.isFinite(px) && px >= 0 ? px : s.threshold })),
   selected: null,
   setSelected: (sel) => set({ selected: sel }),
+  legendMinimized: false,
+  setLegendMinimized: (minimized) => set({ legendMinimized: minimized }),
   tracesOpen: false,
   setTracesOpen: (open) => set({ tracesOpen: open }),
   traceNode: 0,
