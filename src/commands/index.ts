@@ -100,6 +100,7 @@ export {
   DeleteAllPredictions,
   ConvertPredictionToInstance,
   MergeInstance,
+  SwapSymmetricNodes,
   AddMissingInstanceNodes,
   MarkInstanceComplete,
   AddInstancesFromAllPredictions,

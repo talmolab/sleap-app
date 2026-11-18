@@ -101,6 +101,8 @@ interface QcState {
   /** The Review window is open (the main canvas, framed, over the dimmed app). */
   reviewOpen: boolean;
   reviewOrder: QcReviewOrder;
+  /** Review window: draw the typical pose fitted onto the selected instance. */
+  showTypicalPose: boolean;
   /**
    * Instances re-scored after an edit in Review (qcInstKey → the new scores),
    * against the run's fitted model. Shown in place of the run's scores; the
@@ -130,6 +132,7 @@ interface QcState {
   setShowDismissed: (show: boolean) => void;
   setReviewOpen: (open: boolean) => void;
   setReviewOrder: (order: QcReviewOrder) => void;
+  setShowTypicalPose: (show: boolean) => void;
   /** Mark a user instance OK with its current pose, or take that back. */
   markOk: (videoIdx: number, frameIdx: number, userInstIdx: number) => void;
   unmarkOk: (videoIdx: number, frameIdx: number, userInstIdx: number) => void;
@@ -163,6 +166,7 @@ export const useQcStore = create<QcState>((set, get) => ({
   showDismissed: false,
   reviewOpen: false,
   reviewOrder: "severity",
+  showTypicalPose: false,
   rescored: new Map(),
   nodeFocus: null,
   settings: DEFAULT_QC_SETTINGS,
@@ -252,6 +256,7 @@ export const useQcStore = create<QcState>((set, get) => ({
   setReviewOpen: (reviewOpen) => set({ reviewOpen }),
 
   setReviewOrder: (reviewOrder) => set({ reviewOrder }),
+  setShowTypicalPose: (showTypicalPose) => set({ showTypicalPose }),
 
   markOk: (videoIdx, frameIdx, userInstIdx) => {
     const inst = userInstanceAt(videoIdx, frameIdx, userInstIdx);

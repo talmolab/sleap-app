@@ -62,6 +62,7 @@ import {
   AddInstance,
   DeleteSelectedInstance,
   MergeInstance,
+  SwapSymmetricNodes,
   CopyInstance,
   PasteInstance,
   DeleteFramePredictions,
@@ -659,6 +660,13 @@ function labelsMenu(s: MenuSnapshot): TopMenu {
         // (a second user instance, or which one to merge in).
         enabled: s.hasInstance,
         run: exec(MergeInstance),
+      },
+      {
+        kind: "item",
+        id: "labels.swapLeftRight",
+        label: "Swap Left/Right Nodes",
+        enabled: s.hasInstance,
+        run: exec(SwapSymmetricNodes),
       },
       ...clipboardItems(s),
       {

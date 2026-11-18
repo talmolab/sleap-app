@@ -7,6 +7,7 @@
  */
 
 import { frameHasContent } from "@/lib/frameLabeling";
+import { symmetricNodePairs, type SkeletonLike } from "@/lib/analyze/labelQc";
 import { Instance, LabeledFrame, PredictedInstance } from "@talmolab/sleap-io.js";
 import type { Labels, Skeleton } from "@talmolab/sleap-io.js";
 import { UpdateTopic } from "../types";
@@ -603,6 +604,50 @@ export const MergeInstance: Command = {
     ctx.state.setLabeledFrame(lf);
     ctx.state.setInstance(survivor);
     ctx.state.setMergePartner(null);
+    ctx.state.markChanged();
+    ctx.state.touchFrame();
+    ctx.state.bumpOverlayVersion();
+  },
+};
+
+/**
+ * Swap each left/right node pair of the selected instance (Labels ▸ Swap
+ * Left/Right Nodes; the Label QC Review window's fix for a chirality flag).
+ * Pairs are the instance's own skeleton's symmetries, else inferred from L/R
+ * node names, as Label QC's chirality check does. Each pair trades position,
+ * visibility and completeness. One undo step.
+ *
+ * Params:
+ *   instance?: Instance - defaults to the selected instance
+ */
+export const SwapSymmetricNodes: Command = {
+  name: "SwapSymmetricNodes",
+  topics: [UpdateTopic.Frame, UpdateTopic.Instance],
+  // Its own undo step, taken only once there's something to swap.
+  skipAutoSnapshot: true,
+  execute(ctx: CommandContext, params?: Record<string, unknown>) {
+    const instance = (params?.instance as Instance | undefined) ?? ctx.state.instance;
+    if (!instance) return;
+    // An instance off the frame on screen wouldn't be in the undo snapshot.
+    if (params?.instance && !ctx.state.labeledFrame?.instances.includes(instance)) return;
+    const pairs = symmetricNodePairs(instance.skeleton as unknown as SkeletonLike);
+    if (pairs.length === 0) {
+      toast.info("Swap Left/Right: the skeleton has no left/right node pairs.");
+      return;
+    }
+    ctx.pushUndoSnapshot(ctx.takeSnapshot("SwapSymmetricNodes"));
+    for (const [a, b] of pairs) {
+      const pa = instance.points[a];
+      const pb = instance.points[b];
+      if (!pa || !pb) continue;
+      const { xy, visible, complete } = pa;
+      pa.xy = [pb.xy[0], pb.xy[1]];
+      pa.visible = pb.visible;
+      pa.complete = pb.complete;
+      pb.xy = [xy[0], xy[1]];
+      pb.visible = visible;
+      pb.complete = complete;
+    }
     ctx.state.markChanged();
     ctx.state.touchFrame();
     ctx.state.bumpOverlayVersion();
