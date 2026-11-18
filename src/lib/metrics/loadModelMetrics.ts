@@ -18,6 +18,8 @@
 
 import yaml from "js-yaml";
 import type {
+  BboxHistory,
+  BboxMetrics,
   DistanceMetrics,
   MetricsMode,
   MetricsSummary,
@@ -86,6 +88,7 @@ export function looksLikeMetrics(raw: unknown): boolean {
   const obj = raw as Record<string, unknown>;
   return (
     METRIC_SECTIONS.some((k) => k in obj) ||
+    "bbox_mAP" in obj ||
     "detection_metrics" in obj ||
     "mask_metrics" in obj ||
     "semantic_metrics" in obj
@@ -138,6 +141,91 @@ function normalizePck(raw: Record<string, unknown> | undefined): PckMetrics | un
   };
 }
 
+/** A JSON array of numbers (null for NaN), or []. */
+function numList(v: unknown): (number | null)[] {
+  return Array.isArray(v) ? v.map((x) => num(x)) : [];
+}
+
+/**
+ * Box detector metrics from sleap-nn's flat `bbox_*` keys, or undefined when
+ * the dict has none (pose/centroid models).
+ */
+export function normalizeBbox(obj: Record<string, unknown>): BboxMetrics | undefined {
+  if (!("bbox_mAP" in obj)) return undefined;
+  const pr = obj.pr_curve as Record<string, unknown> | undefined;
+  const finite = (xs: (number | null)[]) => xs.map((x) => x ?? Number.NaN);
+  const prCurve =
+    pr && Array.isArray(pr.precision) && Array.isArray(pr.recall)
+      ? {
+          scores: finite(numList(pr.scores)),
+          precision: finite(numList(pr.precision)),
+          recall: finite(numList(pr.recall)),
+        }
+      : null;
+  const perClass = (v: unknown) =>
+    Array.isArray(v) ? v.map((row) => numList(row)) : [];
+  return {
+    mAP: num(obj.bbox_mAP),
+    AP50: num(obj.bbox_AP50),
+    AP75: num(obj.bbox_AP75),
+    AR: num(obj.bbox_AR),
+    precision: num(obj.bbox_precision),
+    recall: num(obj.bbox_recall),
+    f1: num(obj.bbox_f1),
+    f1Threshold: num(obj.bbox_f1_threshold),
+    meanIoU: num(obj.bbox_mean_iou),
+    tp: count(obj.bbox_n_tp),
+    fp: count(obj.bbox_n_fp),
+    fn: count(obj.bbox_n_fn),
+    nFrames: count(obj.n_frames),
+    nGt: count(obj.n_gt),
+    nPred: count(obj.n_pred),
+    predictFps: num(obj.predict_fps),
+    iouThresholds: numList(obj.iou_thresholds).map((x) => x ?? Number.NaN),
+    categories: Array.isArray(obj.categories) ? obj.categories.map((c) => String(c)) : [],
+    apPerClass: perClass(obj.ap_per_class),
+    arPerClass: perClass(obj.ar_per_class),
+    prCurve,
+  };
+}
+
+/**
+ * Per-epoch box metrics from a run's `training_log.csv` (columns
+ * `eval/val/bbox_mAP`, `…_AP50`, `…_AP75`, `…_mean_iou`). Null when the log has
+ * no box columns. Empty cells (epochs without an eval) become null.
+ */
+export function parseBboxHistory(csvText: string): BboxHistory | null {
+  const lines = csvText.split(/\r?\n/).filter((l) => l.trim() !== "");
+  if (lines.length < 2) return null;
+  const header = lines[0].split(",").map((h) => h.trim());
+  const col = (name: string) => header.indexOf(name);
+  const iEpoch = col("epoch");
+  const iMap = col("eval/val/bbox_mAP");
+  if (iEpoch < 0 || iMap < 0) return null;
+  const iAp50 = col("eval/val/bbox_AP50");
+  const iAp75 = col("eval/val/bbox_AP75");
+  const iIou = col("eval/val/bbox_mean_iou");
+  const cell = (cells: string[], i: number): number | null => {
+    if (i < 0) return null;
+    const raw = cells[i]?.trim();
+    if (!raw) return null;
+    const v = Number(raw);
+    return Number.isFinite(v) ? v : null;
+  };
+  const out: BboxHistory = { epoch: [], mAP: [], AP50: [], AP75: [], meanIoU: [] };
+  for (const line of lines.slice(1)) {
+    const cells = line.split(",");
+    const epoch = cell(cells, iEpoch);
+    if (epoch === null) continue;
+    out.epoch.push(epoch);
+    out.mAP.push(cell(cells, iMap));
+    out.AP50.push(cell(cells, iAp50));
+    out.AP75.push(cell(cells, iAp75));
+    out.meanIoU.push(cell(cells, iIou));
+  }
+  return out.epoch.length > 0 ? out : null;
+}
+
 function normalizeMOKS(raw: unknown): number | null {
   if (raw && typeof raw === "object" && "mOKS" in (raw as Record<string, unknown>)) {
     return num((raw as Record<string, unknown>).mOKS);
@@ -156,9 +244,12 @@ export function normalizeMetrics(raw: unknown, split = "val"): ModelMetrics {
   const vocRaw = obj.voc_metrics as Record<string, unknown> | undefined;
   const distRaw = obj.distance_metrics as Record<string, unknown> | undefined;
 
+  const bbox = normalizeBbox(obj);
   const mode: MetricsMode = vocRaw
     ? "oks"
-    : obj.mask_metrics
+    : bbox
+      ? "bbox"
+      : obj.mask_metrics
       ? "mask"
       : obj.semantic_metrics
         ? "semantic"
@@ -174,6 +265,7 @@ export function normalizeMetrics(raw: unknown, split = "val"): ModelMetrics {
     distance: normalizeDistance(distRaw),
     pck: normalizePck(obj.pck_metrics as Record<string, unknown> | undefined),
     visibility: normalizeVisibility(obj.visibility_metrics as Record<string, unknown> | undefined),
+    bbox,
     raw: obj,
   };
 }
@@ -201,6 +293,14 @@ export function summarizeMetrics(m: ModelMetrics | null): MetricsSummary | null 
     distP90: num(dist?.p90),
     distP95: num(dist?.p95),
     distP99: num(dist?.p99),
+    bboxMAP: m.bbox?.mAP ?? null,
+    bboxAP50: m.bbox?.AP50 ?? null,
+    bboxAP75: m.bbox?.AP75 ?? null,
+    bboxAR: m.bbox?.AR ?? null,
+    bboxPrecision: m.bbox?.precision ?? null,
+    bboxRecall: m.bbox?.recall ?? null,
+    bboxF1: m.bbox?.f1 ?? null,
+    bboxMeanIoU: m.bbox?.meanIoU ?? null,
   };
 }
 
@@ -384,6 +484,13 @@ export async function loadModelMetrics(
     const text = await fs.readTextFile(found.path);
     metrics = normalizeMetrics(JSON.parse(text), found.split);
     splitLoaded = found.split;
+    // Box detectors: also read box mAP per epoch from the training log.
+    if (metrics.mode === "bbox") {
+      const logPath = joinPath(runDir, "training_log.csv");
+      if (await fs.exists(logPath)) {
+        metrics.bboxHistory = parseBboxHistory(await fs.readTextFile(logPath)) ?? undefined;
+      }
+    }
   }
 
   let config: TrainingConfigInfo | null = null;
