@@ -51,7 +51,7 @@ export function ModelStatsPreview({ hp, maxStride, filters, filtersRate, outputS
   const [mousePos, setMousePos] = useState<{ x: number; y: number } | null>(null);
   const dragRef = useRef<{ startX: number; startY: number; panX: number; panY: number } | null>(null);
   const rf = computeReceptiveField(maxStride, stemStride);
-  const showCropSize = slot !== "centroid";
+  const showCropSize = slot !== "centroid" && slot !== "bbox";
   // Auto crop size must account for rotation/scale augmentation padding —
   // otherwise a rotated/scaled instance can be clipped by the crop window,
   // and this preview would understate what sleap-nn actually uses at
@@ -297,7 +297,7 @@ export function ModelStatsPreview({ hp, maxStride, filters, filtersRate, outputS
             </span>
             <br />
             <span className="font-medium">Parameters:</span> <span className="text-muted-foreground">{params}</span>
-            {featuresAtStride != null && numKeypoints > 0 && (
+            {featuresAtStride != null && numKeypoints > 0 && slot !== "bbox" && (
               <>
                 <br />
                 <span className="font-medium">Features ({headName} @ stride {outputStride}):</span>{" "}

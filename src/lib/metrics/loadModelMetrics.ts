@@ -213,6 +213,8 @@ export const MODEL_TYPE_LABELS: Record<string, string> = {
   bottomup: "Bottom-Up",
   multi_class_bottomup: "Multi-Class Bottom-Up",
   multi_class_topdown: "Multi-Class Top-Down",
+  bbox_centernet: "Box Detector (CenterNet)",
+  bbox_ssd: "Box Detector (SSD)",
 };
 
 const BACKBONE_LABELS: Record<string, string> = {

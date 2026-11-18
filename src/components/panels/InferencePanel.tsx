@@ -16,7 +16,7 @@ import { useConnectStore } from "@/stores/connectStore";
 import { BackendPicker } from "@/components/common/BackendPicker";
 import { RemoteFileBrowser } from "@/components/dialogs/RemoteFileBrowser";
 import { isTauri } from "../../platform/index";
-import { pipelineModelsProblem, readModelHeadKey } from "@/lib/modelDiscovery";
+import { pipelineModelsProblem, readModelHead, type ModelHead } from "@/lib/modelDiscovery";
 import { detectGpu } from "../../platform/backend";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -62,6 +62,8 @@ const PIPELINE_OPTIONS: { value: PipelineType; label: string; desc: string }[] =
     { value: "single-animal", label: "Single Animal", desc: "Single confidence map model." },
     { value: "top-down-id", label: "Top-Down + ID", desc: "Top-down with identity classification." },
     { value: "bottom-up-id", label: "Bottom-Up + ID", desc: "Bottom-up with identity classification." },
+    { value: "bbox", label: "Box Detector", desc: "One box-detector model: a box around each animal, no poses. Needs sleap-nn 0.3.5+." },
+    { value: "top-down-bbox", label: "Top-Down (Box Crops)", desc: "Two models: box detector + centered instance. Needs sleap-nn 0.3.5+." },
   ];
 
 const DEVICE_OPTIONS = [
@@ -570,13 +572,13 @@ function InferencePanelContent() {
 
   // Head of each local model directory, so Run can require one per head the
   // pipeline needs. Worker paths can't be read from here.
-  const [modelHeads, setModelHeads] = useState<Record<string, string | null>>({});
+  const [modelHeads, setModelHeads] = useState<Record<string, ModelHead | null>>({});
   useEffect(() => {
     if (!isTauri || remoteEnabled) return;
     const unread = modelPaths.filter((p) => !(p in modelHeads));
     if (unread.length === 0) return;
     let cancelled = false;
-    Promise.all(unread.map(async (p) => [p, await readModelHeadKey(p)] as const)).then((entries) => {
+    Promise.all(unread.map(async (p) => [p, await readModelHead(p)] as const)).then((entries) => {
       if (!cancelled) setModelHeads((prev) => ({ ...prev, ...Object.fromEntries(entries) }));
     });
     return () => {
@@ -616,7 +618,9 @@ function InferencePanelContent() {
     ? null
     : pipelineModelsProblem(pipeline, activeModelPaths.map((p) => (remoteEnabled ? null : (modelHeads[p] ?? null))));
   const canRun = (remoteEnabled ? (!!selectedWorkerId && connectionStatus === "connected" && !!remoteDataPath) : sleapNnAvailable) && !isRunning && !isDone && (trackOnly || (activeModelPaths.length > 0 && !modelsProblem)) && !customRangeInvalid;
-  const isTopDown = pipeline === "top-down" || pipeline === "top-down-id";
+  const isTopDown = pipeline === "top-down" || pipeline === "top-down-id" || pipeline === "top-down-bbox";
+  // sleap-nn tracks poses and masks only, not a detector's boxes.
+  const trackingUnavailable = !trackOnly && pipeline === "bbox";
 
   if (!isTauri && connectionStatus !== "connected") {
     return (
@@ -757,7 +761,9 @@ function InferencePanelContent() {
               </div>
               {activeModelPaths.length === 0 ? (
                 <p className="text-[10px] text-muted-foreground">
-                  {isTopDown ? "Add two directories (centroid + centered-instance)." : "Add a model directory."}
+                  {pipeline === "top-down-bbox"
+                    ? "Add two directories (box detector + centered-instance)."
+                    : isTopDown ? "Add two directories (centroid + centered-instance)." : "Add a model directory."}
                 </p>
               ) : (
                 <div className="space-y-1">
@@ -969,9 +975,11 @@ function InferencePanelContent() {
           <Check label="Enable tracking"
             hint={trackOnly
               ? "Always on in track-only mode."
-              : "Connect predicted instances across frames to maintain identity over time."}
-            checked={trackOnly || tracking} onChange={setTracking} disabled={isRunning || trackOnly} />
-          {(trackOnly || tracking) && (
+              : trackingUnavailable
+                ? "Not available for a box detector alone: sleap-nn tracks poses, not boxes. Use Top-Down (Box Crops) to track."
+                : "Connect predicted instances across frames to maintain identity over time."}
+            checked={trackOnly || (tracking && !trackingUnavailable)} onChange={setTracking} disabled={isRunning || trackOnly || trackingUnavailable} />
+          {(trackOnly || (tracking && !trackingUnavailable)) && (
             <>
               <div className="flex items-center justify-between gap-2">
                 <FieldLabel label="Method" hint="Simple matches instances by similarity alone. Optical Flow predicts motion from pixel displacement — best for fast-moving animals. Kalman Filter predicts motion from a per-track velocity model — best for a known, fixed number of animals whose motion helps disambiguate crossings or occlusions." />

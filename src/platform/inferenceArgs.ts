@@ -186,8 +186,11 @@ export function buildInferenceArgs(
     args.push("--ensure_grayscale");
   }
 
-  // Tracking
-  if (config.tracking) {
+  // Tracking. sleap-nn's tracker works on poses and masks, and rejects a box
+  // detector's output ("Tracking is not supported for bounding-box detectors"),
+  // so a detector-only run never asks for it (track-only runs have no model).
+  const canTrack = config.trackOnly || config.pipeline !== "bbox";
+  if (config.tracking && canTrack) {
     args.push("--tracking");
     if (config.trackerMethod === "flow") {
       args.push("--use_flow");

@@ -9,8 +9,9 @@ import {
 } from "@/lib/trainingProfiles";
 
 describe("trainingProfiles", () => {
-  it("has 10 baseline profiles", () => {
-    expect(BASELINE_PROFILES).toHaveLength(10);
+  it("has 14 baseline profiles", () => {
+    // 10 pose presets + 2 box detectors (CenterNet, SSD) + 2 box-crop centered instance.
+    expect(BASELINE_PROFILES).toHaveLength(14);
   });
 
   it("returns correct profiles for centroid", () => {
@@ -110,7 +111,8 @@ describe("trainingProfiles", () => {
 
   it("RF-tiered profiles' labels say which tier they are; single-profile heads' don't", () => {
     for (const p of BASELINE_PROFILES) {
-      const isTiered = getBaselineProfilesForHead(p.headType).length > 1;
+      // The box detector's two presets are styles (CenterNet / SSD), not RF tiers.
+      const isTiered = p.headType !== "bbox" && getBaselineProfilesForHead(p.headType).length > 1;
       expect(p.label.includes("RF)"), p.filename).toBe(isTiered);
     }
   });

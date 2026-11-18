@@ -9,7 +9,7 @@
 
 import { useState, useRef, useEffect, useMemo } from "react";
 import { createPortal } from "react-dom";
-import { useTrainingStore, getConfigSlots, getSlotLabel, countUserLabeledFrames } from "@/stores/trainingStore";
+import { useTrainingStore, getConfigSlots, getSlotLabel, countUserLabeledFrames, isBboxModelType, BBOX_REMOTE_UNSUPPORTED } from "@/stores/trainingStore";
 import { useExportStore } from "@/stores/exportStore";
 import type { ModelType, ConfigFile, ConfigHyperparams } from "@/stores/trainingStore";
 import { useConnectStore } from "@/stores/connectStore";
@@ -25,6 +25,7 @@ import { LossViewerDialog } from "@/components/monitors/LossViewerDialog";
 import { LogTerminalDialog } from "@/components/monitors/LogTerminalDialog";
 import { ErrorOutput } from "@/components/monitors/ErrorOutput";
 import { DryRunResult } from "@/components/panels/DryRunResult";
+import { BboxTrainingFields } from "@/components/panels/BboxTrainingFields";
 import { useAppStore } from "@/stores/appStore";
 import { isTauri } from "@/platform/index";
 import { getBaselineProfilesForHead, slotToHeadType } from "@/lib/trainingProfiles";
@@ -77,6 +78,7 @@ import { formatDuration } from "@/lib/timestamp";
 import { classifyVisibility, type VideoVisibility } from "@/lib/remoteVisibility";
 import { SingleSkeletonGate } from "./SingleSkeletonGate";
 import { POST_TRAINING_TARGET_OPTIONS, describeClip } from "@/lib/postTrainingTarget";
+import { headTypeMatches } from "@/lib/bboxModels";
 
 // ── Constants ────────────────────────────────────────────────────────────────
 
@@ -86,6 +88,8 @@ const MODEL_TYPE_OPTIONS: { value: ModelType; label: string }[] = [
   { value: "bottom_up", label: "Bottom-Up" },
   { value: "top_down_id", label: "Top-Down + ID" },
   { value: "bottom_up_id", label: "Bottom-Up + ID" },
+  { value: "bbox", label: "Box Detector" },
+  { value: "top_down_bbox", label: "Top-Down (Box Crops)" },
 ];
 
 const GPU_MEMORY_LEVEL_COLOR: Record<GpuMemoryLevel, string> = {
@@ -345,7 +349,7 @@ function ConfigSlot({
 
   const headType = slotToHeadType(modelType, slot);
   const baselineProfiles = getBaselineProfilesForHead(headType);
-  const forThisHead = discoveredModels.filter((m) => m.headKey === headType);
+  const forThisHead = discoveredModels.filter((m) => headTypeMatches(headType, m));
 
   // Which dropdown item the current configFile actually corresponds to — a
   // discovered run is identified by its checkpoint living inside that run's
@@ -814,17 +818,25 @@ function TrainingPanelContent() {
   const prevModelType = useRef(config.modelType);
   useEffect(() => {
     const newSlots = getConfigSlots(config.modelType);
+    const dropped = new Set<string>();
     if (prevModelType.current !== config.modelType) {
       // Remove configs that don't belong to the new model type's slots
       for (const cf of config.configs) {
-        if (!newSlots.includes(cf.slot)) {
+        // Also drop a config whose slot now wants a different kind of head:
+        // Top-Down's fixed-crop centered-instance config doesn't carry over to
+        // Top-Down (Box Crops), which loads its box-crop preset instead.
+        if (
+          !newSlots.includes(cf.slot) ||
+          slotToHeadType(prevModelType.current, cf.slot) !== slotToHeadType(config.modelType, cf.slot)
+        ) {
           removeConfigFile(cf.slot);
+          dropped.add(cf.slot);
         }
       }
       prevModelType.current = config.modelType;
     }
     const missingSlots = newSlots.filter(
-      (slot) => !config.configs.some((c) => c.slot === slot),
+      (slot) => dropped.has(slot) || !config.configs.some((c) => c.slot === slot),
     );
 
     const currentTutorialStepId = tutorialActive
@@ -1100,9 +1112,13 @@ function TrainingPanelContent() {
   // Remote training points at a path on the worker's filesystem, which this
   // client can't read to count frames — only guard the local-project path,
   // where an empty project would otherwise start a doomed training run.
+  // A box detector can also learn from drawn boxes alone (no poses).
   const hasLabeledFrames = remoteEnabled
     ? true
-    : (countUserLabeledFrames(labels) ?? 0) > 0;
+    : (countUserLabeledFrames(labels) ?? 0) > 0 ||
+      (config.modelType === "bbox" &&
+        !!labels?.labeledFrames.some((lf) => lf.bboxes.some((b) => !b.isPredicted)));
+  const remoteUnsupported = remoteEnabled && isBboxModelType(config.modelType);
   const hasValidLossWeights = config.configs.every((cf) =>
     cf.hyperparams.confmapsLossWeight > 0 &&
     cf.hyperparams.pafsLossWeight > 0 &&
@@ -1144,6 +1160,7 @@ function TrainingPanelContent() {
     hasValidLossWeights &&
     hasValidCheckpointSelection &&
     !isModelTypeIncompatible &&
+    !remoteUnsupported &&
     !visibilityPending &&
     status === "idle" &&
     (remoteEnabled ? !!selectedWorkerId && connectionStatus === "connected" : true);
@@ -1276,7 +1293,7 @@ function TrainingPanelContent() {
           <div className="space-y-1">
             <span className="text-[10px] text-muted-foreground flex items-center gap-1">
               Model Type
-              <HelpTooltip text="The pose-estimation pipeline to train. Single Animal predicts node locations for one animal per frame. Top-Down uses a centroid model to locate/crop each animal, then a centered-instance model for its pose. Bottom-Up predicts all keypoints and groups them into animals via part affinity fields. The '+ ID' variants also classify each instance's identity." />
+              <HelpTooltip text="The pose-estimation pipeline to train. Single Animal predicts node locations for one animal per frame. Top-Down uses a centroid model to locate/crop each animal, then a centered-instance model for its pose. Bottom-Up predicts all keypoints and groups them into animals via part affinity fields. The '+ ID' variants also classify each instance's identity. Box Detector predicts a box around each animal (no poses); Top-Down (Box Crops) uses that detector in place of the centroid model and crops each animal to its box. Box models need sleap-nn 0.3.5 or newer." />
             </span>
             <Select
               value={config.modelType}
@@ -1534,7 +1551,8 @@ function TrainingPanelContent() {
                   concept (where to crop), so it lives above that division. */}
               {(() => {
                 const ciConfig = config.configs.find((cf) => cf.slot === "centered_instance");
-                if (!ciConfig) return null;
+                // A top-down-box pipeline crops around each predicted box, not an anchor part.
+                if (!ciConfig || config.modelType === "top_down_bbox") return null;
                 return (
                   <>
                     <AnchorPartField
@@ -1546,6 +1564,17 @@ function TrainingPanelContent() {
                   </>
                 );
               })()}
+              {isBboxModelType(config.modelType) && (
+                <>
+                  <BboxTrainingFields
+                    modelType={config.modelType}
+                    configs={config.configs}
+                    onUpdateSlot={updateConfigHyperparams}
+                    disabled={isRunning}
+                  />
+                  <Separator className="my-2" />
+                </>
+              )}
               {config.configs.length === 1 ? (
                 <HyperparamsFields
                   slot={config.configs[0].slot}
@@ -1696,6 +1725,8 @@ function TrainingPanelContent() {
               <p className="text-[10px] text-muted-foreground text-center mt-1">
                 {pipelineProblem
                   ? "Fix the problem under Model Type to start"
+                  : remoteUnsupported
+                  ? BBOX_REMOTE_UNSUPPORTED
                   : !hasAllConfigs
                   ? "Upload config file(s) to begin"
                   : !hasData
