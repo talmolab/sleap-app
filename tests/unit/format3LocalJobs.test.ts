@@ -1,8 +1,10 @@
 /**
  * Local jobs never read a project file that is still in SLP format 3.0 on
- * disk: they read a 2.x copy of the open project in the temp directory (the
- * sleap-nn the app installs reads only the 2.x layout). Models still go next
- * to the project file.
+ * disk: they read the job's 2.x copy of the open project in the temp
+ * directory (the sleap-nn the app installs reads only the 2.x layout). One
+ * copy per job, shared by its runs, deleted when the job ends; copies a crash
+ * left behind are swept by the next job. Models still go next to the project
+ * file. A copy that can't be written ends the job with an error.
  *
  * The labels carry a stand-in `sourceFormat`, shaped like sleap-io.js 0.6's,
  * so this runs against any sleap-io.js; the copy is read back with the
@@ -13,31 +15,81 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import * as sio from "@talmolab/sleap-io.js";
 import type { ProcessEvent } from "@/platform/backend";
+import type { JobLabelsCopy } from "@/lib/jobLabelsFile";
 
 type RunTrainingArgs = [string, string, string, (e: ProcessEvent) => void, string?];
 
-const written = new Map<string, Uint8Array>();
-const writeFileMock = vi.fn(async (path: string, bytes: Uint8Array) => {
-  written.set(path, bytes);
-});
-const runTrainingMock = vi.fn(async (..._args: RunTrainingArgs) => ({
-  success: true,
-  command: "",
-  modelPath: "/data/models/run",
-}));
+/** The fake temp directory: path → bytes. */
+const files = new Map<string, Uint8Array>();
+const removed: string[] = [];
+let writeError: Error | null = null;
+let trainingOutcome: "succeed" | "fail" = "succeed";
+const inferencePaths: string[] = [];
 
-vi.mock("@/platform", () => ({ isTauri: true, getPlatform: async () => ({}) }));
+const runTrainingMock = vi.fn(async (..._args: RunTrainingArgs) =>
+  trainingOutcome === "succeed"
+    ? { success: true, command: "", modelPath: "/data/models/run" }
+    : { success: false, command: "", modelPath: "" },
+);
+
+vi.mock("@/platform", () => ({
+  isTauri: true,
+  getPlatform: async () => ({}),
+  consumeLastBrowserFileHandle: () => null,
+}));
 vi.mock("@tauri-apps/api/path", () => ({
   tempDir: async () => "/tmp",
   join: async (...parts: string[]) => parts.join("/"),
 }));
 vi.mock("@tauri-apps/plugin-fs", () => ({
-  writeFile: writeFileMock,
+  writeFile: async (path: string, bytes: Uint8Array) => {
+    if (writeError) throw writeError;
+    files.set(path, bytes);
+  },
+  remove: async (path: string) => {
+    removed.push(path);
+    files.delete(path);
+  },
+  readDir: async () =>
+    [...files.keys()].map((p) => ({ name: p.split("/").pop(), isFile: true, isDirectory: false })),
   exists: async () => false,
-  remove: async () => {},
 }));
 vi.mock("@/platform/backend", () => ({
+  // Everything else the stores import from the backend, unused here.
+  detectUv: vi.fn(async () => {}),
+  listUvTools: vi.fn(async () => {}),
+  listPythonInterpreters: vi.fn(async () => {}),
+  listDownloadablePythons: vi.fn(async () => {}),
+  checkPython: vi.fn(async () => {}),
+  installPython: vi.fn(async () => {}),
+  detectGpu: vi.fn(async () => {}),
+  detectAccelerator: vi.fn(async () => {}),
+  detectSleapNnExtras: vi.fn(async () => {}),
+  gpuStats: vi.fn(async () => {}),
+  checkWandbAuth: vi.fn(async () => {}),
+  installUvTool: vi.fn(async () => {}),
+  upgradeUvTool: vi.fn(async () => {}),
+  uninstallUvTool: vi.fn(async () => {}),
+  updateUv: vi.fn(async () => {}),
+  installUv: vi.fn(async () => {}),
+  runPythonCommand: vi.fn(async () => {}),
+  exportNwb: vi.fn(async () => {}),
+  sendTrainingStop: vi.fn(async () => {}),
+  spawnOverlayServe: vi.fn(async () => {}),
+  killOverlayServe: vi.fn(async () => {}),
+  runExport: vi.fn(async () => {}),
+  rtcJoinRoom: vi.fn(async () => {}),
+  rtcConnectWorker: vi.fn(async () => {}),
+  rtcSend: vi.fn(async () => {}),
+  rtcDisconnectWorker: vi.fn(async () => {}),
+  rtcLeaveRoom: vi.fn(async () => {}),
   runTraining: runTrainingMock,
+  // Local inference: read the job's copy, as the real runInference does when
+  // the project file is in format 3.0.
+  runInference: async (_cfg: unknown, _projectPath: string | null, _on: unknown, copy?: JobLabelsCopy) => {
+    if (copy) inferencePaths.push(await copy.path());
+    return { success: true, outputPath: null, command: "sleap-nn predict" };
+  },
   cancelCommand: async () => {},
   startZmqRelay: async () => {},
   stopZmqRelay: async () => {},
@@ -50,8 +102,9 @@ vi.mock("@/lib/notify", () => ({
 }));
 
 let useTrainingStore: typeof import("@/stores/trainingStore").useTrainingStore;
+let useInferenceStore: typeof import("@/stores/inferenceStore").useInferenceStore;
 let useAppStore: typeof import("@/stores/appStore").useAppStore;
-let jobLabelsPath: typeof import("@/lib/jobLabelsFile").jobLabelsPath;
+let jobFile: typeof import("@/lib/jobLabelsFile");
 
 const profile = (name: string) =>
   readFileSync(join(import.meta.dir, `../../src/assets/training_profiles/${name}`), "utf8");
@@ -86,44 +139,67 @@ function project(format3: boolean): sio.Labels {
   return labels;
 }
 
+const COPY = /^\/tmp\/sleap_(training|inference)_v2copy_\d+_\d+\.slp$/;
+
 beforeAll(async () => {
   ({ useTrainingStore } = await import("@/stores/trainingStore"));
+  ({ useInferenceStore } = await import("@/stores/inferenceStore"));
   ({ useAppStore } = await import("@/stores/appStore"));
-  ({ jobLabelsPath } = await import("@/lib/jobLabelsFile"));
+  jobFile = await import("@/lib/jobLabelsFile");
 });
 
 beforeEach(() => {
   useAppStore.setState(useAppStore.getInitialState());
   useTrainingStore.setState(useTrainingStore.getInitialState());
-  written.clear();
-  writeFileMock.mockClear();
+  useInferenceStore.setState(useInferenceStore.getInitialState());
+  files.clear();
+  removed.length = 0;
+  inferencePaths.length = 0;
+  writeError = null;
+  trainingOutcome = "succeed";
   runTrainingMock.mockClear();
 });
 
 describe("jobLabelsPath", () => {
-  it("writes a 2.x copy when the project file is in format 3.0", async () => {
-    const labels = project(true);
-    useAppStore.getState().setLabels(labels, "flies.slp", "/data/flies.slp");
-    const path = await jobLabelsPath("/data/flies.slp", "inference");
-    expect(path).toMatch(/^\/tmp\/sleap_inference_input_\d+\.slp$/);
-    const bytes = written.get(path)!;
-    expect(bytes).toBeDefined();
+  it("writes the job's 2.x copy once, when the project file is in format 3.0, and deletes it on release", async () => {
+    useAppStore.getState().setLabels(project(true), "flies.slp", "/data/flies.slp");
+    const copy = jobFile.createJobLabelsCopy("inference");
+    const path = await jobFile.jobLabelsPath("/data/flies.slp", copy);
+    expect(path).toMatch(COPY);
+    expect(await jobFile.jobLabelsPath("/data/flies.slp", copy)).toBe(path); // reused
+    expect(files.size).toBe(1);
     // The copy is a file the installed sleap-io.js opens without a format 3.0 question.
-    const back = await sio.loadSlp(bytes, { openVideos: false });
+    const back = await sio.loadSlp(files.get(path)!, { openVideos: false });
     expect((back as unknown as { sourceFormat?: unknown }).sourceFormat ?? null).toBeNull();
     expect(back.labeledFrames[0].instances[0].points[1].xy).toEqual([30, 40]);
+    await copy.release();
+    expect(removed).toEqual([path]);
+    await copy.release(); // twice is fine
+    expect(removed).toEqual([path]);
   });
 
-  it("uses the project file as it is otherwise", async () => {
+  it("uses the project file as it is otherwise, and another labels file untouched", async () => {
     useAppStore.getState().setLabels(project(false), "flies.slp", "/data/flies.slp");
-    expect(await jobLabelsPath("/data/flies.slp", "training")).toBe("/data/flies.slp");
-    expect(writeFileMock).not.toHaveBeenCalled();
+    const copy = jobFile.createJobLabelsCopy("training");
+    expect(await jobFile.jobLabelsPath("/data/flies.slp", copy)).toBe("/data/flies.slp");
+    useAppStore.getState().setLabels(project(true), "flies.slp", "/data/flies.slp");
+    expect(await jobFile.jobLabelsPath("/data/other.slp", jobFile.createJobLabelsCopy("training"))).toBe(
+      "/data/other.slp",
+    );
+    expect(files.size).toBe(0);
   });
 
-  it("leaves another labels file alone", async () => {
+  it("the next job sweeps copies a crashed job left behind, but not those still in use", async () => {
+    files.set("/tmp/sleap_training_v2copy_1_1.slp", new Uint8Array([1]));
+    files.set("/tmp/unrelated.slp", new Uint8Array([1]));
     useAppStore.getState().setLabels(project(true), "flies.slp", "/data/flies.slp");
-    expect(await jobLabelsPath("/data/other.slp", "training")).toBe("/data/other.slp");
-    expect(writeFileMock).not.toHaveBeenCalled();
+    const first = jobFile.createJobLabelsCopy("training");
+    const firstPath = await first.path();
+    expect(removed).toEqual(["/tmp/sleap_training_v2copy_1_1.slp"]);
+    const second = await jobFile.createJobLabelsCopy("inference").path();
+    expect(files.has(firstPath)).toBe(true); // in use by the first job
+    expect(files.has(second)).toBe(true);
+    expect(files.has("/tmp/unrelated.slp")).toBe(true);
   });
 });
 
@@ -135,14 +211,36 @@ describe("local training", () => {
     s.addConfigFile(s.parseYamlConfig(profile("baseline_medium_rf.topdown.yaml"), "ci.yaml", "centered_instance")!);
   });
 
-  it("reads a 2.x copy of a format 3.0 project file; models go next to the project", async () => {
+  it("both models read one 2.x copy, deleted when the job ends; models go next to the project", async () => {
     useAppStore.getState().setLabels(project(true), "flies.slp", "/data/flies.slp");
     await useTrainingStore.getState().startTraining({});
-    expect(runTrainingMock).toHaveBeenCalled();
-    const [, labelsPath, , , ckptDir] = runTrainingMock.mock.calls[0] as unknown as RunTrainingArgs;
-    expect(labelsPath).toMatch(/^\/tmp\/sleap_training_input_\d+\.slp$/);
-    expect(written.has(labelsPath)).toBe(true);
+    expect(runTrainingMock).toHaveBeenCalledTimes(2);
+    const calls = runTrainingMock.mock.calls as unknown as RunTrainingArgs[];
+    const [, labelsPath, , , ckptDir] = calls[0];
+    expect(labelsPath).toMatch(COPY);
+    expect(calls[1][1]).toBe(labelsPath);
     expect(ckptDir).toBe("/data/models");
+    expect(removed).toEqual([labelsPath]);
+    expect(files.size).toBe(0);
+  });
+
+  it("a failed job deletes its copy too", async () => {
+    trainingOutcome = "fail";
+    useAppStore.getState().setLabels(project(true), "flies.slp", "/data/flies.slp");
+    await useTrainingStore.getState().startTraining({});
+    expect(useTrainingStore.getState().status).toBe("error");
+    expect(files.size).toBe(0);
+  });
+
+  it("a copy that can't be written ends the job with an error, not a run that never ends", async () => {
+    writeError = new Error("No space left on device");
+    useAppStore.getState().setLabels(project(true), "flies.slp", "/data/flies.slp");
+    await useTrainingStore.getState().startTraining({});
+    const s = useTrainingStore.getState();
+    expect(s.status).toBe("error");
+    expect(s.error).toContain("Couldn't write a 2.x copy of the project for training");
+    expect(s.error).toContain("No space left on device");
+    expect(runTrainingMock).not.toHaveBeenCalled();
   });
 
   it("reads the project file itself when it is not in format 3.0", async () => {
@@ -150,6 +248,17 @@ describe("local training", () => {
     await useTrainingStore.getState().startTraining({});
     const [, labelsPath] = runTrainingMock.mock.calls[0] as unknown as RunTrainingArgs;
     expect(labelsPath).toBe("/data/flies.slp");
-    expect(writeFileMock).not.toHaveBeenCalled();
+    expect(files.size).toBe(0);
+  });
+});
+
+describe("local inference", () => {
+  it("reads the job's copy and deletes it when the job ends", async () => {
+    useAppStore.getState().setLabels(project(true), "flies.slp", "/data/flies.slp");
+    await useInferenceStore.getState().startInference({ existingPredictions: "replace", trackOnly: false } as never);
+    expect(inferencePaths).toHaveLength(1);
+    expect(inferencePaths[0]).toMatch(COPY);
+    expect(removed).toEqual([inferencePaths[0]]);
+    expect(files.size).toBe(0);
   });
 });

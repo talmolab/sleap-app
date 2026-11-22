@@ -13,7 +13,7 @@ vi.mock("@/lib/notify", () => ({
   toast: { success: vi.fn(), error: vi.fn(), info: vi.fn(), warning: vi.fn() },
 }));
 
-import { Instance, LabeledFrame, Labels, Skeleton, Video } from "@talmolab/sleap-io.js";
+import { Instance, LabeledFrame, Labels, PredictedInstance, Skeleton, Video } from "@talmolab/sleap-io.js";
 import { confirmUnlabeledAsHidden, countUnlabeledNodes } from "@/lib/slpAccess";
 import { useConfirmStore, type ConfirmRequest } from "@/stores/confirmStore";
 import { useSlpFormatStore, type SlpFormatPrompt } from "@/stores/slpFormatStore";
@@ -60,10 +60,21 @@ beforeEach(() => {
 });
 
 describe("nodes not labeled, before a job", () => {
-  it("counts them", () => {
+  it("counts them in user instances only (training uses no predictions)", () => {
     expect(countUnlabeledNodes(project(2))).toBe(2);
     expect(countUnlabeledNodes(project(0))).toBe(0);
     expect(countUnlabeledNodes(null)).toBe(0);
+    const labels = project(0);
+    const skeleton = labels.skeletons[0];
+    const pred = new PredictedInstance({
+      skeleton,
+      points: [0, 1, 2].map((i) => ({ xy: [i, i] as [number, number], visible: true, complete: false, score: 1 })),
+      score: 1,
+    });
+    const unlabeled = { xy: [Number.NaN, Number.NaN] as [number, number], visible: false, complete: false, labeled: false };
+    Object.defineProperty(pred, "points", { get: () => [unlabeled, unlabeled, unlabeled] });
+    labels.labeledFrames[0].instances.push(pred);
+    expect(countUnlabeledNodes(labels)).toBe(0);
   });
 
   it("asks once with Continue and Cancel when there are some", async () => {
@@ -138,7 +149,7 @@ describe("a job on a project opened View only", () => {
     useAppStore.getState().setLabels(viewOnlyProject(0), "x.slp", "/data/x.slp");
     const seen = cancelNextFormatPrompt();
     await useInferenceStore.getState().startInference({} as never);
-    expect(seen).toEqual([expect.objectContaining({ kind: "allow-edit", action: "add predictions to it" })]);
+    expect(seen).toEqual([expect.objectContaining({ kind: "allow-edit", action: "predictions" })]);
     expect(useInferenceStore.getState().status).toBe("idle");
   });
 
@@ -157,8 +168,33 @@ describe("a job on a project opened View only", () => {
     const before = useTrainingStore.getState().status;
     const seen = cancelNextFormatPrompt();
     await useTrainingStore.getState().startTraining();
-    expect(seen).toEqual([expect.objectContaining({ kind: "allow-edit", action: "train on it" })]);
+    expect(seen).toEqual([expect.objectContaining({ kind: "allow-edit", action: "train" })]);
     expect(useConfirmStore.getState().request).toBeNull(); // never got to the hidden-nodes warning
     expect(useTrainingStore.getState().status).toBe(before);
+  });
+});
+
+describe("loading finished job predictions into a project opened View only", () => {
+  beforeEach(() => useSlpFormatStore.setState({ prompt: null }));
+
+  it("Fetch & Load asks to allow editing first; Cancel keeps the pending merge and reports nothing as merged", async () => {
+    useAppStore.getState().setLabels(viewOnlyProject(0), "x.slp", "/data/x.slp");
+    const pendingMerge = { results: [{ jobId: "j1" }], mode: "replace", trackOnly: false };
+    useTrainingStore.setState({
+      postTrainingInference: { pendingMerge, merged: false, message: null } as never,
+      log: [],
+    });
+    const seen = cancelNextFormatPrompt();
+    await useTrainingStore.getState().fetchAndLoadPostTrainingPredictions();
+    expect(seen).toEqual([expect.objectContaining({ kind: "allow-edit", action: "predictions" })]);
+    const post = useTrainingStore.getState().postTrainingInference as unknown as {
+      pendingMerge: unknown;
+      merged: boolean;
+      message: string | null;
+    };
+    expect(post.pendingMerge).toBe(pendingMerge);
+    expect(post.merged).toBe(false);
+    expect(post.message).toContain("View only");
+    expect(useTrainingStore.getState().log.join("\n")).not.toContain("merged into project");
   });
 });

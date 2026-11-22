@@ -177,6 +177,9 @@ describe("dialog text", () => {
     expect(drops).toContain("Instance metadata: annotator");
     expect(drops).toContain("Frame metadata: note");
     expect(drops.some((d) => d.includes("points/extra"))).toBe(true);
+    expect(describeFormat3Drops({ ...SUMMARY, unreadTables: ["event_types", "events"] })).toContain(
+      "Parts of the file this version doesn't read: event_types, events",
+    );
     expect(
       describeFormat3Drops({
         ...SUMMARY,
