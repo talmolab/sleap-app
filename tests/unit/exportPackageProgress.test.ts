@@ -334,3 +334,37 @@ describe("exportLabelsPackage on desktop (streamed straight to the chosen file)"
     });
   });
 });
+
+describe("a project opened View only (SLP format 3.0)", () => {
+  const viewOnly = {
+    videos: [],
+    labeledFrames: [],
+    suggestions: [],
+    sourceFormat: {
+      formatId: 3,
+      access: "view",
+      summary: {
+        formatId: 3, unlabeledPoints: 0, unlabeledUserPoints: 0, unlabeledPredictedPoints: 0,
+        metadataKeys: { instances: [], frames: [], bboxes: [] }, unknownColumns: [], lossless: true,
+      },
+      labelsPath: "/data/x.slp",
+    },
+  };
+
+  it("asks to allow editing first, and writes nothing when declined", async () => {
+    const { useSlpFormatStore } = await import("@/stores/slpFormatStore");
+    const prompts: unknown[] = [];
+    const unsub = useSlpFormatStore.subscribe((s) => {
+      if (!s.prompt) return;
+      prompts.push(s.prompt);
+      unsub();
+      queueMicrotask(() => useSlpFormatStore.getState().respond(null));
+    });
+    onDesktop();
+    const result = await exportLabelsPackage({ ...viewOnly } as never, "x.slp", "full");
+    expect(result).toBeNull();
+    expect(prompts).toEqual([expect.objectContaining({ kind: "allow-edit", action: "export" })]);
+    expect(order).toEqual([]); // no dialog, no frame reads, no writer
+    expect(toastError).not.toHaveBeenCalled();
+  });
+});

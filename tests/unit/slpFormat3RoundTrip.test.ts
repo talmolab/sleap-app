@@ -3,7 +3,7 @@
  * autosave-journal and save paths (#509, #510, #511).
  *
  * The fixture `format3_unlabeled.slp` (written by Python sleap-io 0.10) holds
- * a user instance whose `tail` is not labelled, a hidden (labelled) `tail` on
+ * a user instance whose `tail` is not labeled, a hidden (labeled) `tail` on
  * another, frame metadata `note` and instance metadata `annotator`.
  *
  * Needs a sleap-io.js that reads format 3.0 (0.6.0 or newer); with an older
@@ -23,6 +23,15 @@ vi.mock("@/lib/notify", () => ({
 vi.mock("@/lib/resolveVideos", () => ({
   resolveExternalVideos: vi.fn(async () => {}),
 }));
+// The app's Save writes through the platform: capture the bytes instead.
+const savedFiles = new Map<string, Uint8Array>();
+vi.mock("@/platform/index", () => ({
+  getPlatform: async () => ({
+    isTauri: true,
+    writeFile: async (path: string, bytes: Uint8Array) => void savedFiles.set(path, bytes),
+    showSaveDialog: async () => null,
+  }),
+}));
 
 import { loadProjectFromPath } from "@/lib/loadProject";
 import { loadSlp } from "@/lib/slpRead";
@@ -33,7 +42,6 @@ import { BeginEdit, SetPointLocation } from "@/commands/editCommands";
 import {
   isSlpViewOnlyError,
   isUnlabeledPoint,
-  markSavedInLegacyLayout,
   metadataOf,
   sourceFormatOf,
   withLegacyLayout,
@@ -45,6 +53,7 @@ import { instanceGeometry } from "@/canvas/instanceGeometry";
 import { qcPose } from "@/lib/analyze/qc/anomaly";
 import { visibilityMask } from "@/lib/analyze/qc/util";
 import { saveLabelsInPlace } from "@/lib/saveLabelsInPlace";
+import { saveProjectAsSlp } from "@/lib/saveProject";
 
 const HAS_FORMAT3 = "SlpFormat3ChoiceError" in sio;
 const HAS_REFUSAL = "SlpFormatError" in sio;
@@ -149,8 +158,21 @@ describe.skipIf(!HAS_FORMAT3)("format 3.0 opened for editing", () => {
     const inPlace = await saveLabelsInPlace(labels, "/nonexistent/format3_unlabeled.slp");
     expect(inPlace.ok).toBe(false);
 
-    // Save as the app does (2.x layout) and read the file back.
-    const bytes = await sio.saveSlpToBytes(labels, withLegacyLayout());
+    // Save through the app's own Save (desktop branch, over the project's
+    // file; the disk write is captured) and read the file back. Every record
+    // the app rebuilt (undo, redo) carries its file's choice, so sleap-io.js
+    // saves it as chosen without a warning.
+    const warnings: string[] = [];
+    const warn = console.warn;
+    console.warn = (...args: unknown[]) => void warnings.push(args.map(String).join(" "));
+    try {
+      await saveProjectAsSlp(labels, "format3_unlabeled.slp");
+    } finally {
+      console.warn = warn;
+    }
+    expect(warnings).toEqual([]);
+    expect(savedFiles.has(FIXTURE)).toBe(true);
+    const bytes = savedFiles.get(FIXTURE)!;
     const back = await sio.loadSlp(bytes, { openVideos: false });
     expect(sourceFormatOf(back)).toBeNull(); // a 2.x file: no question
     const [savedInst] = userInstances(back, 0);
@@ -162,9 +184,8 @@ describe.skipIf(!HAS_FORMAT3)("format 3.0 opened for editing", () => {
     expect(isUnlabeledPoint(savedInst.points[TAIL])).toBe(false);
     const [savedHidden] = userInstances(back, 5);
     expect(savedHidden.points[TAIL].visible).toBe(false);
-    // Saved over its own file: the app clears sourceFormat; later saves still
+    // Saved over its own file: the app cleared sourceFormat; later saves still
     // drop what the 2.x layout can't store, without asking again.
-    markSavedInLegacyLayout(labels);
     expect(sourceFormatOf(labels)).toBeNull();
     await sio.saveSlpToBytes(labels, withLegacyLayout());
     expect(toastError).not.toHaveBeenCalled();

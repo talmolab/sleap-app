@@ -16,11 +16,12 @@ vi.mock("@/lib/notify", () => ({
 import { Instance, LabeledFrame, Labels, Skeleton, Video } from "@talmolab/sleap-io.js";
 import { confirmUnlabeledAsHidden, countUnlabeledNodes } from "@/lib/slpAccess";
 import { useConfirmStore, type ConfirmRequest } from "@/stores/confirmStore";
+import { useSlpFormatStore, type SlpFormatPrompt } from "@/stores/slpFormatStore";
 import { useAppStore } from "@/stores/appStore";
 import { useInferenceStore } from "@/stores/inferenceStore";
 import { useTrainingStore } from "@/stores/trainingStore";
 
-/** A one-frame project; `unlabeled` nodes of its instance are not labelled. */
+/** A one-frame project; `unlabeled` nodes of its instance are not labeled. */
 function project(unlabeled: number): Labels {
   const skeleton = new Skeleton({ nodes: ["a", "b", "c"] });
   const video = new Video({ filename: "v.mp4" });
@@ -58,7 +59,7 @@ beforeEach(() => {
   useConfirmStore.setState({ request: null });
 });
 
-describe("nodes not labelled, before a job", () => {
+describe("nodes not labeled, before a job", () => {
   it("counts them", () => {
     expect(countUnlabeledNodes(project(2))).toBe(2);
     expect(countUnlabeledNodes(project(0))).toBe(0);
@@ -69,7 +70,7 @@ describe("nodes not labelled, before a job", () => {
     const seen = answerNextConfirm(true);
     expect(await confirmUnlabeledAsHidden(project(2), "training")).toBe(true);
     expect(seen).toHaveLength(1);
-    expect(seen[0].message).toContain("2 nodes marked as not labelled");
+    expect(seen[0].message).toContain("2 nodes marked as not labeled");
     expect(seen[0].message).toContain("trains on them as hidden nodes");
     expect(seen[0].confirmLabel).toBe("Continue");
     expect(seen[0].cancelLabel).toBe("Cancel");
@@ -84,7 +85,7 @@ describe("nodes not labelled, before a job", () => {
   });
 
   it("Cancel stops a local inference run before it starts", async () => {
-    useAppStore.getState().setLabels(project(1), "x.slp");
+    useAppStore.getState().setLabels(project(1), "x.slp", "/data/x.slp");
     const seen = answerNextConfirm(false);
     await useInferenceStore.getState().startInference({} as never);
     expect(seen).toHaveLength(1);
@@ -93,12 +94,71 @@ describe("nodes not labelled, before a job", () => {
   });
 
   it("Cancel stops a training run before it starts", async () => {
-    useAppStore.getState().setLabels(project(1), "x.slp");
+    useAppStore.getState().setLabels(project(1), "x.slp", "/data/x.slp");
     const before = useTrainingStore.getState().status;
     const seen = answerNextConfirm(false);
     await useTrainingStore.getState().startTraining();
     expect(seen).toHaveLength(1);
     expect(seen[0].message).toContain("training job");
+    expect(useTrainingStore.getState().status).toBe(before);
+  });
+});
+
+/** The project `project(n)` opened View only from a format 3.0 file. */
+function viewOnlyProject(unlabeled: number): Labels {
+  const labels = project(unlabeled);
+  (labels as unknown as { sourceFormat: unknown }).sourceFormat = {
+    formatId: 3,
+    access: "view",
+    summary: {
+      formatId: 3, unlabeledPoints: unlabeled, unlabeledUserPoints: unlabeled, unlabeledPredictedPoints: 0,
+      metadataKeys: { instances: [], frames: [], bboxes: [] }, unknownColumns: [], lossless: unlabeled === 0,
+    },
+    labelsPath: "/data/x.slp",
+  };
+  return labels;
+}
+
+/** Answer the next SLP format prompt with Cancel; returns the prompts seen. */
+function cancelNextFormatPrompt(): SlpFormatPrompt[] {
+  const seen: SlpFormatPrompt[] = [];
+  const unsub = useSlpFormatStore.subscribe((s) => {
+    if (!s.prompt) return;
+    seen.push(s.prompt);
+    unsub();
+    queueMicrotask(() => useSlpFormatStore.getState().respond(null));
+  });
+  return seen;
+}
+
+describe("a job on a project opened View only", () => {
+  beforeEach(() => useSlpFormatStore.setState({ prompt: null }));
+
+  it("inference asks to allow editing first (its predictions come back); Cancel stops it", async () => {
+    useAppStore.getState().setLabels(viewOnlyProject(0), "x.slp", "/data/x.slp");
+    const seen = cancelNextFormatPrompt();
+    await useInferenceStore.getState().startInference({} as never);
+    expect(seen).toEqual([expect.objectContaining({ kind: "allow-edit", action: "add predictions to it" })]);
+    expect(useInferenceStore.getState().status).toBe("idle");
+  });
+
+  it("remote inference asks too", async () => {
+    useAppStore.getState().setLabels(viewOnlyProject(0), "x.slp", "/data/x.slp");
+    const seen = cancelNextFormatPrompt();
+    await useInferenceStore
+      .getState()
+      .startInference({} as never, { remote: true, dataPath: "/w/x.slp", workerId: "w" });
+    expect(seen).toHaveLength(1);
+    expect(useInferenceStore.getState().status).toBe("idle");
+  });
+
+  it("training asks to allow editing first; Cancel stops it", async () => {
+    useAppStore.getState().setLabels(viewOnlyProject(1), "x.slp", "/data/x.slp");
+    const before = useTrainingStore.getState().status;
+    const seen = cancelNextFormatPrompt();
+    await useTrainingStore.getState().startTraining();
+    expect(seen).toEqual([expect.objectContaining({ kind: "allow-edit", action: "train on it" })]);
+    expect(useConfirmStore.getState().request).toBeNull(); // never got to the hidden-nodes warning
     expect(useTrainingStore.getState().status).toBe(before);
   });
 });

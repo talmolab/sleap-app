@@ -27,7 +27,7 @@ import {
   markPointLabeled,
   markSavedInLegacyLayout,
   metadataOf,
-  setEditableInPlace,
+  setSourceAccess,
   withFormat3,
   withLegacyLayout,
   type Format3Summary,
@@ -169,9 +169,11 @@ describe("points and metadata (shim)", () => {
 describe("dialog text", () => {
   it("lists what saving in the 2.x layout drops", () => {
     const drops = describeFormat3Drops(SUMMARY);
-    expect(drops[0]).toContain("3 nodes marked as not labelled");
+    expect(drops[0]).toContain("3 nodes marked as not labeled");
     expect(drops[0]).toContain("2 in user instances, 1 in predictions");
     expect(drops[0]).toContain("hidden nodes with no position");
+    const one = describeFormat3Drops({ ...SUMMARY, unlabeledPoints: 1, unlabeledUserPoints: 1, unlabeledPredictedPoints: 0 });
+    expect(one[0]).toContain("1 node marked as not labeled (1 in user instances): saved as a hidden node");
     expect(drops).toContain("Instance metadata: annotator");
     expect(drops).toContain("Frame metadata: note");
     expect(drops.some((d) => d.includes("points/extra"))).toBe(true);
@@ -313,11 +315,12 @@ describe("View only projects", () => {
     expect(isViewOnlyLabels(viewed)).toBe(true);
   });
 
-  it("setEditableInPlace changes the shared sourceFormat object", () => {
+  it("setSourceAccess switches the labels' access without mutating the old source format", () => {
     const labels = viewOnlyLabels();
     const sf = (labels as unknown as { sourceFormat: SlpSourceFormat }).sourceFormat;
-    setEditableInPlace(labels);
-    expect(sf.access).toBe("edit");
+    setSourceAccess(labels, "edit");
+    expect(isViewOnlyLabels(labels)).toBe(false);
+    expect(sf.access).toBe("view"); // sleap-io.js freezes these: never mutated
   });
 
   it("commands refuse to edit it, and say how to allow editing", async () => {
@@ -336,7 +339,7 @@ describe("View only projects", () => {
     expect(toastInfo).toHaveBeenCalledTimes(1);
     expect(String((toastInfo.mock.calls[0] as unknown[])[0])).toContain("View only");
 
-    setEditableInPlace(labels);
+    setSourceAccess(labels, "edit");
     expect(refuseEditIfViewOnly()).toBe(false);
     await ctx.execute(SetPointLocation, { nodeIdx: 0, x: 50, y: 60 });
     expect(inst.points[0].xy).toEqual([50, 60]);
