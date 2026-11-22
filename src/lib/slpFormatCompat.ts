@@ -18,9 +18,16 @@
  * `labels.sourceFormat` directly, call `setSourceAccess` and `copySourceMark`
  * directly, and pass `format3` / `unlabeledAs` to the readers and writers
  * without the casts below.
+ *
+ * It also holds the embedded frame format of the package exports
+ * (`imageFormat` / `imageQuality`, sleap-io.js after 0.6.0, not yet published):
+ * {@link canWriteJpegFrames} and {@link withImageFormat}. With the bump to a
+ * release that has them, JPEG is always available and the writers take the
+ * two options without the cast.
  */
 import * as sio from "@talmolab/sleap-io.js";
 import type { Labels } from "@talmolab/sleap-io.js";
+import type { PackageImageOptions } from "@/lib/packageImageFormat";
 
 /**
  * The record-mark helpers of sleap-io.js 0.6.0, absent on the old pin. Read
@@ -149,6 +156,58 @@ export function withFormat3<T>(options: T, access: Format3Access | undefined): T
  */
 export function withLegacyLayout<T extends object = Record<never, never>>(options?: T): T {
   return { ...(options ?? {}), unlabeledAs: "absent" } as T;
+}
+
+// ---------------------------------------------------------------------------
+// Embedded frame format (`imageFormat` / `imageQuality`)
+// ---------------------------------------------------------------------------
+
+/**
+ * True when the installed sleap-io.js can store embedded frames as JPEG: its
+ * writers then take `imageFormat` / `imageQuality`, and it exports
+ * `EMBED_IMAGE_FORMATS`, which lists "jpg". Read as a static member access
+ * (see {@link MarkApi}); against the old pin it is undefined, and `vite
+ * build` warns that it is not exported. The dialogs disable JPEG, with the
+ * reason, when this is false.
+ */
+export function canWriteJpegFrames(): boolean {
+  if (jpegFramesOverride !== null) return jpegFramesOverride;
+  const formats = (sio as unknown as { EMBED_IMAGE_FORMATS?: readonly string[] })
+    .EMBED_IMAGE_FORMATS;
+  return Array.isArray(formats) && formats.includes("jpg");
+}
+
+let jpegFramesOverride: boolean | null = null;
+
+/**
+ * Test-only: answer {@link canWriteJpegFrames} with `value` instead of
+ * asking the installed sleap-io.js (null asks it again), so both answers are
+ * tested against either pin.
+ */
+export function __setJpegFramesSupported(value: boolean | null): void {
+  jpegFramesOverride = value;
+}
+
+/** Why JPEG can't be chosen, for the dialogs (only when it can't). */
+export const JPEG_FRAMES_UNAVAILABLE =
+  "This version of the app stores package frames as PNG only.";
+
+/**
+ * Writer (and streaming plan) options with the package's frame format. PNG
+ * (or no choice) adds nothing, so the export writes exactly what it wrote
+ * before the choice existed: new frames as PNG, already-embedded images
+ * copied as they are. JPEG adds `imageFormat: "jpg"` and `imageQuality`,
+ * which also converts already-embedded images stored in another format.
+ * Throws when JPEG is asked of a sleap-io.js that can't write it, rather than
+ * silently writing PNG. The cast is only for the old pin's option types.
+ */
+export function withImageFormat<T extends object>(
+  options: T,
+  image: PackageImageOptions | null | undefined,
+): T {
+  if (!image || image.format !== "jpg") return options;
+  if (!canWriteJpegFrames()) throw new Error(JPEG_FRAMES_UNAVAILABLE);
+  return { ...options, imageFormat: "jpg", imageQuality: image.quality } as T;
 }
 
 // ---------------------------------------------------------------------------

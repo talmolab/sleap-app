@@ -44,6 +44,7 @@ import { toastExported } from "@/lib/exportToast";
 import { useAppStore } from "@/stores/appStore";
 import { withLegacyLayout } from "@/lib/slpFormatCompat";
 import { ensureWritable } from "@/lib/slpAccess";
+import type { PackageImageOptions } from "@/lib/packageImageFormat";
 
 /** Options from the Extract Clip dialog. */
 export interface ExtractClipParams {
@@ -51,6 +52,11 @@ export interface ExtractClipParams {
   fps?: number;
   /** Open the new project in a new window when done (default true, as PyQt). */
   openWhenDone?: boolean;
+  /**
+   * Extract Clip Labels Package: the frame format (default PNG, written
+   * exactly as before the option).
+   */
+  image?: PackageImageOptions;
 }
 
 /**
@@ -315,7 +321,10 @@ export const ExtractClipLabelsPackageCommand: Command = {
       labelsForRange(labels, video, range),
       ctx.state.filename,
       "full",
-      { suggestedName: extractFilename(ctx.state.filename, range, "pkg.slp") }
+      {
+        suggestedName: extractFilename(ctx.state.filename, range, "pkg.slp"),
+        image: params?.image,
+      }
     );
     if (saved && params?.openWhenDone !== false && (await getPlatform()).isTauri) {
       await openNewInstance({ file: saved });

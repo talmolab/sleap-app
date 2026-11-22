@@ -9,12 +9,14 @@ import { describe, it, expect, beforeEach, vi } from "../bun-test";
 class ExportCancelled extends Error {}
 
 const calls: string[] = [];
+const structureOpts: object[] = [];
 let appendImpl: (opts: { onProgress?: (c: number, t: number) => unknown }) => Promise<void>;
 let encodeEntries: unknown[];
 
 vi.mock("@talmolab/sleap-io.js", () => ({
   saveSlpStructureToBytes: async (_l: unknown, opts: { embed: unknown }) => {
     calls.push(`structure(${JSON.stringify(opts.embed)})`);
+    structureOpts.push(opts);
     return new Uint8Array([1, 2, 3]);
   },
   buildSerializableEmbedPlan: async (_l: unknown, embed: unknown, _s: string, opts: object) => {
@@ -112,10 +114,12 @@ function destHandle(initial = new Uint8Array(0)) {
 }
 
 const { exportNewPkgOpfs } = await import("@/lib/saveEmbeddedPkgOpfs");
+const { __setJpegFramesSupported } = await import("@/lib/slpFormatCompat");
 const labels = {} as never;
 
 beforeEach(() => {
   calls.length = 0;
+  structureOpts.length = 0;
   opfsFiles.clear();
   encodeEntries = [{ videoIndex: 0, frameNumbers: [0, 5] }];
   appendImpl = async () => {};
@@ -146,6 +150,30 @@ describe("exportNewPkgOpfs", () => {
     expect(progress).toEqual([1, 2]);
     expect(dest.bytes).toEqual(new Uint8Array([1, 2, 3]));
     expect(opfsFiles.size).toBe(0);
+  });
+
+  it("writes the structure and plans the frames in the chosen format (JPEG); PNG adds nothing", async () => {
+    __setJpegFramesSupported(true);
+    try {
+      await exportNewPkgOpfs(labels, destHandle() as never, {
+        embed: "user",
+        image: { format: "jpg", quality: 70 },
+      });
+      await exportNewPkgOpfs(labels, destHandle() as never, {
+        embed: "user",
+        image: { format: "png", quality: 70 },
+      });
+    } finally {
+      __setJpegFramesSupported(null);
+    }
+    expect(structureOpts).toEqual([
+      { embed: "user", imageFormat: "jpg", imageQuality: 70, unlabeledAs: "absent" },
+      { embed: "user", unlabeledAs: "absent" },
+    ]);
+    expect(calls.filter((c) => c.startsWith("plan"))).toEqual([
+      'plan("user",{"allowEncode":true,"imageFormat":"jpg","imageQuality":70})',
+      'plan("user",{"allowEncode":true})',
+    ]);
   });
 
   it("publishes the structure alone when no video has frames to embed", async () => {

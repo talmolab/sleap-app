@@ -33,8 +33,8 @@
  * Desktop exports of continuous (e.g. `.mp4`) videos follow PyQt: the Save
  * dialog comes first, then the package is written straight to that file by
  * {@link saveEmbeddedPkgStreaming}. Frames are read here (an mp4 decodes in its
- * own worker) and PNG-encoded + appended by the h5 writer's worker, so the
- * window stays responsive and only a few frames are in memory at a time.
+ * own worker) and encoded (PNG or JPEG) + appended by the h5 writer's worker,
+ * so the window stays responsive and only a few frames are in memory at a time.
  * The browser does the same where it can (Chromium): the Save picker first,
  * then the package is built in an OPFS file by the writer's worker and streamed
  * into the picked file ({@link exportNewPkgOpfs}, the path Save As of a large
@@ -44,6 +44,14 @@
  * fires ONLY when the WRITTEN package genuinely left frames unembedded (see
  * {@link packageLeavesFramesUnembedded}). Both paths show progress with Cancel
  * (io's `onProgress` returning `false` → `ExportCancelled`; nothing is written).
+ *
+ * ── FRAME FORMAT ──────────────────────────────────────────────────────────────
+ * Frames are embedded as PNG unless the export dialog chose JPEG (`image`,
+ * see `packageImageFormat.ts`), which every write path passes to io as
+ * `imageFormat: "jpg"` / `imageQuality` (`withImageFormat`). PNG passes no
+ * option at all, so a PNG export writes exactly what it always did. On
+ * desktop, ffmpeg then extracts a colour video's frames as JPEGs at that
+ * quality (`extractFrames.ts`), which io stores as they are.
  *
  * ── SUGGESTION IMAGES on `full` (follow-up, io-gated) ────────────────────────
  * PyQt's Level 3 is `all_labeled=T, suggested=T` → the ideal embed mode is
@@ -74,7 +82,8 @@ import {
 import { toastExported } from "@/lib/exportToast";
 import { getPlatform } from "../platform/index";
 import { useAppStore } from "@/stores/appStore";
-import { withLegacyLayout } from "@/lib/slpFormatCompat";
+import { withImageFormat, withLegacyLayout } from "@/lib/slpFormatCompat";
+import type { PackageImageOptions } from "@/lib/packageImageFormat";
 import { ensureWritable } from "@/lib/slpAccess";
 
 /** The three PyQt package levels. */
@@ -236,6 +245,28 @@ export function frameCountForLevel(labels: Labels, level: ExportPackageLevel): n
   }
 }
 
+/**
+ * The desktop frame reader for a package: ffmpeg extracts each local video's
+ * frames, as PNGs, or as JPEGs at the chosen quality for a JPEG package.
+ */
+function ffmpegFrameReader(image: PackageImageOptions | undefined) {
+  const extractDeps = createTauriExtractFramesDeps();
+  return (video: Video, frames: readonly number[]) =>
+    createFfmpegFrameReader(video, frames, extractDeps, {
+      format: image?.format,
+      quality: image?.quality,
+    });
+}
+
+/** The `image` param of the package commands (set by the export dialogs). */
+export function packageImageParam(
+  params: Record<string, unknown> | undefined
+): PackageImageOptions | undefined {
+  const image = params?.image as Partial<PackageImageOptions> | undefined;
+  if (!image || (image.format !== "png" && image.format !== "jpg")) return undefined;
+  return { format: image.format, quality: Number(image.quality) };
+}
+
 /** Is the streaming desktop write (worker + native file writes) available? */
 export async function canStreamPackage(): Promise<boolean> {
   return (
@@ -301,7 +332,7 @@ export function warnUnembedded(): void {
  * Export a labels package (embedded-image `.pkg.slp`).
  *
  * Desktop, as PyQt SLEAP: ask where to save first, then write the package
- * straight to that file — the frames are read here and PNG-encoded + written
+ * straight to that file — the frames are read here and encoded + written
  * by a worker ({@link saveEmbeddedPkgStreaming}), so the window stays
  * responsive and only a few frames are in memory at a time, with progress and
  * Cancel. Projects whose videos are already embedded (a `.pkg.slp`), and the
@@ -318,6 +349,8 @@ export async function exportLabelsPackage(
   options: {
     /** Default file name in the Save dialog (default: `<project>.pkg.slp`). */
     suggestedName?: string;
+    /** Frame format (default PNG, written exactly as before the option). */
+    image?: PackageImageOptions;
   } = {}
 ): Promise<string | null> {
   if (!labels) return null;
@@ -355,44 +388,53 @@ export async function withExportLock<T>(work: () => Promise<T | null>): Promise<
  * with no Save dialog — the streaming write when the source videos are
  * continuous, else built in memory and written. Used by the training job
  * package export, which writes the package to a temp file before zipping it.
- * Call inside {@link withEmbedProgress} (pass its `onProgress`).
+ * Call inside {@link withEmbedProgress} (pass its `onProgress`). `image` is
+ * the frame format (default PNG, as before).
  * Returns true when a video's frames could not be embedded.
  */
 export async function writeLabelsPackageToPath(
   labels: Labels,
   level: ExportPackageLevel,
   destPath: string,
-  onProgress: (current: number, total: number, message?: string) => boolean
+  onProgress: (current: number, total: number, message?: string) => boolean,
+  image?: PackageImageOptions
 ): Promise<boolean> {
   const mode = embedModeForLevel(level);
   const exportLabels = labelsForLevel(labels, level);
   const embedVideos = videosToEmbed(exportLabels, level);
   await prepareVideosForFrameReads(embedVideos);
   if ((await canStreamPackage()) && !exportLabels.videos.some((v) => v.hasEmbeddedImages)) {
-    const extractDeps = createTauriExtractFramesDeps();
     await saveEmbeddedPkgStreaming(exportLabels, destPath, null, {
       embed: mode,
       onProgress,
-      frameReader: (video, frames) => createFfmpegFrameReader(video, frames, extractDeps),
+      frameReader: ffmpegFrameReader(image),
+      image,
     });
     return embedVideos.some((v) => !v.backend);
   }
-  const bytes = await saveSlpToBytes(exportLabels, withLegacyLayout({ embed: mode, onProgress }));
+  const bytes = await saveSlpToBytes(
+    exportLabels,
+    withLegacyLayout(withImageFormat({ embed: mode, onProgress }, image))
+  );
   await (await getPlatform()).writeFile(destPath, bytes);
   return packageLeavesFramesUnembedded(labels, bytes).catch(() => false);
 }
 
-/** Build a package of `labels` at `level` in memory (browser path of the training job package). */
+/**
+ * Build a package of `labels` at `level` in memory (browser path of the
+ * training job package). `image` is the frame format (default PNG).
+ */
 export async function labelsPackageBytes(
   labels: Labels,
   level: ExportPackageLevel,
-  onProgress: (current: number, total: number, message?: string) => boolean
+  onProgress: (current: number, total: number, message?: string) => boolean,
+  image?: PackageImageOptions
 ): Promise<Uint8Array> {
   const exportLabels = labelsForLevel(labels, level);
   await prepareVideosForFrameReads(videosToEmbed(exportLabels, level));
   return saveSlpToBytes(
     exportLabels,
-    withLegacyLayout({ embed: embedModeForLevel(level), onProgress })
+    withLegacyLayout(withImageFormat({ embed: embedModeForLevel(level), onProgress }, image))
   );
 }
 
@@ -400,10 +442,11 @@ async function exportLabelsPackageNow(
   labels: Labels,
   filename: string | null,
   level: ExportPackageLevel,
-  options: { suggestedName?: string }
+  options: { suggestedName?: string; image?: PackageImageOptions }
 ): Promise<string | null> {
 
   const mode = embedModeForLevel(level);
+  const image = options.image;
   const suggestedName = options.suggestedName ?? derivePackageFilename(filename);
   const filter = { name: "SLEAP Labels Package", ext: "slp" };
   try {
@@ -432,11 +475,11 @@ async function exportLabelsPackageNow(
         await prepareVideosForFrameReads(embedVideos);
         // Frames of local video files come from ffmpeg (native, all cores);
         // anything ffmpeg can't read is decoded and encoded in the app.
-        const extractDeps = createTauriExtractFramesDeps();
         await saveEmbeddedPkgStreaming(exportLabels, destPath, null, {
           embed: mode,
           onProgress,
-          frameReader: (video, frames) => createFfmpegFrameReader(video, frames, extractDeps),
+          frameReader: ffmpegFrameReader(image),
+          image,
         });
         // A video with no open decoder can't be embedded and stays a link.
         return embedVideos.some((v) => !v.backend);
@@ -463,7 +506,7 @@ async function exportLabelsPackageNow(
       }
       const unembedded = await withEmbedProgress(false, async (onProgress) => {
         await prepareVideosForFrameReads(embedVideos);
-        await exportNewPkgOpfs(exportLabels, destHandle, { embed: mode, onProgress });
+        await exportNewPkgOpfs(exportLabels, destHandle, { embed: mode, onProgress, image });
         return embedVideos.some((v) => !v.backend);
       });
       toastExported("Labels package exported", destHandle.name, false);
@@ -476,7 +519,10 @@ async function exportLabelsPackageNow(
     // save.
     const bytes = await withEmbedProgress(true, async (onProgress) => {
       await prepareVideosForFrameReads(embedVideos);
-      return saveSlpToBytes(exportLabels, withLegacyLayout({ embed: mode, onProgress }));
+      return saveSlpToBytes(
+        exportLabels,
+        withLegacyLayout(withImageFormat({ embed: mode, onProgress }, image))
+      );
     });
     const saved = await saveBytesFile(bytes, suggestedName, filter);
     if (!saved) return null; // user cancelled the dialog/picker
@@ -514,8 +560,10 @@ async function exportLabelsPackageNow(
 export const ExportUserLabelsPackageCommand: Command = {
   name: "ExportUserLabelsPackage",
   topics: [],
-  async execute(ctx: CommandContext) {
-    await exportLabelsPackage(ctx.state.labels, ctx.state.filename, "user");
+  async execute(ctx: CommandContext, params?: Record<string, unknown>) {
+    await exportLabelsPackage(ctx.state.labels, ctx.state.filename, "user", {
+      image: packageImageParam(params),
+    });
   },
 };
 
@@ -523,8 +571,10 @@ export const ExportUserLabelsPackageCommand: Command = {
 export const ExportTrainingPackageCommand: Command = {
   name: "ExportTrainingPackage",
   topics: [],
-  async execute(ctx: CommandContext) {
-    await exportLabelsPackage(ctx.state.labels, ctx.state.filename, "training");
+  async execute(ctx: CommandContext, params?: Record<string, unknown>) {
+    await exportLabelsPackage(ctx.state.labels, ctx.state.filename, "training", {
+      image: packageImageParam(params),
+    });
   },
 };
 
@@ -532,7 +582,9 @@ export const ExportTrainingPackageCommand: Command = {
 export const ExportFullPackageCommand: Command = {
   name: "ExportFullPackage",
   topics: [],
-  async execute(ctx: CommandContext) {
-    await exportLabelsPackage(ctx.state.labels, ctx.state.filename, "full");
+  async execute(ctx: CommandContext, params?: Record<string, unknown>) {
+    await exportLabelsPackage(ctx.state.labels, ctx.state.filename, "full", {
+      image: packageImageParam(params),
+    });
   },
 };

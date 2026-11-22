@@ -20,7 +20,12 @@ import {
 const written = new Map<string, Uint8Array>();
 let saveDialogResult: string | null = "/out/sub.slp";
 const opened: string[] = [];
-const packageCalls: Array<{ labels: Labels; level: string; suggestedName?: string }> = [];
+const packageCalls: Array<{
+  labels: Labels;
+  level: string;
+  suggestedName?: string;
+  image?: unknown;
+}> = [];
 let packageResult: string | null = "/out/sub.pkg.slp";
 const encodedFrames: number[] = [];
 
@@ -41,9 +46,14 @@ vi.mock("@/commands/exportPackageCommands", () => ({
     labels: Labels,
     _filename: string | null,
     level: string,
-    options: { suggestedName?: string }
+    options: { suggestedName?: string; image?: unknown }
   ) => {
-    packageCalls.push({ labels, level, suggestedName: options?.suggestedName });
+    packageCalls.push({
+      labels,
+      level,
+      suggestedName: options?.suggestedName,
+      image: options?.image,
+    });
     return packageResult;
   },
 }));
@@ -263,6 +273,14 @@ describe("Extract Clip Labels Package", () => {
     });
     expect(packageCalls.length).toBe(2);
     expect(opened).toEqual([]);
+  });
+
+  it("passes on the frame format chosen in the dialog (none: PNG, as before)", async () => {
+    const { labels, video } = project();
+    await ExtractClipLabelsPackageCommand.execute(ctx(labels, video, [10, 40]));
+    const image = { format: "jpg", quality: 85 };
+    await ExtractClipLabelsPackageCommand.execute(ctx(labels, video, [10, 40]), { image });
+    expect(packageCalls.map((c) => c.image)).toEqual([undefined, image]);
   });
 
   it("needs a selected range, as PyQt", async () => {

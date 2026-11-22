@@ -61,7 +61,8 @@ import {
   removeFile,
 } from "./nativeWrite";
 import { fileSize, readRange } from "./nativeRange";
-import { withLegacyLayout } from "@/lib/slpFormatCompat";
+import { withImageFormat, withLegacyLayout } from "@/lib/slpFormatCompat";
+import type { PackageImageOptions } from "@/lib/packageImageFormat";
 
 // Same derivation as loadProject.ts / writeBridgeSpike.ts: h5wasm must be served
 // same-origin so the streaming Worker can load it under cross-origin isolation
@@ -80,9 +81,14 @@ export interface SaveEmbeddedPkgStreamingOptions {
    * (throws io's `ExportCancelled`, after removing the partial file). */
   onProgress?: SlpWriteOptions["onProgress"];
   /** Supplies a new embed's frames from outside the app's decoders (desktop:
-   * ffmpeg-extracted PNGs, see `extractFrames.ts`); as io's
-   * `appendEncodedVideos` option. */
+   * ffmpeg-extracted PNGs, or JPEGs for a JPEG package, see
+   * `extractFrames.ts`); as io's `appendEncodedVideos` option. */
   frameReader?: AppendEncodedVideosOptions["frameReader"];
+  /** The package's frame format (Export Labels Package). Absent or PNG:
+   * written exactly as before. JPEG: new frames are stored as JPEG at its
+   * quality (io's `imageFormat` / `imageQuality`), passed to both the
+   * structure write and the plan so the two agree. */
+  image?: PackageImageOptions;
 }
 
 /** Fresh, collision-resistant random suffix for a temp file name. */
@@ -340,7 +346,10 @@ async function saveEmbeddedPkgStreamingNow(
       // 1+2. Main-thread structure write: labels graph + videos_json ONLY, no
       // embedded image data. Small (KB-MB), so writing it whole to a byte
       // buffer first (rather than streaming) is fine.
-      const structureBytes = await saveSlpStructureToBytes(labels, withLegacyLayout({ embed: embedMode }));
+      const structureBytes = await saveSlpStructureToBytes(
+        labels,
+        withLegacyLayout(withImageFormat({ embed: embedMode }, options?.image))
+      );
       await writeOpen(stagePath);
       stageCreated = true;
       await writeAt(0, structureBytes);
@@ -353,9 +362,12 @@ async function saveEmbeddedPkgStreamingNow(
       // Use the SAME embedMode for the plan as for the structure write, so
       // videos_json (which claims which videos are embedded) and the actually
       // appended datasets agree.
-      const plan = await buildSerializableEmbedPlan(labels, embedMode, sourcePath ?? "", {
-        allowEncode: true,
-      });
+      const plan = await buildSerializableEmbedPlan(
+        labels,
+        embedMode,
+        sourcePath ?? "",
+        withImageFormat({ allowEncode: true }, options?.image)
+      );
 
       if (plan.entries.length === 0 && plan.encodeEntries.length === 0) {
         // Nothing to append — the structure IS the whole file.
