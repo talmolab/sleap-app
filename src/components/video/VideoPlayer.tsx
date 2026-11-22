@@ -149,6 +149,7 @@ import { spawnOverlayServe, killOverlayServe, detectGpu } from "@/platform/backe
 import { Film, Frame, Hand, ImageOff, MousePointer2, SquareDashed, Tag, ZoomIn } from "lucide-react";
 import { renderProposalGhosts } from "@/canvas/proposalGhost";
 import { useProposalGhosts } from "@/hooks/useProposalGhosts";
+import { refuseEditIfViewOnly } from "@/lib/slpAccess";
 import { isUnlabeledPoint, markPointLabeled } from "@/lib/slpFormatCompat";
 
 /**
@@ -178,6 +179,7 @@ export function placeQcReviewNode(x: number, y: number): void {
   const targetIdx = store.placementNodeIdx;
   if (store.labelingMode !== "place" || !inst || "score" in inst) return;
   if (targetIdx === null || targetIdx < 0 || targetIdx >= inst.points.length) return;
+  if (refuseEditIfViewOnly()) return;
   commandContext.execute(BeginEdit);
   // Click is in crop-local image space; store back in source coords.
   inst.points[targetIdx].xy = toSourceCoords(store.video, x, y);
@@ -790,6 +792,7 @@ export function VideoPlayer() {
       if (instancesToDelete.length === 0) return;
 
       e.preventDefault();
+      if (refuseEditIfViewOnly()) return;
       commandContext.execute(BeginEdit);
 
       instancesToDelete.sort((a, b) => b - a);
@@ -2801,6 +2804,7 @@ export function VideoPlayer() {
             setPanStart({ x: e.clientX - panX, y: e.clientY - panY });
             return;
           }
+          if (refuseEditIfViewOnly()) return;
           commandContext.execute(BeginEdit);
           // Click is in crop-local image space; store back in source coords.
           currentInstance.points[targetIdx].xy = toSourceCoords(
@@ -2851,6 +2855,8 @@ export function VideoPlayer() {
       // fall through to their normal hit-handling.
       const tryBeginDuplicateDrag = (hitInstanceIdx: number): boolean => {
         if (!e.ctrlKey || instances[hitInstanceIdx]?.isPredicted) return false;
+        // View only: no clone; fall through to plain selection.
+        if (refuseEditIfViewOnly()) return false;
         const lf = useAppStore.getState().labeledFrame;
         const sourceInstance = lf?.instances[hitInstanceIdx];
         if (!lf || !sourceInstance) return false;
@@ -2943,9 +2949,10 @@ export function VideoPlayer() {
 
         if (lf) useAppStore.getState().setInstance(lf.instances[nodeHit.instanceIdx]);
 
-        // Start dragging if it's a user instance
+        // Start dragging if it's a user instance (never in a View only
+        // project: the node is selected, nothing moves).
         const inst = instances[nodeHit.instanceIdx];
-        if (!inst.isPredicted) {
+        if (!inst.isPredicted && !refuseEditIfViewOnly()) {
           commandContext.execute(BeginEdit);
           // Clicking a node marks it "complete" (confirmed by the user), same
           // as PyQt SLEAP's QtNode.mousePressEvent -- turns its label green.
@@ -3534,6 +3541,8 @@ export function VideoPlayer() {
       if (e.altKey) {
         const currentInstance = useAppStore.getState().instance;
         if (currentInstance && !("score" in currentInstance)) {
+          // View only: nothing rotates.
+          if (refuseEditIfViewOnly()) return;
           // Take undo snapshot on first rotation tick of a gesture
           if (!rotationSnapshotTaken.current) {
             commandContext.execute(BeginEdit);

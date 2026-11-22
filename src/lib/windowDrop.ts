@@ -23,6 +23,7 @@ import {
   SUPPORTED_VIDEO_EXTS,
   type PickedVideoFile,
 } from "@/lib/resolveVideos";
+import { refuseEditIfViewOnly } from "@/lib/slpAccess";
 
 /** Last path segment (handles both `/` and `\`). */
 function basename(p: string): string {
@@ -42,6 +43,8 @@ export async function addVideosToProject(picked: PickedVideoFile[]): Promise<num
   const st = useAppStore.getState();
   const labels = st.labels;
   if (!labels) return 0;
+  // A project opened View only gets no new videos.
+  if (refuseEditIfViewOnly()) return 0;
   const added = [];
   for (const pv of picked) {
     const video = await addVideoFileToLabels(labels, pv);

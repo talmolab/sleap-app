@@ -14,6 +14,7 @@ import type { UnlistenFn } from "@tauri-apps/api/event";
 import { formatRunTimestamp as formatPredictionsTimestamp } from "@/lib/timestamp";
 import { buildTrainingArgs } from "./trainingArgs";
 import { buildExportArgs, type BuildExportArgsOptions } from "./exportArgs";
+import { withLegacyLayout } from "@/lib/slpFormatCompat";
 
 function sampleRandomFrames(totalFrames: number, count: number): number[] {
   const n = Math.min(count, totalFrames);
@@ -523,7 +524,7 @@ export async function runInference(
     if (!labels) throw new Error("No project loaded");
     dataPath = await join(tmp, `sleap_inference_input_${ts}.slp`);
     console.log("[inference] Serializing project to temp file:", dataPath);
-    const bytes = await saveSlpToBytes(labels);
+    const bytes = await saveSlpToBytes(labels, withLegacyLayout());
     await writeFile(dataPath, bytes);
     console.log("[inference] Wrote %d bytes to %s", bytes.byteLength, dataPath);
   }

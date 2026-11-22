@@ -42,6 +42,8 @@ import { openNewInstance } from "@/lib/newInstance";
 import { toast } from "@/lib/notify";
 import { toastExported } from "@/lib/exportToast";
 import { useAppStore } from "@/stores/appStore";
+import { withLegacyLayout } from "@/lib/slpFormatCompat";
+import { ensureWritable } from "@/lib/slpAccess";
 
 /** Options from the Extract Clip dialog. */
 export interface ExtractClipParams {
@@ -222,6 +224,9 @@ export const ExtractClipAndLabelsCommand: Command = {
     const target = await rangeToExtract(ctx);
     if (!target) return;
     const { labels, video, range } = target;
+    // Writes an SLP of the range: not for a project opened View only unless
+    // the user allows editing.
+    if (!(await ensureWritable(labels, "export"))) return;
     const platform = await getPlatform();
 
     // Desktop: one Save dialog for the .slp; the clip goes next to it.
@@ -260,7 +265,10 @@ export const ExtractClipAndLabelsCommand: Command = {
         },
         openBackend: false,
       });
-      const slpBytes = await saveSlpToBytes(labelsForRange(labels, video, range, clipVideo));
+      const slpBytes = await saveSlpToBytes(
+        labelsForRange(labels, video, range, clipVideo),
+        withLegacyLayout(),
+      );
       setLoading(false);
 
       if (platform.isTauri) {
@@ -300,6 +308,9 @@ export const ExtractClipLabelsPackageCommand: Command = {
     const target = await rangeToExtract(ctx);
     if (!target) return;
     const { labels, video, range } = target;
+    // Writes an SLP of the range: not for a project opened View only unless
+    // the user allows editing.
+    if (!(await ensureWritable(labels, "export"))) return;
     const saved = await exportLabelsPackage(
       labelsForRange(labels, video, range),
       ctx.state.filename,

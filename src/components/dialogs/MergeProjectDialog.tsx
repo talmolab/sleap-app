@@ -32,6 +32,7 @@ import {
   type ResolvedConflict,
 } from "../../lib/mergeConflicts";
 import { loadLabelsFromSlpFile, loadLabelsFromSlpPath } from "../../lib/loadProject";
+import { isReportedSlpError, SlpOpenCancelled } from "../../lib/slpAccess";
 import { summarizeMatch, type MatchPreview } from "../../lib/mergeProject";
 import { getPlatform } from "../../platform/index";
 import { ConflictReview } from "./ConflictReview";
@@ -53,6 +54,16 @@ import {
 } from "@/components/ui/tooltip";
 
 const errMsg = (e: unknown) => (e instanceof Error ? e.message : String(e));
+/**
+ * The inline error for a donor that didn't load. A refused file was already
+ * explained in its own dialog, and a cancelled format 3.0 choice is no error.
+ */
+const donorLoadError = (e: unknown) =>
+  e instanceof SlpOpenCancelled
+    ? "Not merged."
+    : isReportedSlpError(e)
+      ? "This file can't be read by this version of SLEAP."
+      : errMsg(e);
 
 /** A file to merge: a path on desktop, a File in the browser. */
 export type MergeSource = string | File;
@@ -140,7 +151,7 @@ export function MergeProjectDialog() {
           setConflicts(found);
         }
       } catch (e) {
-        if (!stale()) setError(errMsg(e));
+        if (!stale()) setError(donorLoadError(e));
       } finally {
         if (!stale()) setBusy(null);
       }

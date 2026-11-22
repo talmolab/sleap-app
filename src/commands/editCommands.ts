@@ -223,6 +223,7 @@ export const DeleteSelectedInstance: Command = {
 export const SetPointLocation: Command = {
   name: "SetPointLocation",
   topics: [], // No redraw topics - canvas handles this directly for drag perf
+  editsWithoutTopics: true,
   execute(ctx: CommandContext, params?: Record<string, unknown>) {
     const { instance } = ctx.state;
     if (!instance) return;
@@ -869,6 +870,7 @@ export const ToggleNodeVisibility: Command = {
 export const MoveInstance: Command = {
   name: "MoveInstance",
   topics: [], // No redraw topics - caller handles re-render
+  editsWithoutTopics: true,
   execute(ctx: CommandContext, params?: Record<string, unknown>) {
     const { instance } = ctx.state;
     if (!instance) return;

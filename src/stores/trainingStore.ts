@@ -2957,6 +2957,10 @@ export const useTrainingStore = create<TrainingState>()((set, get) => ({
               const predictions = await loadSlp(bytes, {
                 openVideos: false,
                 h5: { filenameHint: outputPath },
+                // The training job's own predictions, merged into the project
+                // and never written back: no question for a format 3.0 file
+                // (see inferenceStore's loadAndMergePredictionBytes).
+                format3: "edit",
               });
               console.log("[training] Loaded predictions: %d videos, %d frames, %d tracks",
                 predictions.videos?.length ?? 0,

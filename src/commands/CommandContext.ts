@@ -15,6 +15,7 @@ import { toast } from "@/lib/notify";
 import { humanizeCommandName } from "@/lib/humanizeCommand";
 import { dirtyFrameTracker } from "@/lib/autosaveDirty";
 import { copyMetadata, copyPoint, metadataOf, type RecordMetadata } from "@/lib/slpFormatCompat";
+import { refuseEditIfViewOnly } from "@/lib/slpAccess";
 
 /** Record of an executed command for change tracking. */
 export interface ChangeRecord {
@@ -209,6 +210,12 @@ function applyFrame(lf: LabeledFrame, data: SingleFrameData): void {
 type UpdateListener = (topics: UpdateTopic[]) => void;
 
 const MAX_UNDO_STACK = 100;
+
+/**
+ * Mutating commands that replace the project instead of editing it, which a
+ * View only project does not refuse.
+ */
+const PROJECT_REPLACING_COMMANDS: ReadonlySet<string> = new Set(["NewProject"]);
 
 /** Topics that only move the playhead/camera — never a data edit (#468). */
 const NAVIGATION_TOPICS: ReadonlySet<UpdateTopic> = new Set([
@@ -597,6 +604,17 @@ export class CommandContext {
     params?: Record<string, unknown>,
     options?: { undoLabel?: string }
   ): Promise<void> {
+    // A project opened View only can't be edited: refuse any data change
+    // (the toast offers to allow editing). Opening or starting another
+    // project is not an edit of this one.
+    if (
+      (this.isMutating(command) || command.editsWithoutTopics) &&
+      !PROJECT_REPLACING_COMMANDS.has(command.name) &&
+      refuseEditIfViewOnly()
+    ) {
+      return;
+    }
+
     // Snapshot before mutating commands for undo
     // (commands with skipAutoSnapshot handle their own snapshots)
     let autoSnapshot: UndoSnapshot | null = null;

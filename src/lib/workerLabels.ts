@@ -271,6 +271,11 @@ export async function loadWorkerLabels(
   });
   try {
     return await readSlpStreaming(source, {
+      // Read for statistics only, never edited or written back: an SLP format
+      // 3.0 file opens View only without asking. A file the reader refuses is
+      // reported by the caller (the wizard shows the error).
+      format3: "view",
+      refusal: "throw",
       openVideos: false,
       // Only the labels: never download pred_points, which is most of a
       // predictions file and nothing the wizard uses.

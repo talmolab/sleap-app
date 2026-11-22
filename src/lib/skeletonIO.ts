@@ -127,7 +127,13 @@ export async function parseSkeletonFile(
     }
 
     case "slp": {
-      const labels = await loadSlp(toArrayBuffer(data), { openVideos: false });
+      // Only the skeleton is taken from the file, which is never written back:
+      // an SLP format 3.0 file opens View only without asking.
+      const labels = await loadSlp(toArrayBuffer(data), {
+        openVideos: false,
+        format3: "view",
+        fileName: filename,
+      });
       // A project file with several different skeletons: don't guess which one
       // is meant. Identical duplicates (old files) are one skeleton: use [0].
       const distinct = distinctSkeletonCount(labels);

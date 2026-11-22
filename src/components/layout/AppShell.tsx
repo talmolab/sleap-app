@@ -42,6 +42,8 @@ import { VideoCheckDialog } from "../dialogs/VideoCheckDialog";
 import { useQuickVideoChecks } from "@/hooks/useQuickVideoChecks";
 import { ConfirmDialog } from "../dialogs/ConfirmDialog";
 import { ChoiceDialog } from "../dialogs/ChoiceDialog";
+import { SlpFormatDialog } from "../dialogs/SlpFormatDialog";
+import { ViewOnlyBanner } from "./ViewOnlyBanner";
 import { PromptDialog } from "../dialogs/PromptDialog";
 import { SelectToFrameDialog } from "../dialogs/SelectToFrameDialog";
 import { DeletePredictionsDialog } from "../dialogs/DeletePredictionsDialog";
@@ -287,6 +289,7 @@ export function AppShell() {
             >
               {/* Video player takes remaining space */}
               <div className="flex-1 flex flex-col min-w-0 h-full">
+                <ViewOnlyBanner />
                 <VideoPlayer />
               </div>
 
@@ -347,6 +350,7 @@ export function AppShell() {
       <FrameStepSizesDialog />
       <ConfirmDialog />
       <ChoiceDialog />
+      <SlpFormatDialog />
       <PromptDialog />
       <TranscodeConfirmDialog />
       <TranscodeProgressDialog />

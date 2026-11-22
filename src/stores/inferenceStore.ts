@@ -219,6 +219,11 @@ export async function loadAndMergePredictionBytes(
   const predictions = await loadSlp(bytes, {
     openVideos: false,
     h5: { filenameHint },
+    // A job's own output, read once to merge into the project and never
+    // written back, so an SLP format 3.0 file opens for editing without
+    // asking: the predictions become part of the project, whose saves write
+    // the 2.x layout anyway.
+    format3: "edit",
   });
   await mergePredictionsIntoProject(predictions, mode, trackOnly);
 }
@@ -260,6 +265,8 @@ export async function loadRemotePredictions(
         openVideos: false,
         lazy: false,
         filenameHint: `${result.jobId}.predictions.slp`,
+        // A job's output (see loadAndMergePredictionBytes): no question.
+        format3: "edit",
       });
     } finally {
       await dispose();
@@ -270,6 +277,8 @@ export async function loadRemotePredictions(
   return loadSlp(bytes, {
     openVideos: false,
     h5: { filenameHint: `${result.jobId}.predictions.slp` },
+    // A job's output (see loadAndMergePredictionBytes): no question.
+    format3: "edit",
   });
 }
 

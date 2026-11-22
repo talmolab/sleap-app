@@ -37,6 +37,7 @@ import { commandContext } from "@/commands";
 import { MergePredictions } from "@/commands/editCommands";
 import { confirmDiscardUnsavedWork } from "@/lib/unsavedGuard";
 import { resolveExternalVideos } from "@/lib/resolveVideos";
+import { withLegacyLayout } from "@/lib/slpFormatCompat";
 
 /** Last path segment of a worker path (handles both `/` and `\`). */
 function basename(p: string): string {
@@ -161,7 +162,7 @@ export function MergePredictionsDialog({ workerId, jobId, mine, onClose }: Merge
 
   const handleDownload = async () => {
     if (stage.kind !== "ready") return;
-    const bytes = await saveSlpToBytes(stage.predictions);
+    const bytes = await saveSlpToBytes(stage.predictions, withLegacyLayout());
     await saveBytesFile(bytes, `${jobId}.predictions.slp`, { name: "SLEAP Labels", ext: "slp" });
   };
 
