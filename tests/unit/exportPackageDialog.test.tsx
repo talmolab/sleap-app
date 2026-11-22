@@ -96,12 +96,15 @@ describe("ExportPackageDialog", () => {
     useAppStore.setState({ packageImageFormat: "jpg", packageJpegQuality: 90 });
     renderDialog();
     const quality = screen.getByLabelText("Quality") as HTMLInputElement;
-    for (const bad of ["0", "101", ""]) {
+    for (const bad of ["0", "101", "", "80.5"]) {
       fireEvent.change(quality, { target: { value: bad } });
       expect(exportButton().disabled).toBe(true);
       expect(screen.getByText("Enter a quality from 1 to 100.")).toBeTruthy();
     }
     fireEvent.change(quality, { target: { value: "100" } });
+    expect(exportButton().disabled).toBe(false);
+    // Read as the number typed, not its leading digits.
+    fireEvent.change(quality, { target: { value: "1e2" } });
     expect(exportButton().disabled).toBe(false);
     // Switching back to PNG needs no quality.
     fireEvent.change(quality, { target: { value: "" } });
@@ -120,5 +123,15 @@ describe("ExportPackageDialog", () => {
     fireEvent.click(exportButton());
     await waitFor(() => expect(params.length).toBe(1));
     expect(params[0]).toEqual({ image: { format: "png", quality: 80 } });
+    // The remembered JPEG choice is kept for a build that can write it.
+    expect(useAppStore.getState().packageImageFormat).toBe("jpg");
+    expect(useAppStore.getState().packageJpegQuality).toBe(80);
+  });
+
+  it("says that frames already stored as JPEG stay JPEG", () => {
+    __setJpegFramesSupported(true);
+    renderDialog();
+    expect(screen.getByText(/already stores as JPEG stay JPEG with PNG chosen/)).toBeTruthy();
+    expect(screen.getByText(/usually several times smaller/)).toBeTruthy();
   });
 });

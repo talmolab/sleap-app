@@ -57,6 +57,13 @@ the project opens anywhere without its original videos. Export one with
 Level 1 is the smallest package to send to a collaborator; Level 3 is a full
 archive.
 
+The dialog also sets how the frames are stored. **PNG** (the default) is
+lossless. **JPEG** is lossy but usually several times smaller; set its quality
+from 1 to 100 (default 95). The dialog remembers your last choice, and
+**Labels ▸ Extract Clip Labels Package…** offers the same choice. Re-exporting a
+package whose frames are already stored as JPEG keeps them as JPEG, even with
+PNG chosen.
+
 ### Labeled clips
 
 **File ▸ Export ▸ Labeled Clip (Video)…** renders MP4 with the skeleton overlay

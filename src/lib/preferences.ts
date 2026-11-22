@@ -60,7 +60,7 @@ export async function confirmAndResetPreferences(): Promise<boolean> {
     message:
       "Reset all preferences to their defaults?\n\n" +
       "This resets display settings (colors, marker and label sizes, trails), " +
-      "navigation settings (step sizes, navigation scope), the panel layout and the text size.\n" +
+      "navigation settings (step sizes, navigation scope), the panel layout, the text size and the package export format.\n" +
       "Your projects, video path fixes, track colors and update channel are kept.",
     confirmLabel: "Reset",
     destructive: true,

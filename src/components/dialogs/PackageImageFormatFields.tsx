@@ -5,7 +5,8 @@
  * the app store) and remember the choice when they export.
  *
  * When the installed SLP library can't write JPEG frames, JPEG is disabled
- * with the reason and the dialogs export PNG.
+ * with the reason and the dialogs export PNG, leaving the remembered choice
+ * as it was.
  */
 
 import { useCallback, useEffect, useState } from "react";
@@ -41,7 +42,9 @@ export function usePackageImageChoice(open: boolean) {
   }, [open]);
   const valid = choice.format === "png" || isValidJpegQuality(choice.quality);
   const remember = useCallback(() => {
-    useAppStore.getState().setPackageImage(choice);
+    // Without JPEG the dialog could only show PNG: keep the user's choice for
+    // a build that has it (web channels share their stored preferences).
+    if (canWriteJpegFrames()) useAppStore.getState().setPackageImage(choice);
   }, [choice]);
   return { choice, setChoice, valid, remember };
 }
@@ -86,27 +89,35 @@ export function PackageImageFormatFields({
           <RadioGroupItem value="jpg" id={`${idPrefix}-format-jpg`} disabled={!jpegAvailable} />
           JPEG
         </label>
-        {value.format === "jpg" && (
-          <span className="flex items-center gap-2 text-sm">
-            <label htmlFor={qualityId}>Quality</label>
-            <Input
-              id={qualityId}
-              type="number"
-              min={MIN_JPEG_QUALITY}
-              max={MAX_JPEG_QUALITY}
-              value={Number.isFinite(value.quality) ? value.quality : ""}
-              onChange={(e) => onChange({ ...value, quality: parseInt(e.target.value, 10) })}
-              aria-invalid={!isValidJpegQuality(value.quality)}
-              className="h-8 w-20"
-            />
-          </span>
-        )}
       </RadioGroup>
+      {value.format === "jpg" && (
+        <div className="flex items-center gap-2 text-sm">
+          <label htmlFor={qualityId}>Quality</label>
+          <Input
+            id={qualityId}
+            type="number"
+            min={MIN_JPEG_QUALITY}
+            max={MAX_JPEG_QUALITY}
+            step={1}
+            value={Number.isFinite(value.quality) ? value.quality : ""}
+            // Number(), not parseInt: "80.5" or "1e2" must not pass as 80 or 1.
+            onChange={(e) =>
+              onChange({
+                ...value,
+                quality: e.target.value.trim() === "" ? Number.NaN : Number(e.target.value),
+              })
+            }
+            aria-invalid={!isValidJpegQuality(value.quality)}
+            className="h-8 w-20"
+          />
+        </div>
+      )}
       {jpegAvailable ? (
         <p className="text-xs text-muted-foreground">
           JPEG is lossy: the stored frames differ slightly from the video, and the
-          package is several times smaller. Quality {MIN_JPEG_QUALITY}–{MAX_JPEG_QUALITY}{" "}
-          (default {DEFAULT_JPEG_QUALITY}).
+          package is usually several times smaller. Quality {MIN_JPEG_QUALITY}–
+          {MAX_JPEG_QUALITY} (default {DEFAULT_JPEG_QUALITY}). Frames a package
+          already stores as JPEG stay JPEG with PNG chosen.
         </p>
       ) : (
         <p className="text-xs text-muted-foreground">JPEG: {JPEG_FRAMES_UNAVAILABLE}</p>
