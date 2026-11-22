@@ -1,10 +1,11 @@
 /**
  * Local jobs never read a project file that is still in SLP format 3.0 on
  * disk: they read the job's 2.x copy of the open project in the temp
- * directory (the sleap-nn the app installs reads only the 2.x layout). One
- * copy per job, shared by its runs, deleted when the job ends; copies a crash
- * left behind are swept by the next job. Models still go next to the project
- * file. A copy that can't be written ends the job with an error.
+ * copies folder under the app's cache folder (the sleap-nn the app installs
+ * reads only the 2.x layout). One copy per job, shared by its runs, deleted
+ * when the job ends. The next job sweeps only copies old enough that no
+ * window or app process can still be using them. Models still go next to the
+ * project file. A copy that can't be written ends the job with an error.
  *
  * The labels carry a stand-in `sourceFormat`, shaped like sleap-io.js 0.6's,
  * so this runs against any sleap-io.js; the copy is read back with the
@@ -39,7 +40,12 @@ vi.mock("@/platform", () => ({
 }));
 vi.mock("@tauri-apps/api/path", () => ({
   tempDir: async () => "/tmp",
+  appCacheDir: async () => "/cache",
+  appLocalDataDir: async () => "/data-local",
   join: async (...parts: string[]) => parts.join("/"),
+}));
+vi.mock("@tauri-apps/api/webviewWindow", () => ({
+  getCurrentWebviewWindow: () => ({ label: "main" }),
 }));
 vi.mock("@tauri-apps/plugin-fs", () => ({
   writeFile: async (path: string, bytes: Uint8Array) => {
@@ -50,8 +56,11 @@ vi.mock("@tauri-apps/plugin-fs", () => ({
     removed.push(path);
     files.delete(path);
   },
-  readDir: async () =>
-    [...files.keys()].map((p) => ({ name: p.split("/").pop(), isFile: true, isDirectory: false })),
+  readDir: async (dir: string) =>
+    [...files.keys()]
+      .filter((p) => p.startsWith(`${dir}/`))
+      .map((p) => ({ name: p.split("/").pop(), isFile: true, isDirectory: false })),
+  mkdir: async () => {},
   exists: async () => false,
 }));
 vi.mock("@/platform/backend", () => ({
@@ -139,7 +148,8 @@ function project(format3: boolean): sio.Labels {
   return labels;
 }
 
-const COPY = /^\/tmp\/sleap_(training|inference)_v2copy_\d+_\d+\.slp$/;
+const COPY = /^\/cache\/job-copies\/sleap-job-(training|inference)-main-\d+-\d+\.slp$/;
+const DAY = 24 * 60 * 60 * 1000;
 
 beforeAll(async () => {
   ({ useTrainingStore } = await import("@/stores/trainingStore"));
@@ -189,17 +199,36 @@ describe("jobLabelsPath", () => {
     expect(files.size).toBe(0);
   });
 
-  it("the next job sweeps copies a crashed job left behind, but not those still in use", async () => {
-    files.set("/tmp/sleap_training_v2copy_1_1.slp", new Uint8Array([1]));
-    files.set("/tmp/unrelated.slp", new Uint8Array([1]));
+  it("the sweep deletes only old copies and partial copies, never another window's recent one", async () => {
+    const old = Date.now() - 8 * DAY;
+    const fresh = Date.now() - 60_000;
+    const stale = `/cache/job-copies/sleap-job-training-other-${old}-1.slp`;
+    const staleTmp = `/cache/job-copies/sleap-job-training-other-${old}-2.slp.sleap-tmp-abc-123`;
+    const freshTmp = `/cache/job-copies/sleap-job-inference-other-${fresh}-3.slp.sleap-tmp-def`;
+    const unrelated = "/cache/job-copies/notes.txt";
+    for (const p of [stale, staleTmp, freshTmp, unrelated]) files.set(p, new Uint8Array([1]));
     useAppStore.getState().setLabels(project(true), "flies.slp", "/data/flies.slp");
-    const first = jobFile.createJobLabelsCopy("training");
-    const firstPath = await first.path();
-    expect(removed).toEqual(["/tmp/sleap_training_v2copy_1_1.slp"]);
-    const second = await jobFile.createJobLabelsCopy("inference").path();
-    expect(files.has(firstPath)).toBe(true); // in use by the first job
-    expect(files.has(second)).toBe(true);
-    expect(files.has("/tmp/unrelated.slp")).toBe(true);
+
+    // Window A (this module instance) writes its copy; its sweep removes the old files.
+    const copyA = await jobFile.createJobLabelsCopy("training").path();
+    expect(removed.sort()).toEqual([stale, staleTmp].sort());
+    expect(files.has(freshTmp)).toBe(true);
+    expect(files.has(unrelated)).toBe(true);
+
+    // Window B: another instance of the module, as another app window has.
+    // (A query string makes the runtime load a separate instance; the path is
+    // held in a variable so the type checker doesn't look it up.)
+    const secondInstance = "../../src/lib/jobLabelsFile.ts?window=B";
+    const windowB = (await import(secondInstance)) as typeof jobFile;
+    expect(windowB).not.toBe(jobFile);
+    expect(await windowB.sweepStaleJobCopies()).toBe(0);
+    await windowB.createJobLabelsCopy("inference").path();
+    expect(files.has(copyA)).toBe(true); // window A's job still runs
+
+    // A week later, window A's own sweep still keeps the copy its job uses.
+    expect(await jobFile.sweepStaleJobCopies(Date.now() + 8 * DAY)).toBe(2); // window B's, and the partial
+    expect(files.has(copyA)).toBe(true);
+    expect(files.has(freshTmp)).toBe(false);
   });
 });
 
@@ -221,6 +250,10 @@ describe("local training", () => {
     expect(calls[1][1]).toBe(labelsPath);
     expect(ckptDir).toBe("/data/models");
     expect(removed).toEqual([labelsPath]);
+    // The training log says when the copy starts and when it is written.
+    const log = useTrainingStore.getState().log.join("\n");
+    expect(log).toContain("Writing a 2.x copy of the project for sleap-nn");
+    expect(log).toContain("2.x copy written");
     expect(files.size).toBe(0);
   });
 

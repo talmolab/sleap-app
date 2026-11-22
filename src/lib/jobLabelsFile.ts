@@ -13,10 +13,18 @@
  * video-scoped inference that reads the video file directly never writes it),
  * reused by every sleap-nn run of the job (both heads of a top-down model,
  * inference after training, the per-video inference loop), and deleted when
- * the job ends, whatever the outcome. Copies a crash left behind are deleted
- * when the next job writes one. A large embedded package is copied with the
- * streaming writer the app's own saves use above the in-memory size limit, so
- * its frames never pass through memory.
+ * the job ends, whatever the outcome. A large embedded package is copied with
+ * the streaming writer the app's own saves use above the in-memory size limit,
+ * so its frames never pass through memory.
+ *
+ * Copies live in their own folder under the app's cache folder
+ * (`job-copies/`), never in the OS temp folder, which is RAM-backed on many
+ * Linux systems. Their names carry the window that wrote them and when. Each
+ * app window (its own JS heap) and each app process may run a job at once,
+ * and a window can't tell whether another one's copy is still in use, so the
+ * sweep that runs when a job writes a copy deletes only copies, and partial
+ * `.sleap-tmp-` files of the streaming writer, older than
+ * {@link STALE_COPY_AGE_MS} (a crash or a killed app left them).
  */
 import { saveSlpToBytes, type Labels } from "@talmolab/sleap-io.js";
 import { useAppStore } from "@/stores/appStore";
@@ -27,30 +35,64 @@ export function projectFileIsFormat3(labels: Labels | null | undefined): boolean
   return sourceFormatOf(labels) !== null;
 }
 
-/** File names of job copies, in the temp directory. */
-const COPY_NAME = /^sleap_(training|inference)_v2copy_\d+_\d+\.slp$/;
+/**
+ * How old a job copy must be before the sweep deletes it. Generous: a copy
+ * this old belongs to no job any window or process could still be running.
+ */
+export const STALE_COPY_AGE_MS = 7 * 24 * 60 * 60 * 1000;
 
-/** Copies of jobs still running (absolute paths): never swept. */
+/**
+ * A job copy's file name, or a partial file the streaming writer left beside
+ * it: `sleap-job-<purpose>-<window>-<written at, ms>-<seq>.slp[.sleap-tmp-…]`.
+ */
+const COPY_NAME = /^sleap-job-(training|inference)-([A-Za-z0-9]+)-(\d+)-(\d+)\.slp(\.sleap-tmp-[A-Za-z0-9-]+)?$/;
+
+/** Copies of this window's jobs still running (absolute paths): never swept. */
 const live = new Set<string>();
 let seq = 0;
 
-/**
- * Delete job copies left in the temp directory by a job that never ended (a
- * crash, a closed window). Best-effort; copies of running jobs are kept.
- * Returns how many it deleted.
- */
-export async function sweepStaleJobCopies(): Promise<number> {
+/** The folder job copies go in: `job-copies/` under the app's cache folder. */
+export async function jobCopiesDir(): Promise<string> {
+  const { appCacheDir, appLocalDataDir, join } = await import("@tauri-apps/api/path");
+  let base: string;
   try {
-    const [{ tempDir, join }, { readDir, remove }] = await Promise.all([
+    base = await appCacheDir();
+  } catch {
+    base = await appLocalDataDir();
+  }
+  return join(base, "job-copies");
+}
+
+/** This window's label, as it goes in a copy's name (letters and digits only). */
+async function windowTag(): Promise<string> {
+  try {
+    const { getCurrentWebviewWindow } = await import("@tauri-apps/api/webviewWindow");
+    return getCurrentWebviewWindow().label.replace(/[^A-Za-z0-9]/g, "") || "window";
+  } catch {
+    return "window";
+  }
+}
+
+/**
+ * Delete job copies (and partial copies) older than {@link STALE_COPY_AGE_MS}
+ * from the job-copies folder. Never a copy this window is using, and never a
+ * recent one, which may belong to a job in another window or app process.
+ * Best-effort. Returns how many it deleted.
+ */
+export async function sweepStaleJobCopies(now: number = Date.now()): Promise<number> {
+  try {
+    const [{ join }, { readDir, remove }] = await Promise.all([
       import("@tauri-apps/api/path"),
       import("@tauri-apps/plugin-fs"),
     ]);
-    const dir = await tempDir();
+    const dir = await jobCopiesDir();
     let removed = 0;
     for (const entry of await readDir(dir)) {
-      if (!entry.name || !COPY_NAME.test(entry.name)) continue;
+      const m = entry.name ? COPY_NAME.exec(entry.name) : null;
+      if (!m) continue;
+      if (now - Number(m[3]) < STALE_COPY_AGE_MS) continue;
       const path = await join(dir, entry.name);
-      if (live.has(path)) continue;
+      if (live.has(path) || live.has(path.replace(/\.sleap-tmp-[A-Za-z0-9-]+$/, ""))) continue;
       try {
         await remove(path);
         removed++;
@@ -60,7 +102,7 @@ export async function sweepStaleJobCopies(): Promise<number> {
     }
     return removed;
   } catch {
-    return 0;
+    return 0; // no folder yet, or no file system: nothing to sweep
   }
 }
 
@@ -108,8 +150,15 @@ export interface JobLabelsCopy {
   release(): Promise<void>;
 }
 
-/** A job's copy of the project open now (desktop only). */
-export function createJobLabelsCopy(purpose: "training" | "inference"): JobLabelsCopy {
+/**
+ * A job's copy of the project open now (desktop only). `onStatus` hears a line
+ * when the copy starts and when it is written (a large package can take
+ * minutes), for the job's log.
+ */
+export function createJobLabelsCopy(
+  purpose: "training" | "inference",
+  onStatus?: (line: string) => void,
+): JobLabelsCopy {
   const { labels, projectPath } = useAppStore.getState();
   let pending: Promise<string> | null = null;
   let written: string | null = null;
@@ -118,12 +167,23 @@ export function createJobLabelsCopy(purpose: "training" | "inference"): JobLabel
       pending ??= (async () => {
         if (!labels) throw new Error("No project loaded");
         await sweepStaleJobCopies();
-        const { tempDir, join } = await import("@tauri-apps/api/path");
-        const path = await join(await tempDir(), `sleap_${purpose}_v2copy_${Date.now()}_${++seq}.slp`);
+        const [{ join }, { mkdir }] = await Promise.all([
+          import("@tauri-apps/api/path"),
+          import("@tauri-apps/plugin-fs"),
+        ]);
+        const dir = await jobCopiesDir();
+        await mkdir(dir, { recursive: true });
+        const name = `sleap-job-${purpose}-${await windowTag()}-${Date.now()}-${++seq}.slp`;
+        const path = await join(dir, name);
         live.add(path);
         written = path;
+        const started = Date.now();
+        onStatus?.("— Writing a 2.x copy of the project for sleap-nn (its file is in SLP format 3.0)...");
+        console.log(`[${purpose}] Writing a 2.x copy of the project to %s`, path);
         await writeLegacyCopy(labels, path, projectPath);
-        console.log(`[${purpose}] Wrote a 2.x copy of the project to %s`, path);
+        const secs = ((Date.now() - started) / 1000).toFixed(1);
+        onStatus?.(`— 2.x copy written (${secs} s).`);
+        console.log(`[${purpose}] Wrote the 2.x copy in %s s`, secs);
         return path;
       })();
       return pending;

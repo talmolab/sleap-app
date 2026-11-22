@@ -573,7 +573,9 @@ export const useInferenceStore = create<InferenceState>()((set) => ({
       // in SLP format 3.0 (written on first need, shared by the per-video
       // runs), deleted when the job ends.
       const { createJobLabelsCopy } = await import("@/lib/jobLabelsFile");
-      const labelsCopy = createJobLabelsCopy("inference");
+      const labelsCopy = createJobLabelsCopy("inference", (line) =>
+        set((s) => ({ log: [...s.log, line] })),
+      );
       try {
         if (config.frameRange === "random") {
           // "random (all videos)": run per-video, merge each result

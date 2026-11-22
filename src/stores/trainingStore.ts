@@ -2615,7 +2615,9 @@ export const useTrainingStore = create<TrainingState>()((set, get) => ({
       // jobLabelsFile.ts). One copy for the whole job (both heads and the
       // inference afterwards), deleted when the job ends.
       const { createJobLabelsCopy, jobLabelsPath } = await import("@/lib/jobLabelsFile");
-      const labelsCopy = createJobLabelsCopy("training");
+      const labelsCopy = createJobLabelsCopy("training", (line) =>
+        set((s) => ({ log: appendLog(s.log, line) })),
+      );
       let dataLabelsPath: string;
       try {
         dataLabelsPath = await jobLabelsPath(labelsPath, labelsCopy);
@@ -3187,7 +3189,9 @@ export const useTrainingStore = create<TrainingState>()((set, get) => ({
     // A project file still in SLP format 3.0 is read through a 2.x copy,
     // deleted when the dry run ends.
     const { createJobLabelsCopy, jobLabelsPath } = await import("@/lib/jobLabelsFile");
-    const labelsCopy = createJobLabelsCopy("training");
+    const labelsCopy = createJobLabelsCopy("training", (line) =>
+      update((d) => ({ log: appendLog(d.log, line) })),
+    );
     let dataLabelsPath = labelsPath;
     try {
       dataLabelsPath = await jobLabelsPath(labelsPath, labelsCopy);
