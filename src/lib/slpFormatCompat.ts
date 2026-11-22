@@ -25,10 +25,14 @@ import type { Labels } from "@talmolab/sleap-io.js";
 /**
  * The record-mark helpers of sleap-io.js 0.6.0, absent on the old pin. Read
  * as `(sio as unknown as MarkApi).name` at each use (a static member access,
- * so bundlers still tree-shake the library).
+ * so bundlers still tree-shake the library; never assign the namespace to a
+ * variable). Against the old pin, `vite build` warns that these names are not
+ * exported: expected, since they read as undefined and every use checks for
+ * that. The warnings go away with the pin bump.
  */
 interface MarkApi {
   copySourceMark?: (from: object | null | undefined, to: object | null | undefined) => void;
+  sourceMarkOf?: (record: object | null | undefined) => SlpSourceFormat | undefined;
   setSourceAccess?: (labels: Labels, access: Format3Access) => void;
 }
 
@@ -50,6 +54,12 @@ export interface Format3Summary {
   metadataKeys: { instances: string[]; frames: string[]; bboxes: string[] };
   /** Columns the reader does not know, as paths like `points/foo`. */
   unknownColumns: string[];
+  /**
+   * Members of the file the reader does not read at all, as paths (other
+   * tables such as `events`, or members such as `categories/meta_key`).
+   * Absent from builds of sleap-io.js before this field.
+   */
+  unreadTables?: string[];
   /** True when an edit would drop nothing. */
   lossless: boolean;
 }
@@ -182,6 +192,18 @@ export function setSourceAccess(labels: Labels, access: Format3Access): void {
  */
 export function copySourceMark(from: object | null | undefined, to: object | null | undefined): void {
   (sio as unknown as MarkApi).copySourceMark?.(from, to);
+}
+
+/**
+ * Keep a record's open-time choice without keeping the record: a token (an
+ * empty object carrying the same mark), or null when the record has none.
+ * Give it back with {@link copySourceMark}(token, record).
+ */
+export function captureSourceMark(record: object): object | null {
+  if (!(sio as unknown as MarkApi).sourceMarkOf?.(record)) return null;
+  const token = {};
+  (sio as unknown as MarkApi).copySourceMark?.(record, token);
+  return token;
 }
 
 /**

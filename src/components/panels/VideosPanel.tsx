@@ -551,6 +551,10 @@ export function VideosPanel() {
 
     const newCount = newVideo.shape?.[0] ?? Infinity;
     const orphans = labeledFramesBeyond(labels, currentVideo, newCount);
+    // A shorter video would delete labeled frames: not in View only.
+    // (Pointing the project at a video file without losing frames is allowed,
+    // so a missing or unreadable video can still be relinked to view it.)
+    if (orphans.length > 0 && refuseEditIfViewOnly()) return;
     if (orphans.length > 0) {
       setPendingReplace({
         oldVideo: currentVideo,

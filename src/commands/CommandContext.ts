@@ -15,6 +15,7 @@ import { toast } from "@/lib/notify";
 import { humanizeCommandName } from "@/lib/humanizeCommand";
 import { dirtyFrameTracker } from "@/lib/autosaveDirty";
 import {
+  captureSourceMark,
   copyMetadata,
   copyPoint,
   copySourceMark,
@@ -40,10 +41,10 @@ interface SingleFrameData {
   /** The frame's metadata (SLP format 3.0), so undo/redo keeps it. */
   metadata: RecordMetadata | null;
   /**
-   * The frame snapshotted, whose open-time format 3.0 choice a re-created
-   * frame takes (see `copySourceMark`).
+   * The snapshotted frame's open-time format 3.0 choice (a token from
+   * `captureSourceMark`, not the frame itself), for a frame undo re-creates.
    */
-  source: LabeledFrame;
+  sourceMark: object | null;
   /**
    * The frame's non-pose annotations (bounding boxes, centroids, masks, label
    * images, ROIs). Without these, restoring a frame wiped them (#487). Each is
@@ -201,7 +202,7 @@ function captureFrame(lf: LabeledFrame, videoRef: Video, frameIdx: number): Sing
     instances,
     isNegative: lf.isNegative,
     metadata: md ? { ...md } : null,
-    source: lf,
+    sourceMark: captureSourceMark(lf),
     annotations,
   };
 }
@@ -215,7 +216,7 @@ function applyFrame(lf: LabeledFrame, data: SingleFrameData): void {
     (lf as { metadata?: RecordMetadata }).metadata = { ...data.metadata };
   }
   // A frame re-created by undo (it had been deleted) is the same content.
-  if (lf !== data.source) copySourceMark(data.source, lf);
+  if (data.sourceMark) copySourceMark(data.sourceMark, lf);
   lf.bboxes = annotations.bboxes;
   lf.centroids = annotations.centroids;
   lf.masks = annotations.masks;

@@ -17,6 +17,7 @@
  */
 import { create } from "zustand";
 import type { Format3Summary } from "@/lib/slpFormatCompat";
+import type { AllowEditAction } from "@/lib/slpAccess";
 
 export type SlpFormatPrompt =
   | {
@@ -39,8 +40,8 @@ export type SlpFormatPrompt =
       kind: "allow-edit";
       fileName: string;
       summary: Format3Summary;
-      /** What the user was doing when asked ("save", "export"), if anything. */
-      action?: string;
+      /** What the user was doing when asked, if anything. */
+      action?: AllowEditAction;
     };
 
 /** `view`/`edit` for the open choice, `edit` to merge or allow editing, `ok` to dismiss a refusal. */

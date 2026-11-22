@@ -7,6 +7,9 @@
 
 import { isTauri } from "./index";
 import { sleapCmd } from "@/lib/sleapPlugin";
+import { saveSlpToBytes } from "@talmolab/sleap-io.js";
+import type { JobLabelsCopy } from "@/lib/jobLabelsFile";
+import { withLegacyLayout } from "@/lib/slpFormatCompat";
 import type { InferenceConfig } from "@/stores/inferenceStore";
 import { buildInferenceArgs, pickInferenceSubcommand } from "./inferenceArgs";
 import type { UnlistenFn } from "@tauri-apps/api/event";
@@ -497,7 +500,14 @@ export async function runTraining(
 export async function runInference(
   config: InferenceConfig,
   projectPath: string | null,
-  onEvent: (event: ProcessEvent) => void
+  onEvent: (event: ProcessEvent) => void,
+  /**
+   * The job's 2.x copy of the project, shared by its runs (see
+   * `jobLabelsFile.ts`); used only when the project file is still in SLP
+   * format 3.0. Without one, a run that needs a copy writes its own and
+   * deletes it when sleap-nn exits.
+   */
+  labelsCopy?: JobLabelsCopy
 ): Promise<{ success: boolean; outputPath: string | null; command: string }> {
   if (!isTauri) {
     console.warn("Inference is only available in Tauri desktop mode");
@@ -507,19 +517,30 @@ export async function runInference(
   const { tempDir, join, dirname, basename } = await import("@tauri-apps/api/path");
 
   const tmp = await tempDir();
+  const ts = Date.now();
 
-  // Use the project file if there is one and sleap-nn can read it; otherwise
-  // (no file yet, or a file still in SLP format 3.0) serialize a 2.x copy.
-  const { useAppStore } = await import("@/stores/appStore");
-  const { projectFileIsFormat3, writeLegacyJobCopy } = await import("@/lib/jobLabelsFile");
-  const projectLabels = useAppStore.getState().labels;
-  let dataPath: string;
-  if (projectPath && !projectFileIsFormat3(projectLabels)) {
-    dataPath = projectPath;
-    console.log("[inference] Using project file:", dataPath);
+  // Use the original project file if available, otherwise serialize. A
+  // project file still in SLP format 3.0 is read through the job's 2.x copy,
+  // written below only if the run reads the project at all.
+  const { projectFileIsFormat3, createJobLabelsCopy } = await import("@/lib/jobLabelsFile");
+  let dataPath: string | null = null;
+  if (projectPath) {
+    const { useAppStore } = await import("@/stores/appStore");
+    if (!projectFileIsFormat3(useAppStore.getState().labels)) {
+      dataPath = projectPath;
+      console.log("[inference] Using project file:", dataPath);
+    }
   } else {
-    if (!projectLabels) throw new Error("No project loaded");
-    dataPath = await writeLegacyJobCopy(projectLabels, "inference");
+    const { writeFile } = await import("@tauri-apps/plugin-fs");
+    // Lazy import to avoid pulling in saveSlpToBytes when not needed
+    const { useAppStore } = await import("@/stores/appStore");
+    const labels = useAppStore.getState().labels;
+    if (!labels) throw new Error("No project loaded");
+    dataPath = await join(tmp, `sleap_inference_input_${ts}.slp`);
+    console.log("[inference] Serializing project to temp file:", dataPath);
+    const bytes = await saveSlpToBytes(labels, withLegacyLayout());
+    await writeFile(dataPath, bytes);
+    console.log("[inference] Wrote %d bytes to %s", bytes.byteLength, dataPath);
   }
 
   // "frame"/"video"/"random_video"/a custom range all scope to a single video
@@ -630,20 +651,31 @@ export async function runInference(
     sampledFrames = sampleRandomFrames(nFrames, config.sampleCount);
   }
 
-  const args = buildInferenceArgs(config, {
-    dataPath,
-    outputPath,
-    sampledFrames,
-    currentFrameIdx,
-    suppressVideoIndex: videoDataPath !== null,
-    subcommand,
-  });
+  // The project file is in format 3.0 and the run reads the project: use the
+  // job's 2.x copy (or this run's own, deleted when sleap-nn exits).
+  let ownCopy: JobLabelsCopy | null = null;
+  try {
+    if (dataPath === null) {
+      const copy = labelsCopy ?? (ownCopy = createJobLabelsCopy("inference"));
+      dataPath = await copy.path();
+    }
+    const args = buildInferenceArgs(config, {
+      dataPath,
+      outputPath,
+      sampledFrames,
+      currentFrameIdx,
+      suppressVideoIndex: videoDataPath !== null,
+      subcommand,
+    });
 
-  const command = `${program} ${args.join(" ")}`;
-  console.log("[inference] Running:", command);
-  const success = await runPythonCommand(program, args, onEvent);
-  console.log("[inference] Process finished: success=%s, output=%s", success, outputPath);
-  return { success, outputPath, command };
+    const command = `${program} ${args.join(" ")}`;
+    console.log("[inference] Running:", command);
+    const success = await runPythonCommand(program, args, onEvent);
+    console.log("[inference] Process finished: success=%s, output=%s", success, outputPath);
+    return { success, outputPath, command };
+  } finally {
+    await ownCopy?.release();
+  }
 }
 
 /**

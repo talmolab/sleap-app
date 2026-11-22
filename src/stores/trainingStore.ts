@@ -2610,10 +2610,23 @@ export const useTrainingStore = create<TrainingState>()((set, get) => ({
 
       // Save models next to the labels file
       const modelDir = labelsPath.replace(/[/\\][^/\\]+$/, "") + "/models";
-      // What sleap-nn reads: the labels file, or a 2.x copy of the project when
-      // its file on disk is still in SLP format 3.0 (see jobLabelsFile.ts).
-      const { jobLabelsPath } = await import("@/lib/jobLabelsFile");
-      const dataLabelsPath = await jobLabelsPath(labelsPath, "training");
+      // What sleap-nn reads: the labels file, or the job's 2.x copy of the
+      // project when its file on disk is still in SLP format 3.0 (see
+      // jobLabelsFile.ts). One copy for the whole job (both heads and the
+      // inference afterwards), deleted when the job ends.
+      const { createJobLabelsCopy, jobLabelsPath } = await import("@/lib/jobLabelsFile");
+      const labelsCopy = createJobLabelsCopy("training");
+      let dataLabelsPath: string;
+      try {
+        dataLabelsPath = await jobLabelsPath(labelsPath, labelsCopy);
+      } catch (err) {
+        await labelsCopy.release();
+        set({
+          status: "error",
+          error: `Couldn't write a 2.x copy of the project for training: ${err instanceof Error ? err.message : String(err)}`,
+        });
+        return;
+      }
       const trainedModelPaths: string[] = [];
 
       // Ensure sleap-nn's [export] support is installed BEFORE training when the
@@ -2995,10 +3008,10 @@ export const useTrainingStore = create<TrainingState>()((set, get) => ({
             // Run inference; if it targeted the exported model and failed, retry
             // once with the PyTorch checkpoint (runtime auto) as a fallback.
             const runInferenceWithFallback = async (cfg: typeof inferenceConfig) => {
-              let result = await runInference(cfg, projectPath, logEvent);
+              let result = await runInference(cfg, projectPath, logEvent, labelsCopy);
               if (!result.success && useExported) {
                 set((s) => ({ log: appendLog(s.log, "— Exported-model inference failed; retrying with the PyTorch checkpoint...") }));
-                result = await runInference({ ...cfg, modelPaths: trainedModelPaths, runtime: "auto", device: "auto" }, projectPath, logEvent);
+                result = await runInference({ ...cfg, modelPaths: trainedModelPaths, runtime: "auto", device: "auto" }, projectPath, logEvent, labelsCopy);
               }
               return result;
             };
@@ -3062,6 +3075,8 @@ export const useTrainingStore = create<TrainingState>()((set, get) => ({
         if (unlistenProgress) { unlistenProgress(); unlistenProgress = null; }
         try { await stopProgressRelay(); } catch { /* ignore */ }
         try { await stopZmqRelay(); } catch { /* ignore */ }
+        // The job is over (done, failed or cancelled): delete its copy.
+        await labelsCopy.release();
       }
     }
   },
@@ -3122,7 +3137,7 @@ export const useTrainingStore = create<TrainingState>()((set, get) => ({
       const { labels, projectPath } = useAppStore.getState();
       if ((await localTrainingLabelsPath(config)) === projectPath && projectFileIsFormat3(labels)) {
         const { ensureWritable } = await import("@/lib/slpAccess");
-        if (!(await ensureWritable(labels, "check training on it"))) return;
+        if (!(await ensureWritable(labels, "check"))) return;
       }
     }
     const slots = getConfigSlots(config.modelType);
@@ -3169,12 +3184,15 @@ export const useTrainingStore = create<TrainingState>()((set, get) => ({
     const labelsPath = await localTrainingLabelsPath(config);
     const { useAppStore } = await import("@/stores/appStore");
     const labels = useAppStore.getState().labels;
-    // A project file still in SLP format 3.0 is read through a 2.x copy.
+    // A project file still in SLP format 3.0 is read through a 2.x copy,
+    // deleted when the dry run ends.
+    const { createJobLabelsCopy, jobLabelsPath } = await import("@/lib/jobLabelsFile");
+    const labelsCopy = createJobLabelsCopy("training");
     let dataLabelsPath = labelsPath;
     try {
-      const { jobLabelsPath } = await import("@/lib/jobLabelsFile");
-      dataLabelsPath = await jobLabelsPath(labelsPath, "training");
+      dataLabelsPath = await jobLabelsPath(labelsPath, labelsCopy);
     } catch (err) {
+      await labelsCopy.release();
       update(() => ({ status: "failed", log: [`Couldn't write a 2.x copy of the project: ${err instanceof Error ? err.message : String(err)}`] }));
       clearInterval(flushTimer);
       return;
@@ -3272,6 +3290,7 @@ export const useTrainingStore = create<TrainingState>()((set, get) => ({
     } finally {
       clearInterval(flushTimer);
       flush();
+      await labelsCopy.release();
     }
   },
 
@@ -3432,13 +3451,16 @@ export const useTrainingStore = create<TrainingState>()((set, get) => ({
         log: appendLog(s.log, "— Predictions merged into project."),
       }));
     } catch (e) {
-      // Retriable: the job itself succeeded, only the fetch failed — keep
-      // pendingMerge so Fetch & Load stays available (mirrors
-      // inferenceStore.mergePendingRemoteResults).
+      // Retriable: the job itself succeeded, only the fetch failed (or the
+      // user kept a View only project as is) — keep pendingMerge so Fetch &
+      // Load stays available (mirrors inferenceStore.mergePendingRemoteResults).
+      const notMerged = (e as Error)?.name === "PredictionsNotMerged";
       set((s) => ({
         postTrainingInference: s.postTrainingInference && {
           ...s.postTrainingInference,
-          message: `Failed to fetch/merge predictions: ${e instanceof Error ? e.message : String(e)}`,
+          message: notMerged
+            ? (e as Error).message
+            : `Failed to fetch/merge predictions: ${e instanceof Error ? e.message : String(e)}`,
         },
       }));
     }

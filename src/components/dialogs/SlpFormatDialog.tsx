@@ -16,6 +16,7 @@ import {
 } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
 import {
+  allowEditText,
   canSaveLegacyCopy,
   describeFormat3Drops,
   formatLabel,
@@ -165,11 +166,7 @@ export function SlpFormatDialog() {
 
             {prompt.kind === "allow-edit" && (
               <div className="flex flex-col gap-3 text-sm">
-                <p>
-                  {prompt.action
-                    ? `It was opened View only, so it can't be used to ${prompt.action} until editing is allowed.`
-                    : "It was opened View only. Allowing editing lets you change and save it."}
-                </p>
+                <p>{allowEditText(prompt.action).message}</p>
                 <DropList summary={prompt.summary} />
               </div>
             )}
@@ -201,7 +198,7 @@ export function SlpFormatDialog() {
                   )}
                   {prompt.kind === "allow-edit" && (
                     <Button size="sm" onClick={() => respond("edit")}>
-                      {prompt.action ? `Allow editing and ${prompt.action}` : "Allow editing"}
+                      {allowEditText(prompt.action).button}
                     </Button>
                   )}
                 </>

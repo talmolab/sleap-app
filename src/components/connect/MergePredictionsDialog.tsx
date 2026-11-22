@@ -38,6 +38,7 @@ import { MergePredictions } from "@/commands/editCommands";
 import { confirmDiscardUnsavedWork } from "@/lib/unsavedGuard";
 import { resolveExternalVideos } from "@/lib/resolveVideos";
 import { withLegacyLayout } from "@/lib/slpFormatCompat";
+import { ensureWritable } from "@/lib/slpAccess";
 
 /** Last path segment of a worker path (handles both `/` and `\`). */
 function basename(p: string): string {
@@ -120,6 +121,12 @@ export function MergePredictionsDialog({ workerId, jobId, mine, onClose }: Merge
           return;
         }
         if (shouldAutoMerge(mine, compat)) {
+          // A View only project asks to allow editing first; on a decline the
+          // choices stay on screen and nothing is reported as merged.
+          if (!(await ensureWritable(projectLabels, "predictions"))) {
+            if (!cancelled) setStage({ kind: "ready", predictions, compat, jobLabelsPath });
+            return;
+          }
           setStage({ kind: "merging" });
           await commandContext.execute(MergePredictions, { predictions, mode: "replace" });
           toast.success("Loaded. Predictions merged into the project.");
@@ -142,6 +149,8 @@ export function MergePredictionsDialog({ workerId, jobId, mine, onClose }: Merge
   const handleMergeMatching = async () => {
     if (stage.kind !== "ready" || !projectLabels) return;
     const { predictions, compat } = stage;
+    // A View only project asks to allow editing first; a decline merges nothing.
+    if (!(await ensureWritable(projectLabels, "predictions"))) return;
     setStage({ kind: "merging" });
     try {
       const filtered = filterPredictionsToMatchedVideos(predictions, projectLabels);

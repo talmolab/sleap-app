@@ -76,6 +76,10 @@ export function describeFormat3Drops(summary: Format3Summary): string[] {
       `Columns this version doesn't know: ${summary.unknownColumns.join(", ")}`,
     );
   }
+  const unread = summary.unreadTables ?? [];
+  if (unread.length > 0) {
+    drops.push(`Parts of the file this version doesn't read: ${unread.join(", ")}`);
+  }
   return drops;
 }
 
@@ -144,6 +148,28 @@ export function displayFileName(pathOrName: string | null | undefined): string {
 // ---------------------------------------------------------------------------
 
 const reported = new WeakSet<object>();
+
+/**
+ * Job predictions were not merged: the project is open View only and the user
+ * did not allow editing. Callers keep the predictions pending and report
+ * nothing as merged.
+ */
+export class PredictionsNotMerged extends Error {
+  constructor() {
+    super("The predictions were not added: the project is open View only.");
+    this.name = "PredictionsNotMerged";
+  }
+}
+
+/**
+ * Before job predictions are merged into the open project: a View only
+ * project asks to allow editing first. Throws {@link PredictionsNotMerged}
+ * when the user declines.
+ */
+export async function ensurePredictionsMergeable(): Promise<void> {
+  const labels = useAppStore.getState().labels;
+  if (!(await ensureWritable(labels, "predictions"))) throw new PredictionsNotMerged();
+}
 
 /** The user cancelled the format 3.0 choice; nothing was opened. */
 export class SlpOpenCancelled extends Error {
@@ -254,6 +280,45 @@ export async function readWithFormatChoice<T>(
 // View only projects
 // ---------------------------------------------------------------------------
 
+/** What the user was doing when asked to allow editing (see {@link allowEditText}). */
+export type AllowEditAction = "save" | "export" | "predictions" | "train" | "check";
+
+/** The allow-editing prompt's sentence and button for `action`. */
+export function allowEditText(action: AllowEditAction | undefined): { message: string; button: string } {
+  switch (action) {
+    case "save":
+      return {
+        message: "It was opened View only, so it can't be saved until editing is allowed.",
+        button: "Allow editing and save",
+      };
+    case "export":
+      return {
+        message: "It was opened View only, so it can't be exported until editing is allowed.",
+        button: "Allow editing and export",
+      };
+    case "predictions":
+      return {
+        message: "It was opened View only. Allow editing to add the job's predictions to this project?",
+        button: "Allow editing",
+      };
+    case "train":
+      return {
+        message: "It was opened View only. Allow editing to train on this project? Any predictions made after training are added to it.",
+        button: "Allow editing and train",
+      };
+    case "check":
+      return {
+        message: "It was opened View only. Allow editing to check training on this project? The check reads a copy of it in the 2.x layout.",
+        button: "Allow editing and check",
+      };
+    default:
+      return {
+        message: "It was opened View only. Allowing editing lets you change and save it.",
+        button: "Allow editing",
+      };
+  }
+}
+
 /** The open project was opened View only. */
 export function isProjectViewOnly(): boolean {
   return isViewOnlyLabels(useAppStore.getState().labels);
@@ -263,7 +328,7 @@ export function isProjectViewOnly(): boolean {
  * Ask to make a view-only project editable; on yes, make it so in place and
  * return true. `action` names what the user was doing ("save", "export").
  */
-export async function allowEditing(labels: Labels, action?: string): Promise<boolean> {
+export async function allowEditing(labels: Labels, action?: AllowEditAction): Promise<boolean> {
   const sf = sourceFormatOf(labels);
   if (!sf || sf.access !== "view") return true;
   const answer = await askSlpFormat({
@@ -285,7 +350,7 @@ export async function allowEditing(labels: Labels, action?: string): Promise<boo
  */
 export async function ensureWritable(
   labels: Labels | null | undefined,
-  action: string,
+  action: AllowEditAction,
 ): Promise<boolean> {
   if (!labels || !isViewOnlyLabels(labels)) return true;
   return allowEditing(labels, action);
@@ -297,7 +362,7 @@ export async function ensureWritable(
  * Returns true when it did. Any other error, including View only content
  * that ended up in an editable project, is left to the caller's error toast.
  */
-export function handleViewOnlyWriteError(err: unknown, action = "save"): boolean {
+export function handleViewOnlyWriteError(err: unknown, action: AllowEditAction = "save"): boolean {
   if (!isSlpViewOnlyError(err) || !isProjectViewOnly()) return false;
   const labels = useAppStore.getState().labels;
   if (labels) void allowEditing(labels, action);
@@ -329,11 +394,15 @@ export function refuseEditIfViewOnly(opts?: { quiet?: boolean }): boolean {
 // Jobs built from a project with nodes not labelled
 // ---------------------------------------------------------------------------
 
-/** How many nodes in `labels` are marked as not labelled (SLP format 3.0). */
+/**
+ * How many nodes of user instances in `labels` are marked as not labeled (SLP
+ * format 3.0). Training uses user instances only; predictions are left out.
+ */
 export function countUnlabeledNodes(labels: Labels | null | undefined): number {
   let n = 0;
   for (const lf of labels?.labeledFrames ?? []) {
     for (const inst of lf.instances) {
+      if ("score" in inst) continue; // a prediction (as the canvas tells them apart)
       for (const p of inst.points) if (isUnlabeledPoint(p)) n++;
     }
   }
@@ -359,8 +428,7 @@ export async function confirmUnlabeledAsHidden(
     title: "Nodes not labeled will count as hidden",
     message:
       `This project has ${nodes} marked as not labeled. The ${job} job reads ` +
-      "a copy of the project in the older 2.x layout, which can't store that " +
-      "mark, so " +
+      "the project in the older 2.x layout, which can't store that mark, so " +
       (job === "training"
         ? `the model trains on ${them} (annotated as not visible).`
         : `it sees ${them} (annotated as not visible).`),
@@ -385,7 +453,7 @@ export async function confirmJobFromProject(
 ): Promise<boolean> {
   const labels = useAppStore.getState().labels;
   if (!labels) return true;
-  const action = job === "training" ? "train on it" : "add predictions to it";
+  const action: AllowEditAction = job === "training" ? "train" : "predictions";
   if (!(await ensureWritable(labels, action))) return false;
   if (opts.buildsFromProject && !(await confirmUnlabeledAsHidden(labels, job))) return false;
   return true;

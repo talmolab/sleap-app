@@ -628,8 +628,7 @@ export const SaveAsJsonCommand: Command = {
         mime: "application/json",
       });
       if (!saved) return; // user cancelled
-      // A JSON copy is not the project file: the project keeps its unsaved
-      // changes (they are still not in the .slp it saves to).
+      ctx.state.clearChanges();
       toast.success("JSON saved", { description: saved });
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
