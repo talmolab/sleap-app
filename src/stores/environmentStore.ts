@@ -33,6 +33,7 @@ import {
 import { isTauri } from "../platform/index";
 import { toast } from "@/lib/notify";
 import { openExternal } from "@/lib/openExternal";
+import { capSleapNnUpdate, sleapNnInstallSpec } from "@/lib/sleapNnVersion";
 
 const SLEAP_NN_RELEASES_URL = "https://github.com/talmolab/sleap-nn/releases/tag";
 
@@ -189,7 +190,7 @@ export const useEnvironmentStore = create<EnvironmentState>()(
           console.log("[env] downloadable:", downloadablePythons);
 
           set({
-            tools: uvTools,
+            tools: uvTools.map(capSleapNnUpdate),
             interpreters: pythons,
             downloadable: downloadablePythons,
           });
@@ -363,7 +364,7 @@ export const useEnvironmentStore = create<EnvironmentState>()(
             const gpu = await detectGpu();
             console.log("[env] Detected GPU type:", gpu);
             const torchExtra = gpu === "cuda" ? "torch-cuda130" : "torch-cpu";
-            installPkg = `sleap-nn[${torchExtra}]`;
+            installPkg = sleapNnInstallSpec([torchExtra]);
             extraArgs = ["--torch-backend=auto"];
             set((state) => ({
               installLog: [
@@ -434,7 +435,10 @@ export const useEnvironmentStore = create<EnvironmentState>()(
           // forces a reinstall. That's also what makes unchecking work: the
           // omitted extra simply isn't in the new env. The torch backend has
           // to be restated for the same reason, or it would be dropped.
-          const installPkg = `sleap-nn[${[torchExtra, ...extras].join(",")}]`;
+          const installPkg = sleapNnInstallSpec([
+            torchExtra,
+            ...(extras as string[]),
+          ]);
           set((state) => ({
             installLog: [
               ...state.installLog,
@@ -478,7 +482,46 @@ export const useEnvironmentStore = create<EnvironmentState>()(
         };
 
         try {
-          await upgradeUvToolCmd(pkg, onEvent);
+          if (pkg === "sleap-nn") {
+            // `uv tool upgrade` follows the version range recorded when the
+            // tool was installed, and installs made before the cap recorded
+            // none, so it would move them past the cap. Re-run the install
+            // with the capped requirement and `--upgrade` instead: it moves to
+            // the newest version below the cap and records the cap. An install
+            // replaces the tool's requirements, so the extras the env has now
+            // are restated, as in installExtras.
+            const [gpu, installed] = await Promise.all([
+              detectGpu(),
+              detectSleapNnExtras(),
+            ]);
+            if (installed.error) {
+              throw new Error(
+                `Could not tell which optional extras sleap-nn has (${installed.error}). ` +
+                  "Use Reinstall instead."
+              );
+            }
+            const torchExtra = gpu === "cuda" ? "torch-cuda130" : "torch-cpu";
+            const wantOnnx = installed.onnx || installed.tensorrt;
+            const installPkg = sleapNnInstallSpec([
+              torchExtra,
+              ...(wantOnnx ? ["export"] : []),
+              ...(installed.tensorrt ? ["tensorrt"] : []),
+            ]);
+            set((state) => ({
+              installLog: [
+                ...state.installLog,
+                `[env] GPU: ${gpu} → updating ${installPkg}`,
+              ],
+            }));
+            // No `--python`: keep the interpreter the env already has, as
+            // `uv tool upgrade` does.
+            await installUvToolCmd(installPkg, null, false, onEvent, [
+              "--upgrade",
+              "--torch-backend=auto",
+            ]);
+          } else {
+            await upgradeUvToolCmd(pkg, onEvent);
+          }
           await get().refresh();
         } catch (err) {
           const msg = err instanceof Error ? err.message : String(err);
@@ -516,7 +559,7 @@ export const useEnvironmentStore = create<EnvironmentState>()(
           if (pkg === "sleap-nn") {
             const gpu = await detectGpu();
             const torchExtra = gpu === "cuda" ? "torch-cuda130" : "torch-cpu";
-            installPkg = `sleap-nn[${torchExtra}]`;
+            installPkg = sleapNnInstallSpec([torchExtra]);
             extraArgs = ["--torch-backend=auto"];
             set((state) => ({
               installLog: [
@@ -662,10 +705,12 @@ export const useEnvironmentStore = create<EnvironmentState>()(
 
         sleapNnCheckInFlight = (async () => {
           try {
-            const [uvInfo, uvTools] = await Promise.all([
+            const [uvInfo, listedTools] = await Promise.all([
               detectUv(),
               listUvTools(),
             ]);
+            // An update at or above the sleap-nn cap is not announced.
+            const uvTools = listedTools.map(capSleapNnUpdate);
             set({ uv: uvInfo, tools: uvTools });
 
             const tool = uvTools.find((t) => t.name === "sleap-nn");
