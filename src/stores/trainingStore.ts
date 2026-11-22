@@ -2129,6 +2129,15 @@ export const useTrainingStore = create<TrainingState>()((set, get) => ({
     // Training reads the open project's first skeleton: refuse a project that
     // really uses several different skeletons (a worker-side file is its own).
     if (remoteOpts?.labelsSource !== "worker-file" && (await blockedByMultiSkeleton("Training"))) return;
+    // Training data built from the project is written in the 2.x layout: say
+    // once that nodes not labelled will train as hidden nodes.
+    if (remoteOpts?.labelsSource !== "worker-file") {
+      const [{ confirmUnlabeledAsHidden }, { useAppStore }] = await Promise.all([
+        import("@/lib/slpAccess"),
+        import("@/stores/appStore"),
+      ]);
+      if (!(await confirmUnlabeledAsHidden(useAppStore.getState().labels, "training"))) return;
+    }
     const localOpts = opts && !("remote" in opts) ? opts as LocalTrainingOptions : undefined;
     const { config } = get();
 

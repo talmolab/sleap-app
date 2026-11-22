@@ -383,6 +383,12 @@ export const useInferenceStore = create<InferenceState>()((set) => ({
     {
       const { labels, skeleton } = useAppStore.getState();
       if (multiSkeletonBlock(labels, "Running inference", { active: skeleton })) return;
+      // A job built from the project (not a worker-side file) reads it in the
+      // 2.x layout: say once that nodes not labelled will read as hidden.
+      if (!remoteOpts?.remote) {
+        const { confirmUnlabeledAsHidden } = await import("@/lib/slpAccess");
+        if (!(await confirmUnlabeledAsHidden(labels, "inference"))) return;
+      }
     }
 
     // Local inference reads the saved project file (see runInference); a run

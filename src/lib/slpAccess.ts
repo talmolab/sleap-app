@@ -16,11 +16,13 @@ import type { Labels } from "@talmolab/sleap-io.js";
 import { useAppStore } from "@/stores/appStore";
 import { askSlpFormat, useSlpAccessNonce } from "@/stores/slpFormatStore";
 import { toast } from "@/lib/notify";
+import { confirmDialog } from "@/stores/confirmStore";
 import {
   isSlpFormat3ChoiceError,
   isSlpFormatError,
   isSlpTableError,
   isSlpViewOnlyError,
+  isUnlabeledPoint,
   isViewOnlyLabels,
   setEditableInPlace,
   sourceFormatOf,
@@ -317,4 +319,46 @@ export function refuseEditIfViewOnly(): boolean {
     duration: 5000,
   });
   return true;
+}
+
+// ---------------------------------------------------------------------------
+// Jobs built from a project with nodes not labelled
+// ---------------------------------------------------------------------------
+
+/** How many nodes in `labels` are marked as not labelled (SLP format 3.0). */
+export function countUnlabeledNodes(labels: Labels | null | undefined): number {
+  let n = 0;
+  for (const lf of labels?.labeledFrames ?? []) {
+    for (const inst of lf.instances) {
+      for (const p of inst.points) if (isUnlabeledPoint(p)) n++;
+    }
+  }
+  return n;
+}
+
+/**
+ * Before a training or inference job is built from the open project: if it
+ * holds nodes marked as not labelled (an SLP format 3.0 file opened for
+ * editing, or merged in), say once that the job sees them as hidden nodes and
+ * ask to continue. Job inputs are written in the 2.x layout (the sleap-nn the
+ * app runs reads no other), which cannot store the mark. True to go on.
+ */
+export async function confirmUnlabeledAsHidden(
+  labels: Labels | null | undefined,
+  job: "training" | "inference",
+): Promise<boolean> {
+  const n = countUnlabeledNodes(labels);
+  if (n === 0) return true;
+  const nodes = plural(n, "node", "nodes");
+  return confirmDialog({
+    title: "Nodes not labelled will count as hidden",
+    message:
+      `This project has ${nodes} marked as not labelled. The ${job} job reads ` +
+      "the project in the older 2.x layout, which can't store that mark, so " +
+      (job === "training"
+        ? "the model trains on them as hidden nodes (annotated as not visible)."
+        : "it sees them as hidden nodes (annotated as not visible)."),
+    confirmLabel: "Continue",
+    cancelLabel: "Cancel",
+  });
 }

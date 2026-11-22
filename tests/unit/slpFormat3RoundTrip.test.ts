@@ -38,7 +38,7 @@ import {
   sourceFormatOf,
   withLegacyLayout,
 } from "@/lib/slpFormatCompat";
-import { allowEditing, isProjectViewOnly } from "@/lib/slpAccess";
+import { allowEditing, countUnlabeledNodes, isProjectViewOnly } from "@/lib/slpAccess";
 import { applyDeltas, buildBaseIndex, decodeJournal, encodeFrameDelta, frameDeltaToRecord } from "@/lib/autosaveJournal";
 import { instanceNamedPoints } from "@/lib/instancePoints";
 import { instanceGeometry } from "@/canvas/instanceGeometry";
@@ -102,6 +102,9 @@ describe.skipIf(!HAS_FORMAT3)("format 3.0 opened for editing", () => {
     expect(isUnlabeledPoint(hiddenTail.points[TAIL])).toBe(false);
     expect(metadataOf(lf)).toEqual({ note: "frame note" });
     expect(metadataOf(inst)).toEqual({ annotator: "someone" });
+    // Training or inference from this project warns once (see
+    // unlabeledJobWarning.test.ts): the file's one node not labelled counts.
+    expect(countUnlabeledNodes(labels)).toBe(1);
 
     // #511: shown as "not labelled", not drawn, and not missing for Label QC.
     expect(instanceNamedPoints(inst)[TAIL].labeled).toBe(false);
