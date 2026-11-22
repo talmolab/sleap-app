@@ -32,7 +32,7 @@ import {
   type ResolvedConflict,
 } from "../../lib/mergeConflicts";
 import { loadLabelsFromSlpFile, loadLabelsFromSlpPath } from "../../lib/loadProject";
-import { isReportedSlpError, SlpOpenCancelled } from "../../lib/slpAccess";
+import { isReportedSlpError, refuseEditIfViewOnly, SlpOpenCancelled } from "../../lib/slpAccess";
 import { summarizeMatch, type MatchPreview } from "../../lib/mergeProject";
 import { getPlatform } from "../../platform/index";
 import { ConflictReview } from "./ConflictReview";
@@ -58,9 +58,9 @@ const errMsg = (e: unknown) => (e instanceof Error ? e.message : String(e));
  * The inline error for a donor that didn't load. A refused file was already
  * explained in its own dialog, and a cancelled format 3.0 choice is no error.
  */
-const donorLoadError = (e: unknown) =>
+const donorLoadError = (e: unknown): string | null =>
   e instanceof SlpOpenCancelled
-    ? "Not merged."
+    ? null
     : isReportedSlpError(e)
       ? "This file can't be read by this version of SLEAP."
       : errMsg(e);
@@ -125,6 +125,9 @@ export function MergeProjectDialog() {
   const previewDonor = useCallback(
     async (source: MergeSource) => {
       if (!labels) return;
+      // A project opened View only takes no merge: say so before reading the
+      // donor (and asking about it), not after.
+      if (refuseEditIfViewOnly()) return;
       resetFile();
       const seq = loadSeq.current;
       const stale = () => seq !== loadSeq.current;

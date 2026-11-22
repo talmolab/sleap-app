@@ -46,12 +46,18 @@ export class VisibilityModel {
   fit(masks: NodeVisibility[][]): this {
     this.nInstances = masks.length;
     this.nNodes = masks.length ? masks[0].length : 0;
-    // Rates over the instances that labelled the node.
+    // Rates over the instances that labeled the node (two counters, no
+    // intermediate arrays: this runs for every node pair).
     const rate = (ms: NodeVisibility[][], j: number): number => {
-      const known = ms.filter((m) => m[j] !== null);
-      return known.length
-        ? known.reduce((s, m) => s + (m[j] ? 1 : 0), 0) / known.length
-        : 0;
+      let known = 0;
+      let visible = 0;
+      for (const m of ms) {
+        const v = m[j];
+        if (v === null) continue;
+        known++;
+        if (v) visible++;
+      }
+      return known ? visible / known : 0;
     };
     this.visibilityRates = Array.from({ length: this.nNodes }, (_, j) => rate(masks, j));
     this.coVisibility = Array.from({ length: this.nNodes }, () =>

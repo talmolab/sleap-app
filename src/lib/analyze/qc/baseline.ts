@@ -476,12 +476,13 @@ export class BaselineFeatureExtractor {
     }
 
     // has_isolated_invisible -> the invisible node whose skeleton neighbors are all
-    // visible (matches the break in _visibilityFeatures).
-    const visMask = pose.map(isVisible);
+    // visible (matches the break in _visibilityFeatures, which leaves out
+    // nodes not labeled).
+    const visMask = visibilityMask(pose);
     for (let i = 0; i < this.nNodes; i++) {
-      if (visMask[i]) continue;
+      if (visMask[i] !== false) continue;
       const nb = adj[i];
-      if (nb.length && nb.every((n) => visMask[n])) {
+      if (nb.length && nb.every((n) => visMask[n] === true)) {
         out.has_isolated_invisible = { nodes: [i] };
         break;
       }

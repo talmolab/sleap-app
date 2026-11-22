@@ -36,6 +36,7 @@ import {
 } from "@talmolab/sleap-io.js";
 import {
   copyPoint,
+  copySourceMark,
   isPointLabeled,
   metadataOf,
   setMetadata,
@@ -286,6 +287,10 @@ export function applyDeltas(base: Labels, deltas: FrameDelta[]): void {
     lf.isNegative = delta.neg;
     setMetadata(lf, delta.md);
     if (delta.bb) lf.bboxes = delta.bb.map((b) => rebuildBbox(b, base, slots));
+    // Rebuilt records belong to the frame they replay into: they take its
+    // open-time format 3.0 choice, if the base was read from such a file.
+    for (const inst of lf.instances) copySourceMark(lf, inst);
+    for (const box of lf.bboxes) copySourceMark(lf, box);
   }
 
   // We mutated `labeledFrames`/`instances` directly, so io's count-guarded

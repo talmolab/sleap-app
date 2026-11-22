@@ -15,10 +15,22 @@
  * THIS MODULE GOES AWAY WITH THE PIN BUMP to sleap-io.js >= 0.6.0: import the
  * types and error classes from `@talmolab/sleap-io.js` instead, replace the
  * `is*Error` helpers with `instanceof`, read `point.labeled`, `x.metadata` and
- * `labels.sourceFormat` directly, and pass `format3` / `unlabeledAs` to the
- * readers and writers without the casts below.
+ * `labels.sourceFormat` directly, call `setSourceAccess` and `copySourceMark`
+ * directly, and pass `format3` / `unlabeledAs` to the readers and writers
+ * without the casts below.
  */
+import * as sio from "@talmolab/sleap-io.js";
 import type { Labels } from "@talmolab/sleap-io.js";
+
+/**
+ * The record-mark helpers of sleap-io.js 0.6.0, absent on the old pin. Read
+ * as `(sio as unknown as MarkApi).name` at each use (a static member access,
+ * so bundlers still tree-shake the library).
+ */
+interface MarkApi {
+  copySourceMark?: (from: object | null | undefined, to: object | null | undefined) => void;
+  setSourceAccess?: (labels: Labels, access: Format3Access) => void;
+}
 
 // ---------------------------------------------------------------------------
 // Types (mirrors of sleap-io.js 0.6.0 `codecs/slp/format3.ts`)
@@ -146,14 +158,62 @@ export function isViewOnlyLabels(labels: Labels | null | undefined): boolean {
 }
 
 /**
- * Turn view-only labels editable, in place. Equivalent to reopening the file
- * with `format3: "edit"`: both choices read the same model, and only the
- * writers look at `access`. `sourceFormat` is one object shared by the labels
- * and their lazy store, so this changes both.
+ * Switch labels loaded from a format 3.0 file to `access`, in place: the
+ * labels, their lazy store and the mark every record carries (sleap-io.js
+ * `setSourceAccess`; its source formats are frozen, so they are never
+ * mutated). Switching to "edit" is equivalent to reopening the file with
+ * `format3: "edit"`: both choices read the same model, and only the writers
+ * look at the choice. No-op for labels not loaded from a 3.0 file.
  */
-export function setEditableInPlace(labels: Labels): void {
+export function setSourceAccess(labels: Labels, access: Format3Access): void {
   const sf = sourceFormatOf(labels);
-  if (sf) sf.access = "edit";
+  if (!sf || sf.access === access) return;
+  const set = (sio as unknown as MarkApi).setSourceAccess;
+  if (set) set(labels, access);
+  else
+    (labels as { sourceFormat?: SlpSourceFormat | null }).sourceFormat = { ...sf, access };
+}
+
+/**
+ * Give a record the app rebuilt (an undo snapshot, a copy, a converted
+ * prediction, a journal replay) the open-time choice of the record it was
+ * made from, so writers treat it as that file's content (sleap-io.js
+ * `copySourceMark`). No-op on the old pin.
+ */
+export function copySourceMark(from: object | null | undefined, to: object | null | undefined): void {
+  (sio as unknown as MarkApi).copySourceMark?.(from, to);
+}
+
+/**
+ * Give labels whose records were rebuilt from a draft the source format of
+ * the file the project was opened from, when that file is still in format
+ * 3.0 on disk (see {@link sourceFormatRecord}). The in-place save and local
+ * jobs then know not to read or patch that file as it is.
+ */
+export function restoreSourceFormat(
+  labels: Labels,
+  record: { formatId: number; summary: Format3Summary } | null | undefined,
+  labelsPath: string,
+): void {
+  if (!record || sourceFormatOf(labels)) return;
+  (labels as { sourceFormat?: SlpSourceFormat | null }).sourceFormat = Object.freeze({
+    formatId: record.formatId,
+    access: "edit" as const,
+    summary: record.summary,
+    labelsPath,
+  });
+}
+
+/**
+ * What a draft records about the project's file (for
+ * {@link restoreSourceFormat}): its format and drop summary while it is still
+ * in format 3.0 on disk, else undefined.
+ */
+export function sourceFormatRecord(
+  labels: Labels,
+): { formatId: number; summary: Format3Summary } | undefined {
+  const sf = sourceFormatOf(labels);
+  return sf ? { formatId: sf.formatId, summary: sf.summary } : undefined;
 }
 
 /**

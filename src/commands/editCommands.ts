@@ -14,7 +14,13 @@ import type { Command } from "./types";
 import type { CommandContext } from "./CommandContext";
 import { useAppStore } from "../stores/appStore";
 import { toast } from "@/lib/notify";
-import { copyMetadata, copyPoint, isUnlabeledPoint, markPointLabeled } from "@/lib/slpFormatCompat";
+import {
+  copyMetadata,
+  copyPoint,
+  copySourceMark,
+  isUnlabeledPoint,
+  markPointLabeled,
+} from "@/lib/slpFormatCompat";
 import {
   showLabelingHint,
   hintIfFirstInstance,
@@ -324,6 +330,7 @@ export const CopyInstance: Command = {
       track: instance.track,
     });
     copyMetadata(instance, clone);
+    copySourceMark(instance, clone);
     ctx.setState({ clipboardInstance: clone });
   },
 };
@@ -364,6 +371,7 @@ export const PasteInstance: Command = {
       track: clipboardInstance.track,
     });
     copyMetadata(clipboardInstance, newInstance);
+    copySourceMark(clipboardInstance, newInstance);
 
     // Find or create the LabeledFrame
     const frames = labels.find({ video, frameIdx });
@@ -407,6 +415,7 @@ export const DuplicateInstance: Command = {
       track: source.track,
     });
     copyMetadata(source, newInstance);
+    copySourceMark(source, newInstance);
 
     const frames = labels.find({ video, frameIdx });
     let lf: LabeledFrame;
@@ -484,6 +493,8 @@ export const ConvertPredictionToInstance: Command = {
       track: predicted.track,
       fromPredicted: predicted,
     });
+    // The conversion keeps the content's source (its format 3.0 choice).
+    copySourceMark(predicted, userInstance);
     const hadMissingNodes = userInstance.points.some(
       (p) => isNaN(p.xy[0]) || isNaN(p.xy[1])
     );
@@ -732,6 +743,7 @@ export const AddInstancesFromAllPredictions: Command = {
         track: inst.track,
         fromPredicted: inst,
       });
+      copySourceMark(inst, userInstance);
       fillMissingPredictedNodes(userInstance);
       if (!firstConverted) firstConverted = userInstance;
       return userInstance;
@@ -790,6 +802,7 @@ export const AddInstancesFromAllPredictionsInProject: Command = {
           track: inst.track,
           fromPredicted: inst,
         });
+        copySourceMark(inst, userInstance);
         fillMissingPredictedNodes(userInstance);
         totalAccepted++;
         return userInstance;

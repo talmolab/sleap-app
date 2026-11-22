@@ -36,6 +36,7 @@ import { loadSlp, readSlpStreaming } from "@/lib/slpRead";
 import { useAppStore } from "@/stores/appStore";
 import { toast } from "@/lib/notify";
 import { toastLoadError } from "@/lib/slpAccess";
+import { restoreSourceFormat } from "@/lib/slpFormatCompat";
 import {
   reportParseProgress,
   installTauriImageReader,
@@ -309,6 +310,10 @@ export async function restoreTauriDraft(
     const filename =
       (entry.projectPath ?? entry.displayName).split(/[\\/]/).pop() ??
       entry.displayName;
+    // The original may still be in SLP format 3.0 on disk (opened for
+    // editing, never saved): say so again, so the in-place save and local
+    // jobs don't patch or read it as it is.
+    restoreSourceFormat(draftLabels, entry.sourceFormat, projectPath ?? entry.displayName);
     store.setLabels(draftLabels, filename, projectPath ?? undefined);
 
     // The desktop draft is only a net — the recovered project is still DIRTY vs

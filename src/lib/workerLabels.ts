@@ -271,10 +271,12 @@ export async function loadWorkerLabels(
   });
   try {
     return await readSlpStreaming(source, {
-      // Read for statistics only, never edited or written back: an SLP format
-      // 3.0 file opens View only without asking. A file the reader refuses is
+      // Never edited or written back to the worker. The wizard may send a 2.x
+      // copy of it to the worker when videos are re-pointed (and says first
+      // that nodes not labeled train as hidden), so an SLP format 3.0 file
+      // opens for editing without asking. A file the reader refuses is
       // reported by the caller (the wizard shows the error).
-      format3: "view",
+      format3: "edit",
       refusal: "throw",
       openVideos: false,
       // Only the labels: never download pred_points, which is most of a

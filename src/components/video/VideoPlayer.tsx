@@ -2952,7 +2952,7 @@ export function VideoPlayer() {
         // Start dragging if it's a user instance (never in a View only
         // project: the node is selected, nothing moves).
         const inst = instances[nodeHit.instanceIdx];
-        if (!inst.isPredicted && !refuseEditIfViewOnly()) {
+        if (!inst.isPredicted && !refuseEditIfViewOnly({ quiet: true })) {
           commandContext.execute(BeginEdit);
           // Clicking a node marks it "complete" (confirmed by the user), same
           // as PyQt SLEAP's QtNode.mousePressEvent -- turns its label green.

@@ -2129,17 +2129,22 @@ export const useTrainingStore = create<TrainingState>()((set, get) => ({
     // Training reads the open project's first skeleton: refuse a project that
     // really uses several different skeletons (a worker-side file is its own).
     if (remoteOpts?.labelsSource !== "worker-file" && (await blockedByMultiSkeleton("Training"))) return;
-    // Training data built from the project is written in the 2.x layout: say
-    // once that nodes not labelled will train as hidden nodes.
+    const localOpts = opts && !("remote" in opts) ? opts as LocalTrainingOptions : undefined;
+    const { config } = get();
+    // A job that uses the open project (its labels, or predictions merged back
+    // into it): a View only project asks to allow editing first (Cancel stops
+    // the job), and when the training data is built from the project, nodes
+    // not labeled are announced as hidden (the job reads a 2.x copy).
     if (remoteOpts?.labelsSource !== "worker-file") {
-      const [{ confirmUnlabeledAsHidden }, { useAppStore }] = await Promise.all([
+      const [{ confirmJobFromProject }, { useAppStore }] = await Promise.all([
         import("@/lib/slpAccess"),
         import("@/stores/appStore"),
       ]);
-      if (!(await confirmUnlabeledAsHidden(useAppStore.getState().labels, "training"))) return;
+      const buildsFromProject = remoteOpts
+        ? true
+        : (await localTrainingLabelsPath(config)) === useAppStore.getState().projectPath;
+      if (!(await confirmJobFromProject("training", { buildsFromProject }))) return;
     }
-    const localOpts = opts && !("remote" in opts) ? opts as LocalTrainingOptions : undefined;
-    const { config } = get();
 
     // Local sleap-nn reads the labels file from disk; don't let it silently
     // train on a stale project file while the window holds unsaved labels.
@@ -2605,6 +2610,10 @@ export const useTrainingStore = create<TrainingState>()((set, get) => ({
 
       // Save models next to the labels file
       const modelDir = labelsPath.replace(/[/\\][^/\\]+$/, "") + "/models";
+      // What sleap-nn reads: the labels file, or a 2.x copy of the project when
+      // its file on disk is still in SLP format 3.0 (see jobLabelsFile.ts).
+      const { jobLabelsPath } = await import("@/lib/jobLabelsFile");
+      const dataLabelsPath = await jobLabelsPath(labelsPath, "training");
       const trainedModelPaths: string[] = [];
 
       // Ensure sleap-nn's [export] support is installed BEFORE training when the
@@ -2753,7 +2762,7 @@ export const useTrainingStore = create<TrainingState>()((set, get) => ({
             ),
           }));
 
-          const result = await runTraining(configYaml, labelsPath, runName, (event) => {
+          const result = await runTraining(configYaml, dataLabelsPath, runName, (event) => {
             const state = get();
             const idx = state.currentModelIndex;
 
@@ -2967,8 +2976,9 @@ export const useTrainingStore = create<TrainingState>()((set, get) => ({
                 openVideos: false,
                 h5: { filenameHint: outputPath },
                 // The training job's own predictions, merged into the project
-                // and never written back: no question for a format 3.0 file
-                // (see inferenceStore's loadAndMergePredictionBytes).
+                // (the file itself is not written again): no question for a
+                // format 3.0 file; the project's 2.x saves drop any metadata
+                // they carry (see inferenceStore's loadAndMergePredictionBytes).
                 format3: "edit",
               });
               console.log("[training] Loaded predictions: %d videos, %d frames, %d tracks",
@@ -3103,6 +3113,18 @@ export const useTrainingStore = create<TrainingState>()((set, get) => ({
     if (!isTauri || get().status !== "idle" || get().dryRun?.status === "running") return;
     if (await blockedByMultiSkeleton("Training")) return;
     const { config } = get();
+    // A dry run of a project whose file is still in SLP format 3.0 reads a
+    // 2.x copy of it (as a real run does), which a View only project can't
+    // write until editing is allowed.
+    {
+      const { useAppStore } = await import("@/stores/appStore");
+      const { projectFileIsFormat3 } = await import("@/lib/jobLabelsFile");
+      const { labels, projectPath } = useAppStore.getState();
+      if ((await localTrainingLabelsPath(config)) === projectPath && projectFileIsFormat3(labels)) {
+        const { ensureWritable } = await import("@/lib/slpAccess");
+        if (!(await ensureWritable(labels, "check training on it"))) return;
+      }
+    }
     const slots = getConfigSlots(config.modelType);
     const id = ++dryRunSeq;
     set({
@@ -3147,6 +3169,16 @@ export const useTrainingStore = create<TrainingState>()((set, get) => ({
     const labelsPath = await localTrainingLabelsPath(config);
     const { useAppStore } = await import("@/stores/appStore");
     const labels = useAppStore.getState().labels;
+    // A project file still in SLP format 3.0 is read through a 2.x copy.
+    let dataLabelsPath = labelsPath;
+    try {
+      const { jobLabelsPath } = await import("@/lib/jobLabelsFile");
+      dataLabelsPath = await jobLabelsPath(labelsPath, "training");
+    } catch (err) {
+      update(() => ({ status: "failed", log: [`Couldn't write a 2.x copy of the project: ${err instanceof Error ? err.message : String(err)}`] }));
+      clearInterval(flushTimer);
+      return;
+    }
     const sizeStats = computeInstanceSizeStats(labels);
     const { runTraining } = await import("@/platform/backend");
     // Next to the labels file, as a real run: the summary's run folder shows it.
@@ -3183,7 +3215,7 @@ export const useTrainingStore = create<TrainingState>()((set, get) => ({
         try {
           ({ success } = await runTraining(
             configYaml,
-            labelsPath,
+            dataLabelsPath,
             runName,
             (event) => {
               if (event.event !== "stdout" && event.event !== "stderr") return;

@@ -352,7 +352,7 @@ function InstanceRow({
         className="py-0.5 px-2 text-xs text-right tabular-nums"
         title={
           notLabelled > 0
-            ? `${visibleNodes} visible of ${totalNodes} nodes; ${notLabelled} not labelled`
+            ? `${visibleNodes} visible of ${totalNodes} nodes; ${notLabelled} not labeled`
             : undefined
         }
       >
@@ -435,7 +435,7 @@ function InstanceDetailPanel({
         </span>
         <span>
           Nodes: {visibleNodes}/{totalNodes}
-          {notLabelled > 0 && ` (${notLabelled} not labelled)`}
+          {notLabelled > 0 && ` (${notLabelled} not labeled)`}
         </span>
       </div>
       <div className="relative">
@@ -465,7 +465,7 @@ function InstanceDetailPanel({
             // this instance. Muted, unlike a hidden or unplaced node (red),
             // since nothing is wrong with it.
             const status = !pt.labeled
-              ? "not labelled"
+              ? "not labeled"
               : shown
                 ? `${pt.x.toFixed(1)}, ${pt.y.toFixed(1)}`
                 : placed

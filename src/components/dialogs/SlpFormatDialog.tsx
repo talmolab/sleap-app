@@ -86,7 +86,7 @@ function RefusedBody({ prompt }: { prompt: Extract<SlpFormatPrompt, { kind: "ref
         <div className="space-y-1.5">
           <p className="text-muted-foreground">
             To get a copy this app can open, save it in the 2.x layout with
-            Python sleap-io 0.10 or newer. Nodes marked as not labelled are saved
+            Python sleap-io 0.10 or newer. Nodes marked as not labeled are saved
             as hidden nodes with no position.
           </p>
           <CopyableCode text={legacyCopyCommand(prompt.fileName)} />
@@ -144,7 +144,7 @@ export function SlpFormatDialog() {
               <div className="flex flex-col gap-3 text-sm">
                 <p>
                   <span className="font-medium">View only</span> opens it with
-                  editing off. Nothing is ever written back to the file.
+                  editing off. Nothing is written back unless you allow editing.
                 </p>
                 <p>
                   <span className="font-medium">Edit</span> allows changes.

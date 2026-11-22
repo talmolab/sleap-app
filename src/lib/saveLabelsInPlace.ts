@@ -235,7 +235,15 @@ async function probeOnDisk(path: string): Promise<OnDiskProbe> {
             };
           }
         | undefined;
-      tables[keyOf[name]] = onDiskTableFromMeta({ shape: meta.shape, metadata });
+      const table = onDiskTableFromMeta({ shape: meta.shape, metadata });
+      // A label table that is not a dataset (format 3.0 stores each as a group
+      // of columns) can't be patched; failing the probe sends the caller to a
+      // full re-save. Covers a file whose format the labels no longer record
+      // (e.g. a recovered draft of a format 3.0 project).
+      if (!table) {
+        throw new Error(`/${name} is not a table this in-place save can patch (SLP format 3.0?)`);
+      }
+      tables[keyOf[name]] = table;
     }
 
     // Sidecars: tracks/suggestions JSON string arrays, video signatures, and the
@@ -443,9 +451,10 @@ export async function saveLabelsInPlace(
   // Labels opened View only are never written. Throw rather than return
   // {ok:false}, which would send the caller on to a full re-save.
   const sourceFormat = sourceFormatOf(labels);
+  const formatName = (id: number) => (Number.isInteger(id) ? id.toFixed(1) : String(id));
   if (sourceFormat?.access === "view") {
     throw new Error(
-      `${destPath} is open View only (SLP format ${sourceFormat.formatId}); nothing was written.`
+      `${destPath} is open View only (SLP format ${formatName(sourceFormat.formatId)}); nothing was written.`
     );
   }
   // A format 3.0 file stores its tables in another layout, which this in-place
@@ -455,7 +464,7 @@ export async function saveLabelsInPlace(
   if (sourceFormat) {
     return {
       ok: false,
-      reason: `opened from SLP format ${sourceFormat.formatId}, which an in-place save cannot patch — full re-save in the 2.x layout`,
+      reason: `opened from SLP format ${formatName(sourceFormat.formatId)}, which an in-place save cannot patch — full re-save in the 2.x layout`,
     };
   }
   if (!hasCrossOriginIsolation()) {

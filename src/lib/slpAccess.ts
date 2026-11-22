@@ -24,7 +24,7 @@ import {
   isSlpViewOnlyError,
   isUnlabeledPoint,
   isViewOnlyLabels,
-  setEditableInPlace,
+  setSourceAccess,
   sourceFormatOf,
   type Format3Access,
   type Format3Summary,
@@ -55,10 +55,11 @@ export function describeFormat3Drops(summary: Format3Summary): string[] {
     if (summary.unlabeledPredictedPoints > 0) {
       parts.push(`${summary.unlabeledPredictedPoints} in predictions`);
     }
+    const one = summary.unlabeledPoints === 1;
     drops.push(
-      `${plural(summary.unlabeledPoints, "node", "nodes")} marked as not labelled` +
+      `${plural(summary.unlabeledPoints, "node", "nodes")} marked as not labeled` +
         (parts.length > 0 ? ` (${parts.join(", ")})` : "") +
-        ": saved as hidden nodes with no position",
+        `: saved as ${one ? "a hidden node" : "hidden nodes"} with no position`,
     );
   }
   const tables: Array<[keyof Format3Summary["metadataKeys"], string]> = [
@@ -95,9 +96,8 @@ export function refusalReason(
   }
   if (formatId !== null && formatId >= 4) {
     return (
-      `It is in SLP format ${formatLabel(formatId)}, written by a newer tool than ` +
-      "this version of SLEAP can read. Open it with the tool that wrote it, or " +
-      "update SLEAP."
+      "It was written by a newer tool than this version of SLEAP can read. " +
+      "Open it with the tool that wrote it, or update SLEAP."
     );
   }
   if (unsupportedFeatures.length > 0) {
@@ -107,9 +107,8 @@ export function refusalReason(
     );
   }
   return (
-    `It is in SLP format ${formatLabel(formatId)}, which this version of SLEAP ` +
-    "can't read in full (see the details below). Python sleap-io 0.10 or newer " +
-    "reads it."
+    "This version of SLEAP can't read all of it (see the details below). " +
+    "Python sleap-io 0.10 or newer reads it."
   );
 }
 
@@ -274,7 +273,7 @@ export async function allowEditing(labels: Labels, action?: string): Promise<boo
     action,
   });
   if (answer !== "edit") return false;
-  setEditableInPlace(labels);
+  setSourceAccess(labels, "edit");
   useSlpAccessNonce.getState().bump();
   return true;
 }
@@ -293,23 +292,28 @@ export async function ensureWritable(
 }
 
 /**
- * Turn a writer's `SlpViewOnlyError` (the backstop when an app check was
- * missed) into the allow-editing prompt. Returns true when the error was one.
+ * Turn a writer's `SlpViewOnlyError` for a project opened View only (the
+ * backstop when an app check was missed) into the allow-editing prompt.
+ * Returns true when it did. Any other error, including View only content
+ * that ended up in an editable project, is left to the caller's error toast.
  */
-export function handleViewOnlyWriteError(err: unknown): boolean {
-  if (!isSlpViewOnlyError(err)) return false;
+export function handleViewOnlyWriteError(err: unknown, action = "save"): boolean {
+  if (!isSlpViewOnlyError(err) || !isProjectViewOnly()) return false;
   const labels = useAppStore.getState().labels;
-  if (labels) void allowEditing(labels, "save");
+  if (labels) void allowEditing(labels, action);
   return true;
 }
 
 /**
  * Refuse an edit of a view-only project: tell the user (with an action to
  * allow editing) and return true. Returns false when editing is allowed.
+ * `quiet` refuses without the toast, for a gesture that may only be a
+ * selection (the banner already says the project is View only).
  */
-export function refuseEditIfViewOnly(): boolean {
+export function refuseEditIfViewOnly(opts?: { quiet?: boolean }): boolean {
   const labels = useAppStore.getState().labels;
   if (!isViewOnlyLabels(labels)) return false;
+  if (opts?.quiet) return true;
   toast.info("This file is open View only", {
     id: "view-only-edit",
     description: "Editing is off, and nothing is written back to the file.",
@@ -350,15 +354,39 @@ export async function confirmUnlabeledAsHidden(
   const n = countUnlabeledNodes(labels);
   if (n === 0) return true;
   const nodes = plural(n, "node", "nodes");
+  const them = n === 1 ? "it as a hidden node" : "them as hidden nodes";
   return confirmDialog({
-    title: "Nodes not labelled will count as hidden",
+    title: "Nodes not labeled will count as hidden",
     message:
-      `This project has ${nodes} marked as not labelled. The ${job} job reads ` +
-      "the project in the older 2.x layout, which can't store that mark, so " +
+      `This project has ${nodes} marked as not labeled. The ${job} job reads ` +
+      "a copy of the project in the older 2.x layout, which can't store that " +
+      "mark, so " +
       (job === "training"
-        ? "the model trains on them as hidden nodes (annotated as not visible)."
-        : "it sees them as hidden nodes (annotated as not visible)."),
+        ? `the model trains on ${them} (annotated as not visible).`
+        : `it sees ${them} (annotated as not visible).`),
     confirmLabel: "Continue",
     cancelLabel: "Cancel",
   });
+}
+
+/**
+ * Before a training or inference job that uses the open project (its labels
+ * go into the job, or its predictions come back into the project):
+ * - a View only project asks to allow editing first (the job's output would
+ *   be refused otherwise, and the job's 2.x copy of the project can't be
+ *   written); Cancel stops the job;
+ * - when the job's data is built from the project (`buildsFromProject`),
+ *   nodes not labeled are announced as hidden ({@link confirmUnlabeledAsHidden}).
+ * True to go on.
+ */
+export async function confirmJobFromProject(
+  job: "training" | "inference",
+  opts: { buildsFromProject: boolean },
+): Promise<boolean> {
+  const labels = useAppStore.getState().labels;
+  if (!labels) return true;
+  const action = job === "training" ? "train on it" : "add predictions to it";
+  if (!(await ensureWritable(labels, action))) return false;
+  if (opts.buildsFromProject && !(await confirmUnlabeledAsHidden(labels, job))) return false;
+  return true;
 }

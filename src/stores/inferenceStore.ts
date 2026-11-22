@@ -219,10 +219,11 @@ export async function loadAndMergePredictionBytes(
   const predictions = await loadSlp(bytes, {
     openVideos: false,
     h5: { filenameHint },
-    // A job's own output, read once to merge into the project and never
-    // written back, so an SLP format 3.0 file opens for editing without
-    // asking: the predictions become part of the project, whose saves write
-    // the 2.x layout anyway.
+    // A job's own output, read once to merge into the project; the file
+    // itself is not written again. An SLP format 3.0 file opens for editing
+    // without asking: the predictions become part of the project, and the
+    // project's saves write the 2.x layout, which drops any metadata or
+    // not-labeled marks they carry, as for the project's own records.
     format3: "edit",
   });
   await mergePredictionsIntoProject(predictions, mode, trackOnly);
@@ -383,11 +384,13 @@ export const useInferenceStore = create<InferenceState>()((set) => ({
     {
       const { labels, skeleton } = useAppStore.getState();
       if (multiSkeletonBlock(labels, "Running inference", { active: skeleton })) return;
-      // A job built from the project (not a worker-side file) reads it in the
-      // 2.x layout: say once that nodes not labelled will read as hidden.
-      if (!remoteOpts?.remote) {
-        const { confirmUnlabeledAsHidden } = await import("@/lib/slpAccess");
-        if (!(await confirmUnlabeledAsHidden(labels, "inference"))) return;
+      // The predictions come back into the project: a View only project asks
+      // to allow editing first (Cancel stops the job). A local job reads a
+      // 2.x copy of the project, so nodes not labeled are announced as hidden;
+      // a remote one reads its own file on the worker.
+      const { confirmJobFromProject } = await import("@/lib/slpAccess");
+      if (!(await confirmJobFromProject("inference", { buildsFromProject: !remoteOpts?.remote }))) {
+        return;
       }
     }
 

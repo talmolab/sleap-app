@@ -7,14 +7,12 @@
 
 import { isTauri } from "./index";
 import { sleapCmd } from "@/lib/sleapPlugin";
-import { saveSlpToBytes } from "@talmolab/sleap-io.js";
 import type { InferenceConfig } from "@/stores/inferenceStore";
 import { buildInferenceArgs, pickInferenceSubcommand } from "./inferenceArgs";
 import type { UnlistenFn } from "@tauri-apps/api/event";
 import { formatRunTimestamp as formatPredictionsTimestamp } from "@/lib/timestamp";
 import { buildTrainingArgs } from "./trainingArgs";
 import { buildExportArgs, type BuildExportArgsOptions } from "./exportArgs";
-import { withLegacyLayout } from "@/lib/slpFormatCompat";
 
 function sampleRandomFrames(totalFrames: number, count: number): number[] {
   const n = Math.min(count, totalFrames);
@@ -509,24 +507,19 @@ export async function runInference(
   const { tempDir, join, dirname, basename } = await import("@tauri-apps/api/path");
 
   const tmp = await tempDir();
-  const ts = Date.now();
 
-  // Use original project file if available, otherwise serialize
+  // Use the project file if there is one and sleap-nn can read it; otherwise
+  // (no file yet, or a file still in SLP format 3.0) serialize a 2.x copy.
+  const { useAppStore } = await import("@/stores/appStore");
+  const { projectFileIsFormat3, writeLegacyJobCopy } = await import("@/lib/jobLabelsFile");
+  const projectLabels = useAppStore.getState().labels;
   let dataPath: string;
-  if (projectPath) {
+  if (projectPath && !projectFileIsFormat3(projectLabels)) {
     dataPath = projectPath;
     console.log("[inference] Using project file:", dataPath);
   } else {
-    const { writeFile } = await import("@tauri-apps/plugin-fs");
-    // Lazy import to avoid pulling in saveSlpToBytes when not needed
-    const { useAppStore } = await import("@/stores/appStore");
-    const labels = useAppStore.getState().labels;
-    if (!labels) throw new Error("No project loaded");
-    dataPath = await join(tmp, `sleap_inference_input_${ts}.slp`);
-    console.log("[inference] Serializing project to temp file:", dataPath);
-    const bytes = await saveSlpToBytes(labels, withLegacyLayout());
-    await writeFile(dataPath, bytes);
-    console.log("[inference] Wrote %d bytes to %s", bytes.byteLength, dataPath);
+    if (!projectLabels) throw new Error("No project loaded");
+    dataPath = await writeLegacyJobCopy(projectLabels, "inference");
   }
 
   // "frame"/"video"/"random_video"/a custom range all scope to a single video

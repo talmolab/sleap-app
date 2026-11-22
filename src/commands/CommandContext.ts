@@ -14,7 +14,13 @@ import type { Command } from "./types";
 import { toast } from "@/lib/notify";
 import { humanizeCommandName } from "@/lib/humanizeCommand";
 import { dirtyFrameTracker } from "@/lib/autosaveDirty";
-import { copyMetadata, copyPoint, metadataOf, type RecordMetadata } from "@/lib/slpFormatCompat";
+import {
+  copyMetadata,
+  copyPoint,
+  copySourceMark,
+  metadataOf,
+  type RecordMetadata,
+} from "@/lib/slpFormatCompat";
 import { refuseEditIfViewOnly } from "@/lib/slpAccess";
 
 /** Record of an executed command for change tracking. */
@@ -33,6 +39,11 @@ interface SingleFrameData {
   isNegative: boolean;
   /** The frame's metadata (SLP format 3.0), so undo/redo keeps it. */
   metadata: RecordMetadata | null;
+  /**
+   * The frame snapshotted, whose open-time format 3.0 choice a re-created
+   * frame takes (see `copySourceMark`).
+   */
+  source: LabeledFrame;
   /**
    * The frame's non-pose annotations (bounding boxes, centroids, masks, label
    * images, ROIs). Without these, restoring a frame wiped them (#487). Each is
@@ -120,6 +131,7 @@ function cloneInstances(instances: Instance[]): Instance[] {
         score: inst.score,
       });
       copyMetadata(inst, copy);
+      copySourceMark(inst, copy);
       predClones.set(inst, copy);
       return copy;
     }
@@ -135,6 +147,7 @@ function cloneInstances(instances: Instance[]): Instance[] {
       // A link to a prediction on another frame keeps its original target.
       fromPredicted: from ? (predClones.get(from) ?? from) : null,
     });
+    copySourceMark(inst, copy);
     return copyMetadata(inst, copy);
   });
 }
@@ -149,6 +162,7 @@ function cloneAnnotation<T extends object>(ann: T, instanceMap: Map<Instance, In
     instance?: Instance | null;
   };
   if (copy.instance) copy.instance = instanceMap.get(copy.instance) ?? copy.instance;
+  copySourceMark(ann, copy);
   return copy;
 }
 
@@ -187,6 +201,7 @@ function captureFrame(lf: LabeledFrame, videoRef: Video, frameIdx: number): Sing
     instances,
     isNegative: lf.isNegative,
     metadata: md ? { ...md } : null,
+    source: lf,
     annotations,
   };
 }
@@ -199,6 +214,8 @@ function applyFrame(lf: LabeledFrame, data: SingleFrameData): void {
   if (data.metadata) {
     (lf as { metadata?: RecordMetadata }).metadata = { ...data.metadata };
   }
+  // A frame re-created by undo (it had been deleted) is the same content.
+  if (lf !== data.source) copySourceMark(data.source, lf);
   lf.bboxes = annotations.bboxes;
   lf.centroids = annotations.centroids;
   lf.masks = annotations.masks;

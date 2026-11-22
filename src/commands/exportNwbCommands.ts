@@ -97,9 +97,6 @@ export const ExportNwbCommand: Command = {
   async execute(ctx: CommandContext) {
     const { labels, filename } = ctx.state;
     if (!labels) return;
-    // The export goes through an SLP copy in the 2.x layout: not for a
-    // project opened View only unless the user allows editing.
-    if (!(await ensureWritable(labels, "export"))) return;
 
     const platform = await getPlatform();
     if (!platform.isTauri) {
@@ -124,6 +121,10 @@ export const ExportNwbCommand: Command = {
       });
       return;
     }
+
+    // The export goes through an SLP copy in the 2.x layout: not for a
+    // project opened View only unless the user allows editing.
+    if (!(await ensureWritable(labels, "export"))) return;
 
     const nwbPath = await platform.showSaveDialog({
       filters: [{ name: "NWB (ndx-pose)", extensions: ["nwb"] }],

@@ -21,6 +21,7 @@ import { videoSignature, buildBackendGraftPlan } from "@/lib/videoGraft";
 import { isDraftStaleVsDisk, isSourceChanged } from "@/lib/draftStaleness";
 import { toast } from "@/lib/notify";
 import { toastLoadError } from "@/lib/slpAccess";
+import { restoreSourceFormat } from "@/lib/slpFormatCompat";
 
 const H5WASM_URL =
   typeof location !== "undefined"
@@ -255,6 +256,7 @@ export async function restoreDraft(entry: DraftManifestEntry): Promise<boolean> 
         });
       }
       await resolveExternalVideos(draftLabels);
+      restoreSourceFormat(draftLabels, entry.sourceFormat, entry.displayName);
       store.setLabels(
         draftLabels,
         entry.displayName,
@@ -281,6 +283,8 @@ export async function restoreDraft(entry: DraftManifestEntry): Promise<boolean> 
       // but only when the on-disk file hasn't diverged from this draft (else force
       // Save-As so we never silently overwrite newer on-disk edits).
       const writeHandle = await safeRestoreWriteHandle(entry);
+      // The original may still be in format 3.0 on disk: say so again.
+      restoreSourceFormat(draftLabels, entry.sourceFormat, entry.displayName);
       store.setLabels(
         draftLabels,
         entry.displayName,

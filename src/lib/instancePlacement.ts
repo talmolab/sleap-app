@@ -10,6 +10,7 @@ import type { Labels, Skeleton, Video, LabeledFrame, InstancePlacementMethod } f
 import { toSourceCoords } from "@/lib/cropTransform";
 import {
   copyPointLabeled,
+  copySourceMark,
   isUnlabeledPoint,
   markPointLabeled,
   type PointLike,
@@ -393,6 +394,7 @@ function placePriorFrame(
         // A node not labelled on the prior frame stays not labelled.
         copyPointLabeled(source.points[i], instance.points[i]);
       }
+      copySourceMark(source, instance);
       if (source.track) instance.track = source.track;
       return instance;
     }
@@ -445,6 +447,7 @@ function placePrediction(
       instance.points[i].complete = source.points[i].complete;
       copyPointLabeled(source.points[i], instance.points[i]);
     }
+    copySourceMark(source, instance);
     // Copy track from the prediction
     if (source.track) {
       instance.track = source.track;
