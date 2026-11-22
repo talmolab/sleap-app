@@ -50,8 +50,8 @@
  * see `packageImageFormat.ts`), which every write path passes to io as
  * `imageFormat: "jpg"` / `imageQuality` (`withImageFormat`). PNG passes no
  * option at all, so a PNG export writes exactly what it always did. On
- * desktop, ffmpeg then extracts a colour video's frames as JPEGs at that
- * quality (`extractFrames.ts`), which io stores as they are.
+ * desktop, ffmpeg extracts PNG frames for either format; for JPEG, io's
+ * worker decodes them and encodes the JPEG (`extractFrames.ts`).
  *
  * ── SUGGESTION IMAGES on `full` (follow-up, io-gated) ────────────────────────
  * PyQt's Level 3 is `all_labeled=T, suggested=T` → the ideal embed mode is
@@ -83,7 +83,7 @@ import { toastExported } from "@/lib/exportToast";
 import { getPlatform } from "../platform/index";
 import { useAppStore } from "@/stores/appStore";
 import { withImageFormat, withLegacyLayout } from "@/lib/slpFormatCompat";
-import type { PackageImageOptions } from "@/lib/packageImageFormat";
+import { normalizePackageImage, type PackageImageOptions } from "@/lib/packageImageFormat";
 import { ensureWritable } from "@/lib/slpAccess";
 
 /** The three PyQt package levels. */
@@ -247,24 +247,27 @@ export function frameCountForLevel(labels: Labels, level: ExportPackageLevel): n
 
 /**
  * The desktop frame reader for a package: ffmpeg extracts each local video's
- * frames, as PNGs, or as JPEGs at the chosen quality for a JPEG package.
+ * frames as PNGs, whatever format the package stores (io encodes a JPEG
+ * package's frames from them).
  */
-function ffmpegFrameReader(image: PackageImageOptions | undefined) {
+function ffmpegFrameReader() {
   const extractDeps = createTauriExtractFramesDeps();
   return (video: Video, frames: readonly number[]) =>
-    createFfmpegFrameReader(video, frames, extractDeps, {
-      format: image?.format,
-      quality: image?.quality,
-    });
+    createFfmpegFrameReader(video, frames, extractDeps);
 }
 
-/** The `image` param of the package commands (set by the export dialogs). */
+/**
+ * The `image` param of the package commands (set by the export dialogs),
+ * cleaned: a missing or junk quality becomes the default, an out-of-range
+ * one is clamped. Undefined (PNG, as before) without a known format.
+ */
 export function packageImageParam(
   params: Record<string, unknown> | undefined
 ): PackageImageOptions | undefined {
   const image = params?.image as Partial<PackageImageOptions> | undefined;
-  if (!image || (image.format !== "png" && image.format !== "jpg")) return undefined;
-  return { format: image.format, quality: Number(image.quality) };
+  if (!image || typeof image !== "object") return undefined;
+  if (image.format !== "png" && image.format !== "jpg") return undefined;
+  return normalizePackageImage(image.format, image.quality);
 }
 
 /** Is the streaming desktop write (worker + native file writes) available? */
@@ -407,7 +410,7 @@ export async function writeLabelsPackageToPath(
     await saveEmbeddedPkgStreaming(exportLabels, destPath, null, {
       embed: mode,
       onProgress,
-      frameReader: ffmpegFrameReader(image),
+      frameReader: ffmpegFrameReader(),
       image,
     });
     return embedVideos.some((v) => !v.backend);
@@ -478,7 +481,7 @@ async function exportLabelsPackageNow(
         await saveEmbeddedPkgStreaming(exportLabels, destPath, null, {
           embed: mode,
           onProgress,
-          frameReader: ffmpegFrameReader(image),
+          frameReader: ffmpegFrameReader(),
           image,
         });
         // A video with no open decoder can't be embedded and stays a link.

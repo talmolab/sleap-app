@@ -81,8 +81,8 @@ export interface SaveEmbeddedPkgStreamingOptions {
    * (throws io's `ExportCancelled`, after removing the partial file). */
   onProgress?: SlpWriteOptions["onProgress"];
   /** Supplies a new embed's frames from outside the app's decoders (desktop:
-   * ffmpeg-extracted PNGs, or JPEGs for a JPEG package, see
-   * `extractFrames.ts`); as io's `appendEncodedVideos` option. */
+   * ffmpeg-extracted PNGs, see `extractFrames.ts`; io encodes them as JPEG
+   * for a JPEG package); as io's `appendEncodedVideos` option. */
   frameReader?: AppendEncodedVideosOptions["frameReader"];
   /** The package's frame format (Export Labels Package). Absent or PNG:
    * written exactly as before. JPEG: new frames are stored as JPEG at its

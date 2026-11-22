@@ -34,7 +34,7 @@ import {
   runClipExport,
   type FrameRange,
 } from "@/lib/videoExport";
-import { exportLabelsPackage } from "./exportPackageCommands";
+import { exportLabelsPackage, packageImageParam } from "./exportPackageCommands";
 import { getPlatform } from "../platform/index";
 import { downloadFile } from "@/lib/exportUtils";
 import { directoryOf } from "@/lib/analysisExport";
@@ -323,7 +323,7 @@ export const ExtractClipLabelsPackageCommand: Command = {
       "full",
       {
         suggestedName: extractFilename(ctx.state.filename, range, "pkg.slp"),
-        image: params?.image,
+        image: packageImageParam(params as Record<string, unknown> | undefined),
       }
     );
     if (saved && params?.openWhenDone !== false && (await getPlatform()).isTauri) {

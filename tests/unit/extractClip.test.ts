@@ -6,6 +6,7 @@
  * The encoder, platform, package export and new-window opening are mocked;
  * sleap-io is real.
  */
+import { normalizePackageImage } from "@/lib/packageImageFormat";
 import { describe, it, expect, beforeEach, vi } from "../bun-test";
 import {
   Instance,
@@ -42,6 +43,11 @@ vi.mock("@/lib/newInstance", () => ({
   openNewInstance: async (o: { file?: string }) => void opened.push(o.file ?? ""),
 }));
 vi.mock("@/commands/exportPackageCommands", () => ({
+  // As the real one: a known format, its quality cleaned.
+  packageImageParam: (p?: { image?: { format?: string; quality?: unknown } }) =>
+    p?.image?.format === "png" || p?.image?.format === "jpg"
+      ? normalizePackageImage(p.image.format, p.image.quality)
+      : undefined,
   exportLabelsPackage: async (
     labels: Labels,
     _filename: string | null,
@@ -275,12 +281,24 @@ describe("Extract Clip Labels Package", () => {
     expect(opened).toEqual([]);
   });
 
-  it("passes on the frame format chosen in the dialog (none: PNG, as before)", async () => {
+  it("passes on the frame format chosen in the dialog, cleaned (none: PNG, as before)", async () => {
     const { labels, video } = project();
     await ExtractClipLabelsPackageCommand.execute(ctx(labels, video, [10, 40]));
-    const image = { format: "jpg", quality: 85 };
+    const image = { format: "jpg" as const, quality: 85 };
     await ExtractClipLabelsPackageCommand.execute(ctx(labels, video, [10, 40]), { image });
-    expect(packageCalls.map((c) => c.image)).toEqual([undefined, image]);
+    // A caller other than the dialog: junk is dropped, a bad quality cleaned.
+    await ExtractClipLabelsPackageCommand.execute(ctx(labels, video, [10, 40]), {
+      image: { format: "webp" },
+    } as never);
+    await ExtractClipLabelsPackageCommand.execute(ctx(labels, video, [10, 40]), {
+      image: { format: "jpg" },
+    } as never);
+    expect(packageCalls.map((c) => c.image)).toEqual([
+      undefined,
+      image,
+      undefined,
+      { format: "jpg", quality: 95 },
+    ]);
   });
 
   it("needs a selected range, as PyQt", async () => {

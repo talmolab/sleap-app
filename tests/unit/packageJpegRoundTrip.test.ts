@@ -6,20 +6,18 @@
  * - A colour and a grayscale video export as JPEG: the package reads back
  *   with format "jpg", RGB, the video's shape, and stored JPEGs of the right
  *   size and channel count, written with libjpeg's tables at the chosen
- *   quality: the tables the desktop's ffmpeg extraction is given
- *   (`libjpegQuantTable`).
+ *   quality.
  * - Without a choice the same export stores PNG, as before.
- * - JPEGs extracted by ffmpeg with the app's arguments (the fixture
- *   `ffmpeg_extract_q90.jpg`, made with `buildExtractFramesArgs` at quality
- *   90) are stored as they are, on the in-memory path and on the streaming
- *   writer's (whose worker is replaced by a recording sink), so the package's
- *   `format` attribute and its bytes agree.
+ * - An already-embedded PNG package exported as JPEG is converted.
+ * - The desktop path: ffmpeg hands the streaming writer PNG frames, which a
+ *   JPEG plan turns into pixels for the worker to encode as JPEG (the worker
+ *   is replaced by a recording sink).
  *
  * Needs a sleap-io.js that writes JPEG frames (`imageFormat`); with an older
  * one the suite skips itself and says so.
  */
 import { describe, it, expect, beforeEach, afterAll, vi } from "../bun-test";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import * as sio from "@talmolab/sleap-io.js";
@@ -52,7 +50,6 @@ vi.mock("@/lib/notify", () => ({
 }));
 
 const { exportLabelsPackage } = await import("@/commands/exportPackageCommands");
-const { libjpegQuantTable } = await import("@/lib/transcode/extractFrames");
 
 type SioJpeg = {
   EMBED_IMAGE_FORMATS?: readonly string[];
@@ -78,9 +75,21 @@ if (!HAS_JPEG) {
 
 const W = 64;
 const H = 48;
-const FIXTURE = new Uint8Array(
-  readFileSync(join(import.meta.dir, "../fixtures/ffmpeg_extract_q90.jpg"))
-);
+/** libjpeg's `jpeg_set_quality` scaling of the Annex K tables, natural order. */
+function libjpegQuantTable(table: "luma" | "chroma", quality: number): number[] {
+  const luma = [
+    16, 11, 10, 16, 24, 40, 51, 61, 12, 12, 14, 19, 26, 58, 60, 55, 14, 13, 16, 24, 40, 57, 69,
+    56, 14, 17, 22, 29, 51, 87, 80, 62, 18, 22, 37, 56, 68, 109, 103, 77, 24, 35, 55, 64, 81,
+    104, 113, 92, 49, 64, 78, 87, 103, 121, 120, 101, 72, 92, 95, 98, 112, 100, 103, 99,
+  ];
+  const chroma = [17, 18, 24, 47, 99, 99, 99, 99, 18, 21, 26, 66, 99, 99, 99, 99, 24, 26, 56]
+    .concat([99, 99, 99, 99, 99, 47, 66])
+    .concat(new Array(38).fill(99));
+  const scale = quality < 50 ? Math.floor(5000 / quality) : 200 - quality * 2;
+  return (table === "luma" ? luma : chroma).map((v) =>
+    Math.min(255, Math.max(1, Math.floor((v * scale + 50) / 100)))
+  );
+}
 
 /** A smooth test image: value of frame `idx` at (x, y), channel `c`. */
 const value = (idx: number, x: number, y: number, c: number) =>
@@ -108,20 +117,6 @@ function backend(n: number, channels: 1 | 3): VideoBackend {
         }
       }
       return { data, width: W, height: H } as never;
-    },
-    close() {},
-  } as unknown as VideoBackend;
-}
-
-/** A video whose frames come back as encoded bytes, as ffmpeg's do. */
-function encodedBackend(n: number, bytes: Uint8Array): VideoBackend {
-  return {
-    filename: "clip.mp4",
-    shape: [n, H, W, 3],
-    fps: 30,
-    embeddedChannelOrder: "RGB",
-    async getFrame(idx: number): Promise<VideoFrame | null> {
-      return idx >= 0 && idx < n ? (bytes.slice() as never) : null;
     },
     close() {},
   } as unknown as VideoBackend;
@@ -244,57 +239,66 @@ describe.skipIf(!HAS_JPEG)("JPEG package export, read back (local sleap-io.js bu
     expect([png[0], png[1], png[2], png[3]]).toEqual([0x89, 0x50, 0x4e, 0x47]);
   });
 
-  it("the ffmpeg fixture was made with the documented tables (AC; ffmpeg's DC is 8)", () => {
-    const header = jpegHeader(FIXTURE);
-    expect([header.comps, header.height, header.width]).toEqual([3, H, W]);
-    for (const [k, table] of (["luma", "chroma"] as const).entries()) {
-      expect(header.tables[k].slice(1)).toEqual(libjpegQuantTable(table, 90).slice(1));
-      expect(header.tables[k][0]).toBe(8);
+  it("converts an already-embedded PNG package to JPEG", async () => {
+    const labels = labelsOn(new Video({ filename: "clip.mp4", backend: backend(10, 3) }), [1, 6]);
+    await exportLabelsPackage(labels, "clip.slp", "user");
+    const { labels: pngPackage, backend: before } = await readBack(saved[0]);
+    expect(before.embeddedFormat).toBe("png");
+
+    await exportLabelsPackage(pngPackage, "clip.pkg.slp", "user", {
+      image: { format: "jpg", quality: 85 },
+    });
+    expect(toastError).not.toHaveBeenCalled();
+    const { labels: back, video, backend: b } = await readBack(saved[1]);
+    expect(b.embeddedFormat).toBe("jpg");
+    expect(video.shape?.slice(1)).toEqual([H, W, 3]);
+    expect(back.labeledFrames.map((f) => f.frameIdx)).toEqual([1, 6]);
+    for (const frameIdx of [1, 6]) {
+      const header = jpegHeader((await b.getFrameBuffer(frameIdx))!);
+      expect([header.comps, header.height, header.width]).toEqual([3, H, W]);
+      expect(header.tables[0]).toEqual(libjpegQuantTable("luma", 85));
     }
   });
 
-  it("keeps ffmpeg's JPEGs as they are, with format jpg (in memory)", async () => {
-    const labels = labelsOn(new Video({ filename: "clip.mp4", backend: encodedBackend(4, FIXTURE) }), [0, 2]);
-    await exportLabelsPackage(labels, "clip.slp", "user", { image: { format: "jpg", quality: 90 } });
-    const { backend: b } = await readBack(saved[0]);
-    expect(b.embeddedFormat).toBe("jpg");
-    expect(b.embeddedChannelOrder).toBe("RGB");
-    expect(await b.getFrameBuffer(2)).toEqual(FIXTURE);
-  });
-
-  it("keeps ffmpeg's JPEGs as they are on the streaming writer, whose entry says jpg", async () => {
+  it("desktop: ffmpeg's PNG frames go to the worker as pixels under a jpg entry", async () => {
     const io = sio as unknown as SioJpeg;
+    // PNG frames as ffmpeg would extract them: here, those of a PNG package.
+    const source = labelsOn(new Video({ filename: "clip.mp4", backend: backend(10, 3) }), [3]);
+    await exportLabelsPackage(source, "clip.slp", "user");
+    const png = (await (await readBack(saved[0])).backend.getFrameBuffer(3))!;
+    expect([png[0], png[1], png[2], png[3]]).toEqual([0x89, 0x50, 0x4e, 0x47]);
+
     const labels = labelsOn(new Video({ filename: "clip.mp4", backend: backend(10, 3) }), [3, 5]);
     const { withImageFormat } = await import("@/lib/slpFormatCompat");
-    const image = { format: "jpg" as const, quality: 90 };
     const plan = await io.buildSerializableEmbedPlan(
       labels,
       "user",
       "",
-      withImageFormat({ allowEncode: true }, image)
+      withImageFormat({ allowEncode: true }, { format: "jpg", quality: 90 })
     );
     expect(plan.encodeEntries).toHaveLength(1);
     const entry = plan.encodeEntries[0];
-    // What the worker records on the dataset: format and channel order.
+    // What the worker encodes in and records on the dataset.
     expect(entry.format).toBe("jpg");
-    expect(entry.channelOrder).toBe("RGB");
+    expect(entry.formatChosen).toBe(true);
     expect(entry.quality).toBe(90);
+    expect(entry.channelOrder).toBe("RGB");
 
-    const appended: Array<{ frameIdx: number; kind: string; bytes?: Uint8Array }> = [];
+    const appended: Array<{ frameIdx: number; kind: string; channels?: number }> = [];
     const sink = {
       beginEncodedVideo: async () => {},
-      appendEncodedFrame: async (frameIdx: number, frame: { kind: string; bytes?: Uint8Array }) =>
-        void appended.push({ frameIdx, kind: frame.kind, bytes: frame.bytes }),
+      appendEncodedFrame: async (frameIdx: number, frame: { kind: string; channels?: number }) =>
+        void appended.push({ frameIdx, kind: frame.kind, channels: frame.channels }),
       endEncodedVideo: async () => ({ framesWritten: appended.length }),
     };
-    // ffmpeg's reader, as the desktop export hands it over: the extracted JPEGs.
     await io.appendEncodedVideos(sink, labels, plan.encodeEntries, {
-      frameReader: async () => ({ read: async () => FIXTURE.slice(), close: () => {} }),
+      frameReader: async () => ({ read: async () => png.slice(), close: () => {} }),
     });
+    // Decoded here, encoded as JPEG by the worker: never stored as PNG.
     expect(appended.map((a) => [a.frameIdx, a.kind])).toEqual([
-      [3, "jpg"],
-      [5, "jpg"],
+      [3, "pixels"],
+      [5, "pixels"],
     ]);
-    expect(appended[0].bytes).toEqual(FIXTURE);
+    expect(appended[0].channels).toBe(3);
   });
 });

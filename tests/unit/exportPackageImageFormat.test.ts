@@ -1,8 +1,9 @@
 /**
  * The frame format of a package export (PNG or JPEG, #512) reaches every
- * write path: the in-memory save, the desktop streaming writer and its ffmpeg
- * frame reader, the browser's OPFS writer, the package commands, and the
- * training job package's two builders. PNG (or no choice) passes no option,
+ * write path: the in-memory save, the desktop streaming writer, the browser's
+ * OPFS writer, the package commands, and the training job package's two
+ * builders. On desktop, ffmpeg extracts PNG frames for either format, and
+ * io encodes the JPEG from them. PNG (or no choice) passes no option,
  * so those exports write what they wrote before; JPEG passes io's
  * `imageFormat: "jpg"` and `imageQuality`. JPEG asked of a sleap-io.js that
  * can't write it fails before anything is written.
@@ -52,8 +53,8 @@ vi.mock("@/lib/saveEmbeddedPkgOpfs", () => ({
 }));
 vi.mock("@/lib/transcode/extractFrames", () => ({
   createTauriExtractFramesDeps: () => ({}),
-  createFfmpegFrameReader: async (_v: unknown, _f: number[], _d: unknown, image: unknown) => {
-    ffmpegCalls.push(image);
+  createFfmpegFrameReader: async (...args: unknown[]) => {
+    ffmpegCalls.push(args.length);
     return null;
   },
 }));
@@ -159,26 +160,29 @@ describe("streamed package export (desktop)", () => {
     (globalThis as { crossOriginIsolated?: boolean }).crossOriginIsolated = true;
   }
 
-  it("hands the format to the streaming writer and to ffmpeg's frame reader", async () => {
+  // ffmpeg's reader takes (video, frames, deps) only: it extracts PNG for
+  // every package, and the JPEG choice goes to the writer, whose structure
+  // write and plan pass io imageFormat jpg (saveEmbeddedPkgStreaming.test.ts).
+  it("JPEG: PNG extraction by ffmpeg, the format to the streaming writer", async () => {
     onDesktop();
     await exportLabelsPackage(mp4Labels(), "labels.slp", "user", { image: JPEG });
     expect(calls.map((c) => c.path)).toEqual(["stream"]);
     expect(calls[0].opts.image).toEqual(JPEG);
-    expect(ffmpegCalls).toEqual([{ format: "jpg", quality: 80 }]);
+    expect(ffmpegCalls).toEqual([3]);
   });
 
-  it("passes no format without a choice, and ffmpeg extracts PNGs", async () => {
+  it("passes no format without a choice, and ffmpeg extracts PNGs as before", async () => {
     onDesktop();
     await exportLabelsPackage(mp4Labels(), "labels.slp", "user");
     expect(calls[0].opts.image).toBeUndefined();
-    expect(ffmpegCalls).toEqual([{ format: undefined, quality: undefined }]);
+    expect(ffmpegCalls).toEqual([3]);
   });
 
   it("the training job package's desktop writer passes it the same way", async () => {
     onDesktop();
     await writeLabelsPackageToPath(mp4Labels(), "user", "/tmp/x.pkg.slp", () => true, JPEG);
     expect(calls[0].opts.image).toEqual(JPEG);
-    expect(ffmpegCalls).toEqual([{ format: "jpg", quality: 80 }]);
+    expect(ffmpegCalls).toEqual([3]);
   });
 });
 
@@ -227,7 +231,7 @@ describe("package commands", () => {
     expect(keys(calls[0].opts)).toEqual(["embed", "onProgress", "unlabeledAs"]);
   });
 
-  it("ignore a malformed format param", () => {
+  it("ignore a malformed format param, and clean a bad quality", () => {
     expect(packageImageParam(undefined)).toBeUndefined();
     expect(packageImageParam({ image: { format: "webp", quality: 3 } })).toBeUndefined();
     expect(packageImageParam({ image: "jpg" })).toBeUndefined();
@@ -235,5 +239,16 @@ describe("package commands", () => {
       format: "jpg",
       quality: 70,
     });
+    // No quality: the default, never NaN; out of range: clamped.
+    expect(packageImageParam({ image: { format: "jpg" } })).toEqual({ format: "jpg", quality: 95 });
+    expect(packageImageParam({ image: { format: "jpg", quality: 400 } })).toEqual({
+      format: "jpg",
+      quality: 100,
+    });
+  });
+
+  it("export JPEG at the default quality when a caller gives none", async () => {
+    await ExportUserLabelsPackageCommand.execute(ctx(), { image: { format: "jpg" } });
+    expect(calls[0].opts.imageQuality).toBe(95);
   });
 });

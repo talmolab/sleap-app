@@ -1,9 +1,8 @@
 /**
  * Desktop package export: frames extracted by the ffmpeg sidecar
  * (`extractFrames.ts`). The filter/args are checked as strings; the reader
- * runs against fake deps (a fake ffmpeg that "writes" numbered PNGs, or JPEGs
- * for a JPEG package, and reports progress). The real sidecar is covered by
- * manual desktop checks.
+ * runs against fake deps (a fake ffmpeg that "writes" numbered PNGs and
+ * reports progress). The real sidecar is covered by manual desktop checks.
  */
 import { describe, it, expect, beforeEach } from "../bun-test";
 import {
@@ -13,9 +12,6 @@ import {
   createFfmpegFrameReader,
   __resetFfmpegCheck,
   EXTRACT_PNG_ARGS,
-  extractFormatFor,
-  jpegExtractArgs,
-  libjpegQuantTable,
   type ExtractFramesDeps,
 } from "@/lib/transcode/extractFrames";
 import type { TranscodeProgress } from "@/lib/transcode/transcodeVideo";
@@ -77,8 +73,8 @@ function fakeDeps(options: { ffmpegRuns?: boolean } = {}) {
       return aborted;
     },
     /** ffmpeg writes output frame `n` (1-based) and reports it. */
-    write(n: number, ext = "png") {
-      files.set(`${dir}/${String(n).padStart(6, "0")}.${ext}`, new Uint8Array([n]));
+    write(n: number) {
+      files.set(`${dir}/${String(n).padStart(6, "0")}.png`, new Uint8Array([n]));
       progress({ frame: n, done: false });
     },
     exit: (err?: Error) => finish(err),
@@ -121,86 +117,22 @@ describe("buildExtractFramesArgs", () => {
     expect(args[args.length - 1]).toBe("/tmp/%06d.png");
   });
 
-  it("is exactly today's PNG command unless JPEG is asked for", () => {
-    const base = {
-      input: "/in.mp4",
-      filterFile: "/tmp/select.txt",
-      outPattern: "/tmp/%06d.png",
-      frameCount: 3,
-    };
-    const png = [
+  it("is the same PNG command for every package format", () => {
+    // Pinned in full: JPEG packages extract PNG too (sleap-io.js encodes the
+    // JPEG), so this list is what every desktop package export runs.
+    expect(
+      buildExtractFramesArgs({
+        input: "/in.mp4",
+        filterFile: "/tmp/select.txt",
+        outPattern: "/tmp/%06d.png",
+        frameCount: 3,
+      })
+    ).toEqual([
       "-y", "-i", "/in.mp4", "-map", "0:v:0", "-an", "-/vf", "/tmp/select.txt",
       "-fps_mode", "passthrough", "-frames:v", "3",
       "-c:v", "png", "-pred", "sub", "-compression_level", "4",
       "-progress", "pipe:1", "-nostats", "-stats_period", "0.1", "/tmp/%06d.png",
-    ];
-    expect(buildExtractFramesArgs(base)).toEqual(png);
-    expect(buildExtractFramesArgs({ ...base, format: "png", quality: 50 })).toEqual(png);
-  });
-
-  it("writes JPEGs with libjpeg's tables at the quality when asked for", () => {
-    const args = buildExtractFramesArgs({
-      input: "/in.mp4",
-      filterFile: "/tmp/select.txt",
-      outPattern: "/tmp/%06d.jpg",
-      frameCount: 3,
-      format: "jpg",
-      quality: 80,
-    });
-    expect(args.join(" ")).not.toContain(EXTRACT_PNG_ARGS.join(" "));
-    expect(args.join(" ")).toContain(jpegExtractArgs(80).join(" "));
-    // Frame selection, progress and output stay as for PNG.
-    expect(args[args.indexOf("-fps_mode") + 1]).toBe("passthrough");
-    expect(args[args.indexOf("-frames:v") + 1]).toBe("3");
-    expect(args[args.length - 1]).toBe("/tmp/%06d.jpg");
-  });
-});
-
-describe("JPEG quality mapping", () => {
-  it("scales the Annex K tables as libjpeg: quality 50 is the tables themselves", () => {
-    const luma = libjpegQuantTable("luma", 50);
-    const chroma = libjpegQuantTable("chroma", 50);
-    expect(luma.slice(0, 8)).toEqual([16, 11, 10, 16, 24, 40, 51, 61]);
-    expect(luma[63]).toBe(99);
-    expect(chroma.slice(0, 8)).toEqual([17, 18, 24, 47, 99, 99, 99, 99]);
-    expect(luma).toHaveLength(64);
-    expect(chroma).toHaveLength(64);
-  });
-
-  it("matches libjpeg at the ends and in between (95, 75, 10; 100 is all 1, 1 is capped at 255)", () => {
-    // Scale 10% at 95: floor((16 * 10 + 50) / 100) = 2, (11 * 10 + 50) / 100 -> 1.
-    expect(libjpegQuantTable("luma", 95).slice(0, 4)).toEqual([2, 1, 1, 2]);
-    // Scale 50% at 75.
-    expect(libjpegQuantTable("luma", 75).slice(0, 4)).toEqual([8, 6, 5, 8]);
-    // Scale 500% at 10.
-    expect(libjpegQuantTable("chroma", 10).slice(0, 4)).toEqual([85, 90, 120, 235]);
-    expect(new Set(libjpegQuantTable("luma", 100))).toEqual(new Set([1]));
-    expect(new Set(libjpegQuantTable("chroma", 1))).toEqual(new Set([255]));
-    // Out of range is clamped: 0 counts as 1, above 100 as 100.
-    expect(libjpegQuantTable("luma", 0)).toEqual(libjpegQuantTable("luma", 1));
-    expect(libjpegQuantTable("luma", 120)).toEqual(libjpegQuantTable("luma", 100));
-  });
-
-  it("gives ffmpeg 8 x those tables at qscale 1, so it writes them exactly, in 4:2:0", () => {
-    const args = jpegExtractArgs(90);
-    const after = (flag: string) => args[args.indexOf(flag) + 1];
-    expect(after("-c:v")).toBe("mjpeg");
-    expect(after("-pix_fmt")).toBe("yuvj420p");
-    expect(after("-qmin")).toBe("1");
-    expect(after("-q:v")).toBe("1");
-    expect(after("-intra_matrix")).toBe(libjpegQuantTable("luma", 90).map((v) => v * 8).join(","));
-    expect(after("-chroma_intra_matrix")).toBe(
-      libjpegQuantTable("chroma", 90).map((v) => v * 8).join(",")
-    );
-    // Default quality: 95, as sleap-io.js and OpenCV.
-    expect(jpegExtractArgs()).toEqual(jpegExtractArgs(95));
-  });
-
-  it("extracts JPEG for colour videos only; grayscale stays PNG", () => {
-    expect(extractFormatFor("jpg", false)).toBe("jpg");
-    expect(extractFormatFor("jpg", true)).toBe("png");
-    expect(extractFormatFor("png", false)).toBe("png");
-    expect(extractFormatFor(undefined, false)).toBe("png");
+    ]);
   });
 });
 
@@ -245,48 +177,6 @@ describe("createFfmpegFrameReader", () => {
     expect(await reader!.read(8)).toEqual(new Uint8Array([3]));
     await reader!.close();
     expect(f.removedDirs).toEqual([f.dir]);
-  });
-
-  it("extracts JPEGs at the package's quality for a JPEG package", async () => {
-    const f = fakeDeps();
-    const reader = await createFfmpegFrameReader(fakeVideo(), [4, 5], f.deps, {
-      format: "jpg",
-      quality: 80,
-    });
-    expect(f.args[f.args.length - 1]).toBe(`${f.dir}/%06d.jpg`);
-    expect(f.args.join(" ")).toContain(jpegExtractArgs(80).join(" "));
-    f.write(1, "jpg");
-    f.write(2, "jpg");
-    f.exit();
-    expect(await reader!.read(4)).toEqual(new Uint8Array([1]));
-    expect(f.files.has(`${f.dir}/000001.jpg`)).toBe(false);
-    expect(await reader!.read(5)).toEqual(new Uint8Array([2]));
-    await reader!.close();
-  });
-
-  it("extracts PNGs as before with no format or PNG", async () => {
-    for (const image of [undefined, { format: "png" as const, quality: 80 }]) {
-      __resetFfmpegCheck();
-      const f = fakeDeps();
-      await createFfmpegFrameReader(fakeVideo(), [0], f.deps, image);
-      expect(f.args[f.args.length - 1]).toBe(`${f.dir}/%06d.png`);
-      expect(f.args.join(" ")).toContain(EXTRACT_PNG_ARGS.join(" "));
-      expect(f.args).not.toContain("mjpeg");
-    }
-  });
-
-  it("keeps a grayscale video's frames PNG for a JPEG package (sleap-io.js encodes them)", async () => {
-    const f = fakeDeps();
-    const reader = await createFfmpegFrameReader(fakeVideo({ shape: [10, 8, 8, 1] }), [0], f.deps, {
-      format: "jpg",
-      quality: 80,
-    });
-    expect(f.files.get(`${f.dir}/select.txt`)).toContain("extractplanes=r");
-    expect(f.args[f.args.length - 1]).toBe(`${f.dir}/%06d.png`);
-    expect(f.args).not.toContain("mjpeg");
-    f.write(1);
-    f.exit();
-    expect(await reader!.read(0)).toEqual(new Uint8Array([1]));
   });
 
   it("asks ffmpeg for grayscale frames when the video has one channel", async () => {
