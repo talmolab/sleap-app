@@ -3,8 +3,10 @@ name: Build Dev Channel
 # Nightly desktop builds off `main`, for the in-app "dev" update channel.
 # macOS is Developer ID signed + notarized, same as build.yml's release
 # pipeline (see the "Configure macOS code signing" step) -- so a downloaded
-# .dmg opens normally without Gatekeeper overrides (#343). Windows/Linux stay
-# unsigned. Publishes to a single rolling `dev` pre-release instead of a
+# .dmg opens normally without Gatekeeper overrides (#343). Windows is
+# Authenticode-signed via Azure Artifact Signing once that is configured
+# (docs/.internal/windows-code-signing.md); Linux stays unsigned. Publishes to a
+# single rolling `dev` pre-release instead of a
 # per-version tag -- see the `publish` job.
 #
 # Runs on a nightly schedule (not per-push -- a full 3-platform native build
@@ -247,6 +249,17 @@ jobs:
             job-timeout: 60
 
     runs-on: ${{ matrix.platform }}
+    # `code-signing` is what Azure trusts: the Entra app's federated credential
+    # matches the OIDC subject repo:talmolab/sleap-app:environment:code-signing,
+    # which stays the same for tag releases, branch dispatches and the nightly
+    # alike (a ref-based subject would need one credential per tag). It also
+    # holds the Windows signing variables. Never add required reviewers to it:
+    # the nightly dev build would block waiting for an approval.
+    environment: code-signing
+    permissions:
+      contents: read
+      # Lets scripts/windows-signing.ps1 mint GitHub OIDC tokens for Azure.
+      id-token: write
     timeout-minutes: ${{ matrix.job-timeout }}
 
     steps:
@@ -396,6 +409,23 @@ jobs:
           echo "SLEAP_SIGNING_MODE=developer-id-notarized" >> "$GITHUB_ENV"
           echo "Developer ID signing + notarization enabled."
 
+      # Opt-in Authenticode signing via Azure Artifact Signing, keyless (GitHub
+      # OIDC -> Entra workload identity; no client secret exists). Off until the
+      # ARTIFACT_SIGNING_PROFILE variable is set on the `code-signing`
+      # environment -- the build then ships unsigned exactly as before. Once on,
+      # it signs a throwaway file up front so a broken setup fails here in
+      # seconds, not after the Rust build. See docs/.internal/windows-code-signing.md.
+      - name: Configure Windows code signing
+        if: matrix.target == 'windows'
+        shell: pwsh
+        env:
+          AZURE_CLIENT_ID: ${{ vars.AZURE_CLIENT_ID }}
+          AZURE_TENANT_ID: ${{ vars.AZURE_TENANT_ID }}
+          ARTIFACT_SIGNING_ENDPOINT: ${{ vars.ARTIFACT_SIGNING_ENDPOINT }}
+          ARTIFACT_SIGNING_ACCOUNT: ${{ vars.ARTIFACT_SIGNING_ACCOUNT }}
+          ARTIFACT_SIGNING_PROFILE: ${{ vars.ARTIFACT_SIGNING_PROFILE }}
+        run: ./scripts/windows-signing.ps1 configure
+
       # tauri.conf.json declares the ffmpeg/ffprobe sidecars as externalBin, so
       # `tauri build` panics unless binaries/ffmpeg-<triple> exist. They are
       # .gitignore'd (large, per-platform) and fetched here. The script asserts a
@@ -417,7 +447,9 @@ jobs:
       - name: Build Tauri app
         uses: tauri-apps/tauri-action@v0
         with:
-          args: ${{ matrix.tauri-args }}
+          # SLEAP_TAURI_SIGN_ARGS is `--config <overlay>` adding the Windows
+          # signCommand when signing is on, and empty everywhere else.
+          args: ${{ matrix.tauri-args }} ${{ env.SLEAP_TAURI_SIGN_ARGS }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
@@ -431,6 +463,15 @@ jobs:
           APPIMAGE="$(find "${{ matrix.bundle-dir }}/appimage" -maxdepth 1 -type f -name '*.AppImage' | head -1)"
           [ -n "$APPIMAGE" ] || { echo "::error::no .AppImage under ${{ matrix.bundle-dir }}/appimage"; exit 1; }
           bash scripts/appimage-gstreamer.sh verify "$APPIMAGE"
+
+      # Windows counterpart of "Verify macOS code signature": with signing on,
+      # every shipped binary must carry a valid, TIMESTAMPED signature (the
+      # certificate itself only lives three days). A build that was supposed to
+      # be signed and is not gets discarded here rather than published.
+      - name: Verify Windows code signature
+        if: matrix.target == 'windows'
+        shell: pwsh
+        run: ./scripts/windows-signing.ps1 verify "${{ matrix.bundle-dir }}"
 
       # Tauri notarizes and staples the .app, then builds the .dmg around it. The
       # disk image itself is left un-notarized, and Gatekeeper assesses the image

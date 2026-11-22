@@ -214,11 +214,18 @@ Dragging the app to `/Applications` should then launch with no dialog at all.
   it into a clear error rather than an ad-hoc release.
 - **Forks and PRs from forks get no secrets**, so they fall back to `adhoc` and
   still build. That is deliberate.
+- **`HTTP status code: 403. A required agreement is missing or has expired.`**
+  Notarization stops working whenever Apple publishes a new Program License
+  Agreement. Signing still succeeds, so the failure shows up only at
+  `Notarizing …`. Nothing in CI or the secrets is wrong. The Account Holder has
+  to sign in at [developer.apple.com/account](https://developer.apple.com/account)
+  and accept the banner. Apple announces these by email to the Account Holder
+  ("Updated Apple Developer Program License Agreement Now Available"). The Oct
+  2026 update went unaccepted, and every nightly from Nov 14 failed this way.
 
 ## Windows
 
-Not set up, and not doing the same job. SmartScreen warnings are driven by
-reputation, so only an EV certificate (hardware token, ~$300+/yr) removes them
-outright; a standard code-signing certificate mostly just accrues reputation over
-time. The NSIS installer is currently unsigned, and its warning has a
-**More info → Run anyway**.
+See [windows-code-signing.md](windows-code-signing.md): keyless Azure Artifact
+Signing, opt-in the same way. SmartScreen is reputation-based, so even a signed
+installer can warn until the publisher name builds up downloads, but it then shows
+a real publisher instead of "Unknown publisher".
