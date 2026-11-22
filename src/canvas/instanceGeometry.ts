@@ -7,6 +7,7 @@
 
 import type { Instance, Video } from "@talmolab/sleap-io.js";
 import { toImageCoords } from "@/lib/cropTransform";
+import { isUnlabeledPoint } from "@/lib/slpFormatCompat";
 import type { RenderedEdge, RenderedNode } from "./SkeletonRenderer";
 
 export function instanceGeometry(
@@ -18,7 +19,11 @@ export function instanceGeometry(
     // Cropped videos store points in SOURCE coords; translate into the
     // displayed crop-local image space so they overlay the cropped frame.
     // Identity for uncropped videos. (cropped pkg.slp / SLP-2.3)
-    const [nx, ny] = toImageCoords(video, point.xy[0], point.xy[1]);
+    // A node not labelled (SLP format 3.0) is not drawn, not even as a hidden
+    // marker, and can't be hit: it gets no position, like an unplaced node.
+    const [nx, ny] = isUnlabeledPoint(point)
+      ? [Number.NaN, Number.NaN]
+      : toImageCoords(video, point.xy[0], point.xy[1]);
     return {
       x: nx,
       y: ny,

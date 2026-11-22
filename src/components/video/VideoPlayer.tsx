@@ -149,6 +149,7 @@ import { spawnOverlayServe, killOverlayServe, detectGpu } from "@/platform/backe
 import { Film, Frame, Hand, ImageOff, MousePointer2, SquareDashed, Tag, ZoomIn } from "lucide-react";
 import { renderProposalGhosts } from "@/canvas/proposalGhost";
 import { useProposalGhosts } from "@/hooks/useProposalGhosts";
+import { isUnlabeledPoint, markPointLabeled } from "@/lib/slpFormatCompat";
 
 /**
  * First unused `node_${k}` name (k = 0, 1, 2, …) for a fresh builder node, so
@@ -181,6 +182,8 @@ export function placeQcReviewNode(x: number, y: number): void {
   // Click is in crop-local image space; store back in source coords.
   inst.points[targetIdx].xy = toSourceCoords(store.video, x, y);
   inst.points[targetIdx].visible = true;
+  // Placing a node labels it (it may have been not labelled in the file).
+  markPointLabeled(inst.points[targetIdx]);
   hintIfFirstNodeConfirm(inst.points[targetIdx].complete);
   inst.points[targetIdx].complete = true;
   store.markChanged();
@@ -1611,7 +1614,10 @@ export function VideoPlayer() {
           palette, distinctlyColor, instIdx, inst.track, tracks, isPredicted, colorPredicted, projectHasTracks, frameInstanceTracks, trackColorOverrides
         );
         const nodes: RenderedNode[] = inst.points.map((point, nIdx) => {
-          const [nx, ny] = toImageCoords(video, point.xy[0], point.xy[1]);
+          // Nodes not labelled are never drawn (see instanceGeometry).
+          const [nx, ny] = isUnlabeledPoint(point)
+            ? [Number.NaN, Number.NaN]
+            : toImageCoords(video, point.xy[0], point.xy[1]);
           return {
             x: nx,
             y: ny,
@@ -2803,6 +2809,8 @@ export function VideoPlayer() {
             y
           );
           currentInstance.points[targetIdx].visible = true;
+          // Placing a node labels it (it may have been not labelled in the file).
+          markPointLabeled(currentInstance.points[targetIdx]);
           hintIfFirstNodeConfirm(currentInstance.points[targetIdx].complete);
           currentInstance.points[targetIdx].complete = true;
           store.markChanged();

@@ -18,6 +18,7 @@ import {
 import { remapInstancePoints } from "../lib/skeletonIO";
 import { dirtyFrameTracker } from "../lib/autosaveDirty";
 import { sameSkeletonStructure } from "../lib/skeletonStructure";
+import { copyPoint } from "@/lib/slpFormatCompat";
 
 // ---------------------------------------------------------------------------
 // Snapshot helpers
@@ -64,18 +65,14 @@ export function instanceUsesSkeleton(
   return inst.skeleton === skeleton;
 }
 
-/** Deep-clone a single point. */
+/**
+ * Deep-clone a single point. Keeps the per-point prediction score, so it
+ * survives a skeleton-edit undo/redo round-trip (predicted instances carry it;
+ * user points leave it undefined), and the `labeled` flag of a node not
+ * labelled in an SLP format 3.0 file.
+ */
 function clonePoint(p: Instance["points"][0]): Instance["points"][0] {
-  return {
-    xy: [p.xy[0], p.xy[1]] as [number, number],
-    visible: p.visible,
-    complete: p.complete,
-    // Preserve the per-point prediction score so it survives a skeleton-edit
-    // undo/redo round-trip (predicted instances carry it; user points leave it
-    // undefined). Without this, undoing a skeleton edit silently dropped scores.
-    score: p.score,
-    name: p.name,
-  };
+  return copyPoint(p);
 }
 
 /**

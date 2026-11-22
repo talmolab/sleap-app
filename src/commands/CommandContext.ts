@@ -14,6 +14,7 @@ import type { Command } from "./types";
 import { toast } from "@/lib/notify";
 import { humanizeCommandName } from "@/lib/humanizeCommand";
 import { dirtyFrameTracker } from "@/lib/autosaveDirty";
+import { copyMetadata, copyPoint, metadataOf, type RecordMetadata } from "@/lib/slpFormatCompat";
 
 /** Record of an executed command for change tracking. */
 export interface ChangeRecord {
@@ -29,6 +30,8 @@ interface SingleFrameData {
   instances: Instance[];
   /** Negative (background) flag, so Mark-Frame-as-Negative is undoable. */
   isNegative: boolean;
+  /** The frame's metadata (SLP format 3.0), so undo/redo keeps it. */
+  metadata: RecordMetadata | null;
   /**
    * The frame's non-pose annotations (bounding boxes, centroids, masks, label
    * images, ROIs). Without these, restoring a frame wiped them (#487). Each is
@@ -89,15 +92,12 @@ interface UndoSnapshot {
   activeFrameIdx: number;
 }
 
-/** Deep-clone an instance's points. */
+/**
+ * Deep-clone an instance's points, keeping each point's `labeled` flag (a node
+ * not labelled in an SLP format 3.0 file stays so across undo/redo).
+ */
 function clonePoints(points: Instance["points"]): Instance["points"] {
-  return points.map((p) => ({
-    xy: [p.xy[0], p.xy[1]] as [number, number],
-    visible: p.visible,
-    complete: p.complete,
-    name: p.name,
-    score: p.score,
-  }));
+  return points.map((p) => copyPoint(p));
 }
 
 /**
@@ -114,16 +114,11 @@ function cloneInstances(instances: Instance[]): Instance[] {
     if (inst instanceof PredictedInstance) {
       const copy = new PredictedInstance({
         skeleton: inst.skeleton,
-        points: inst.points.map((p) => ({
-          xy: [p.xy[0], p.xy[1]] as [number, number],
-          visible: p.visible,
-          complete: p.complete,
-          name: p.name,
-          score: p.score ?? 0,
-        })),
+        points: inst.points.map((p) => ({ ...copyPoint(p), score: p.score ?? 0 })),
         track: inst.track,
         score: inst.score,
       });
+      copyMetadata(inst, copy);
       predClones.set(inst, copy);
       return copy;
     }
@@ -132,13 +127,14 @@ function cloneInstances(instances: Instance[]): Instance[] {
   return cloned.map((inst) => {
     if (inst instanceof PredictedInstance) return inst;
     const from = inst.fromPredicted ?? null;
-    return new Instance({
+    const copy = new Instance({
       skeleton: inst.skeleton,
       points: clonePoints(inst.points),
       track: inst.track,
       // A link to a prediction on another frame keeps its original target.
       fromPredicted: from ? (predClones.get(from) ?? from) : null,
     });
+    return copyMetadata(inst, copy);
   });
 }
 
@@ -183,7 +179,15 @@ function cloneFrameContents(
 /** Snapshot one labeled frame. */
 function captureFrame(lf: LabeledFrame, videoRef: Video, frameIdx: number): SingleFrameData {
   const { instances, annotations } = cloneFrameContents(lf.instances, lf);
-  return { videoRef, frameIdx, instances, isNegative: lf.isNegative, annotations };
+  const md = metadataOf(lf);
+  return {
+    videoRef,
+    frameIdx,
+    instances,
+    isNegative: lf.isNegative,
+    metadata: md ? { ...md } : null,
+    annotations,
+  };
 }
 
 /** Write a snapshotted frame back into `lf` (cloned, so the snapshot stays reusable). */
@@ -191,6 +195,9 @@ function applyFrame(lf: LabeledFrame, data: SingleFrameData): void {
   const { instances, annotations } = cloneFrameContents(data.instances, data.annotations);
   lf.instances = instances;
   lf.isNegative = data.isNegative;
+  if (data.metadata) {
+    (lf as { metadata?: RecordMetadata }).metadata = { ...data.metadata };
+  }
   lf.bboxes = annotations.bboxes;
   lf.centroids = annotations.centroids;
   lf.masks = annotations.masks;

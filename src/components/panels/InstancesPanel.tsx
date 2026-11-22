@@ -55,7 +55,7 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 import { PredictedInstance } from "@talmolab/sleap-io.js";
-import { instanceNamedPoints } from "@/lib/instancePoints";
+import { instanceNamedPoints, unlabeledNodeCount } from "@/lib/instancePoints";
 import { meanNodeScore } from "@/lib/meanNodeScore";
 import { BboxList } from "./BboxList";
 import type { Instance, Labels } from "../../types";
@@ -271,6 +271,7 @@ function InstanceRow({
   const trackName = instance.track?.name ?? "[no track]";
   const visibleNodes = instance.nVisible;
   const totalNodes = instance.points.length;
+  const notLabelled = unlabeledNodeCount(instance);
   const score = predicted ? (instance as PredictedInstance).score : null;
   const nodeScore = showMeanNodeScore && predicted ? meanNodeScore(instance.points) : null;
 
@@ -347,8 +348,16 @@ function InstanceRow({
           {predicted ? "pred" : "user"}
         </Badge>
       </TableCell>
-      <TableCell className="py-0.5 px-2 text-xs text-right tabular-nums">
+      <TableCell
+        className="py-0.5 px-2 text-xs text-right tabular-nums"
+        title={
+          notLabelled > 0
+            ? `${visibleNodes} visible of ${totalNodes} nodes; ${notLabelled} not labelled`
+            : undefined
+        }
+      >
         {visibleNodes}/{totalNodes}
+        {notLabelled > 0 && <span className="text-muted-foreground">*</span>}
       </TableCell>
       <TableCell className="py-0.5 px-2 text-xs text-right tabular-nums text-muted-foreground">
         {score !== null ? score.toFixed(2) : "--"}
@@ -406,6 +415,7 @@ function InstanceDetailPanel({
   // human-readable node-name view only (names never enter the clipboard).
   const pointsStr = formatPointsAsPython(instance);
   const namedPoints = instanceNamedPoints(instance);
+  const notLabelled = unlabeledNodeCount(instance);
 
   const handleCopy = async () => {
     await navigator.clipboard.writeText(pointsStr);
@@ -425,6 +435,7 @@ function InstanceDetailPanel({
         </span>
         <span>
           Nodes: {visibleNodes}/{totalNodes}
+          {notLabelled > 0 && ` (${notLabelled} not labelled)`}
         </span>
       </div>
       <div className="relative">
@@ -450,6 +461,16 @@ function InstanceDetailPanel({
             // (not placed) is red, not green (#278 feedback).
             const placed = Number.isFinite(pt.x) && Number.isFinite(pt.y);
             const shown = pt.visible && placed;
+            // Not labelled (SLP format 3.0): the node was never annotated in
+            // this instance. Muted, unlike a hidden or unplaced node (red),
+            // since nothing is wrong with it.
+            const status = !pt.labeled
+              ? "not labelled"
+              : shown
+                ? `${pt.x.toFixed(1)}, ${pt.y.toFixed(1)}`
+                : placed
+                  ? "not visible"
+                  : "not placed";
             return (
               <div
                 key={i}
@@ -461,14 +482,14 @@ function InstanceDetailPanel({
                 <span
                   className={cn(
                     "tabular-nums text-right",
-                    shown ? "text-green-500" : "text-red-500",
+                    !pt.labeled
+                      ? "text-muted-foreground italic"
+                      : shown
+                        ? "text-green-500"
+                        : "text-red-500",
                   )}
                 >
-                  {shown
-                    ? `${pt.x.toFixed(1)}, ${pt.y.toFixed(1)}`
-                    : placed
-                      ? "not visible"
-                      : "not placed"}
+                  {status}
                 </span>
               </div>
             );

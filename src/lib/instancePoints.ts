@@ -7,12 +7,18 @@
  */
 
 import type { Instance, PredictedInstance } from "../types";
+import { isUnlabeledPoint } from "@/lib/slpFormatCompat";
 
 export interface NamedPoint {
   /** Node name from the skeleton, in point order. */
   name: string;
   /** Whether the keypoint is visible (invisible ones render as such). */
   visible: boolean;
+  /**
+   * False for a node the source did not annotate (SLP format 3.0), as opposed
+   * to a hidden one. Such a node is neither visible nor placed.
+   */
+  labeled: boolean;
   /** X coordinate (NaN when not visible, matching the np.nan copy handling). */
   x: number;
   /** Y coordinate (NaN when not visible). */
@@ -31,7 +37,15 @@ export function instanceNamedPoints(
   return instance.points.map((pt, i) => ({
     name: nodes[i]?.name ?? pt.name ?? `node ${i}`,
     visible: pt.visible,
+    labeled: !isUnlabeledPoint(pt),
     x: pt.xy[0],
     y: pt.xy[1],
   }));
+}
+
+/** How many of an instance's nodes are not labelled (see {@link NamedPoint.labeled}). */
+export function unlabeledNodeCount(instance: Instance | PredictedInstance): number {
+  let n = 0;
+  for (const pt of instance.points) if (isUnlabeledPoint(pt)) n++;
+  return n;
 }

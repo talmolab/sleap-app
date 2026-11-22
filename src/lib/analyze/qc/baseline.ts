@@ -16,6 +16,7 @@
  */
 import {
   isVisible,
+  visibilityMask,
   dist,
   std,
   safeMean,
@@ -322,13 +323,16 @@ export class BaselineFeatureExtractor {
 
   private _visibilityFeatures(pose: Pose): [number, boolean] {
     const adj = this._adjacency as number[][];
-    const visMask = pose.map(isVisible);
-    const visRate = visMask.filter(Boolean).length / this.nNodes;
+    // Nodes not labelled (null) are neither visible nor missing: the rate is
+    // over the labelled nodes, and one is never an "isolated missing" node.
+    const visMask = visibilityMask(pose);
+    const labelled = visMask.filter((v) => v !== null).length;
+    const visRate = labelled > 0 ? visMask.filter((v) => v === true).length / labelled : 0;
     let isolated = false;
     for (let i = 0; i < this.nNodes; i++) {
-      if (visMask[i]) continue;
+      if (visMask[i] !== false) continue;
       const nb = adj[i];
-      if (nb.length && nb.every((n) => visMask[n])) {
+      if (nb.length && nb.every((n) => visMask[n] === true)) {
         isolated = true;
         break;
       }

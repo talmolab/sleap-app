@@ -8,7 +8,12 @@
  *
  * Learns P(node_j visible | node_i visible) over a reference set of visibility
  * masks, then scores how unusual a pose's visibility pattern is.
+ *
+ * A node not labelled (mask entry `null`, SLP format 3.0) is neither visible
+ * nor missing: it is left out of the rates it would count in, and is never
+ * blamed for being absent.
  */
+import type { NodeVisibility } from "./util";
 
 /** `score()` result: normalized pattern score in [0,1] + raw violation count. */
 export interface VisibilityScore {
@@ -37,37 +42,39 @@ export class VisibilityModel {
     this.nInstances = 0;
   }
 
-  /** masks: boolean[N_instances][N_nodes]. */
-  fit(masks: boolean[][]): this {
+  /** masks: NodeVisibility[N_instances][N_nodes] (`null` = not labelled). */
+  fit(masks: NodeVisibility[][]): this {
     this.nInstances = masks.length;
     this.nNodes = masks.length ? masks[0].length : 0;
-    this.visibilityRates = Array.from({ length: this.nNodes }, (_, j) =>
-      masks.length
-        ? masks.reduce((s, m) => s + (m[j] ? 1 : 0), 0) / masks.length
-        : 0,
-    );
+    // Rates over the instances that labelled the node.
+    const rate = (ms: NodeVisibility[][], j: number): number => {
+      const known = ms.filter((m) => m[j] !== null);
+      return known.length
+        ? known.reduce((s, m) => s + (m[j] ? 1 : 0), 0) / known.length
+        : 0;
+    };
+    this.visibilityRates = Array.from({ length: this.nNodes }, (_, j) => rate(masks, j));
     this.coVisibility = Array.from({ length: this.nNodes }, () =>
       new Array<number>(this.nNodes).fill(0),
     );
     for (let i = 0; i < this.nNodes; i++) {
-      const withI = masks.filter((m) => m[i]);
+      const withI = masks.filter((m) => m[i] === true);
       if (withI.length === 0) continue;
       for (let j = 0; j < this.nNodes; j++) {
-        this.coVisibility[i][j] =
-          withI.reduce((s, m) => s + (m[j] ? 1 : 0), 0) / withI.length;
+        this.coVisibility[i][j] = rate(withI, j);
       }
     }
     return this;
   }
 
   /** mask: boolean[N_nodes] -> { patternScore (0..1), nViolations }. */
-  score(mask: boolean[]): VisibilityScore {
+  score(mask: NodeVisibility[]): VisibilityScore {
     if (!this.coVisibility) throw new Error("Model not fitted. Call fit() first.");
     let nViolations = 0;
     for (let i = 0; i < this.nNodes; i++) {
       if (!mask[i]) continue;
       for (let j = 0; j < this.nNodes; j++) {
-        if (i === j) continue;
+        if (i === j || mask[j] === null) continue; // not labelled: no verdict
         const p = this.coVisibility[i][j];
         if (!mask[j] && p > 0.9) nViolations++; // expected visible, but invisible
         else if (mask[j] && p < 0.1) nViolations++; // rarely co-visible, yet visible
@@ -85,7 +92,7 @@ export class VisibilityModel {
    * accrues to the surprising node `j`; returns the most-blamed node, or -1 if
    * the pose has no violations.
    */
-  worstNode(mask: boolean[]): number {
+  worstNode(mask: NodeVisibility[]): number {
     return this.worstNodeDetail(mask).node;
   }
 
@@ -95,13 +102,13 @@ export class VisibilityModel {
    *   "present" — it is here, and it almost never co-occurs with the peers that are
    * A node the model cannot blame either way returns { node: -1, kind: null }.
    */
-  worstNodeDetail(mask: boolean[]): WorstNodeDetail {
+  worstNodeDetail(mask: NodeVisibility[]): WorstNodeDetail {
     if (!this.coVisibility) throw new Error("Model not fitted. Call fit() first.");
     const blame = new Array<number>(this.nNodes).fill(0);
     for (let i = 0; i < this.nNodes; i++) {
       if (!mask[i]) continue;
       for (let j = 0; j < this.nNodes; j++) {
-        if (i === j) continue;
+        if (i === j || mask[j] === null) continue; // not labelled: never blamed
         const p = this.coVisibility[i][j];
         if (!mask[j] && p > 0.9) blame[j]++; // j expected visible, but absent
         else if (mask[j] && p < 0.1) blame[j]++; // j rarely co-visible, yet present
