@@ -33,7 +33,13 @@ import {
 import { isTauri } from "../platform/index";
 import { toast } from "@/lib/notify";
 import { openExternal } from "@/lib/openExternal";
-import { capSleapNnUpdate, sleapNnInstallSpec } from "@/lib/sleapNnVersion";
+import {
+  SLEAP_NN_VERSION_SPECIFIER,
+  capSleapNnUpdate,
+  exportExtras,
+  isSleapNnVersionBelowCap,
+  sleapNnInstallSpec,
+} from "@/lib/sleapNnVersion";
 
 const SLEAP_NN_RELEASES_URL = "https://github.com/talmolab/sleap-nn/releases/tag";
 
@@ -487,30 +493,49 @@ export const useEnvironmentStore = create<EnvironmentState>()(
             // tool was installed, and installs made before the cap recorded
             // none, so it would move them past the cap. Re-run the install
             // with the capped requirement and `--upgrade` instead: it moves to
-            // the newest version below the cap and records the cap. An install
-            // replaces the tool's requirements, so the extras the env has now
-            // are restated, as in installExtras.
-            const [gpu, installed] = await Promise.all([
+            // the newest version below the cap and records the cap.
+            const current = get().tools.find((t) => t.name === "sleap-nn");
+            if (current?.version && !isSleapNnVersionBelowCap(current.version)) {
+              // The capped install would move this env DOWN. Never do that
+              // from a button that says Update.
+              throw new Error(
+                `sleap-nn ${current.version} is newer than this version of the ` +
+                  `app installs (${SLEAP_NN_VERSION_SPECIFIER}), so there is ` +
+                  "nothing to update to. Reinstall installs the newest " +
+                  "supported version."
+              );
+            }
+            // An install replaces the tool's requirements, so the extras the
+            // env has now are restated, as in installExtras. If they can't be
+            // read now, the last good reading is used; with neither, stop
+            // without installing anything.
+            const [gpu, probed] = await Promise.all([
               detectGpu(),
               detectSleapNnExtras(),
             ]);
-            if (installed.error) {
+            const lastGood = get().extras;
+            const installed = !probed.error
+              ? probed
+              : lastGood && !lastGood.error
+                ? lastGood
+                : null;
+            if (!installed) {
               throw new Error(
-                `Could not tell which optional extras sleap-nn has (${installed.error}). ` +
-                  "Use Reinstall instead."
+                `Could not tell which optional extras sleap-nn has (${probed.error}), ` +
+                  "so the update was not started. Reinstall installs sleap-nn " +
+                  "without the ONNX and TensorRT extras; add them again afterwards."
               );
             }
             const torchExtra = gpu === "cuda" ? "torch-cuda130" : "torch-cpu";
-            const wantOnnx = installed.onnx || installed.tensorrt;
             const installPkg = sleapNnInstallSpec([
               torchExtra,
-              ...(wantOnnx ? ["export"] : []),
-              ...(installed.tensorrt ? ["tensorrt"] : []),
+              ...exportExtras(installed),
             ]);
             set((state) => ({
               installLog: [
                 ...state.installLog,
                 `[env] GPU: ${gpu} → updating ${installPkg}`,
+                "[env] Extras or install options added outside the app are not kept.",
               ],
             }));
             // No `--python`: keep the interpreter the env already has, as

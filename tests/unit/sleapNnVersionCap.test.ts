@@ -46,11 +46,22 @@ vi.mock("@/platform/backend", () => ({
     selfUpdateSupported: true,
   }),
   detectGpu: async () => gpu,
-  detectAccelerator: unused,
+  detectAccelerator: async () => ({
+    accelerator: "cpu",
+    gpuCount: 0,
+    gpus: [],
+    torchVersion: null,
+    cudaVersion: null,
+    driverVersion: null,
+    driverCompatible: null,
+    driverMinRequired: null,
+    os: "linux",
+    error: null,
+  }),
   detectSleapNnExtras: async () => installedExtras,
   listUvTools: async () => listedTools,
-  listPythonInterpreters: unused,
-  listDownloadablePythons: unused,
+  listPythonInterpreters: async () => [],
+  listDownloadablePythons: async () => [],
   checkPython: unused,
   installPython: unused,
   updateUv: unused,
@@ -81,10 +92,15 @@ vi.mock("@/platform/backend", () => ({
   },
 }));
 
+let realRefresh: (() => Promise<void>) | null = null;
+
 async function store() {
   const { useEnvironmentStore } = await import("@/stores/environmentStore");
+  realRefresh ??= useEnvironmentStore.getState().refresh;
   useEnvironmentStore.setState({
     refresh: async () => {},
+    tools: listedTools,
+    extras: null,
     selectedPythonPath: null,
     lastNotifiedSleapNnVersion: null,
   });
@@ -153,10 +169,23 @@ describe("capSleapNnUpdate", () => {
   });
 
   it("leaves an up-to-date or unchecked tool alone", () => {
-    const upToDate = tool({ updateAvailable: false, latestVersion: null });
+    // For an up-to-date tool the backend reports the installed version as
+    // the latest.
+    const upToDate = tool({ updateAvailable: false, latestVersion: "0.3.5" });
     expect(capSleapNnUpdate(upToDate)).toBe(upToDate);
     const unknown = tool({ updateAvailable: null, latestVersion: null });
     expect(capSleapNnUpdate(unknown)).toBe(unknown);
+  });
+
+  // A sleap-nn already at 0.4 must keep reading as up to date. Turning it
+  // into "unknown" would offer an Update that could only move it down.
+  it("leaves an up-to-date sleap-nn at or above the cap alone", () => {
+    const above = tool({
+      version: "0.4.0",
+      updateAvailable: false,
+      latestVersion: "0.4.0",
+    });
+    expect(capSleapNnUpdate(above)).toBe(above);
   });
 
   it("leaves other tools alone", () => {
@@ -252,7 +281,68 @@ describe("the Update button for sleap-nn", () => {
     await s.getState().doUpgradeTool("sleap-nn");
     expect(calls).toEqual([]);
     expect(s.getState().installStatus).toBe("error");
-    expect(s.getState().installLog.join("\n")).toContain("Use Reinstall");
+    // Reinstall drops the export extras, and the message says so.
+    expect(s.getState().installLog.join("\n")).toContain(
+      "without the ONNX and TensorRT extras"
+    );
+  });
+
+  it("falls back to the last good reading of the extras", async () => {
+    installedExtras = { ...installedExtras, error: "python exited" };
+    const s = await store();
+    s.setState({
+      extras: { onnx: true, tensorrt: false, tensorrtSupported: true, error: null },
+    });
+    await s.getState().doUpgradeTool("sleap-nn");
+    expect(calls).toEqual([
+      "install sleap-nn[torch-cpu,export]<0.4 --upgrade --torch-backend=auto",
+    ]);
+  });
+
+  // The capped install would move the env down, to the newest 0.3.
+  it("never downgrades a sleap-nn that is already at or above the cap", async () => {
+    listedTools = [
+      tool({ version: "0.4.0", updateAvailable: false, latestVersion: "0.4.0" }),
+    ];
+    const s = await store();
+    await s.getState().doUpgradeTool("sleap-nn");
+    expect(calls).toEqual([]);
+    expect(s.getState().installStatus).toBe("error");
+    expect(s.getState().installLog.join("\n")).toContain("nothing to update to");
+  });
+
+  it("says that extras added outside the app are not kept", async () => {
+    const s = await store();
+    await s.getState().doUpgradeTool("sleap-nn");
+    expect(s.getState().installLog.join("\n")).toContain(
+      "Extras or install options added outside the app are not kept."
+    );
+  });
+});
+
+describe("the Environment panel's refresh", () => {
+  // The tests above replace refresh(); this one runs the real one, which
+  // feeds the panel's tool rows.
+  it("hides an update at or above the cap", async () => {
+    listedTools = [
+      tool({ latestVersion: "0.4.0" }),
+      tool({ name: "sleap-connect", version: "0.0.8", latestVersion: "0.4.0" }),
+    ];
+    const s = await store();
+    await realRefresh!();
+    const [nn, connect] = s.getState().tools;
+    expect(nn.updateAvailable).toBeNull();
+    expect(nn.latestVersion).toBeNull();
+    expect(connect.updateAvailable).toBe(true);
+    expect(connect.latestVersion).toBe("0.4.0");
+  });
+
+  it("keeps an update below the cap", async () => {
+    listedTools = [tool({ latestVersion: "0.3.6" })];
+    const s = await store();
+    await realRefresh!();
+    expect(s.getState().tools[0].updateAvailable).toBe(true);
+    expect(s.getState().tools[0].latestVersion).toBe("0.3.6");
   });
 });
 

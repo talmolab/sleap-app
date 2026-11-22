@@ -47,14 +47,33 @@ export function isSleapNnVersionBelowCap(version: string): boolean {
  * Hide a sleap-nn update the app would not install.
  *
  * `uv tool list --outdated` reports the newest release on the index and takes
- * no account of the version range recorded with the tool. When that release is
- * at or above the cap, whether a newer version below the cap exists is not
- * known, so the update state becomes unknown (`null`): the Update button stays
- * usable and nothing announces a version the app won't install. Other tools
- * and updates below the cap pass through unchanged.
+ * no account of the version range recorded with the tool. When an update is
+ * flagged and that release is at or above the cap, whether a newer version
+ * below the cap exists is not known, so the update state becomes unknown
+ * (`null`): the Update button stays usable and nothing announces a version the
+ * app won't install.
+ *
+ * Everything else passes through unchanged: other tools, an update below the
+ * cap, and a tool that is up to date. That includes a sleap-nn that is already
+ * at or above the cap and up to date, which must keep reading as up to date so
+ * that Update is not offered for it (see `doUpgradeTool`).
  */
 export function capSleapNnUpdate(tool: UvTool): UvTool {
-  if (tool.name !== "sleap-nn" || !tool.latestVersion) return tool;
+  if (tool.name !== "sleap-nn") return tool;
+  if (tool.updateAvailable !== true || !tool.latestVersion) return tool;
   if (isSleapNnVersionBelowCap(tool.latestVersion)) return tool;
   return { ...tool, updateAvailable: null, latestVersion: null };
+}
+
+/** The extras the app manages besides the torch one, as install extras. */
+export function exportExtras(installed: {
+  onnx: boolean;
+  tensorrt: boolean;
+}): string[] {
+  // TensorRT export is built on the ONNX toolchain, so it brings `export`.
+  const wantOnnx = installed.onnx || installed.tensorrt;
+  return [
+    ...(wantOnnx ? ["export"] : []),
+    ...(installed.tensorrt ? ["tensorrt"] : []),
+  ];
 }
