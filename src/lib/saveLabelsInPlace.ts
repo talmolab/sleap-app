@@ -18,9 +18,17 @@
  *   - We PROBE the on-disk file (via the read-only range reader) to learn its
  *     label-table layouts and its sidecars (tracks/suggestions/videos/metadata).
  *   - We ask the gate whether the current `labels` differ from the file ONLY in
- *     the label tables. If not (a track/video/metadata/etc. change, or a
- *     Python-written enum-point file h5wasm can't patch), the gate refuses and
- *     we return `{ok:false}` so the caller falls back to a full re-save.
+ *     the label tables. If not (a track/video/metadata/etc. change), the gate
+ *     refuses and we return `{ok:false}` so the caller falls back to a full
+ *     re-save.
+ *   - Python sleap-io writes the point flags `visible`/`complete` as HDF5
+ *     booleans (enum members). sleap-io.js from talmolab/sleap-io.js#285 on
+ *     patches them in the file's own type (main thread and worker), so a
+ *     Python-written 2.x package is saved in place like the app's own. Older
+ *     releases (the pinned 0.5.16) refuse them at the gate, and the save falls
+ *     back to a full rewrite, which stores the flags as uint8; later saves of
+ *     that file are then fast. The app makes no decision of its own here: the
+ *     gate of the installed sleap-io.js does.
  *   - Only on an OK gate do we open the file for writing and patch it.
  * A gate refusal or a PROBE failure returns `{ok:false}` (nothing was written —
  * safe to fall through). A failure DURING/AFTER the write begins THROWS: an
@@ -153,17 +161,25 @@ async function readJsonStringDataset(
  *    reloaded `video.shape` equals it exactly.
  * NON-embedded (external) videos use the raw stored path, which the live side
  * may have RESOLVED against the labels dir — a benign mismatch that only routes
- * the save to the (always-correct) full re-save. Python-written files never
- * reach the video check: their enum points refuse at the gate first.
+ * the save to the (always-correct) full re-save.
+ *
+ * Python sleap-io records no `backend.shape` for an embedded video; the reader
+ * then takes the shape from the embedded dataset (see
+ * {@link embeddedShapeFromDataset}), and so does this signature, so that an
+ * unchanged Python-written package passes the video check.
  */
-function buildOnDiskVideoSignatures(
+async function buildOnDiskVideoSignatures(
+  reader: StreamingH5File,
   videosJson: string[] | null,
   destPath: string
-): string[] | null {
+): Promise<string[] | null> {
   if (!videosJson) return null;
   const videoLikes: Video[] = [];
-  for (const entry of videosJson) {
-    let parsed: { filename?: unknown; backend?: { filename?: unknown; shape?: unknown } };
+  for (const [index, entry] of videosJson.entries()) {
+    let parsed: {
+      filename?: unknown;
+      backend?: { filename?: unknown; shape?: unknown; dataset?: unknown };
+    };
     try {
       parsed = JSON.parse(entry);
     } catch {
@@ -178,7 +194,12 @@ function buildOnDiskVideoSignatures(
           : "";
     const embedded = rawName === ".";
     const filename = embedded ? destPath : rawName;
-    const shape = Array.isArray(backend.shape) ? (backend.shape as number[]) : null;
+    let shape = Array.isArray(backend.shape) ? (backend.shape as number[]) : null;
+    if (embedded && (shape === null || shape.length < 4)) {
+      const dataset =
+        typeof backend.dataset === "string" ? backend.dataset : `video${index}/video`;
+      shape = (await embeddedShapeFromDataset(reader, dataset, shape)) ?? shape;
+    }
     // buildVideoSignatures only reads .filename / .shape / .hasEmbeddedImages.
     videoLikes.push({
       filename,
@@ -187,6 +208,58 @@ function buildOnDiskVideoSignatures(
     } as unknown as Video);
   }
   return buildVideoSignatures(videoLikes);
+}
+
+/** A number from an HDF5 attribute or dataset value (bigint, number, wrapper). */
+function h5Number(raw: unknown): number | undefined {
+  const v = raw && typeof raw === "object" && "value" in raw ? (raw as { value: unknown }).value : raw;
+  const first = ArrayBuffer.isView(v) || Array.isArray(v) ? (v as ArrayLike<unknown>)[0] : v;
+  const n = typeof first === "bigint" ? Number(first) : typeof first === "number" ? first : NaN;
+  return Number.isFinite(n) ? n : undefined;
+}
+
+/**
+ * The shape sleap-io.js's reader gives an embedded video whose `videos_json`
+ * entry has none (Python-written packages): height, width and channels from
+ * the dataset's attributes (or the partial JSON shape), and the source frame
+ * count `max(declared, max(frame_numbers) + 1)`, declared by the `frames`
+ * attribute or the JSON shape (as the reader's `resolveSourceFrameCount`).
+ * Null when it can't be read; the signature then keeps the JSON shape, and a
+ * mismatch only sends the save to a full rewrite.
+ */
+async function embeddedShapeFromDataset(
+  reader: StreamingH5File,
+  dataset: string,
+  jsonShape: number[] | null
+): Promise<number[] | null> {
+  try {
+    if (!reader.keys().includes(dataset.split("/")[0])) return null;
+    const attrs = await reader.getAttrs(dataset);
+    const height = jsonShape?.[1] ?? h5Number(attrs["height"]);
+    const width = jsonShape?.[2] ?? h5Number(attrs["width"]);
+    const channels = jsonShape?.[3] ?? h5Number(attrs["channels"]);
+    if (!height || !width || !channels) return null;
+    const group = dataset.includes("/") ? dataset.slice(0, dataset.lastIndexOf("/")) : "";
+    let maxFrame = -1;
+    try {
+      const { value } = await reader.getDatasetValue(`${group}/frame_numbers`);
+      for (const n of Array.from(value as ArrayLike<unknown>, (x) => h5Number(x) ?? -1)) {
+        if (n > maxFrame) maxFrame = n;
+      }
+    } catch {
+      // No frame_numbers: the declared count stands.
+    }
+    const framesAttr = h5Number(attrs["frames"]);
+    const declared =
+      framesAttr !== undefined && framesAttr > 0
+        ? framesAttr
+        : jsonShape?.[0] !== undefined && jsonShape[0] > 0
+          ? jsonShape[0]
+          : 0;
+    return [Math.max(declared, maxFrame + 1), height, width, channels];
+  } catch {
+    return null;
+  }
 }
 
 /** What the probe learned about the on-disk file (all read read-only). */
@@ -265,7 +338,7 @@ async function probeOnDisk(path: string): Promise<OnDiskProbe> {
       tracksJson,
       suggestionsJson,
       metadataJson,
-      videos: buildOnDiskVideoSignatures(videosJson, path),
+      videos: await buildOnDiskVideoSignatures(reader, videosJson, path),
     };
     return { tables, sidecars, size };
   } finally {
@@ -368,7 +441,8 @@ async function verifyInPlace(
       tracksJson: await readJsonStringDataset(reader, "tracks_json"),
       suggestionsJson: await readJsonStringDataset(reader, "suggestions_json"),
       metadataJson: null, // metadata MAY have been intentionally rewritten; not checked here
-      videos: buildOnDiskVideoSignatures(
+      videos: await buildOnDiskVideoSignatures(
+        reader,
         await readJsonStringDataset(reader, "videos_json"),
         path
       ),
