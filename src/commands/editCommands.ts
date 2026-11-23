@@ -301,7 +301,7 @@ function clonePoints(points: Instance["points"]): Instance["points"] {
  * appears at all, instead of the hollow "invisible node" marker it draws for
  * genuinely non-visible points.
  */
-function clonePredictedPoints(points: Instance["points"]): Instance["points"] {
+export function clonePredictedPoints(points: Instance["points"]): Instance["points"] {
   return points.map((p) => ({
     xy: [p.xy[0], p.xy[1]] as [number, number],
     visible: !Number.isNaN(p.xy[0]),

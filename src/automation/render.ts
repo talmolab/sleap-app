@@ -1,11 +1,12 @@
 /**
- * Off-screen picture of one flagged instance for Claude: the video frame
- * cropped around the instance, enlarged, with every pose drawn and node names
- * on. The flagged instance is drawn at full strength and the others dimmed.
- * The user's view doesn't move.
+ * Off-screen picture of one flagged instance (or one prediction) for Claude:
+ * the video frame cropped around the instance, enlarged, with every pose
+ * drawn and node names on. The instance under review is drawn at full
+ * strength and the others dimmed. The user's view doesn't move.
  *
  * Each render gets a `render_id` that remembers its transform, so a later
- * `propose_fix` can take positions in the picture's own pixels.
+ * `propose_fix` / `propose_correction` can take positions in the picture's
+ * own pixels.
  */
 import { useAppStore } from "@/stores/appStore";
 import { buildExportRenderedInstances } from "@/lib/videoExport";
@@ -15,6 +16,8 @@ import { cropOrigin, toImageCoords } from "@/lib/cropTransform";
 import { poseOf, type PoseSnapshot } from "@/stores/proposalStore";
 import { AutomationError } from "./errors";
 import { findQcFlag, flagTarget, requireLabels } from "./qcFlags";
+import { findPrediction, type PredictionTarget } from "./predictions";
+import type { Instance, LabeledFrame } from "@/types";
 import { frameToRender, instanceBBox, planCrop, type RenderTransform } from "./coords";
 
 /** Long-edge budget: Claude's vision downsizes anything larger. */
@@ -28,9 +31,11 @@ export interface RenderRecord {
   labels?: object | null;
   /** The flagged instance's pose when rendered (what Claude looked at). */
   pose?: PoseSnapshot;
+  /** The flag id, or prediction id, it was rendered for. */
   flagId: string;
   videoIdx: number;
   frameIdx: number;
+  /** The flag's user-instance index, or the prediction's index among the frame's predictions. */
   instIdx: number | null;
   transform: RenderTransform;
   width: number;
@@ -53,7 +58,7 @@ export function getRender(renderId: string): RenderRecord {
   if (!r || (r.labels && r.labels !== useAppStore.getState().labels)) {
     throw new AutomationError(
       "UNKNOWN_RENDER",
-      `Unknown render_id "${renderId}" (only the last ${MAX_RENDERS} are kept). Call render_flag again.`,
+      `Unknown render_id "${renderId}" (only the last ${MAX_RENDERS} are kept). Call render_flag (or render_prediction) again.`,
     );
   }
   return r;
@@ -86,18 +91,33 @@ export interface FlagRender extends RenderRecord {
 
 const round1 = (v: number) => Math.round(v * 10) / 10;
 
-/** Render a flag's instance (or, for a frame-level flag, the whole frame). */
-export async function renderFlag(flagId: string, opts: { maxEdge?: number } = {}): Promise<FlagRender> {
+/** What {@link renderCrop} drew, before it is remembered under a render id. */
+interface CropPicture {
+  png: Uint8Array;
+  transform: RenderTransform;
+  width: number;
+  height: number;
+}
+
+/**
+ * Draw `instance`'s frame cropped around it and enlarged, every pose drawn,
+ * `instance` at full strength with node names and the others dimmed (or, with
+ * no instance, the whole frame with every name).
+ */
+async function renderCrop(
+  lf: LabeledFrame,
+  instance: Instance | null,
+  where: { videoIdx: number; frameIdx: number },
+  maxEdge: number,
+): Promise<CropPicture> {
   const labels = requireLabels();
-  const flag = findQcFlag(flagId);
-  const { lf, instance } = flagTarget(labels, flag);
   const video = lf.video;
 
   let frame: OffscreenCanvas | null = null;
   try {
     const raw = await (
       video as unknown as { getFrame: (i: number, o?: { prefetch?: boolean }) => Promise<unknown> }
-    ).getFrame(flag.frameIdx, { prefetch: false });
+    ).getFrame(where.frameIdx, { prefetch: false });
     // frameToCanvas copies, so a backend that reuses its bitmap can't change it under us.
     frame = await frameToCanvas(raw, video.shape);
   } catch {
@@ -106,7 +126,7 @@ export async function renderFlag(flagId: string, opts: { maxEdge?: number } = {}
   if (!frame) {
     throw new AutomationError(
       "RENDER_FAILED",
-      `Couldn't read frame ${flag.frameIdx} of video ${flag.videoIdx}. Is the video file available?`,
+      `Couldn't read frame ${where.frameIdx} of video ${where.videoIdx}. Is the video file available?`,
     );
   }
 
@@ -118,7 +138,7 @@ export async function renderFlag(flagId: string, opts: { maxEdge?: number } = {}
     bbox: instance ? instanceBBox(imagePts) : null,
     frameW: frame.width,
     frameH: frame.height,
-    maxEdge: opts.maxEdge ?? DEFAULT_MAX_EDGE,
+    maxEdge,
     pad: 0.5,
   });
   const offset = cropOrigin(video) ?? [0, 0];
@@ -163,7 +183,7 @@ export async function renderFlag(flagId: string, opts: { maxEdge?: number } = {}
       ...extra,
     });
   if (focusIdx >= 0) {
-    // Others dimmed and unlabeled, so every name in the picture is the flagged instance's.
+    // Others dimmed and unlabeled, so every name in the picture is the focus instance's.
     draw(rendered.filter((_, i) => i !== focusIdx), { showLabels: false, poseOpacity: FOCUS_DIM_OPACITY });
     draw([rendered[focusIdx]], { showLabels: true, poseOpacity: 1 });
   } else {
@@ -171,21 +191,13 @@ export async function renderFlag(flagId: string, opts: { maxEdge?: number } = {}
   }
 
   const blob = await out.convertToBlob({ type: "image/png" });
-  const png = new Uint8Array(await blob.arrayBuffer());
+  return { png: new Uint8Array(await blob.arrayBuffer()), transform, width, height };
+}
 
-  const rec = rememberRender({
-    labels,
-    pose: instance ? poseOf(instance) : undefined,
-    flagId: flag.id,
-    videoIdx: flag.videoIdx,
-    frameIdx: flag.frameIdx,
-    instIdx: flag.instIdx,
-    transform,
-    width,
-    height,
-  });
+/** An instance's nodes in a render's pixels (null where not placed). */
+function renderedNodes(instance: Instance | null, transform: RenderTransform): RenderedNodeInfo[] {
   const names = instance?.skeleton.nodeNames ?? [];
-  const nodes: RenderedNodeInfo[] = (instance?.points ?? []).map((p, i) => {
+  return (instance?.points ?? []).map((p, i) => {
     const placed = Number.isFinite(p.xy[0]) && Number.isFinite(p.xy[1]);
     const [rx, ry] = placed ? frameToRender(transform, p.xy[0], p.xy[1]) : [NaN, NaN];
     return {
@@ -195,5 +207,58 @@ export async function renderFlag(flagId: string, opts: { maxEdge?: number } = {}
       visible: p.visible && placed,
     };
   });
-  return { ...rec, png, nodes };
+}
+
+/** Render a flag's instance (or, for a frame-level flag, the whole frame). */
+export async function renderFlag(flagId: string, opts: { maxEdge?: number } = {}): Promise<FlagRender> {
+  const labels = requireLabels();
+  const flag = findQcFlag(flagId);
+  const { lf, instance } = flagTarget(labels, flag);
+  const pic = await renderCrop(lf, instance, flag, opts.maxEdge ?? DEFAULT_MAX_EDGE);
+  const rec = rememberRender({
+    labels,
+    pose: instance ? poseOf(instance) : undefined,
+    flagId: flag.id,
+    videoIdx: flag.videoIdx,
+    frameIdx: flag.frameIdx,
+    instIdx: flag.instIdx,
+    transform: pic.transform,
+    width: pic.width,
+    height: pic.height,
+  });
+  return { ...rec, png: pic.png, nodes: renderedNodes(instance, pic.transform) };
+}
+
+export interface PredictionRender extends RenderRecord {
+  png: Uint8Array;
+  /** The prediction's nodes in render pixels, with the model's score per node. */
+  nodes: (RenderedNodeInfo & { score: number | null })[];
+  target: PredictionTarget;
+}
+
+/**
+ * Render a predicted instance for prediction review. The render remembers the
+ * prediction's pose, so a correction proposed from it follows that prediction
+ * (and is outdated once it is gone).
+ */
+export async function renderPrediction(predictionId: string, opts: { maxEdge?: number } = {}): Promise<PredictionRender> {
+  const labels = requireLabels();
+  const target = findPrediction(labels, predictionId);
+  const pic = await renderCrop(target.lf, target.instance, target, opts.maxEdge ?? DEFAULT_MAX_EDGE);
+  const rec = rememberRender({
+    labels,
+    pose: poseOf(target.instance),
+    flagId: target.id,
+    videoIdx: target.videoIdx,
+    frameIdx: target.frameIdx,
+    instIdx: target.predIdx,
+    transform: pic.transform,
+    width: pic.width,
+    height: pic.height,
+  });
+  const nodes = renderedNodes(target.instance, pic.transform).map((n, i) => {
+    const score = target.instance.points[i]?.score;
+    return { ...n, score: typeof score === "number" && Number.isFinite(score) ? Math.round(score * 1000) / 1000 : null };
+  });
+  return { ...rec, png: pic.png, nodes, target };
 }

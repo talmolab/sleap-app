@@ -1,6 +1,14 @@
 // Why: the accuracy numbers in the PR come from this script; its planting and scoring must be right.
 import { describe, it, expect } from "../../bun-test";
-import { plantErrors, scoreProposals, type Planted, type ProposalOut } from "../../../scripts/qc-claude-eval";
+import {
+  plantErrors,
+  plantPredictionErrors,
+  scoreCorrections,
+  scoreProposals,
+  type Planted,
+  type PlantedPrediction,
+  type ProposalOut,
+} from "../../../scripts/qc-claude-eval";
 
 const pose = (dx: number) => ({
   points: [
@@ -86,5 +94,84 @@ describe("scoreProposals", () => {
     expect(s.fixesOnPlanted).toBe(2);
     expect(s.rightNodePct).toBe(50);
     expect(s.fixesWithExtraNodes).toBe(1);
+  });
+});
+
+describe("plantPredictionErrors", () => {
+  type ScoredPose = { points: { xy: [number, number]; visible: boolean; score?: number }[] };
+  const predFrames = () =>
+    [0, 1, 2, 3, 4].map((f) => ({ videoIdx: 0, frameIdx: f, poses: [pose(0), pose(100)] as ScoredPose[] }));
+
+  // Why: errors are moved AND scored low, decoys only scored low; everything else scores high, so the low score is the only hint.
+  it("plants N moved low-scored nodes and D unmoved low-scored decoys, repeatably", () => {
+    const frames = predFrames();
+    const planted = plantPredictionErrors(frames, ["a", "b", "c"], { n: 3, decoys: 2, seed: 2, min: 10, max: 40 });
+    expect(plantPredictionErrors(predFrames(), ["a", "b", "c"], { n: 3, decoys: 2, seed: 2, min: 10, max: 40 })).toEqual(planted);
+    expect(planted.filter((p) => p.kind === "error")).toHaveLength(3);
+    expect(planted.filter((p) => p.kind === "decoy")).toHaveLength(2);
+    expect(new Set(planted.map((p) => `${p.frameIdx}:${p.predIdx}`)).size).toBe(5);
+    for (const p of planted) {
+      const pt = frames[p.frameIdx].poses[p.predIdx].points[p.node];
+      expect(pt.score!).toBeLessThan(0.36);
+      expect(pt.xy).toEqual(p.moved);
+      expect(p.truth[p.nodeName]).toEqual(p.original);
+      expect(p.truth.c).toBeNull(); // the hidden node
+      if (p.kind === "decoy") expect(p.distance).toBe(0);
+      else expect(p.distance).toBeGreaterThanOrEqual(10 - 1e-9);
+    }
+    // Every other node is confident.
+    const lows = frames.flatMap((f) => f.poses.flatMap((q) => q.points.filter((pt) => pt.score! < 0.6)));
+    expect(lows).toHaveLength(5);
+  });
+});
+
+describe("scoreCorrections", () => {
+  const truth = { a: [10, 10] as [number, number], b: [20, 20] as [number, number], c: null };
+  const planted: PlantedPrediction[] = [
+    { kind: "error", videoIdx: 0, frameIdx: 1, predIdx: 0, node: 0, nodeName: "a", original: [10, 10], moved: [30, 10], distance: 20, truth },
+    { kind: "error", videoIdx: 0, frameIdx: 2, predIdx: 1, node: 1, nodeName: "b", original: [20, 20], moved: [20, 50], distance: 30, truth },
+    { kind: "error", videoIdx: 0, frameIdx: 3, predIdx: 0, node: 0, nodeName: "a", original: [10, 10], moved: [10, 40], distance: 30, truth },
+    { kind: "error", videoIdx: 0, frameIdx: 5, predIdx: 0, node: 0, nodeName: "a", original: [10, 10], moved: [10, 40], distance: 30, truth },
+    { kind: "decoy", videoIdx: 0, frameIdx: 4, predIdx: 0, node: 1, nodeName: "b", original: [20, 20], moved: [20, 20], distance: 0, truth },
+    { kind: "decoy", videoIdx: 0, frameIdx: 4, predIdx: 1, node: 1, nodeName: "b", original: [20, 20], moved: [20, 20], distance: 0, truth },
+    { kind: "decoy", videoIdx: 0, frameIdx: 6, predIdx: 0, node: 0, nodeName: "a", original: [10, 10], moved: [10, 10], distance: 0, truth },
+  ];
+  const corr = (frame: number, prediction: number, after: ProposalOut["after"]): ProposalOut => ({
+    proposal_id: `p${frame}${prediction}`,
+    kind: "correct",
+    status: "pending",
+    video: 0,
+    frame,
+    prediction,
+    after,
+  });
+
+  // Why: each number in the correction report must count what its name says.
+  it("counts found errors, pixel error, misses, decoys left right or broken, and collateral moves", () => {
+    const s = scoreCorrections(planted, [
+      corr(1, 0, { a: [13, 14] }), // found, 5 px
+      corr(2, 1, { a: [40, 40] }), // wrong node, and moves a away from the truth
+      corr(3, 0, {}), // accepted an error as is
+      corr(4, 0, {}), // decoy accepted as is: right
+      corr(4, 1, { b: [50, 50] }), // decoy broken
+      corr(9, 0, { a: [1, 1] }), // not planted
+    ]);
+    expect(s).toMatchObject({
+      errors: 4,
+      decoys: 3,
+      found: 1,
+      foundPct: 25,
+      notReviewed: 1,
+      acceptedAsIs: 1,
+      wrongNode: 1,
+      medianErrorPx: 5,
+      within5PxPct: 100,
+      improvedPct: 100,
+      decoysLeftRight: 2, // one as is, one never proposed
+      decoysAcceptedAsIs: 1,
+      decoysBroken: 1,
+      collateralNodes: 1,
+      otherCorrections: 1,
+    });
   });
 });

@@ -19,23 +19,34 @@ import type { ToolRegistry } from "./registry";
 import { APP_VERSION } from "@/lib/version";
 import { sleapCmd } from "@/lib/sleapPlugin";
 
-/** What Claude reads first: what SLEAP is and how the QC-review tools fit together. */
+/** What Claude reads first: what SLEAP is and how the review tools fit together. */
 export const SERVER_INSTRUCTIONS = `SLEAP is a pose-tracking app: users label body parts ("nodes", joined by "edges" into a skeleton) on animals in video frames, train models, and check their labels. This server connects you to the SLEAP desktop window the user has open.
 
-What you can do here: review Label QC flags. Label QC finds labeled poses that look wrong (a node on the wrong body part, swapped left/right, an implausible shape, duplicates). You look at each flagged pose and PROPOSE a fix or propose ignoring the flag. The user accepts or rejects each proposal in SLEAP's QC Review window. You never change labels yourself, and there is no save tool.
+What you can do here, in two jobs:
+- Review Label QC flags. Label QC finds labeled poses that look wrong (a node on the wrong body part, swapped left/right, an implausible shape, duplicates). You look at each flagged pose and PROPOSE a fix or propose ignoring the flag.
+- Correct predictions. A trained model's predicted poses ("predictions") can be wrong where the model was unsure (low scores) or where several models disagree. You look at each one and PROPOSE a corrected pose (or propose accepting it as is); if the user accepts, it becomes one of their labels.
+The user accepts or rejects each proposal in SLEAP's Review window. You never change labels yourself, and there is no save tool.
 
-Workflow:
-1. get_session: see what is open and whether Label QC has been run. If it hasn't, ask the user to run Analyze → Label Quality Check (or open the Label QC panel and run it), then continue.
+Start with get_session: it says what is open, whether Label QC has been run, how many predictions there are, and which models are loaded for comparison.
+
+QC review:
+1. If Label QC hasn't been run, ask the user to run Analyze → Label Quality Check (or open the Label QC panel and run it), then continue.
 2. list_qc_flags: the open flags, most severe first, with stable ids. Skip flags whose 'proposal' is already 'pending' or 'accepted'.
 3. For each flag on an instance: render_flag(flag_id). Look at the picture carefully: node names are drawn next to each node of the flagged animal; other animals are dimmed. Decide whether a node is misplaced, whether a node that should be hidden (occluded, out of view) is placed, or whether the pose is actually fine.
-4. propose_fix(flag_id, render_id, nodes, reason) with positions in the PICTURE'S PIXELS (origin top-left, x right, y down) as returned by render_flag — the app converts them; do no math. Only list nodes you want to change; null marks a node not visible. Or propose_ignore(flag_id, reason) if the pose is right.
-5. Keep reasons to one short sentence the user can check at a glance ("head was on the left wing tip").
+4. propose_fix(flag_id, render_id, nodes, reason), or propose_ignore(flag_id, reason) if the pose is right.
 
-Rules:
-- Only propose a change you can see is right in the picture. When unsure, say so in the reason or leave the flag for the user.
-- Never tell the user a fix is applied, saved or done. Say it is proposed and waiting for them in the Review window. list_proposals shows what they accepted, rejected or undid, and which proposals are outdated because the pose changed.
-- Frame-level flags (instance null) can't be fixed or ignored here; mention them to the user instead.
-- Work through flags in batches (for example 10 at a time) and summarize what you proposed.`;
+Prediction review:
+1. list_predictions_to_review: predictions the model was unsure of (instance or node score below a threshold) and, when two or more models are shown in Compare Model Predictions, ones whose nodes the models place far apart. Least confident first. Skip ones whose 'proposal' is already 'pending' or 'accepted'. If almost everything or almost nothing is listed, use score_summary to pick other thresholds (max_instance_score, max_node_score).
+2. For each: render_prediction(prediction_id). The low-scored nodes and the nodes the models disagree on are the ones to check first; where the models disagree you also get each model's placement, which can point at the right spot — but trust the picture, not the majority.
+3. propose_correction(prediction_id, render_id, nodes, reason) with only the nodes to change. If the prediction is right as it is, propose it with nodes {} so the user can accept it as a label. If the prediction isn't an animal at all, or is too wrong to fix node by node, don't propose; tell the user instead.
+
+For both jobs:
+- Positions are in the PICTURE'S PIXELS (origin top-left, x right, y down) as returned by render_flag / render_prediction — the app converts them; do no math. null marks a node not visible.
+- Keep reasons to one short sentence the user can check at a glance ("head was on the left wing tip").
+- Only propose a change you can see is right in the picture. When unsure, say so in the reason or leave it for the user.
+- Never tell the user a change is applied, saved or done. Say it is proposed and waiting for them in SLEAP's Review window (SLEAP shows them a "Review" button). list_proposals shows what they accepted, rejected or undid, and which proposals are outdated because the pose changed.
+- Frame-level QC flags (instance null) can't be fixed or ignored here; mention them to the user instead.
+- Work in batches (for example 10 at a time) and summarize what you proposed.`;
 
 export function createMcpServer(registry: ToolRegistry = defaultRegistry): Server {
   const server = new Server(
