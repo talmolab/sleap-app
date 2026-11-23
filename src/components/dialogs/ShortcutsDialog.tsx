@@ -152,9 +152,16 @@ export function ShortcutsDialog({ open, onOpenChange }: ShortcutsDialogProps) {
     setDraft((d) => assignShortcut(d, action, key));
   }, [draft]);
 
-  // While waiting for a key, take every key press before anything else sees
-  // it (the app's own shortcuts, the dialog's Esc-to-close, and on macOS the
-  // native menu, which only gets keys the page didn't handle).
+  // While waiting for a key the menus own no shortcuts: on macOS the native
+  // menu would otherwise take its ⌘ keys (e.g. ⌘K runs Delete Predictions
+  // from Area…) before the page sees them.
+  useEffect(() => {
+    useAppStore.getState().set("shortcutCaptureActive", capturing !== null);
+    return () => useAppStore.getState().set("shortcutCaptureActive", false);
+  }, [capturing]);
+
+  // While waiting for a key, take every key press before anything else on
+  // the page sees it (the app's own shortcuts, the dialog's Esc-to-close).
   useEffect(() => {
     if (!capturing) return;
     const onKey = (e: KeyboardEvent) => {

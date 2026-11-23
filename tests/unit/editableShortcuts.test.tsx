@@ -614,3 +614,44 @@ describe("review fixes", () => {
     expect(shortcutText("add instance")).toBe("no key");
   });
 });
+
+describe("capturing a ⌘ key on the macOS desktop app", () => {
+  // The native menu takes a key that's one of its accelerators before the
+  // page sees it (⌘K ran Delete Predictions from Area… instead of being
+  // captured), so while the dialog waits for a key no menu item has one.
+  it("drops every menu accelerator while a key is being captured", () => {
+    expect(accelerator("labels.deleteArea")).toBe("CmdOrCtrl+K");
+    useAppStore.setState({ shortcutCaptureActive: true });
+    expect(accelerator("labels.deleteArea")).toBeUndefined();
+    expect(accelerator("file.save")).toBeUndefined();
+    expect(ownedShortcuts(currentAppMenu())).toEqual(["$mod+KeyQ"]);
+    useAppStore.setState({ shortcutCaptureActive: false });
+    expect(accelerator("labels.deleteArea")).toBe("CmdOrCtrl+K");
+  });
+
+  // The native menu is rebuilt when capture starts and ends.
+  it("rebuilds the menu when capture starts and ends", () => {
+    const seen: (string | undefined)[] = [];
+    const stop = subscribeAppMenu((menu) => seen.push(menuItemForAction(menu, "delete area predictions")?.shortcut));
+    useAppStore.setState({ shortcutCaptureActive: true });
+    useAppStore.setState({ shortcutCaptureActive: false });
+    stop();
+    expect(seen).toEqual(["$mod+KeyK", undefined, "$mod+KeyK"]);
+  });
+
+  // The dialog turns capture on when you click a key and off once a key is
+  // pressed (or the dialog goes away), so the accelerators come back.
+  it("is on only while the dialog waits for a key", () => {
+    useConfirmStore.setState({ confirm: async () => false } as never);
+    const { unmount } = render(<ShortcutsDialog open onOpenChange={() => {}} />);
+    const keyButton = document.querySelector('[data-action="add track"] button') as HTMLButtonElement;
+    fireEvent.click(keyButton);
+    expect(useAppStore.getState().shortcutCaptureActive).toBe(true);
+    press("KeyG");
+    expect(useAppStore.getState().shortcutCaptureActive).toBe(false);
+    fireEvent.click(keyButton);
+    expect(useAppStore.getState().shortcutCaptureActive).toBe(true);
+    unmount();
+    expect(useAppStore.getState().shortcutCaptureActive).toBe(false);
+  });
+});

@@ -9,7 +9,7 @@ import { useAppStore, type AppState } from "@/stores/appStore";
 import { commandContext } from "@/commands";
 import { isTauri } from "@/lib/platform";
 import { buildAppMenu, type MenuSnapshot } from "./appMenu";
-import { withUserShortcuts } from "./menuShortcuts";
+import { withUserShortcuts, withoutShortcuts } from "./menuShortcuts";
 import type { AppMenu } from "./types";
 
 /**
@@ -74,6 +74,7 @@ export function pickInputs(s: AppState) {
     propagateTrackLabels: s.propagateTrackLabels,
     seekbarHeaderGraph: s.seekbarHeaderGraph,
     shortcutOverrides: s.shortcutOverrides,
+    shortcutCaptureActive: s.shortcutCaptureActive,
   };
 }
 
@@ -154,7 +155,9 @@ export function snapshotFrom(i: MenuInputs): MenuSnapshot {
 
 /** The menus for these inputs, showing the user's keyboard shortcuts. */
 function menuFrom(i: MenuInputs): AppMenu {
-  return withUserShortcuts(buildAppMenu(snapshotFrom(i)), i.shortcutOverrides);
+  const menu = buildAppMenu(snapshotFrom(i));
+  // While the Shortcuts dialog captures a key, no menu item may own one.
+  return i.shortcutCaptureActive ? withoutShortcuts(menu) : withUserShortcuts(menu, i.shortcutOverrides);
 }
 
 /** The menus for the current state (for one-off reads outside React). */

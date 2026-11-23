@@ -85,6 +85,23 @@ export function withUserShortcuts(menu: AppMenu, overrides: ShortcutOverrides): 
   return menu.map((top) => (top.kind === "menu" ? { ...top, items: mapNodes(top.items, overrides) } : top));
 }
 
+function stripNodes(nodes: MenuNode[]): MenuNode[] {
+  return nodes.map((node) => {
+    if (node.kind === "submenu") return { ...node, items: stripNodes(node.items) };
+    if (node.kind !== "item" && node.kind !== "check") return node;
+    return { ...node, shortcut: undefined };
+  });
+}
+
+/**
+ * The menu with no shortcuts at all, for while the Shortcuts dialog waits
+ * for a key: on macOS the native menu bar takes a key that's one of its
+ * accelerators (⌘K → Delete Predictions from Area…) before the page sees it.
+ */
+export function withoutShortcuts(menu: AppMenu): AppMenu {
+  return menu.map((top) => (top.kind === "menu" ? { ...top, items: stripNodes(top.items) } : top));
+}
+
 /** The menu item for an action, if it has one (enabled or not). */
 export function menuItemForAction(
   menu: AppMenu,

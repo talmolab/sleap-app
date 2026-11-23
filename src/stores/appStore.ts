@@ -286,6 +286,12 @@ export interface AppState {
    * PyQt keeps these in shortcuts.yaml. Persisted.
    */
   shortcutOverrides: ShortcutOverrides;
+  /**
+   * The Shortcuts dialog is waiting for a key: the menus drop their shortcuts
+   * meanwhile, so the macOS native menu doesn't take a ⌘ key (its accelerator)
+   * before the dialog sees it. Not persisted.
+   */
+  shortcutCaptureActive: boolean;
   /** Frames moved by Ctrl+Shift+Left/Right (PyQt pref "large step size"). Persisted. */
   largeStepSize: number;
   /** What the trail follows: `"centroid"` or a skeleton node name (PyQt `trail node`). Persisted. */
@@ -968,6 +974,7 @@ export const useAppStore = create<AppState>()(
       mediumStepSize: STEP_SIZES.medium,
       largeStepSize: STEP_SIZES.large,
       shortcutOverrides: {},
+      shortcutCaptureActive: false,
       // PyQt prefs.py defaults.
       trailNode: "centroid",
       trailAlpha: 1,
