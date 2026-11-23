@@ -20,6 +20,7 @@ import {
   toVideoImportEntries,
   prepareVideoImportEntries,
   hdf5ImportOptions,
+  importGrayscale,
   type VideoImportEntry,
 } from "./VideoImportList";
 import { SKELETON_TEMPLATES, TEMPLATE_ORDER } from "../../lib/skeletonTemplates";
@@ -90,7 +91,7 @@ export function NewProjectDialog() {
         const v = await addVideoFileToLabels(
           labels,
           pv,
-          pv.grayscale,
+          importGrayscale(pv),
           hdf5ImportOptions(pv)
         );
         if (v) addedAny = true;

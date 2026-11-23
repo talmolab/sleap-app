@@ -11,6 +11,8 @@
  *   a `channels_first` / `channels_last` choice (PyQt's labels, verbatim; the
  *   first is selected by default, as in PyQt), bulk "All channels last" /
  *   "All channels first".
+ * Like PyQt, each pair of bulk buttons shows whenever a file of its kind is
+ * staged, even just one.
  */
 
 import { X } from "lucide-react";
@@ -79,6 +81,15 @@ export async function prepareVideoImportEntries(
   );
 }
 
+/**
+ * The grayscale flag to import `entry` with: the checkbox for a media file;
+ * `null` (autodetect from the first frame) for an HDF5 movie, whose PyQt
+ * import has no grayscale parameter, so Python opens it with `grayscale=None`.
+ */
+export function importGrayscale(entry: VideoImportEntry): boolean | null {
+  return entry.hdf5 ? null : entry.grayscale;
+}
+
 /** The HDF5 options to import `entry` with, or undefined for other files. */
 export function hdf5ImportOptions(
   entry: VideoImportEntry
@@ -135,7 +146,9 @@ export function VideoImportList({
 
   return (
     <div className="flex flex-col gap-1.5">
-      {videos.length > 1 && (
+      {/* PyQt shows the bulk buttons whenever a file of that kind is staged,
+          even a single one. */}
+      {(anyMedia || anyHdf5) && (
         <div className="flex flex-wrap items-center gap-2 self-start">
           {anyMedia && (
             <>

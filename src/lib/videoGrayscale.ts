@@ -5,8 +5,11 @@
  *
  * PyQt reads the grayscale state of the CURRENT video (or, if that one can't
  * say, the first video that can), then flips EVERY video in the project to the
- * opposite state. It does this silently: no dialog, no message. A video whose
- * backend can't be switched is skipped with a console note.
+ * opposite state. It does this silently: no dialog, no message. A video with
+ * no open decoder (on desktop, every video not yet viewed is opened lazily)
+ * is still switched: like Python sleap-io's `Video.grayscale` setter, only its
+ * `backendMetadata.grayscale` is written, and the decoder picks it up when it
+ * opens.
  *
  * The undo side lives here too: {@link captureGrayscaleState} records exactly
  * what a toggle changes on one `Video` (its grayscale wrapper, its
@@ -105,7 +108,23 @@ export function grayscaleToToggleFrom(
  * next toggle read the old state and flip the wrong way.
  */
 export function setVideoGrayscale(video: Video, value: boolean): void {
-  video.grayscale = value; // throws when the video has no open backend
+  if (!video.backend) {
+    // Not opened (lazy) or missing: Python's setter just records the value.
+    // The recorded shape's channel count follows, so the saved .slp agrees.
+    const meta = { ...(video.backendMetadata as Record<string, unknown>) };
+    meta.grayscale = value;
+    const shape = meta.shape as number[] | undefined;
+    if (Array.isArray(shape) && shape.length === 4) {
+      meta.shape = [shape[0], shape[1], shape[2], value ? 1 : 3];
+    }
+    video.backendMetadata = meta;
+    const override = shapeOverrideOf(video);
+    if (override) {
+      video.shape = [override[0], override[1], override[2], value ? 1 : 3];
+    }
+    return;
+  }
+  video.grayscale = value;
   const override = shapeOverrideOf(video);
   if (override) {
     const channels = video.backend?.shape?.[3] ?? (value ? 1 : 3);
@@ -124,8 +143,8 @@ export interface GrayscaleToggle {
 /**
  * Flip every video to the opposite of {@link grayscaleToToggleFrom}'s state —
  * PyQt's `ToggleGrayscale.do_action`. Throws PyQt's own messages when there is
- * nothing to toggle. A video that can't be switched (no open backend: a
- * missing file, or one not opened yet) is skipped with PyQt's console note.
+ * nothing to toggle. Every video is switched (see {@link setVideoGrayscale});
+ * one that still throws is skipped with PyQt's console note.
  */
 export function toggleGrayscaleAll(
   videos: readonly Video[],

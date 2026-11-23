@@ -8,7 +8,6 @@ import {
   findRank4Datasets,
   frameShapeFor,
   rawFrameToRgba,
-  type Hdf5Tree,
 } from "@/lib/rawHdf5Video";
 import {
   prepareVideoImportEntries,
@@ -18,69 +17,77 @@ import {
 } from "@/components/dialogs/VideoImportList";
 import { hdf5HintsForVideo, rawMovieShape } from "@/lib/hdf5VideoSource";
 import { Video } from "@talmolab/sleap-io.js";
+import path from "node:path";
+import { openWithRealH5wasm } from "./helpers/h5wasmWorkerMirror";
 
-/** A fake HDF5 file: groups map to children, datasets map to shapes. */
-function tree(nodes: Record<string, string[] | number[]>): Hdf5Tree {
-  const isGroup = (p: string) =>
-    Array.isArray(nodes[p]) && typeof (nodes[p] as unknown[])[0] === "string";
-  return {
-    keys: () => nodes[""] as string[],
-    getKeys: async (p) => {
-      if (!isGroup(p)) throw new Error("not a group");
-      return nodes[p] as string[];
-    },
-    getDatasetMeta: async (p) => {
-      if (isGroup(p) || !(p in nodes)) throw new Error("not a dataset");
-      return { shape: nodes[p] as number[], dtype: "<u1" };
-    },
-  };
-}
+const MOVIE = path.join(import.meta.dir, "..", "fixtures", "raw_movie.h5");
+// raw_movie.h5 (written with h5py): /box = (2, 64, 96, 3) channels-last, and
+// /g/first = the same movie as (2, 3, 64, 96). Each frame is red on the top 32
+// rows, blue below. Expected values come from Python sleap-io 0.6.0:
+// `sio.load_video("raw_movie.h5", dataset=..., input_format=...)`.
 
-describe("findRank4Datasets", () => {
-  // PyQt lists only rank-4 datasets, walking into groups, as "/group/name".
-  it("lists rank-4 datasets recursively, PyQt-style paths", async () => {
-    const h5 = tree({
-      "": ["box", "meta", "grp"],
-      box: [100, 64, 48, 1],
-      meta: [3],
-      grp: ["movie", "inner"],
-      "grp/movie": [10, 3, 32, 32],
-      "grp/inner": ["deep"],
-      "grp/inner/deep": [5, 8, 8, 3],
-    });
-    expect(await findRank4Datasets(h5)).toEqual([
-      "/box",
-      "/grp/movie",
-      "/grp/inner/deep",
-    ]);
+describe("findRank4Datasets (real h5wasm)", () => {
+  // The worker's getKeys returns [] for a dataset, so detection must use the
+  // dataset's shape — a mock that threw on getKeys hid that every dataset was
+  // taken for an empty group and the menu came out empty.
+  it("lists the rank-4 datasets of a real file, PyQt-style", async () => {
+    const h5 = await openWithRealH5wasm(MOVIE);
+    try {
+      expect(await findRank4Datasets(h5)).toEqual(["/box", "/g/first"]);
+    } finally {
+      await h5.close();
+    }
   });
 
   // A SLEAP package stores 1-D encoded frames, so PyQt's menu is empty.
   it("offers nothing for a SLEAP package", async () => {
-    const h5 = tree({
-      "": ["video0"],
-      video0: ["video", "frame_numbers"],
-      "video0/video": [12],
-      "video0/frame_numbers": [12],
-    });
-    expect(await findRank4Datasets(h5)).toEqual([]);
+    const pkg = path.join(import.meta.dir, "..", "fixtures", "embedded_source.pkg.slp");
+    const h5 = await openWithRealH5wasm(pkg);
+    try {
+      expect(await findRank4Datasets(h5)).toEqual([]);
+    } finally {
+      await h5.close();
+    }
   });
 });
 
-describe("raw frame layout", () => {
-  // channels_first stores [frames, C, H, W]; the video is still [N, H, W, C].
+describe("raw frame layout matches Python sleap-io", () => {
+  // Python stores channels_first as (frames, C, W, H) and transposes each
+  // frame (2, 1, 0): (2, 3, 64, 96) reads as (2, 96, 64, 3).
   it("maps the stored shape to [frames, H, W, C]", () => {
-    expect(frameShapeFor([10, 3, 32, 48], "channels_first")).toEqual([10, 32, 48, 3]);
-    expect(frameShapeFor([10, 32, 48, 3], "channels_last")).toEqual([10, 32, 48, 3]);
+    expect(frameShapeFor([2, 3, 64, 96], "channels_first")).toEqual([2, 96, 64, 3]);
+    expect(frameShapeFor([2, 64, 96, 3], "channels_last")).toEqual([2, 64, 96, 3]);
   });
 
-  // The same 2x1 RGB image, stored both ways, decodes to the same pixels.
-  it("decodes channels_last and channels_first to the same RGBA", () => {
-    // pixel 0 = (1,2,3), pixel 1 = (4,5,6)
-    const last = rawFrameToRgba([1, 2, 3, 4, 5, 6], 1, 2, 3, "channels_last");
-    const first = rawFrameToRgba([1, 4, 2, 5, 3, 6], 1, 2, 3, "channels_first");
-    expect([...last]).toEqual([1, 2, 3, 255, 4, 5, 6, 255]);
-    expect([...first]).toEqual([...last]);
+  /** Read frame 1 of `dataset` from the real file as RGBA. */
+  async function frame(dataset: string, fmt: "channels_first" | "channels_last") {
+    const h5 = await openWithRealH5wasm(MOVIE);
+    try {
+      const meta = await h5.getDatasetMeta(dataset.slice(1));
+      const [, h, w, c] = frameShapeFor(meta.shape, fmt);
+      const { value } = await h5.getDatasetValue(dataset.slice(1), [[1, 2], [], [], []]);
+      const rgba = rawFrameToRgba(value as ArrayLike<number>, h, w, c, fmt);
+      return (y: number, x: number) => [...rgba.slice((y * w + x) * 4, (y * w + x) * 4 + 3)];
+    } finally {
+      await h5.close();
+    }
+  }
+
+  // Same pixels Python returns for channels_last.
+  it("decodes channels_last like Python", async () => {
+    const px = await frame("/box", "channels_last");
+    expect(px(5, 7)).toEqual([255, 0, 0]);
+    expect(px(5, 40)).toEqual([255, 0, 0]);
+    expect(px(60, 10)).toEqual([0, 0, 255]);
+  });
+
+  // Same pixels Python returns for channels_first (a transposed frame).
+  it("decodes channels_first like Python", async () => {
+    const px = await frame("/g/first", "channels_first");
+    expect(px(5, 7)).toEqual([255, 0, 0]);
+    expect(px(5, 40)).toEqual([0, 0, 255]);
+    expect(px(60, 10)).toEqual([255, 0, 0]);
+    expect(px(90, 50)).toEqual([0, 0, 255]);
   });
 
   // One channel is gray: copied into R, G and B.
@@ -149,27 +156,27 @@ describe("saved input_format", () => {
   });
 });
 
-describe("rawMovieShape", () => {
-  const h5 = {
-    keys: () => ["box", "video0"],
-    getKeys: async (p: string) => {
-      if (p === "video0") return ["video", "frame_numbers"];
-      throw new Error("not a group");
-    },
-    getDatasetMeta: async (p: string) => {
-      if (p === "box") return { shape: [9, 4, 4, 1], dtype: "<u1" };
-      if (p === "video0/video") return { shape: [3, 4, 4, 1], dtype: "<u1" };
-      throw new Error("not a dataset");
-    },
-  };
-
-  // A plain rank-4 array is read by the raw movie reader...
-  it("routes a root rank-4 dataset to the raw reader", async () => {
-    expect(await rawMovieShape(h5, "/box")).toEqual([9, 4, 4, 1]);
+describe("rawMovieShape (real h5wasm)", () => {
+  // Plain rank-4 arrays (root or nested) go to the raw movie reader.
+  it("routes the movie's rank-4 datasets to the raw reader", async () => {
+    const h5 = await openWithRealH5wasm(MOVIE);
+    try {
+      expect(await rawMovieShape(h5, "/box")).toEqual([2, 64, 96, 3]);
+      expect(await rawMovieShape(h5, "/g/first")).toEqual([2, 3, 64, 96]);
+      expect(await rawMovieShape(h5, "/g")).toBeNull(); // a group
+    } finally {
+      await h5.close();
+    }
   });
 
-  // ...but a package's embedded frames (with frame_numbers) stay on the package reader.
+  // A package's embedded frames stay on the package reader.
   it("leaves a package's embedded frames alone", async () => {
-    expect(await rawMovieShape(h5, "video0/video")).toBeNull();
+    const pkg = path.join(import.meta.dir, "..", "fixtures", "embedded_source.pkg.slp");
+    const h5 = await openWithRealH5wasm(pkg);
+    try {
+      expect(await rawMovieShape(h5, "video0/video")).toBeNull();
+    } finally {
+      await h5.close();
+    }
   });
 });

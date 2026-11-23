@@ -51,6 +51,7 @@ import {
   VideoImportList,
   prepareVideoImportEntries,
   hdf5ImportOptions,
+  importGrayscale,
   type VideoImportEntry,
 } from "@/components/dialogs/VideoImportList";
 import { displayFrameCount } from "@/lib/videoFrameCount";
@@ -490,7 +491,7 @@ export function VideosPanel() {
         const video = await addVideoFileToLabels(
           labels,
           pv,
-          pv.grayscale,
+          importGrayscale(pv),
           hdf5ImportOptions(pv)
         );
         if (video) added.push(video);

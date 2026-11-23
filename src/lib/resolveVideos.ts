@@ -2281,7 +2281,7 @@ export function isSupportedVideoUrl(url: string): boolean {
 export async function buildStandaloneVideo(
   file: File,
   absPath?: string | null,
-  grayscale?: boolean,
+  grayscale?: boolean | null,
   hdf5?: Hdf5ImportOptions
 ): Promise<Video | null> {
   // `.pkg.slp`/`.h5` are video sources too (their frames are embedded-image
@@ -2440,7 +2440,7 @@ export function pickedFromPaths(paths: string[]): PickedVideoFile[] {
 export async function addVideoFileToLabels(
   labels: Labels,
   picked: PickedVideoFile,
-  grayscale?: boolean,
+  grayscale?: boolean | null,
   hdf5?: Hdf5ImportOptions
 ): Promise<Video | null> {
   const video = await buildStandaloneVideo(

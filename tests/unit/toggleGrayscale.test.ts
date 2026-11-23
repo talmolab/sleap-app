@@ -8,6 +8,8 @@ import {
   GrayscaleVideoBackend,
   Labels,
   Video,
+  loadSlp,
+  saveSlpToBytes,
   type VideoBackend,
 } from "@talmolab/sleap-io.js";
 import { CommandContext } from "@/commands/CommandContext";
@@ -81,14 +83,19 @@ describe("toggleGrayscaleAll", () => {
     expect(grayscaleToToggleFrom([missingVideo(), v], null)).toBe(false);
   });
 
-  // PyQt skips a video it can't switch (here: a missing file) and goes on.
-  it("skips a video with no open backend", () => {
+  // Desktop opens unviewed videos lazily (no backend yet). PyQt still flips
+  // them (Python's setter just writes backend_metadata), so they must not be
+  // skipped — skipping left mixed channel counts in the saved .slp.
+  it("switches a not-yet-opened (lazy) video through its metadata", () => {
     const ok = openVideo("a");
-    const gone = missingVideo();
-    gone.backendMetadata = { shape: [10, 4, 4, 3] };
-    const result = toggleGrayscaleAll([ok, gone], ok);
+    const lazy = missingVideo();
+    lazy.backendMetadata = { shape: [10, 4, 4, 3], lazyPath: "/v/gone.mp4" };
+    const result = toggleGrayscaleAll([ok, lazy], ok);
     expect(ok.grayscale).toBe(true);
-    expect(result.after.map((s) => s.video)).toEqual([ok]);
+    expect(lazy.grayscale).toBe(true);
+    expect(lazy.backendMetadata.grayscale).toBe(true);
+    expect(lazy.backendMetadata.shape).toEqual([10, 4, 4, 1]);
+    expect(result.after.map((s) => s.video)).toEqual([ok, lazy]);
   });
 
   // PyQt's own error messages when there is nothing to toggle.
@@ -134,6 +141,26 @@ describe("ToggleGrayscale command", () => {
     expect(a.grayscale).toBe(true);
     expect(b.grayscale).toBe(true);
     expect(a.backendMetadata.grayscale).toBe(true);
+  });
+
+  // With an unviewed lazy 2nd video: both are saved grayscale, and ⌘Z puts
+  // the lazy one back too (read back from the saved file, as Python would).
+  it("saves and undoes a lazy second video too", async () => {
+    const lazy = missingVideo();
+    lazy.backendMetadata = { shape: [10, 4, 4, 3], lazyPath: "/v/gone.mp4" };
+    const labels = new Labels({ videos: [a, lazy] });
+    useAppStore.getState().setLabels(labels, "test.slp");
+    useAppStore.getState().setVideo(a);
+    ctx = new CommandContext();
+
+    await ctx.execute(ToggleGrayscale);
+    const saved = await loadSlp(await saveSlpToBytes(labels), { openVideos: false });
+    expect(saved.videos.map((v) => v.backendMetadata.grayscale)).toEqual([true, true]);
+    expect(saved.videos[1]!.backendMetadata.shape).toEqual([10, 4, 4, 1]);
+
+    expect(ctx.undo()).toBe(true);
+    expect(lazy.grayscale).toBe(false);
+    expect("grayscale" in lazy.backendMetadata).toBe(false);
   });
 
   // videos_json changes, so the next autosave must rewrite the whole file.

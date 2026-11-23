@@ -23,11 +23,18 @@ export const HDF5_INPUT_FORMATS: readonly Hdf5InputFormat[] = [
   "channels_last",
 ];
 
-/** The slice of {@link StreamingH5File} the dataset search needs (mockable). */
+/**
+ * The slice of {@link StreamingH5File} the dataset search needs. Mind the
+ * worker's semantics: `getKeys` returns `[]` for a DATASET (it never throws),
+ * and `getDatasetMeta` on a GROUP resolves with an undefined `shape`. So "is
+ * this a dataset?" must be asked of `getDatasetMeta`, not `getKeys`.
+ */
 export interface Hdf5Tree {
   keys(): string[];
   getKeys(path: string): Promise<string[]>;
-  getDatasetMeta(path: string): Promise<{ shape: number[]; dtype: string }>;
+  getDatasetMeta(
+    path: string
+  ): Promise<{ shape?: number[] | null; dtype?: string } | null | undefined>;
 }
 
 /** `"/box"` → `"box"`: the reader resolves paths from the root either way. */
@@ -45,39 +52,49 @@ export async function findRank4Datasets(h5: Hdf5Tree): Promise<string[]> {
   async function walk(prefix: string, names: string[]): Promise<void> {
     for (const name of names) {
       const path = `${prefix}/${name}`;
-      let children: string[] | null = null;
+      let shape: number[] | null | undefined;
+      try {
+        shape = (await h5.getDatasetMeta(h5Path(path)))?.shape;
+      } catch {
+        shape = undefined; // not a dataset (or unreadable)
+      }
+      if (Array.isArray(shape)) {
+        if (shape.length === 4) out.push(path);
+        continue;
+      }
+      // A group: walk into it (PyQt recurses into every h5py Group).
+      let children: string[] = [];
       try {
         children = await h5.getKeys(h5Path(path));
       } catch {
-        children = null; // a dataset, not a group
+        children = []; /* unreadable: skip, as PyQt's try/except does */
       }
-      if (children) {
-        await walk(path, children);
-        continue;
-      }
-      try {
-        const meta = await h5.getDatasetMeta(h5Path(path));
-        if (meta?.shape?.length === 4) out.push(path);
-      } catch {
-        /* unreadable: skip, as PyQt's try/except does */
-      }
+      await walk(path, children);
     }
   }
   await walk("", h5.keys());
   return out;
 }
 
-/** `[frames, H, W, C]` from a stored shape read in `format`. */
+/**
+ * `[frames, H, W, C]` from a stored shape read in `format`, exactly as Python
+ * sleap-io's `HDF5Video` does (what PyQt and sleap-nn use): channels_first is
+ * stored `(frames, C, W, H)` and each frame is `np.transpose(img, (2, 1, 0))`,
+ * so a stored `(N, 3, 64, 96)` reads as `(N, 96, 64, 3)`.
+ */
 export function frameShapeFor(
   stored: readonly number[],
   format: Hdf5InputFormat
 ): [number, number, number, number] {
   const [n, a, b, c] = stored as [number, number, number, number];
-  return format === "channels_first" ? [n, b, c, a] : [n, a, b, c];
+  return format === "channels_first" ? [n, c, b, a] : [n, a, b, c];
 }
 
 /**
- * One frame's pixels (`H*W*C` values in `format` order) as RGBA bytes.
+ * One frame's pixels as RGBA bytes for a `height` x `width` frame (the
+ * {@link frameShapeFor} sizes). channels_last data is `(H, W, C)`;
+ * channels_first data is the stored `(C, W, H)` block, read through Python's
+ * `(2, 1, 0)` transpose: frame pixel (y, x, c) = stored [c, x, y].
  * 1 channel → gray, 3 → RGB, 4 → RGBA; values outside 0–255 are clamped.
  */
 export function rawFrameToRgba(
@@ -91,7 +108,8 @@ export function rawFrameToRgba(
   const rgba = new Uint8ClampedArray(n * 4);
   const at =
     format === "channels_first"
-      ? (px: number, ch: number) => data[ch * n + px] ?? 0
+      ? (px: number, ch: number) =>
+          data[ch * n + (px % width) * height + Math.floor(px / width)] ?? 0
       : (px: number, ch: number) => data[px * channels + ch] ?? 0;
   for (let px = 0; px < n; px++) {
     const o = px * 4;
