@@ -142,3 +142,6 @@ export {
   OpenSkeletonCommand,
   installSkeletonUndoInterceptor,
 } from "./skeletonCommands";
+
+// Video commands
+export { ToggleGrayscale } from "./videoCommands";

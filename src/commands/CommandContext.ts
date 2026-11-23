@@ -87,6 +87,12 @@ interface UndoSnapshot {
   activeVideo: Video | null;
   /** The frame index that was active. */
   activeFrameIdx: number;
+  /**
+   * State outside the labeled frames that this step changed (e.g. every
+   * video's grayscale setting): undo calls `undo()`, redo calls `redo()`. It
+   * travels with the step between the two stacks.
+   */
+  sideEffect?: { undo(): void; redo(): void };
 }
 
 /** Deep-clone an instance's points. */
@@ -631,6 +637,8 @@ export class CommandContext {
 
     const redoSnapshot = this.restoreSnapshot(snapshot);
     redoSnapshot.label = snapshot.label;
+    snapshot.sideEffect?.undo();
+    redoSnapshot.sideEffect = snapshot.sideEffect;
     this.redoStack.push(redoSnapshot);
     // Undoing "Add skeleton" removes the active skeleton from the project.
     this.state.reconcileActiveSkeleton();
@@ -661,6 +669,8 @@ export class CommandContext {
 
     const undoSnapshot = this.restoreSnapshot(snapshot);
     undoSnapshot.label = snapshot.label;
+    snapshot.sideEffect?.redo();
+    undoSnapshot.sideEffect = snapshot.sideEffect;
     this.undoStack.push(undoSnapshot);
     this.state.reconcileActiveSkeleton();
     this.state.bumpOverlayVersion();

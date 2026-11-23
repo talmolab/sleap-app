@@ -7,6 +7,7 @@
  */
 
 import { useAppStore } from "../../stores/appStore";
+import { commandContext, ToggleGrayscale } from "@/commands";
 import { toast } from "@/lib/notify";
 import { cn } from "@/lib/utils";
 import {
@@ -706,6 +707,15 @@ export function VideosPanel() {
         />
       </div>
       <div className="flex gap-1 p-2">
+        {/* PyQt's Videos dock button: flips every video, silently (undoable). */}
+        <Button
+          variant="subtle"
+          size="xs"
+          disabled={!currentVideo}
+          onClick={() => void commandContext.execute(ToggleGrayscale)}
+        >
+          Toggle Grayscale
+        </Button>
         <Button
           variant="subtle"
           size="xs"
@@ -755,8 +765,7 @@ export function VideosPanel() {
           <DialogHeader>
             <DialogTitle>Import Videos</DialogTitle>
             <DialogDescription>
-              Choose which video(s) to import as grayscale. This can&apos;t be
-              changed after import.
+              Choose which video(s) to import as grayscale.
             </DialogDescription>
           </DialogHeader>
           {pendingImport && (
