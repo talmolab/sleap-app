@@ -19,11 +19,12 @@
  * file's `videos_json`, through one new range reader on that file, built as
  * the loader builds them (deferred: per-video metadata is read on first use).
  * It replaces the old backend inside any grayscale or crop wrapper, at the
- * same video, and the old backends and their reader are closed. Before
- * anything is swapped, the new backends are checked: every disk-read video of
- * the project must be in the written list, names must be unique among the
- * embedded videos, and a video whose stored frames were known must find the
- * same frame numbers under its new name.
+ * same video, and the old backends and their reader are closed; a reader no
+ * open video reads is retired, so a video restored by undo fails its reads at
+ * once (diskBackedVideos.ts). Before anything is swapped, the new backends are
+ * checked: every disk-read video of the project must be in the written list,
+ * names must be unique among the embedded videos, and a video whose stored
+ * frames were known must find the same frame numbers under its new name.
  *
  * {@link rebindOrMark}: a rebind clears the stale-name mark; any failure
  * leaves the old backends in place and, when the write replaced the file
@@ -44,9 +45,16 @@ import {
   type VideoBackend,
 } from "@talmolab/sleap-io.js";
 import { fileSize, readRange } from "./nativeRange";
-import { embeddedSource, recordEmbeddedSources } from "./embeddedVideoSources";
-import { diskBackendOf, hasDiskBackedVideos, markDiskReader, readerOf } from "./diskBackedVideos";
+import {
+  diskBackendOf,
+  markDiskReader,
+  readerOf,
+  readsRetiredReader,
+  retireDiskReader,
+} from "./diskBackedVideos";
 import { clearStaleVideoNames, markStaleVideoNames, warnStaleVideoNames } from "./inPlaceBinding";
+import { hasDiskBackedVideos } from "./diskBackedVideos";
+import { recordEmbeddedSources } from "./embeddedVideoSources";
 import { readWrittenDatasets } from "./saveLabelsInPlace";
 import { useAppStore } from "@/stores/appStore";
 
@@ -60,23 +68,6 @@ interface Wrapper {
 // streaming Worker can load it under cross-origin isolation.
 const H5WASM_URL =
   typeof location !== "undefined" ? `${location.origin}/h5wasm/h5wasm.js` : undefined;
-
-/**
- * The first embedded video of `labels` whose images can't be read for a full
- * save from `sourcePath`: it reads the file on disk, and the record says its
- * images aren't in that file (it was removed before a full save, then
- * restored by undo). Null when there is none.
- */
-export function unreadableEmbeddedVideo(labels: Labels, sourcePath: string): Video | null {
-  return (
-    labels.videos.find(
-      (video) =>
-        video.hasEmbeddedImages &&
-        diskBackendOf(video) !== null &&
-        embeddedSource(video, sourcePath).kind === "stale"
-    ) ?? null
-  );
-}
 
 export type RebindResult = { ok: true; rebound: number } | { ok: false; reason: string };
 
@@ -117,7 +108,11 @@ export async function rebindEmbeddedVideos(
   // Every disk-read video of the project must be rebound: one left on the old
   // reader would read the replaced file through its old layout.
   const missing = labels.videos.findIndex(
-    (video) => video.hasEmbeddedImages && diskBackendOf(video) !== null && !written.includes(video)
+    (video) =>
+      video.hasEmbeddedImages &&
+      diskBackendOf(video) !== null &&
+      !readsRetiredReader(video) &&
+      !written.includes(video)
   );
   if (missing >= 0) {
     return { ok: false, reason: `video ${missing} is not in the written file` };
@@ -187,7 +182,8 @@ export async function rebindEmbeddedVideos(
     markDiskReader(reader);
     reader = null; // the new backends own it now
 
-    // Close the old backends, and each old reader no open video still reads.
+    // Close the old backends, and retire each old reader no open video still
+    // reads (a video restored by undo then fails its reads at once).
     const stillRead = new Set(
       labels.videos.flatMap((video) => {
         const disk = diskBackendOf(video);
@@ -204,12 +200,7 @@ export async function rebindEmbeddedVideos(
       oldReaders.add(readerOf(leaf));
     }
     for (const old of oldReaders) {
-      if (!old || stillRead.has(old)) continue;
-      try {
-        await (old as { close?: () => Promise<void> }).close?.();
-      } catch {
-        /* already closed */
-      }
+      if (old && !stillRead.has(old)) await retireDiskReader(old);
     }
     return { ok: true, rebound: built.length };
   } catch (err) {
@@ -224,8 +215,8 @@ export async function rebindEmbeddedVideos(
  * over the project file) whose embedded datasets are `datasets` (null if the
  * file couldn't be read back): rebind the project's disk-read videos to it, or
  * mark the labels. `replacedReadersFile` says the write replaced the file the
- * project's disk readers read (any write over the project file; not a Save
- * As to another path): then any failure marks the labels and asks to reopen,
+ * project's disk readers read (any write over the project file; not a Save As
+ * to another path): then any failure marks the labels and asks to reopen,
  * whatever the names. A rebind clears the mark.
  */
 export async function rebindOrMark(

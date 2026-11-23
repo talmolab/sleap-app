@@ -26,7 +26,7 @@
  * the full re-save is always correct, and records a binding.
  */
 import type { Labels, Video } from "@talmolab/sleap-io.js";
-import { diskBackendOf, hasDiskBackedVideos } from "@/lib/diskBackedVideos";
+import { diskBackendOf, hasDiskBackedVideos, readsRetiredReader } from "@/lib/diskBackedVideos";
 import { toast } from "@/lib/notify";
 
 /** A file as the app last read or wrote it. */
@@ -259,12 +259,30 @@ export function warnStaleVideoNames(): void {
 }
 
 /**
+ * The message for a video of `labels` whose images are no longer in the
+ * project file (removed before a save or export over it that rebound the
+ * others, then restored by undo; see diskBackedVideos.ts), or null.
+ */
+export function retiredVideoMessage(labels: Labels): string | null {
+  const index = labels.videos.findIndex((video) => readsRetiredReader(video));
+  if (index < 0) return null;
+  return (
+    `The images of video ${index + 1} are no longer in the project file: a save or export ` +
+    "wrote the file without that video, after it was removed. Remove the video, or reopen " +
+    "the project. Nothing was written."
+  );
+}
+
+/**
  * Refuse, with an error note, a writer that would copy the embedded images
- * of labels marked with stale video names (exports, saves). True if refused.
+ * of labels marked with stale video names (exports, saves), or of a video
+ * whose images are no longer in the project file. True if refused.
  */
 export function refuseStaleVideoNames(labels: Labels | null | undefined, title: string): boolean {
-  if (!labels || !hasStaleVideoNames(labels)) return false;
-  toast.error(title, { description: STALE_VIDEO_NAMES_MESSAGE });
+  if (!labels) return false;
+  const reason = hasStaleVideoNames(labels) ? STALE_VIDEO_NAMES_MESSAGE : retiredVideoMessage(labels);
+  if (!reason) return false;
+  toast.error(title, { description: reason });
   return true;
 }
 
@@ -281,7 +299,9 @@ export function projectFileReplaced(labels: Labels): void {
   if (hasDiskBackedVideos(labels)) markStaleVideoNames(labels);
 }
 
-/** Throw for a job that would copy embedded images under stale names. */
+/** Throw for a job that would copy embedded images under stale names, or that are gone. */
 export function assertNoStaleVideoNames(labels: Labels): void {
   if (hasStaleVideoNames(labels)) throw new Error(STALE_VIDEO_NAMES_MESSAGE);
+  const retired = retiredVideoMessage(labels);
+  if (retired) throw new Error(retired);
 }

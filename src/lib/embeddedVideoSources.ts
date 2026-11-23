@@ -38,7 +38,7 @@ const records = new WeakMap<Video, SourceRecord>();
  * whose embedded images are under `datasets` (by index; null for an external
  * video or an unknown name). Every earlier record for `path` goes stale. With
  * `datasets` null (the written file could not be read back), every embedded
- * video's name is unknown, so all of them are stale.
+ * video's name is unknown ("unread").
  */
 export function recordEmbeddedSources(
   path: string,
@@ -60,8 +60,10 @@ export function recordEmbeddedSources(
 export type EmbeddedSource =
   /** The file at that path holds them under `dataset`. */
   | { kind: "recorded"; dataset: string }
-  /** They are not known to be in that file under any name. */
+  /** That file was written without them (an earlier write left the video out). */
   | { kind: "stale" }
+  /** The last write of that file held them, but it couldn't be read back to tell their name. */
+  | { kind: "unread" }
   /** No record: the app never opened or wrote a file with this video. */
   | { kind: "unknown" };
 
@@ -69,8 +71,6 @@ export type EmbeddedSource =
 export function embeddedSource(video: Video, path: string): EmbeddedSource {
   const record = records.get(video);
   if (!record) return { kind: "unknown" };
-  if (record.path === path && record.generation === generations.get(path) && record.dataset) {
-    return { kind: "recorded", dataset: record.dataset };
-  }
-  return { kind: "stale" };
+  if (record.path !== path || record.generation !== generations.get(path)) return { kind: "stale" };
+  return record.dataset ? { kind: "recorded", dataset: record.dataset } : { kind: "unread" };
 }

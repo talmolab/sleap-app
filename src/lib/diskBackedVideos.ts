@@ -91,6 +91,51 @@ export function hasDiskBackedVideos(labels: Labels): boolean {
   return diskLabels.has(labels) || labels.videos.some((video) => diskBackendOf(video) !== null);
 }
 
+/**
+ * Readers closed by a rebind (rebindEmbeddedVideos.ts) once no open video read
+ * them. A video removed before that save and restored by undo still holds
+ * one: its images are not in the written file, and a closed reader would
+ * never answer, so its reads fail at once instead.
+ */
+const retiredReaders = new WeakSet<object>();
+
+/** Why a video on a retired reader can't be read. */
+export const RETIRED_READER_MESSAGE =
+  "This video's images are no longer in the project file: a save or export wrote the file " +
+  "without it, after it was removed. Remove the video, or reopen the project.";
+
+/** Reader methods that read the file (sleap-io.js `StreamingH5File`). */
+const READ_METHODS = ["getKeys", "getAttr", "getAttrs", "getDatasetMeta", "getDatasetValue"];
+
+/**
+ * Close a disk reader no open video reads any more, and make every later read
+ * through it fail with {@link RETIRED_READER_MESSAGE} (a closed sleap-io.js
+ * reader leaves its reads waiting forever).
+ */
+export async function retireDiskReader(reader: object): Promise<void> {
+  retiredReaders.add(reader);
+  const methods = reader as Record<string, unknown>;
+  const close = typeof methods.close === "function" ? (methods.close as () => unknown).bind(reader) : null;
+  for (const name of READ_METHODS) {
+    methods[name] = () => Promise.reject(new Error(RETIRED_READER_MESSAGE));
+  }
+  methods.keys = () => {
+    throw new Error(RETIRED_READER_MESSAGE);
+  };
+  try {
+    await close?.();
+  } catch {
+    /* already closed */
+  }
+}
+
+/** Whether `video` reads its images through a reader a rebind retired. */
+export function readsRetiredReader(video: Video): boolean {
+  const found = streamingBackendOf(video);
+  const reader = found && readerOf(found.leaf);
+  return !!reader && retiredReaders.has(reader);
+}
+
 /** The backend of `video` that reads its embedded images from a file on disk, if any. */
 export function diskBackendOf(video: Video): DiskBackend | null {
   const found = streamingBackendOf(video);

@@ -137,6 +137,7 @@ import {
 } from "../../lib/resolveVideos";
 import { useVideoCheckStore } from "@/stores/videoCheckStore";
 import { toast } from "@/lib/notify";
+import { RETIRED_READER_MESSAGE, readsRetiredReader } from "@/lib/diskBackedVideos";
 import { confirmDialog } from "@/stores/confirmStore";
 import { predictionsInArea } from "@/lib/predictionDeletion";
 import { hintIfPredictionsRemain, hintIfFirstNodeConfirm } from "@/lib/labelingHints";
@@ -930,6 +931,16 @@ export function VideoPlayer() {
         // Fresh read: clear any prior per-frame "image missing" flag; the catch
         // below re-raises it if this frame's image can't be read.
         setFrameImageMissing(false);
+        // A video restored by undo after a save left it out of the project
+        // file: its images are gone from that file (diskBackedVideos.ts). Say
+        // so, and show the missing-image state below.
+        if (readsRetiredReader(video)) {
+          toast.error("This video's images are not in the project file", {
+            id: "retired-video-images",
+            description: RETIRED_READER_MESSAGE,
+          });
+          throw new Error(RETIRED_READER_MESSAGE);
+        }
         // Lazy video backends: the decoder is deferred at load (open one video,
         // not all N). Open it on first view, then read. ensureVideoBackend clears
         // lazyPath after opening, so this whole block is skipped from then on.

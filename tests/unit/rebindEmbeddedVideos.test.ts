@@ -80,31 +80,49 @@ type H5Node = {
   attrs: Record<string, { value: unknown }>;
 };
 
-/** The range reader: reads the file at its path on each call, until closed. */
+let readerCopies = 0;
+
+/**
+ * The range reader, as the app's behaves: it opens the file once and keeps
+ * the HDF5 structure it read then, while every read fetches the bytes now at
+ * the path. (It reads a private copy, refreshed in place from the path before
+ * each call, so the open handle keeps its cached structure over the new
+ * bytes.) After a save replaces the file, it reads the new file's bytes at the
+ * old offsets. `harness` opens skip the injected failure.
+ */
 class H5Reader {
   path = "";
   closed = false;
+  private file: H5File | null = null;
+  private copy = "";
   async openRange(
     source: { readRange: (offset: number, length: number) => Promise<Uint8Array> },
-    options?: { filenameHint?: string }
+    options?: { filenameHint?: string; harness?: boolean }
   ) {
     await source.readRange(0, 0); // the mocked readRange notes its path
     this.path = options?.filenameHint ?? state.lastRangePath;
-    if (state.failRebindOpen && options?.filenameHint) throw new Error("injected open failure");
+    if (state.failRebindOpen && options?.filenameHint && !options.harness) {
+      throw new Error("injected open failure");
+    }
     await ready;
+    this.copy = join(tmp, `reader-${readerCopies++}.h5`);
+    copyFileSync(this.path, this.copy);
+    this.file = new H5File(this.copy, "r");
+  }
+  private current(): H5File {
+    if (this.closed || !this.file) throw new Error("reader closed");
+    if (existsSync(this.path)) writeFileSync(this.copy, readFileSync(this.path)); // same inode
+    return this.file;
   }
   private use<T>(fn: (f: H5File) => T): Promise<T> {
-    if (this.closed) return Promise.reject(new Error("reader closed"));
-    return withFile(this.path, fn);
+    try {
+      return Promise.resolve(fn(this.current()));
+    } catch (err) {
+      return Promise.reject(err);
+    }
   }
   keys() {
-    if (this.closed) throw new Error("reader closed");
-    const f = new H5File(this.path, "r");
-    try {
-      return f.keys();
-    } finally {
-      f.close();
-    }
+    return this.current().keys();
   }
   getKeys(p: string) {
     return this.use((f) => (f.get(p) as unknown as H5Node).keys());
@@ -130,6 +148,8 @@ class H5Reader {
   }
   async close() {
     this.closed = true;
+    this.file?.close();
+    this.file = null;
   }
 }
 
@@ -266,6 +286,7 @@ vi.mock("@/lib/nativeWrite", () => ({
 }));
 vi.mock("@/platform/index", () => ({
   isTauri: true,
+  consumeLastBrowserFileHandle: () => null,
   getPlatform: async () => ({
     isTauri: true,
     writeFile: async (p: string, bytes: Uint8Array) => {
@@ -295,11 +316,23 @@ vi.mock("sonner", () => ({
 const { saveProjectAsSlp } = await import("@/lib/saveProject");
 const { useAppStore } = await import("@/stores/appStore");
 const { withLegacyLayout } = await import("@/lib/slpFormatCompat");
-const { bindLabelsToFile, bindingRefusal, boundDatasets, hasStaleVideoNames, loadedVideoDataset, statFileIdentity } =
-  await import("@/lib/inPlaceBinding");
+const {
+  assertNoStaleVideoNames,
+  bindLabelsToFile,
+  bindingRefusal,
+  boundDatasets,
+  clearFileBinding,
+  hasStaleVideoNames,
+  loadedVideoDataset,
+  statFileIdentity,
+} = await import("@/lib/inPlaceBinding");
 const { recordEmbeddedSources } = await import("@/lib/embeddedVideoSources");
 const { rebindEmbeddedVideos } = await import("@/lib/rebindEmbeddedVideos");
-const { markDiskBackedVideos } = await import("@/lib/diskBackedVideos");
+const { markDiskBackedVideos, readsRetiredReader } = await import("@/lib/diskBackedVideos");
+const { exportLabelsPackage } = await import("@/commands/exportPackageCommands");
+const { ExtractClipAndLabelsCommand } = await import("@/commands/extractClipCommands");
+const { commandContext } = await import("@/commands/CommandContext");
+const { buildRemoteLabelsPayload } = await import("@/lib/remoteLabelsPayload");
 const { applyRecordedSourceDatasets, saveEmbeddedPkgStreaming } = await import(
   "@/lib/saveEmbeddedPkgStreaming"
 );
@@ -337,7 +370,7 @@ async function storedImages(path: string): Promise<Array<{ dataset: string; fram
     )
   );
   const reader = new H5Reader();
-  reader.path = path;
+  await reader.openRange({ readRange: async () => new Uint8Array(0) }, { filenameHint: path, harness: true });
   const out = [];
   for (const entry of vj as Array<{ backend: { dataset: string } }>) {
     const backend = new sioModule.StreamingHdf5VideoBackend({
@@ -351,6 +384,7 @@ async function storedImages(path: string): Promise<Array<{ dataset: string; fram
     for (const fn of backend.frameNumbers) frames.push([fn, imageKey(await backend.getFrameBuffer(fn))]);
     out.push({ dataset: entry.backend.dataset, frames });
   }
+  await reader.close();
   return out;
 }
 
@@ -380,12 +414,20 @@ async function fileImages(path: string): Promise<string[]> {
   );
 }
 
-/** The image each loaded video shows for each of `frames[i]`, through its backend. */
+/** The image the first loaded videos show for each of `frames[i]`, through their backends. */
 async function shownImages(labels: sioModule.Labels, frames: number[][]): Promise<string[]> {
   const out = [];
-  for (const [i, video] of labels.videos.entries()) {
+  for (const [i, wanted] of frames.entries()) {
     const shown = [];
-    for (const fn of frames[i]) shown.push(imageNames.get(imageKey(await video.getFrameBuffer(fn))) ?? "wrong");
+    for (const fn of wanted) {
+      let bytes: Uint8Array | null = null;
+      try {
+        bytes = await labels.videos[i].getFrameBuffer(fn);
+      } catch {
+        bytes = null;
+      }
+      shown.push(imageNames.get(imageKey(bytes)) ?? "wrong");
+    }
     out.push(shown.join(","));
   }
   return out;
@@ -415,7 +457,10 @@ async function openAsApp(source: string, mode: Mode, opts: { shown?: boolean; wr
     readFrom = `${path}.in-memory`;
     copyFileSync(path, readFrom);
   }
-  await reader.openRange({ readRange: async () => new Uint8Array(0) }, { filenameHint: readFrom });
+  await reader.openRange(
+    { readRange: async () => new Uint8Array(0) },
+    { filenameHint: readFrom, harness: true }
+  );
   for (const v of labels.videos) {
     const leaf = new sioModule.StreamingHdf5VideoBackend({
       filename: path,
@@ -573,15 +618,21 @@ describe("a large file's open, saved in full after removing a video", () => {
     expect(readFileSync(path).equals(bytes)).toBe(true);
   });
 
-  it("refuses a full save of a video removed before a save and restored after it", async () => {
-    const { labels, path } = await openAsApp(await appPackage([0, 1, 2]), "large");
+  it("a video removed before a save and restored after it: every writer and the view refuse it at once", async () => {
+    const { labels, path } = await openAsApp(await appPackage([0, 1, 2]), "large", { shown: true });
     const [A, B, C] = labels.videos;
     const framesOfA = labels.labeledFrames.filter((f) => f.video === A);
     labels.removeVideo(A);
     await saveProjectAsSlp(labels, "proj.pkg.slp");
-    // Undo brings A back; its images are not in the file any more.
+    // Undo brings A back; its images are not in the file any more, and its
+    // reader was retired: reads fail at once instead of waiting.
     labels.videos = [A, B, C];
     labels.labeledFrames.push(...framesOfA);
+    expect(readsRetiredReader(A)).toBe(true);
+    await expect((A.backend as unknown as { h5file: H5Reader }).h5file.getDatasetValue("video0/video")).rejects.toThrow(
+      /no longer in the project file/
+    );
+    expect(await A.getFrameBuffer(2)).toBeNull();
     const bytes = readFileSync(path);
     for (const streaming of [false, true]) {
       state.streaming = streaming;
@@ -589,15 +640,118 @@ describe("a large file's open, saved in full after removing a video", () => {
       toasts.length = 0;
       await saveProjectAsSlp(labels, "proj.pkg.slp");
       expect(fileOps.filter((op) => op !== "openWrite")).toEqual([]);
-      expect(toasts.some((t) => t.startsWith("error: Can't save this project in full"))).toBe(true);
+      expect(
+        toasts.some((t) => t.startsWith("error: Reopen this project before saving it in full — The images of video 1 are no longer in the project file"))
+      ).toBe(true);
       expect(readFileSync(path).equals(bytes)).toBe(true);
     }
+    // Export Labels Package, Extract Clip and Labels, the remote payload and
+    // the job copy's check refuse it too, with nothing written.
+    state.streaming = false;
+    toasts.length = 0;
+    state.saveAsPath = join(tmp, `export-${copies++}.pkg.slp`);
+    expect(await exportLabelsPackage(labels, "proj.pkg.slp", "user")).toBeNull();
+    expect(existsSync(state.saveAsPath)).toBe(false);
+    expect(toasts.some((t) => t.includes("The images of video 1 are no longer in the project file"))).toBe(true);
+    toasts.length = 0;
+    useAppStore.setState({ video: A, frameRange: [0, 3] });
+    await ExtractClipAndLabelsCommand.execute(commandContext);
+    expect(toasts.some((t) => t.startsWith("error: Reopen this project before extracting a clip — The images of video 1"))).toBe(true);
+    await expect(
+      buildRemoteLabelsPayload(labels, labels.videos.map(() => ({ visible: false })) as never, {
+        embedFramesToPredict: false,
+      })
+    ).rejects.toThrow(/video 1 are no longer in the project file/);
+    expect(() => assertNoStaleVideoNames(labels)).toThrow(/video 1 are no longer in the project file/);
     // Without it, the save goes ahead.
     labels.removeVideo(A);
     toasts.length = 0;
     await saveProjectAsSlp(labels, "proj.pkg.slp");
     expect(toasts.filter((t) => t.startsWith("error"))).toEqual([]);
     expect(await fileImages(path)).toEqual(["B@3", "C@4"]);
+  });
+});
+
+describe("a large file's open, saved in full with the same names (rebind or mark)", () => {
+  for (const how of ["the last video removed", "an edit with no in-place record"] as const) {
+    it(`${how}: the videos are rebound, and read their own images through the new file`, async () => {
+      const { labels, path } = await openAsApp(await appPackage([0, 1, 2]), "large", { shown: true });
+      const oldReader = (labels.videos[0].backend as unknown as { h5file: H5Reader }).h5file;
+      if (how === "the last video removed") labels.removeVideo(labels.videos[2]);
+      else {
+        clearFileBinding(labels); // the next save is a full one
+        movePoint(labels, 4);
+      }
+      await saveProjectAsSlp(labels, "proj.pkg.slp");
+      expect(fileOps).toContain("fullRewrite");
+      expect(hasStaleVideoNames(labels)).toBe(false);
+      expect(toasts.filter((t) => t.startsWith("warning"))).toEqual([]);
+      expect((labels.videos[0].backend as unknown as { h5file: H5Reader }).h5file).not.toBe(oldReader);
+      const expected = how === "the last video removed" ? ["A@2,A@5", "B@3"] : ["A@2,A@5", "B@3", "C@4"];
+      expect(await fileImages(path)).toEqual(expected);
+      expect(await shownImages(labels, [FRAMES.A, FRAMES.B, FRAMES.C].slice(0, expected.length))).toEqual(expected);
+    });
+
+    it(`${how}: a failed rebind marks the labels, as the old reader reads the new file through the old layout`, async () => {
+      const { labels } = await openAsApp(await appPackage([0, 1, 2]), "large", { shown: true });
+      if (how === "the last video removed") labels.removeVideo(labels.videos[2]);
+      else {
+        clearFileBinding(labels);
+        movePoint(labels, 4);
+      }
+      state.failRebindOpen = true;
+      await saveProjectAsSlp(labels, "proj.pkg.slp");
+      expect(hasStaleVideoNames(labels)).toBe(true);
+      expect(toasts.some((t) => t.startsWith("warning: Reopen this project"))).toBe(true);
+      // What the mark protects against: here the old reader no longer gives
+      // A's images. (A rewrite whose layout happens to match reads right, by
+      // luck; the mark doesn't depend on it.)
+      if (how === "the last video removed") {
+        expect(await shownImages(labels, [FRAMES.A])).not.toEqual(["A@2,A@5"]);
+      }
+    });
+  }
+
+  it("a Save As whose rebind fails doesn't mark: the old reader's file is untouched", async () => {
+    const { labels } = await openAsApp(await appPackage([0, 1, 2]), "large", { shown: true });
+    labels.removeVideo(labels.videos[0]);
+    state.failRebindOpen = true;
+    state.saveAsPath = join(tmp, `saved-as-${copies++}.pkg.slp`);
+    await saveProjectAsSlp(labels, "proj.pkg.slp", true);
+    expect(hasStaleVideoNames(labels)).toBe(false);
+    expect(await shownImages(labels, [FRAMES.B, FRAMES.C])).toEqual(["B@3", "C@4"]);
+  });
+});
+
+describe("a package exported over the project's own file (rebind or mark)", () => {
+  it("rebinds the videos it holds: no mark, the views and the next full save keep each video's images", async () => {
+    const { labels, path } = await openAsApp(await appPackage([0, 1, 2]), "large", { shown: true });
+    state.saveAsPath = path; // the export's default name is the project's own
+    expect(await exportLabelsPackage(labels, "proj.pkg.slp", "user")).toBe(path);
+    expect(hasStaleVideoNames(labels)).toBe(false);
+    expect(bindingRefusal(labels, path, await statFileIdentity(path))).toMatch(/no record/);
+    expect(await shownImages(labels, [FRAMES.A, FRAMES.B, FRAMES.C])).toEqual(["A@2,A@5", "B@3", "C@4"]);
+    labels.removeVideo(labels.videos[0]);
+    fileOps.length = 0;
+    await saveProjectAsSlp(labels, "proj.pkg.slp");
+    expect(fileOps).toContain("fullRewrite");
+    expect(await fileImages(path)).toEqual(["B@3", "C@4"]);
+    expect(await shownImages(labels, [FRAMES.B, FRAMES.C])).toEqual(["B@3", "C@4"]);
+  });
+
+  it("a package that leaves a video out keeps the labels marked; the next full save is refused", async () => {
+    // D has no labeled frames, so a user-level package leaves it out.
+    const { labels, path } = await openAsApp(await appPackage([3, 1, 2]), "large", { shown: true });
+    state.saveAsPath = path;
+    expect(await exportLabelsPackage(labels, "proj.pkg.slp", "user")).toBe(path);
+    expect(hasStaleVideoNames(labels)).toBe(true);
+    expect(toasts.some((t) => t.startsWith("warning: Reopen this project"))).toBe(true);
+    movePoint(labels, 3);
+    const bytes = readFileSync(path);
+    fileOps.length = 0;
+    await saveProjectAsSlp(labels, "proj.pkg.slp");
+    expect(fileOps).toEqual([]);
+    expect(readFileSync(path).equals(bytes)).toBe(true);
   });
 });
 
@@ -722,5 +876,13 @@ describe("applyRecordedSourceDatasets", () => {  const video = (embedded = true)
     const ok = planOf(entry(1, "video1/video"));
     applyRecordedSourceDatasets(ok, labels, "/q.slp");
     expect(ok.entries[0].sourceDataset).toBe("video0/video");
+  });
+
+  it("refuses a video whose name is unknown because the file couldn't be read back, saying so", () => {
+    const [a] = [video()];
+    recordEmbeddedSources("/r.slp", [a], null);
+    expect(() =>
+      applyRecordedSourceDatasets(planOf(entry(0, "video0/video")), { videos: [a] } as unknown as sioModule.Labels, "/r.slp")
+    ).toThrow(/couldn't be read back after the last save/);
   });
 });

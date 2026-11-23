@@ -170,7 +170,9 @@ async function removeFileBestEffort(path: string): Promise<void> {
  * full save renumbers the embedded datasets, and a backend may still name the
  * one it was read from, which the rewritten file may have given to another
  * video. A video the record says the file no longer holds (removed before a
- * full save, then restored by undo) is refused, before anything is copied. A
+ * full save, then restored by undo), or whose name in it is unknown (the file
+ * couldn't be read back after the last save), is refused, before anything is
+ * copied. A
  * video with no record keeps its backend's name: no save of this app has
  * renumbered it.
  */
@@ -187,6 +189,13 @@ export function applyRecordedSourceDatasets(
       throw new Error(
         `saveEmbeddedPkgStreaming: video${entry.videoIndex}'s images are no longer in the ` +
           "source file (an earlier save wrote it without that video); nothing was written"
+      );
+    }
+    if (source.kind === "unread") {
+      throw new Error(
+        `saveEmbeddedPkgStreaming: the source file couldn't be read back after the last save, ` +
+          `so video${entry.videoIndex}'s images can't be located in it; reopen the project. ` +
+          "Nothing was written"
       );
     }
     entry.sourceDataset = source.dataset;

@@ -24,7 +24,7 @@ import {
   statFileIdentity,
 } from "@/lib/inPlaceBinding";
 import { recordEmbeddedSources } from "@/lib/embeddedVideoSources";
-import { rebindOrMark, unreadableEmbeddedVideo } from "@/lib/rebindEmbeddedVideos";
+import { rebindOrMark } from "@/lib/rebindEmbeddedVideos";
 import { isSaveInProgress, whileSaving } from "@/lib/saveInProgress";
 import { hasDiskBackedVideos } from "@/lib/diskBackedVideos";
 import {
@@ -247,13 +247,13 @@ function isCurrent(labels: Labels): boolean {
 /**
  * Before a full write that copies embedded images from the project file:
  * refuse when its names are stale, when a video's images are no longer in
- * that file (see refuseUnreadableVideos), or when the file changed on disk
+ * that file (restored by undo after a save that left it out; see
+ * retiredVideoMessage), or when the file changed on disk
  * since the app last read or wrote it and the project reads its images from
  * it (a large file's open). True if refused; nothing is written.
  */
 async function refuseFullWrite(labels: Labels, sourcePath: string | null): Promise<boolean> {
   if (refuseStaleVideoNames(labels, "Reopen this project before saving it in full")) return true;
-  if (refuseUnreadableVideos(labels, sourcePath)) return true;
   if (!sourcePath || !hasDiskBackedVideos(labels)) return false;
   if (!recordedFileChanged(labels, sourcePath, await statFileIdentity(sourcePath))) return false;
   markStaleVideoNames(labels);
@@ -262,24 +262,6 @@ async function refuseFullWrite(labels: Labels, sourcePath: string | null): Promi
       "It changed since the app opened or last saved it, and this project reads its " +
       "embedded images from that file, so a save would store the wrong images. Reopen " +
       "the project. Nothing was written.",
-  });
-  return true;
-}
-
-/**
- * Refuse a full write from `sourcePath` of labels with an embedded video
- * whose images that file no longer holds: it was removed before a full save
- * and restored by undo, and its images were read from the file on disk.
- */
-function refuseUnreadableVideos(labels: Labels, sourcePath: string | null): boolean {
-  const video = sourcePath ? unreadableEmbeddedVideo(labels, sourcePath) : null;
-  if (!video) return false;
-  const index = labels.videos.indexOf(video);
-  toast.error("Can't save this project in full", {
-    description:
-      `The images of video ${index + 1} are no longer in the project file: an earlier ` +
-      "save wrote the file without that video. Remove the video, or reopen the project, " +
-      "before saving in full. Nothing was written.",
   });
   return true;
 }
