@@ -20,6 +20,8 @@ import { deleteDraftEntry, type DraftManifestEntry } from "@/lib/draftManifest";
 import { videoSignature, buildBackendGraftPlan } from "@/lib/videoGraft";
 import { isDraftStaleVsDisk, isSourceChanged } from "@/lib/draftStaleness";
 import { toast } from "@/lib/notify";
+import { toastLoadError } from "@/lib/slpAccess";
+import { restoreSourceFormat } from "@/lib/slpFormatCompat";
 
 const H5WASM_URL =
   typeof location !== "undefined"
@@ -179,6 +181,10 @@ export async function restoreDraft(entry: DraftManifestEntry): Promise<boolean> 
     const loadDraftBase = async (
       opts: Parameters<typeof loadSlp>[1],
     ): Promise<Labels> => {
+      // The app writes drafts itself, in the 2.x layout (sleap-io.js writes no
+      // other), so no format 3.0 question ever applies to them; "edit" keeps
+      // a restored draft editable should that change.
+      opts = { ...opts, format3: "edit" };
       try {
         return await loadSlp(await readOpfsFile(entry.draftPath), opts);
       } catch (primaryErr) {
@@ -216,6 +222,9 @@ export async function restoreDraft(entry: DraftManifestEntry): Promise<boolean> 
         openVideos: true,
         h5: { h5wasmUrl: H5WASM_URL },
         onProgress: reportParseProgress,
+        // Read only to lend its video backends to the draft; never edited or
+        // written back, so an SLP format 3.0 original opens View only.
+        format3: "view",
       });
       const draftSigs =
         entry.videoSignatures?.length === draftLabels.videos.length
@@ -247,6 +256,7 @@ export async function restoreDraft(entry: DraftManifestEntry): Promise<boolean> 
         });
       }
       await resolveExternalVideos(draftLabels);
+      restoreSourceFormat(draftLabels, entry.sourceFormat, entry.displayName);
       store.setLabels(
         draftLabels,
         entry.displayName,
@@ -273,6 +283,8 @@ export async function restoreDraft(entry: DraftManifestEntry): Promise<boolean> 
       // but only when the on-disk file hasn't diverged from this draft (else force
       // Save-As so we never silently overwrite newer on-disk edits).
       const writeHandle = await safeRestoreWriteHandle(entry);
+      // The original may still be in format 3.0 on disk: say so again.
+      restoreSourceFormat(draftLabels, entry.sourceFormat, entry.displayName);
       store.setLabels(
         draftLabels,
         entry.displayName,
@@ -298,8 +310,7 @@ export async function restoreDraft(entry: DraftManifestEntry): Promise<boolean> 
       });
       return false;
     }
-    const msg = err instanceof Error ? err.message : String(err);
-    toast.error("Couldn't restore unsaved work", { description: msg });
+    toastLoadError("Couldn't restore unsaved work", err);
     console.error("[restoreDraft] failed:", err);
     return false;
   } finally {

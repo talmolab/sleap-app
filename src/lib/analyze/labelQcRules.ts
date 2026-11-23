@@ -8,7 +8,14 @@
  * duplicate detection, negative-frame, InstanceCountChecker) plus the plan's
  * instance-level rules (sparse / empty / out-of-range). The split-duplicate
  * geometric signal is deferred to Tier 3.
+ *
+ * A points array may carry the nodes its source did not annotate (SLP format
+ * 3.0 points marked not labelled, recorded with `withUnlabeledNodes`). Such a
+ * node is NaN like a hidden one, but it is neither present nor missing: the
+ * node-count rules (empty / sparse) leave it out. The other rules only look
+ * at visible nodes, so they treat it like any node without a location.
  */
+import { isUnlabeledNode } from "@/lib/analyze/qc/util";
 
 function isVisible(p: number[]): boolean {
   return Number.isFinite(p[0]) && Number.isFinite(p[1]);
@@ -145,12 +152,51 @@ export function visibleNodeCount(points: number[][]): number {
   return c;
 }
 
-/** An instance with fewer than `minVisible` visible nodes. */
-export function isSparseInstance(points: number[][], minVisible = 2): boolean {
-  return visibleNodeCount(points) < minVisible;
+/**
+ * Number of nodes the instance's source annotated, visible or hidden: every
+ * node except those recorded as not labelled (see `withUnlabeledNodes`).
+ */
+export function labeledNodeCount(points: number[][]): number {
+  let c = 0;
+  for (let j = 0; j < points.length; j++) if (!isUnlabeledNode(points, j)) c++;
+  return c;
 }
 
-/** An instance with no visible points at all (all-NaN / missing). */
+/**
+ * Whether the instance has nodes but none of them was annotated. It still
+ * counts as empty (see {@link isEmptyInstance}); this tells the two apart.
+ */
+export function hasNoLabeledNodes(points: number[][]): boolean {
+  return points.length > 0 && labeledNodeCount(points) === 0;
+}
+
+/**
+ * The visible-node count below which an instance is sparse. When every node
+ * is labelled this is `minVisible`, as it always was. Nodes not labelled are
+ * neither present nor missing, so they cannot make an instance sparse: the
+ * threshold is capped at the number of labelled nodes, and an instance whose
+ * labelled nodes are all visible is never sparse.
+ */
+function sparseThreshold(points: number[][], minVisible: number): number {
+  const labeled = labeledNodeCount(points);
+  return labeled < points.length ? Math.min(minVisible, labeled) : minVisible;
+}
+
+/**
+ * An instance with fewer than `minVisible` visible nodes, counting only the
+ * nodes its source annotated (see {@link sparseThreshold}).
+ */
+export function isSparseInstance(points: number[][], minVisible = 2): boolean {
+  return visibleNodeCount(points) < sparseThreshold(points, minVisible);
+}
+
+/**
+ * An instance with no visible points at all (all-NaN / missing). An instance
+ * whose nodes are all not labelled is empty too: no node is missing, but it
+ * holds no keypoint at all, so like an all-hidden instance it gives nothing
+ * to train on or review and wants deleting or annotating. `hasNoLabeledNodes`
+ * tells the two cases apart for the message.
+ */
 export function isEmptyInstance(points: number[][]): boolean {
   return visibleNodeCount(points) === 0;
 }

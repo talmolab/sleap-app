@@ -29,8 +29,10 @@ async function defaultDeps(): Promise<LoadDeps> {
   ]);
   const platform = await getPlatform();
   return {
-    loadPath: (p) => loadLabelsFromSlpPath(p, platform.readFile),
-    loadFile: (f) => loadLabelsFromSlpFile(f),
+    // Overlays only draw these predictions; nothing is merged or written back,
+    // so an SLP format 3.0 file opens View only without asking.
+    loadPath: (p) => loadLabelsFromSlpPath(p, platform.readFile, "view"),
+    loadFile: (f) => loadLabelsFromSlpFile(f, "view"),
   };
 }
 

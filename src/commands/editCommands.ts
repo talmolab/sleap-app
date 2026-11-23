@@ -15,6 +15,13 @@ import type { CommandContext } from "./CommandContext";
 import { useAppStore } from "../stores/appStore";
 import { toast } from "@/lib/notify";
 import {
+  copyMetadata,
+  copyPoint,
+  copySourceMark,
+  isUnlabeledPoint,
+  markPointLabeled,
+} from "@/lib/slpFormatCompat";
+import {
   showLabelingHint,
   hintIfFirstInstance,
   hintIfFirstPredictionConversion,
@@ -222,6 +229,7 @@ export const DeleteSelectedInstance: Command = {
 export const SetPointLocation: Command = {
   name: "SetPointLocation",
   topics: [], // No redraw topics - canvas handles this directly for drag perf
+  editsWithoutTopics: true,
   execute(ctx: CommandContext, params?: Record<string, unknown>) {
     const { instance } = ctx.state;
     if (!instance) return;
@@ -239,6 +247,8 @@ export const SetPointLocation: Command = {
     instance.points[nodeIdx].xy = [x, y];
     instance.points[nodeIdx].visible = true;
     instance.points[nodeIdx].complete = true;
+    // Placing a node labels it (it may have been not labelled in the file).
+    markPointLabeled(instance.points[nodeIdx]);
 
     ctx.state.markChanged();
   },
@@ -275,21 +285,19 @@ export const SetNodes: Command = {
       p.xy = [v[0], v[1]];
       p.visible = true;
       p.complete = true;
+      markPointLabeled(p);
     }
     ctx.state.markChanged();
     ctx.state.bumpOverlayVersion();
   },
 };
 
-/** Deep-copy a point array. */
+/**
+ * Deep-copy a point array, keeping each point's `labeled` flag (a node not
+ * labelled in an SLP format 3.0 file stays so in a copy).
+ */
 function clonePoints(points: Instance["points"]): Instance["points"] {
-  return points.map((p) => ({
-    xy: [p.xy[0], p.xy[1]] as [number, number],
-    visible: p.visible,
-    complete: p.complete,
-    name: p.name,
-    score: p.score,
-  }));
+  return points.map((p) => copyPoint(p));
 }
 
 /**
@@ -302,13 +310,10 @@ function clonePoints(points: Instance["points"]): Instance["points"] {
  * genuinely non-visible points.
  */
 function clonePredictedPoints(points: Instance["points"]): Instance["points"] {
-  return points.map((p) => ({
-    xy: [p.xy[0], p.xy[1]] as [number, number],
-    visible: !Number.isNaN(p.xy[0]),
-    complete: p.complete,
-    name: p.name,
-    score: p.score,
-  }));
+  // A predicted node not labelled stays so (and hidden) in the user instance.
+  return points.map((p) =>
+    copyPoint(p, { visible: isUnlabeledPoint(p) ? false : !Number.isNaN(p.xy[0]) }),
+  );
 }
 
 /** Copy the selected instance's point data to the clipboard. */
@@ -324,6 +329,8 @@ export const CopyInstance: Command = {
       points: clonePoints(instance.points),
       track: instance.track,
     });
+    copyMetadata(instance, clone);
+    copySourceMark(instance, clone);
     ctx.setState({ clipboardInstance: clone });
   },
 };
@@ -363,6 +370,8 @@ export const PasteInstance: Command = {
       points: clonePoints(clipboardInstance.points),
       track: clipboardInstance.track,
     });
+    copyMetadata(clipboardInstance, newInstance);
+    copySourceMark(clipboardInstance, newInstance);
 
     // Find or create the LabeledFrame
     const frames = labels.find({ video, frameIdx });
@@ -405,6 +414,8 @@ export const DuplicateInstance: Command = {
       points: clonePoints(source.points),
       track: source.track,
     });
+    copyMetadata(source, newInstance);
+    copySourceMark(source, newInstance);
 
     const frames = labels.find({ video, frameIdx });
     let lf: LabeledFrame;
@@ -482,6 +493,8 @@ export const ConvertPredictionToInstance: Command = {
       track: predicted.track,
       fromPredicted: predicted,
     });
+    // The conversion keeps the content's source (its format 3.0 choice).
+    copySourceMark(predicted, userInstance);
     const hadMissingNodes = userInstance.points.some(
       (p) => isNaN(p.xy[0]) || isNaN(p.xy[1])
     );
@@ -594,6 +607,8 @@ export const MergeInstance: Command = {
         s.xy = [d.xy[0], d.xy[1]];
         s.visible = d.visible;
         s.complete = d.complete;
+        // The donor labelled this node; so does the survivor now.
+        markPointLabeled(s);
       }
     });
 
@@ -728,6 +743,7 @@ export const AddInstancesFromAllPredictions: Command = {
         track: inst.track,
         fromPredicted: inst,
       });
+      copySourceMark(inst, userInstance);
       fillMissingPredictedNodes(userInstance);
       if (!firstConverted) firstConverted = userInstance;
       return userInstance;
@@ -786,6 +802,7 @@ export const AddInstancesFromAllPredictionsInProject: Command = {
           track: inst.track,
           fromPredicted: inst,
         });
+        copySourceMark(inst, userInstance);
         fillMissingPredictedNodes(userInstance);
         totalAccepted++;
         return userInstance;
@@ -844,7 +861,11 @@ export const ToggleNodeVisibility: Command = {
 
     const visibleCount = points.filter((p) => p.visible).length;
     const makeVisible = visibleCount <= points.length / 2;
-    for (const point of points) point.visible = makeVisible;
+    for (const point of points) {
+      point.visible = makeVisible;
+      // Showing a node labels it (a visible node is always labelled).
+      if (makeVisible) markPointLabeled(point);
+    }
 
     ctx.state.markChanged();
     ctx.state.touchFrame();
@@ -862,6 +883,7 @@ export const ToggleNodeVisibility: Command = {
 export const MoveInstance: Command = {
   name: "MoveInstance",
   topics: [], // No redraw topics - caller handles re-render
+  editsWithoutTopics: true,
   execute(ctx: CommandContext, params?: Record<string, unknown>) {
     const { instance } = ctx.state;
     if (!instance) return;

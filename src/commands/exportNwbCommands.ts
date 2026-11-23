@@ -35,6 +35,8 @@ import { exportNwb as invokeExportNwb } from "../platform/backend";
 import { isImageSequenceVideo } from "@/lib/resolveVideos";
 import { useAppStore } from "@/stores/appStore";
 import { toast } from "@/lib/notify";
+import { withLegacyLayout } from "@/lib/slpFormatCompat";
+import { ensureWritable } from "@/lib/slpAccess";
 
 /**
  * Derive the `.nwb` output filename from the current project filename. Strips a
@@ -120,6 +122,10 @@ export const ExportNwbCommand: Command = {
       return;
     }
 
+    // The export goes through an SLP copy in the 2.x layout: not for a
+    // project opened View only unless the user allows editing.
+    if (!(await ensureWritable(labels, "export"))) return;
+
     const nwbPath = await platform.showSaveDialog({
       filters: [{ name: "NWB (ndx-pose)", extensions: ["nwb"] }],
       defaultName: deriveNwbFilename(filename),
@@ -131,7 +137,7 @@ export const ExportNwbCommand: Command = {
       // Serialize the CURRENT labels (incl. unsaved edits) to a plain .slp (no
       // embed — NWB references the video by path, no pixels). Written next to the
       // chosen output; the Rust command removes it after converting.
-      const bytes = await saveSlpToBytes(labels);
+      const bytes = await saveSlpToBytes(labels, withLegacyLayout());
       await platform.writeFile(tmpSlp, bytes);
       await invokeExportNwb(tmpSlp, nwbPath);
       toast.success("NWB exported", { description: nwbPath });

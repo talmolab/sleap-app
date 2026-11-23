@@ -24,8 +24,33 @@ export const isVisible = (p: Pt | null | undefined): boolean =>
 /** Euclidean distance between two points. */
 export const dist = (a: Pt, b: Pt): number => Math.hypot(a[0] - b[0], a[1] - b[1]);
 
-/** Per-node visibility mask for a pose. */
-export const visibilityMask = (pose: Pose): boolean[] => pose.map(isVisible);
+/**
+ * Nodes a pose's source did not annotate (SLP format 3.0 points marked not
+ * labelled), keyed by the pose array itself so the pose stays a plain
+ * `number[][]`. Such a node is `[NaN, NaN]` like an invisible one, but it is
+ * not missing: the visibility checks leave it out (see {@link visibilityMask}).
+ */
+const unlabeledNodesByPose = new WeakMap<Pose, readonly boolean[]>();
+
+/** Record which of `pose`'s nodes are not labelled. Returns `pose`. */
+export function withUnlabeledNodes(pose: Pose, unlabeled: readonly boolean[]): Pose {
+  if (unlabeled.some(Boolean)) unlabeledNodesByPose.set(pose, unlabeled);
+  return pose;
+}
+
+/** Whether node `j` of `pose` is not labelled (see {@link withUnlabeledNodes}). */
+export const isUnlabeledNode = (pose: Pose, j: number): boolean =>
+  unlabeledNodesByPose.get(pose)?.[j] === true;
+
+/**
+ * A node's visibility: `true` visible, `false` invisible (hidden or missing),
+ * `null` not labelled, which counts as neither.
+ */
+export type NodeVisibility = boolean | null;
+
+/** Per-node visibility mask for a pose (`null` for nodes not labelled). */
+export const visibilityMask = (pose: Pose): NodeVisibility[] =>
+  pose.map((p, j) => (isUnlabeledNode(pose, j) ? null : isVisible(p)));
 
 export function mean(xs: number[]): number {
   return xs.length ? xs.reduce((s, x) => s + x, 0) / xs.length : 0;

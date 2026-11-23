@@ -66,6 +66,7 @@ import {
   type ImageFeaturesParams,
   type ProgressPhase,
 } from "../../lib/imageFeatures";
+import { refuseEditIfViewOnly } from "@/lib/slpAccess";
 
 /** Extract just the basename from a file path. */
 function basename(path: string | string[]): string {
@@ -352,6 +353,8 @@ export function SuggestionsPanel({
   /** Replace labels.suggestions, mark dirty, and force a re-render. */
   const applySuggestions = (next: SuggestionFrame[]) => {
     if (!labels) return;
+    // Suggestions are saved with the project: not changed in View only.
+    if (refuseEditIfViewOnly()) return;
     labels.suggestions = next;
     useAppStore.getState().markChanged();
     forceUpdate();

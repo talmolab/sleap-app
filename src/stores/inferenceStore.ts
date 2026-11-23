@@ -195,6 +195,10 @@ async function mergePredictionsIntoProject(
     predictions.labeledFrames?.length ?? 0,
     predictions.tracks?.length ?? 0,
   );
+  // A View only project asks to allow editing first; on a decline this throws
+  // PredictionsNotMerged, and callers keep the predictions pending.
+  const { ensurePredictionsMergeable } = await import("@/lib/slpAccess");
+  await ensurePredictionsMergeable();
   if (trackOnly) {
     await commandContext.execute(MergeTracks, { retracked: predictions });
   } else {
@@ -219,6 +223,12 @@ export async function loadAndMergePredictionBytes(
   const predictions = await loadSlp(bytes, {
     openVideos: false,
     h5: { filenameHint },
+    // A job's own output, read once to merge into the project; the file
+    // itself is not written again. An SLP format 3.0 file opens for editing
+    // without asking: the predictions become part of the project, and the
+    // project's saves write the 2.x layout, which drops any metadata or
+    // not-labeled marks they carry, as for the project's own records.
+    format3: "edit",
   });
   await mergePredictionsIntoProject(predictions, mode, trackOnly);
 }
@@ -260,6 +270,8 @@ export async function loadRemotePredictions(
         openVideos: false,
         lazy: false,
         filenameHint: `${result.jobId}.predictions.slp`,
+        // A job's output (see loadAndMergePredictionBytes): no question.
+        format3: "edit",
       });
     } finally {
       await dispose();
@@ -270,6 +282,8 @@ export async function loadRemotePredictions(
   return loadSlp(bytes, {
     openVideos: false,
     h5: { filenameHint: `${result.jobId}.predictions.slp` },
+    // A job's output (see loadAndMergePredictionBytes): no question.
+    format3: "edit",
   });
 }
 
@@ -295,6 +309,10 @@ export async function fetchAndMergeRemoteResult(
  * failure; the caller keeps its pending state so the action stays retriable.
  */
 export async function mergeRemoteResults(pending: PendingRemoteMerge): Promise<void> {
+  // Ask before fetching anything when the project is View only (and again,
+  // as a no-op, per merge below).
+  const { ensurePredictionsMergeable } = await import("@/lib/slpAccess");
+  await ensurePredictionsMergeable();
   for (const result of pending.results) {
     await fetchAndMergeRemoteResult(result, pending.mode, pending.trackOnly);
   }
@@ -374,6 +392,14 @@ export const useInferenceStore = create<InferenceState>()((set) => ({
     {
       const { labels, skeleton } = useAppStore.getState();
       if (multiSkeletonBlock(labels, "Running inference", { active: skeleton })) return;
+      // The predictions come back into the project: a View only project asks
+      // to allow editing first (Cancel stops the job). A local job reads a
+      // 2.x copy of the project, so nodes not labeled are announced as hidden;
+      // a remote one reads its own file on the worker.
+      const { confirmJobFromProject } = await import("@/lib/slpAccess");
+      if (!(await confirmJobFromProject("inference", { buildsFromProject: !remoteOpts?.remote }))) {
+        return;
+      }
     }
 
     // Local inference reads the saved project file (see runInference); a run
@@ -543,6 +569,13 @@ export const useInferenceStore = create<InferenceState>()((set) => ({
 
       console.log("[inference] Starting with config:", config);
       const { handleProcessEvent } = useInferenceStore.getState();
+      // One 2.x copy of the project for the whole job when its file is still
+      // in SLP format 3.0 (written on first need, shared by the per-video
+      // runs), deleted when the job ends.
+      const { createJobLabelsCopy } = await import("@/lib/jobLabelsFile");
+      const labelsCopy = createJobLabelsCopy("inference", (line) =>
+        set((s) => ({ log: [...s.log, line] })),
+      );
       try {
         if (config.frameRange === "random") {
           // "random (all videos)": run per-video, merge each result
@@ -576,7 +609,7 @@ export const useInferenceStore = create<InferenceState>()((set) => ({
               progress: null,
               log: [...s.log, `— Video ${vi + 1}/${labels.videos.length}: sampling ${Math.min(config.sampleCount, nFrames)} of ${nFrames} frames...`],
             }));
-            const result = await runInference(perVideoConfig, projectPath, multiVideoHandler);
+            const result = await runInference(perVideoConfig, projectPath, multiVideoHandler, labelsCopy);
             if (result.outputPath) {
               set({ outputPath: result.outputPath });
               const platform = await getPlatform();
@@ -595,7 +628,7 @@ export const useInferenceStore = create<InferenceState>()((set) => ({
           }
           set({ status: "completed" });
         } else {
-          const result = await runInference(config, projectPath, handleProcessEvent);
+          const result = await runInference(config, projectPath, handleProcessEvent, labelsCopy);
           if (result.command) {
             set((state) => ({
               log: [`$ ${result.command}`, ...state.log],
@@ -611,6 +644,8 @@ export const useInferenceStore = create<InferenceState>()((set) => ({
           status: "error",
           error: `Failed to start inference: ${e instanceof Error ? e.message : String(e)}`,
         });
+      } finally {
+        await labelsCopy.release();
       }
     }
   },
@@ -674,7 +709,9 @@ export const useInferenceStore = create<InferenceState>()((set) => ({
       // used to force a full job resubmit to recover from what's often just
       // a flaky fetch.
       set({
-        error: `Failed to fetch/merge remote result: ${e instanceof Error ? e.message : String(e)}`,
+        error: (e as Error)?.name === "PredictionsNotMerged"
+          ? (e as Error).message
+          : `Failed to fetch/merge remote result: ${e instanceof Error ? e.message : String(e)}`,
       });
     }
   },

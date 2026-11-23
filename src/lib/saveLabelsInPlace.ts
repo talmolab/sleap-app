@@ -60,6 +60,7 @@ import {
   writeClose,
 } from "./nativeWrite";
 import { fileSize, readRange } from "./nativeRange";
+import { sourceFormatOf, withLegacyLayout } from "./slpFormatCompat";
 
 // Same derivation as loadProject.ts / saveEmbeddedPkgStreaming.ts: h5wasm must be
 // served same-origin so the streaming Worker can load it under cross-origin
@@ -234,7 +235,15 @@ async function probeOnDisk(path: string): Promise<OnDiskProbe> {
             };
           }
         | undefined;
-      tables[keyOf[name]] = onDiskTableFromMeta({ shape: meta.shape, metadata });
+      const table = onDiskTableFromMeta({ shape: meta.shape, metadata });
+      // A label table that is not a dataset (format 3.0 stores each as a group
+      // of columns) can't be patched; failing the probe sends the caller to a
+      // full re-save. Covers a file whose format the labels no longer record
+      // (e.g. a recovered draft of a format 3.0 project).
+      if (!table) {
+        throw new Error(`/${name} is not a table this in-place save can patch (SLP format 3.0?)`);
+      }
+      tables[keyOf[name]] = table;
     }
 
     // Sidecars: tracks/suggestions JSON string arrays, video signatures, and the
@@ -439,6 +448,25 @@ export async function saveLabelsInPlace(
   labels: Labels,
   destPath: string
 ): Promise<{ ok: true } | { ok: false; reason: string }> {
+  // Labels opened View only are never written. Throw rather than return
+  // {ok:false}, which would send the caller on to a full re-save.
+  const sourceFormat = sourceFormatOf(labels);
+  const formatName = (id: number) => (Number.isInteger(id) ? id.toFixed(1) : String(id));
+  if (sourceFormat?.access === "view") {
+    throw new Error(
+      `${destPath} is open View only (SLP format ${formatName(sourceFormat.formatId)}); nothing was written.`
+    );
+  }
+  // A format 3.0 file stores its tables in another layout, which this in-place
+  // patch cannot write; the full re-save writes the 2.x layout instead (the
+  // user chose that, with the list of what it drops, when opening the file).
+  // sleap-io.js's gate refuses this too; skip the probe.
+  if (sourceFormat) {
+    return {
+      ok: false,
+      reason: `opened from SLP format ${formatName(sourceFormat.formatId)}, which an in-place save cannot patch — full re-save in the 2.x layout`,
+    };
+  }
   if (!hasCrossOriginIsolation()) {
     return {
       ok: false,
@@ -470,9 +498,12 @@ export async function saveLabelsInPlace(
   try {
     const newMetadataJson = buildMetadataJson(labels);
     metadataChanged = probe.sidecars.metadataJson !== newMetadataJson;
+    // Unlabelled nodes (from a format 3.0 file the user chose to edit or
+    // merge) are written as hidden nodes with no position, as every app save
+    // does; the 2.x tables cannot store the flag.
     update = buildLabelTableUpdate(
       labels,
-      metadataChanged ? { metadataJson: newMetadataJson } : undefined
+      withLegacyLayout(metadataChanged ? { metadataJson: newMetadataJson } : {})
     );
     const expected = buildExpectedSidecars(labels);
     const gate = checkInPlaceWritable(update, probe.tables, {

@@ -27,6 +27,7 @@ import { runLabelQc, SOFT_QC_KINDS, type QcFinding } from "@/lib/analyze/labelQc
 import { hasMultipleSkeletons, multiSkeletonBlock } from "@/lib/multiSkeleton";
 import {
   anomalyVerdict,
+  qcPose,
   scoreLabelsAnomalyAsync,
   type AnomalyInstance,
   type AnomalyResult,
@@ -714,7 +715,7 @@ export function rescoreQcFrame(): void {
   for (const { a } of e.anomalies) {
     const key = qcInstKey(videoIdx, frameIdx, a.instIdx);
     const inst = lf?.userInstances[a.instIdx];
-    const r = inst ? rescore(videoIdx, frameIdx, a.instIdx, inst.numpy({ invisibleAsNaN: true })) : null;
+    const r = inst ? rescore(videoIdx, frameIdx, a.instIdx, qcPose(inst)) : null;
     if (!r && !qc.rescored.has(key)) continue;
     next ??= new Map(qc.rescored);
     if (r) next.set(key, r);

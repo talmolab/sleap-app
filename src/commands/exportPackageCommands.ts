@@ -74,6 +74,8 @@ import {
 import { toastExported } from "@/lib/exportToast";
 import { getPlatform } from "../platform/index";
 import { useAppStore } from "@/stores/appStore";
+import { withLegacyLayout } from "@/lib/slpFormatCompat";
+import { ensureWritable } from "@/lib/slpAccess";
 
 /** The three PyQt package levels. */
 export type ExportPackageLevel = "user" | "training" | "full";
@@ -216,7 +218,9 @@ export async function packageLeavesFramesUnembedded(
     bytes.byteOffset,
     bytes.byteOffset + bytes.byteLength
   ) as ArrayBuffer;
-  const reloaded = await loadSlp(ab, { openVideos: false });
+  // The app's own bytes, just written in the 2.x layout and only inspected:
+  // no format 3.0 question applies, and failures stay with the caller.
+  const reloaded = await loadSlp(ab, { openVideos: false, format3: "view", refusal: "throw" });
   return reloaded.videos.some((v) => !v.hasEmbeddedImages);
 }
 
@@ -317,6 +321,9 @@ export async function exportLabelsPackage(
   } = {}
 ): Promise<string | null> {
   if (!labels) return null;
+  // A project opened View only is never written, packages included, unless
+  // the user allows editing (the prompt lists what the 2.x layout drops).
+  if (!(await ensureWritable(labels, "export"))) return null;
   return withExportLock(() => exportLabelsPackageNow(labels, filename, level, options));
 }
 
@@ -370,7 +377,7 @@ export async function writeLabelsPackageToPath(
     });
     return embedVideos.some((v) => !v.backend);
   }
-  const bytes = await saveSlpToBytes(exportLabels, { embed: mode, onProgress });
+  const bytes = await saveSlpToBytes(exportLabels, withLegacyLayout({ embed: mode, onProgress }));
   await (await getPlatform()).writeFile(destPath, bytes);
   return packageLeavesFramesUnembedded(labels, bytes).catch(() => false);
 }
@@ -383,7 +390,10 @@ export async function labelsPackageBytes(
 ): Promise<Uint8Array> {
   const exportLabels = labelsForLevel(labels, level);
   await prepareVideosForFrameReads(videosToEmbed(exportLabels, level));
-  return saveSlpToBytes(exportLabels, { embed: embedModeForLevel(level), onProgress });
+  return saveSlpToBytes(
+    exportLabels,
+    withLegacyLayout({ embed: embedModeForLevel(level), onProgress })
+  );
 }
 
 async function exportLabelsPackageNow(
@@ -466,7 +476,7 @@ async function exportLabelsPackageNow(
     // save.
     const bytes = await withEmbedProgress(true, async (onProgress) => {
       await prepareVideosForFrameReads(embedVideos);
-      return saveSlpToBytes(exportLabels, { embed: mode, onProgress });
+      return saveSlpToBytes(exportLabels, withLegacyLayout({ embed: mode, onProgress }));
     });
     const saved = await saveBytesFile(bytes, suggestedName, filter);
     if (!saved) return null; // user cancelled the dialog/picker

@@ -41,6 +41,7 @@ import { installTauriFsResolver } from "./fsResolver";
 import { fileSize, readRange } from "./nativeRange";
 import { sleapCmd } from "./sleapPlugin";
 import { basenameFromUrl } from "./urlOpen";
+import { isReportedSlpError, toastLoadError, type Format3Policy } from "./slpAccess";
 
 // Files larger than this open via the B-seam native range reader (lazy, on-disk)
 // instead of reading the whole file into WASM memory. Below it, eager is simpler
@@ -195,9 +196,10 @@ export async function loadProjectFromFile(file: File): Promise<boolean> {
     useEnvironmentStore.getState().checkSleapNnUpdateAndNotify();
     return true;
   } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
-    toast.error("Failed to load project", { description: msg });
-    console.error("Failed to load project:", err);
+    // A refused file or a cancelled format 3.0 choice was already shown in
+    // its own dialog (slpRead.ts).
+    toastLoadError("Failed to load project", err);
+    if (!isReportedSlpError(err)) console.error("Failed to load project:", err);
     return false;
   } finally {
     store.setLoading(false);
@@ -231,6 +233,8 @@ export async function loadProjectFromUrl(url: string): Promise<boolean> {
       filenameHint: name,
       h5wasmUrl: H5WASM_URL,
       onProgress: reportParseProgress,
+      // The URL can carry an access token: dialogs name the file only.
+      fileName: name,
     });
     store.setLoading(true, "Locating videos...");
     await resolveExternalVideos(labels);
@@ -250,7 +254,7 @@ export async function loadProjectFromUrl(url: string): Promise<boolean> {
     // error: both can carry the access token, so redact on the way out.
     const msg =
       err instanceof RemoteIOError ? err.message : redactedCauseSummary(err);
-    toast.error("Failed to open dataset", { description: msg });
+    toastLoadError("Failed to open dataset", err, msg);
     console.error(
       "Failed to open dataset from URL:",
       redactUrl(url),
@@ -314,6 +318,7 @@ export async function loadProjectFromPath(
           readRange(path, offset, length),
       };
       labels = await readSlpStreaming(rangeSource, {
+        fileName: path,
         // Embedded (pkg.slp) videos: build from videos_json and open each video's
         // backend on first view (LAZY_VIDEO_METADATA) so a many-video package
         // opens fast. Eager path (openVideos) reads all per-video metadata now.
@@ -330,6 +335,7 @@ export async function loadProjectFromPath(
         openVideos: true,
         h5: { filenameHint: path, h5wasmUrl: H5WASM_URL },
         onProgress: reportParseProgress,
+        fileName: path,
       });
     }
 
@@ -361,9 +367,10 @@ export async function loadProjectFromPath(
     // resolveExternalVideos above — no separate toast here (avoids a duplicate).
     return true;
   } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
-    toast.error("Failed to load project", { description: msg });
-    console.error("Failed to load project:", err);
+    // A refused file or a cancelled format 3.0 choice was already shown in
+    // its own dialog (slpRead.ts).
+    toastLoadError("Failed to load project", err);
+    if (!isReportedSlpError(err)) console.error("Failed to load project:", err);
     return false;
   } finally {
     store.setLoading(false);
@@ -391,22 +398,35 @@ export async function loadProjectFromPath(
  *     external video). This avoids hanging on an unreachable external video.
  * The dialog shows its own "Reading & matching…" indicator during this.
  */
-export async function loadLabelsFromSlpFile(file: File): Promise<Labels> {
+export async function loadLabelsFromSlpFile(
+  file: File,
+  format3: Format3Policy = "merge"
+): Promise<Labels> {
   return await loadSlp(file, {
     openVideos: false,
     h5: { h5wasmUrl: H5WASM_URL },
+    format3,
   });
 }
 
-/** Tauri path variant of {@link loadLabelsFromSlpFile} (load-to-Labels, no activate). */
+/**
+ * Tauri path variant of {@link loadLabelsFromSlpFile} (load-to-Labels, no activate).
+ *
+ * `format3` says how to read an SLP format 3.0 file: `"merge"` (default) asks
+ * whether to merge it, showing what the project's 2.x save drops; a caller
+ * that only reads it (never merges or writes it) passes `"view"`.
+ */
 export async function loadLabelsFromSlpPath(
   path: string,
-  readFile: (path: string) => Promise<Uint8Array>
+  readFile: (path: string) => Promise<Uint8Array>,
+  format3: Format3Policy = "merge"
 ): Promise<Labels> {
   const bytes = await readFile(path);
   return await loadSlp(bytes, {
     openVideos: false,
     h5: { filenameHint: path, h5wasmUrl: H5WASM_URL },
+    format3,
+    fileName: path,
   });
 }
 

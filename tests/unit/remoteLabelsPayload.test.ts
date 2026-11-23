@@ -39,8 +39,8 @@ function makeLabels(videos: FakeVideo[]): Labels {
 }
 
 let capturedLabelsArg: { videos: FakeVideo[] } | null = null;
-let capturedOptions: { embed: boolean | string } | null = null;
-const saveSlpToBytesMock = vi.fn(async (labelsArg: { videos: FakeVideo[] }, options: { embed: boolean | string }) => {
+let capturedOptions: { embed: boolean | string; unlabeledAs?: string } | null = null;
+const saveSlpToBytesMock = vi.fn(async (labelsArg: { videos: FakeVideo[] }, options: { embed: boolean | string; unlabeledAs?: string }) => {
   capturedLabelsArg = labelsArg;
   capturedOptions = options;
   return new Uint8Array([1, 2, 3]);
@@ -77,7 +77,7 @@ describe("buildRemoteLabelsPayload", () => {
     const result = await buildRemoteLabelsPayload(labels, visibility, { embedFramesToPredict: false });
 
     expect(saveSlpToBytesMock).toHaveBeenCalledTimes(1);
-    expect(capturedOptions).toEqual({ embed: false });
+    expect(capturedOptions).toEqual({ embed: false, unlabeledAs: "absent" });
     expect(capturedLabelsArg?.videos[0]).toMatchObject({
       filename: "/mnt/worker/a.mp4",
       backend: null,
@@ -111,7 +111,7 @@ describe("buildRemoteLabelsPayload", () => {
       embedFramesToPredict: false,
     });
 
-    expect(capturedOptions).toEqual({ embed: "all" });
+    expect(capturedOptions).toEqual({ embed: "all", unlabeledAs: "absent" });
     expect(capturedLabelsArg?.videos[0]).toMatchObject({
       filename: "/local/hidden.mp4",
       backend: { kind: "mp4" },
@@ -128,7 +128,7 @@ describe("buildRemoteLabelsPayload", () => {
       embedFramesToPredict: true,
     });
 
-    expect(capturedOptions).toEqual({ embed: "all+suggestions" });
+    expect(capturedOptions).toEqual({ embed: "all+suggestions", unlabeledAs: "absent" });
   });
 
   it("a hidden video with no backend is reported unavailable, not embedded, but 'all' is still requested for the other hidden video", async () => {
@@ -144,7 +144,7 @@ describe("buildRemoteLabelsPayload", () => {
       { embedFramesToPredict: false },
     );
 
-    expect(capturedOptions).toEqual({ embed: "all" });
+    expect(capturedOptions).toEqual({ embed: "all", unlabeledAs: "absent" });
     expect(result.unavailableVideos).toEqual([0]);
     expect(result.embeddedVideos).toEqual([1]);
   });
@@ -157,7 +157,7 @@ describe("buildRemoteLabelsPayload", () => {
       embedFramesToPredict: false,
     });
 
-    expect(capturedOptions).toEqual({ embed: "all" });
+    expect(capturedOptions).toEqual({ embed: "all", unlabeledAs: "absent" });
     expect(result.unavailableVideos).toEqual([0]);
     expect(result.embeddedVideos).toEqual([]);
   });
@@ -187,7 +187,7 @@ describe("buildRemoteLabelsPayload", () => {
 
     const result = await buildRemoteLabelsPayload(labels, [], { embedFramesToPredict: false });
 
-    expect(capturedOptions).toEqual({ embed: "all" });
+    expect(capturedOptions).toEqual({ embed: "all", unlabeledAs: "absent" });
     expect(result.embeddedVideos).toEqual([0]);
   });
 });

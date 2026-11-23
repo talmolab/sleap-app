@@ -122,6 +122,35 @@ describe("maybeAutosaveLabelsDraft — desktop (Tauri) branch", () => {
     expect(useAppStore.getState().hasChanges).toBe(true);
   });
 
+  it("writes no draft and no journal for a project opened View only (SLP format 3.0)", async () => {
+    const viewOnly = {
+      videos: [],
+      sourceFormat: { formatId: 3, access: "view", summary: {}, labelsPath: "/data/x.slp" },
+    } as unknown as Labels;
+    useAppStore.setState({
+      labels: viewOnly,
+      hasChanges: true,
+      isLoading: false,
+      projectPath: null,
+      filename: "x.slp",
+      labelsDraftPath: null,
+    });
+    dirtyFrameTracker.markStructural();
+
+    await maybeAutosaveLabelsDraft();
+
+    expect(newTauriDraftPathMock).not.toHaveBeenCalled();
+    expect(recordTauriDraftSaveMock).not.toHaveBeenCalled();
+    expect(useAppStore.getState().labelsDraftPath).toBeNull();
+
+    // The same project opened for editing does get its draft.
+    useAppStore.setState({
+      labels: { ...viewOnly, sourceFormat: { formatId: 3, access: "edit", summary: {}, labelsPath: "/data/x.slp" } } as unknown as Labels,
+    });
+    await maybeAutosaveLabelsDraft();
+    expect(recordTauriDraftSaveMock).toHaveBeenCalledTimes(1);
+  });
+
   it("reuses an already-minted draft path instead of minting a new one", async () => {
     const existing = "/appdata/sleap-drafts/sleap-draft-existing-xyz.slp";
     useAppStore.setState({

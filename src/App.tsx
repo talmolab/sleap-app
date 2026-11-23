@@ -399,6 +399,18 @@ export default function App() {
     void useEnvironmentStore.getState().checkSleapNnUpdateAndNotify();
   }, []);
 
+  // Sweep job copies left by a crash or by a window closed during a job, once
+  // per window start. Same age rule as the sweep when a job writes a copy
+  // (jobLabelsFile.ts), so a copy another window may still use is never
+  // touched. Without this, a leftover copy would wait for the next job on a
+  // format 3.0 project, which may never come.
+  useEffect(() => {
+    if (!isTauri) return;
+    void import("@/lib/jobLabelsFile")
+      .then((m) => m.sweepStaleJobCopies())
+      .catch(() => {});
+  }, []);
+
   // Apply hash state once after project loads, then start syncing
   useEffect(() => {
     if (!projectLoaded) return;

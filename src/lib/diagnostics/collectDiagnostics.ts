@@ -96,6 +96,8 @@ export interface DiagnosticsBundle {
   inferenceLog: string[];
   draftManifest: unknown[];
   projectDraft: { filename: string; base64: string } | null;
+  /** Why an opted-in project draft is missing (absent when it is included). */
+  projectDraftNote?: string;
 }
 
 export type AssembleInputs = Omit<DiagnosticsBundle, "_whatIsThis">;
@@ -303,6 +305,7 @@ export async function collectDiagnostics(opts: {
 
   // --- opt-in imageless project draft ---
   let projectDraft: { filename: string; base64: string } | null = null;
+  let projectDraftNote: string | undefined;
   if (opts.includeProject && labels) {
     try {
       const { serializeLabelsDraft } = await import("@/lib/labelsDraft");
@@ -311,8 +314,14 @@ export async function collectDiagnostics(opts: {
         ? app.projectPath.replace(/^.*[/\\]/, "")
         : "project";
       projectDraft = { filename: `${base}.imageless.slp`, base64: toBase64(bytes) };
-    } catch {
+    } catch (err) {
       projectDraft = null;
+      // Say why in the bundle: a View only project (an SLP format 3.0 file)
+      // can't be written in the 2.x layout until editing is allowed.
+      const { isSlpViewOnlyError } = await import("@/lib/slpFormatCompat");
+      projectDraftNote = isSlpViewOnlyError(err)
+        ? "Not included: the project is open View only (SLP format 3.0), so its labels can't be written in the 2.x layout until editing is allowed."
+        : `Not included: ${err instanceof Error ? err.message : String(err)}`;
     }
   }
 
@@ -326,5 +335,6 @@ export async function collectDiagnostics(opts: {
     inferenceLog: [...(useInferenceStore.getState().log ?? [])],
     draftManifest,
     projectDraft,
+    ...(projectDraftNote ? { projectDraftNote } : {}),
   });
 }

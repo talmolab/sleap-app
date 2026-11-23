@@ -667,6 +667,10 @@ export function NewJobWizard({ workerId, workerLabel, seed, onClose, onSubmitted
     try {
       let labelsContent: string | null = null;
       if (needsRepoint && videoCheck) {
+        // The worker gets a 2.x copy of the file: nodes not labeled train as
+        // hidden nodes. Say so once.
+        const { confirmUnlabeledAsHidden } = await import("@/lib/slpAccess");
+        if (!(await confirmUnlabeledAsHidden(labels, "training"))) return;
         const { buildRemoteLabelsPayload } = await import("@/lib/remoteLabelsPayload");
         const visibility = videoChecksToVisibility(videoCheck);
         const payload = await buildRemoteLabelsPayload(labels, visibility, { embedFramesToPredict: false });

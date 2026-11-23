@@ -35,6 +35,7 @@ import {
 } from "@/lib/tauriDraft";
 import { computeAutosaveDebounceMs } from "@/lib/autosaveDebounce";
 import { isIncrementalAutosaveEnabled } from "@/lib/autosaveFlags";
+import { isViewOnlyLabels } from "@/lib/slpFormatCompat";
 import { dirtyFrameTracker } from "@/lib/autosaveDirty";
 import {
   runIncrementalAutosave,
@@ -127,6 +128,10 @@ export async function maybeAutosaveLabelsDraft(
   reArm?: () => void,
 ): Promise<void> {
   if (inFlight) return;
+  // A project opened View only is never written, not even as a draft (base or
+  // journal). Editing is off for it, so there is nothing to recover; any
+  // change that got through stays in memory until editing is allowed.
+  if (isViewOnlyLabels(useAppStore.getState().labels)) return;
   // Desktop: a disk-backed crash-recovery net (never marks the project clean).
   if (isTauri) {
     await maybeAutosaveTauriDraft(reArm);

@@ -22,6 +22,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { addVideoUrlToLabels, isSupportedVideoUrl } from "@/lib/resolveVideos";
 import { toast } from "@/lib/notify";
+import { refuseEditIfViewOnly } from "@/lib/slpAccess";
 
 export function AddVideoUrlDialog() {
   const open = useAppStore((s) => s.addVideoUrlDialogOpen);
@@ -40,6 +41,8 @@ export function AddVideoUrlDialog() {
   const handleAdd = async () => {
     const labels = useAppStore.getState().labels;
     if (!labels || !valid || adding) return;
+    // A project opened View only gets no new videos.
+    if (refuseEditIfViewOnly()) return;
     setAdding(true);
     try {
       const video = await addVideoUrlToLabels(labels, trimmed);
