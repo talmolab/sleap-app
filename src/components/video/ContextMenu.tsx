@@ -27,7 +27,7 @@ import {
 } from "../../commands";
 import { cn } from "@/lib/utils";
 import { formatShortcut } from "@/lib/formatShortcut";
-import { DEFAULT_SHORTCUTS } from "@/lib/shortcuts";
+import { currentShortcut } from "@/lib/shortcutPrefs";
 import { requestToggleNegativeFrame } from "@/lib/negativeFrame";
 import type { InstancePlacementMethod } from "../../types";
 
@@ -177,18 +177,18 @@ export function ContextMenu({
         <>
           <ContextMenuItem
             label="Copy Instance"
-            shortcut={formatShortcut("$mod+KeyC")}
+            shortcut={formatShortcut(currentShortcut("copy instance"))}
             onClick={() => exec(CopyInstance)}
           />
           <ContextMenuItem
             label="Delete Instance"
-            shortcut={formatShortcut("$mod+Backspace")}
+            shortcut={formatShortcut(currentShortcut("delete instance"))}
             onClick={() => exec(DeleteSelectedInstance)}
           />
           {mergeDonors.length > 0 && (
             <ContextMenuSubmenu
               label="Merge Instance with"
-              shortcut={formatShortcut(DEFAULT_SHORTCUTS["merge instance"])}
+              shortcut={formatShortcut(currentShortcut("merge instance"))}
             >
               {mergeDonors.map((donor) => (
                 <ContextMenuItem
@@ -230,7 +230,7 @@ export function ContextMenu({
       )}
 
       {/* General actions */}
-      <ContextMenuSubmenu label="Add Instance" shortcut={formatShortcut("$mod+KeyI")}>
+      <ContextMenuSubmenu label="Add Instance" shortcut={formatShortcut(currentShortcut("add instance"))}>
         <ContextMenuItem label="Best" disabled={!skeletonHasNodes} onClick={() => addWithMethod("best")} />
         <ContextMenuItem label="Template" disabled={!skeletonHasNodes} onClick={() => addWithMethod("template")} />
         <ContextMenuItem label="Force Directed" disabled={!skeletonHasNodes} onClick={() => addWithMethod("force_directed")} />
@@ -241,7 +241,7 @@ export function ContextMenu({
       {clipboardInstance && (
         <ContextMenuItem
           label="Paste Instance"
-          shortcut={formatShortcut("$mod+KeyV")}
+          shortcut={formatShortcut(currentShortcut("paste instance"))}
           disabled={!skeletonHasNodes}
           onClick={() => exec(PasteInstance)}
         />

@@ -9,6 +9,7 @@ import { useAppStore, type AppState } from "@/stores/appStore";
 import { commandContext } from "@/commands";
 import { isTauri } from "@/lib/platform";
 import { buildAppMenu, type MenuSnapshot } from "./appMenu";
+import { withUserShortcuts } from "./menuShortcuts";
 import type { AppMenu } from "./types";
 
 /**
@@ -18,7 +19,7 @@ import type { AppMenu } from "./types";
  * `overlayVersion` carry no menu text themselves: they change when the undo
  * stack, the skeleton or the frame's instances do, which aren't store fields.
  */
-function pickInputs(s: AppState) {
+export function pickInputs(s: AppState) {
   return {
     projectLoaded: s.projectLoaded,
     projectPath: s.projectPath,
@@ -72,6 +73,7 @@ function pickInputs(s: AppState) {
     overlayModelOutputs: s.overlayModelOutputs,
     propagateTrackLabels: s.propagateTrackLabels,
     seekbarHeaderGraph: s.seekbarHeaderGraph,
+    shortcutOverrides: s.shortcutOverrides,
   };
 }
 
@@ -150,25 +152,30 @@ export function snapshotFrom(i: MenuInputs): MenuSnapshot {
   };
 }
 
+/** The menus for these inputs, showing the user's keyboard shortcuts. */
+function menuFrom(i: MenuInputs): AppMenu {
+  return withUserShortcuts(buildAppMenu(snapshotFrom(i)), i.shortcutOverrides);
+}
+
 /** The menus for the current state (for one-off reads outside React). */
 export function currentAppMenu(): AppMenu {
-  return buildAppMenu(snapshotFrom(pickInputs(useAppStore.getState())));
+  return menuFrom(pickInputs(useAppStore.getState()));
 }
 
 export function useAppMenu(): AppMenu {
   const inputs = useAppStore(useShallow(pickInputs));
-  return useMemo(() => buildAppMenu(snapshotFrom(inputs)), [inputs]);
+  return useMemo(() => menuFrom(inputs), [inputs]);
 }
 
 /** Subscribe to the menus outside React (the native menu); returns unsubscribe. */
 export function subscribeAppMenu(onChange: (menu: AppMenu) => void): () => void {
   let last = pickInputs(useAppStore.getState());
-  onChange(buildAppMenu(snapshotFrom(last)));
+  onChange(menuFrom(last));
   return useAppStore.subscribe((state) => {
     const next = pickInputs(state);
     const keys = Object.keys(next) as (keyof MenuInputs)[];
     if (keys.every((k) => Object.is(next[k], last[k]))) return;
     last = next;
-    onChange(buildAppMenu(snapshotFrom(next)));
+    onChange(menuFrom(next));
   });
 }

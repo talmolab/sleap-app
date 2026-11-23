@@ -8,7 +8,10 @@
 
 import { useEffect } from "react";
 import { tinykeys } from "tinykeys";
-import { DEFAULT_SHORTCUTS, STEP_SIZES, withExtraShortcuts } from "../lib/shortcuts";
+import { STEP_SIZES, bindActions, type ShortcutOverrides } from "../lib/shortcuts";
+import { EDITABLE_ACTIONS, isEditableAction } from "../lib/shortcutEditing";
+import { currentAppMenu } from "../lib/menu/useAppMenu";
+import { menuItemForAction } from "../lib/menu/menuShortcuts";
 import { useAppStore } from "../stores/appStore";
 import { Track } from "@talmolab/sleap-io.js";
 import { confirmDeleteInstanceAndTrack } from "@/lib/trackDeleteConfirms";
@@ -75,63 +78,112 @@ function isTextInput(e: KeyboardEvent): boolean {
   return tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT" || (e.target as HTMLElement)?.isContentEditable === true;
 }
 
+/**
+ * Editable actions with no handler of their own here (e.g. Delete Predictions
+ * on Current Frame) run their menu item, if it's enabled, so any key the user
+ * gives them works.
+ */
+function menuFallbacks(handled: Set<string>): Bindings {
+  const out: Bindings = {};
+  for (const action of EDITABLE_ACTIONS) {
+    if (handled.has(action)) continue;
+    out[action] = (e) => {
+      if (isTextInput(e)) return;
+      const item = menuItemForAction(currentAppMenu(), action);
+      if (!item || item.enabled === false) return;
+      e.preventDefault();
+      void item.run();
+    };
+  }
+  return out;
+}
+
+/**
+ * The tinykeys map: each action's handler on the key(s) the user gave it
+ * (or its defaults), plus the fixed keys. Where a fixed key that only acts
+ * in one place (Tab in node placement mode, A/X/0 in Label QC Review) is
+ * also an action's key, the fixed handler goes first and the action runs
+ * only if it didn't take the key.
+ */
+export function buildKeyBindings(handlers: Bindings, overrides: ShortcutOverrides): Bindings {
+  const actions: Bindings = {};
+  const fixed: Bindings = {};
+  for (const [name, handler] of Object.entries(handlers)) {
+    if (isEditableAction(name)) actions[name] = handler;
+    else fixed[name] = handler;
+  }
+  const out = bindActions({ ...menuFallbacks(new Set(Object.keys(actions))), ...actions }, overrides);
+  for (const [key, handler] of Object.entries(fixed)) {
+    const action = out[key];
+    out[key] = action
+      ? (e) => {
+          handler(e);
+          if (!e.defaultPrevented) action(e);
+        }
+      : handler;
+  }
+  return out;
+}
+
 export function useKeyboardShortcuts() {
+  const overrides = useAppStore((s) => s.shortcutOverrides);
   useEffect(() => {
     const store = useAppStore.getState;
 
-    // On macOS desktop the native menu owns its ⌘ shortcuts: leave those to
-    // it (not preventDefault-ed, so the menu still gets the keystroke).
-    // withExtraShortcuts adds legacy SLEAP's second keys (EXTRA_SHORTCUTS).
-    const unsubscribe = tinykeys(window, leaveNativeMenuShortcuts(withExtraShortcuts({
+    // Handlers by action name (see lib/shortcuts.ts), bound to the user's
+    // keys; the rest are fixed keys. On macOS desktop the native menu owns
+    // its ⌘ shortcuts: leave those to it (not preventDefault-ed, so the menu
+    // still gets the keystroke).
+    const unsubscribe = tinykeys(window, leaveNativeMenuShortcuts(buildKeyBindings({
       // Frame navigation (direct store for responsiveness). In the Label QC
       // Review window ← / → step through the flags instead.
-      [DEFAULT_SHORTCUTS["frame next"]]: (e) => {
+      "frame next": (e) => {
         e.preventDefault();
         if (handleQcReviewKey("frame next")) return;
         store().incrementFrameIdx(STEP_SIZES.small);
       },
-      [DEFAULT_SHORTCUTS["frame prev"]]: (e) => {
+      "frame prev": (e) => {
         e.preventDefault();
         if (handleQcReviewKey("frame prev")) return;
         store().incrementFrameIdx(-STEP_SIZES.small);
       },
-      [DEFAULT_SHORTCUTS["frame next medium step"]]: (e) => {
+      "frame next medium step": (e) => {
         if (isTextInput(e)) return; // ⌘←/→ moves the caret in a text field
         e.preventDefault();
         store().incrementFrameIdx(store().mediumStepSize);
       },
-      [DEFAULT_SHORTCUTS["frame prev medium step"]]: (e) => {
+      "frame prev medium step": (e) => {
         if (isTextInput(e)) return; // ⌘←/→ moves the caret in a text field
         e.preventDefault();
         store().incrementFrameIdx(-store().mediumStepSize);
       },
-      [DEFAULT_SHORTCUTS["frame next large step"]]: (e) => {
+      "frame next large step": (e) => {
         if (isTextInput(e)) return; // ⌘←/→ moves the caret in a text field
         e.preventDefault();
         store().incrementFrameIdx(store().largeStepSize);
       },
-      [DEFAULT_SHORTCUTS["frame prev large step"]]: (e) => {
+      "frame prev large step": (e) => {
         if (isTextInput(e)) return; // ⌘←/→ moves the caret in a text field
         e.preventDefault();
         store().incrementFrameIdx(-store().largeStepSize);
       },
 
       // Skip to start/end
-      [DEFAULT_SHORTCUTS["goto start"]]: (e) => {
+      "goto start": (e) => {
         e.preventDefault();
         commandContext.execute(GoToStartFrame);
       },
-      [DEFAULT_SHORTCUTS["goto end"]]: (e) => {
+      "goto end": (e) => {
         e.preventDefault();
         commandContext.execute(GoToEndFrame);
       },
 
       // Labeled frame navigation (via command system)
-      [DEFAULT_SHORTCUTS["goto next labeled"]]: (e) => {
+      "goto next labeled": (e) => {
         e.preventDefault();
         commandContext.execute(GoNextLabeledFrame);
       },
-      [DEFAULT_SHORTCUTS["goto prev labeled"]]: (e) => {
+      "goto prev labeled": (e) => {
         e.preventDefault();
         commandContext.execute(GoPrevLabeledFrame);
       },
@@ -140,31 +192,31 @@ export function useKeyboardShortcuts() {
       // -- the actual jump is deferred to key-release below, so a hold-Space-
       // then-drag pan gesture (VideoPlayer.tsx) doesn't also jump frames out
       // from under the drag the instant Space goes down.
-      [DEFAULT_SHORTCUTS["goto next suggestion"]]: (e) => {
+      "goto next suggestion": (e) => {
         if (isTextInput(e)) return;
         e.preventDefault();
       },
-      [DEFAULT_SHORTCUTS["goto prev suggestion"]]: (e) => {
+      "goto prev suggestion": (e) => {
         if (isTextInput(e)) return;
         e.preventDefault();
       },
 
       // Go to last interacted frame
-      [DEFAULT_SHORTCUTS["goto last interacted"]]: (e) => {
+      "goto last interacted": (e) => {
         e.preventDefault();
         commandContext.execute(GoToLastInteracted);
       },
-      [DEFAULT_SHORTCUTS["goto next user"]]: (e) => {
+      "goto next user": (e) => {
         e.preventDefault();
         commandContext.execute(GoNextUserFrame);
       },
-      [DEFAULT_SHORTCUTS["goto prev user"]]: (e) => {
+      "goto prev user": (e) => {
         e.preventDefault();
         commandContext.execute(GoPrevUserFrame);
       },
 
       // Mark the current frame / jump back to it (PyQt Ctrl+M / Ctrl+Shift+M).
-      [DEFAULT_SHORTCUTS["mark frame"]]: (e) => {
+      "mark frame": (e) => {
         if (isTextInput(e)) return;
         e.preventDefault();
         const s = store();
@@ -175,73 +227,73 @@ export function useKeyboardShortcuts() {
           duration: 1400,
         });
       },
-      [DEFAULT_SHORTCUTS["goto marked frame"]]: (e) => {
+      "goto marked frame": (e) => {
         e.preventDefault();
         commandContext.execute(GoToMarkedFrame);
       },
 
       // Open the Training panel (PyQt "learning" dialog, Ctrl+L).
-      [DEFAULT_SHORTCUTS.learning]: (e) => {
+      "learning": (e) => {
         if (isTextInput(e)) return;
         e.preventDefault();
         store().openPanel("training");
       },
 
       // View toggles (direct store)
-      [DEFAULT_SHORTCUTS["show instances"]]: (e) => {
+      "show instances": (e) => {
         if (isTextInput(e)) return;
         e.preventDefault();
         store().toggle("showInstances");
       },
-      [DEFAULT_SHORTCUTS["show labels"]]: (e) => {
+      "show labels": (e) => {
         if (isTextInput(e)) return;
         e.preventDefault();
         store().toggle("showLabels");
       },
-      [DEFAULT_SHORTCUTS["show edges"]]: (e) => {
+      "show edges": (e) => {
         if (isTextInput(e)) return;
         e.preventDefault();
         store().toggle("showEdges");
       },
-      [DEFAULT_SHORTCUTS["show non-visible nodes"]]: (e) => {
+      "show non-visible nodes": (e) => {
         if (isTextInput(e)) return;
         e.preventDefault();
         store().toggle("showNonVisibleNodes");
       },
-      [DEFAULT_SHORTCUTS.fit]: (e) => {
+      "fit": (e) => {
         e.preventDefault();
         store().setZoomMode("fit", !store().fit);
       },
       // Reset the video canvas view to default (zoom=1, no pan). Plain letter
       // key, so ignore it while typing in an input.
-      [DEFAULT_SHORTCUTS["reset view"]]: (e) => {
+      "reset view": (e) => {
         if (isTextInput(e)) return;
         e.preventDefault();
         store().resetView();
       },
-      [DEFAULT_SHORTCUTS["toggle pan mode"]]: (e) => {
+      "toggle pan mode": (e) => {
         if (isTextInput(e)) return;
         e.preventDefault();
         store().toggle("defaultToPan");
       },
-      [DEFAULT_SHORTCUTS["box tool"]]: (e) => {
+      "box tool": (e) => {
         if (isTextInput(e)) return;
         e.preventDefault();
         store().toggle("bboxDrawMode");
       },
 
       // Label QC review queue (F / Shift+F; 3 marks the selected flag OK).
-      [DEFAULT_SHORTCUTS["goto next qc flag"]]: (e) => {
+      "goto next qc flag": (e) => {
         if (isTextInput(e)) return;
         e.preventDefault();
         commandContext.execute(GoNextQcFlag);
       },
-      [DEFAULT_SHORTCUTS["goto prev qc flag"]]: (e) => {
+      "goto prev qc flag": (e) => {
         if (isTextInput(e)) return;
         e.preventDefault();
         commandContext.execute(GoPrevQcFlag);
       },
-      [DEFAULT_SHORTCUTS["ignore qc flag"]]: (e) => {
+      "ignore qc flag": (e) => {
         if (isTextInput(e)) return;
         e.preventDefault();
         commandContext.execute(MarkQcFlagOk);
@@ -262,14 +314,14 @@ export function useKeyboardShortcuts() {
       },
 
       // Mark Frame as Negative (N, as in SLEAP) — asks first if it would remove instances.
-      [DEFAULT_SHORTCUTS["mark negative"]]: (e) => {
+      "mark negative": (e) => {
         if (isTextInput(e)) return;
         e.preventDefault();
         void requestToggleNegativeFrame();
       },
 
       // Merge Instance (Shift+M): merge another user instance into the selected one.
-      [DEFAULT_SHORTCUTS["merge instance"]]: (e) => {
+      "merge instance": (e) => {
         if (isTextInput(e)) return;
         if (!store().instance) return;
         e.preventDefault();
@@ -277,7 +329,7 @@ export function useKeyboardShortcuts() {
       },
 
       // Toggle place mode (Shift+N)
-      [DEFAULT_SHORTCUTS["toggle place mode"]]: (e) => {
+      "toggle place mode": (e) => {
         if (isTextInput(e)) return;
         e.preventDefault();
         const { labelingMode, instance, enterPlacementMode, exitPlacementMode } = store();
@@ -311,27 +363,27 @@ export function useKeyboardShortcuts() {
       },
 
       // Instance editing (via command system)
-      [DEFAULT_SHORTCUTS["add instance"]]: (e) => {
+      "add instance": (e) => {
         e.preventDefault();
         commandContext.execute(AddInstance);
       },
-      [DEFAULT_SHORTCUTS["delete instance"]]: (e) => {
+      "delete instance": (e) => {
         e.preventDefault();
         commandContext.execute(DeleteSelectedInstance);
       },
-      [DEFAULT_SHORTCUTS["accept all predictions"]]: (e) => {
+      "accept all predictions": (e) => {
         e.preventDefault();
         commandContext.execute(AddInstancesFromAllPredictions);
       },
 
       // Track commands
-      [DEFAULT_SHORTCUTS.transpose]: (e) => {
+      "transpose": (e) => {
         e.preventDefault();
         requestTranspose(commandContext);
       },
       // Tracks ▸ Propagate Track Labels on/off (Shift+P). The setting is
       // otherwise only visible in the menu, so say which way it went.
-      [DEFAULT_SHORTCUTS["propagate track labels"]]: (e) => {
+      "propagate track labels": (e) => {
         if (isTextInput(e)) return;
         e.preventDefault();
         store().toggle("propagateTrackLabels");
@@ -341,17 +393,17 @@ export function useKeyboardShortcuts() {
           duration: 1400,
         });
       },
-      [DEFAULT_SHORTCUTS["add track"]]: (e) => {
+      "add track": (e) => {
         e.preventDefault();
         commandContext.execute(AddTrack);
       },
-      [DEFAULT_SHORTCUTS["delete track"]]: async (e) => {
+      "delete track": async (e) => {
         e.preventDefault();
         if (await confirmDeleteInstanceAndTrack(commandContext.state)) {
           commandContext.execute(DeleteInstanceAndTrack);
         }
       },
-      [DEFAULT_SHORTCUTS["select to frame"]]: (e) => {
+      "select to frame": (e) => {
         e.preventDefault();
         store().setSelectToFrameDialogOpen(true);
       },
@@ -385,7 +437,7 @@ export function useKeyboardShortcuts() {
       ),
 
       // Next track spawn frame
-      [DEFAULT_SHORTCUTS["goto next track spawn"]]: (e) => {
+      "goto next track spawn": (e) => {
         e.preventDefault();
         commandContext.execute(GoNextTrackSpawnFrame);
       },
@@ -393,7 +445,7 @@ export function useKeyboardShortcuts() {
       // Dismiss ALL currently-stacked on-screen toasts at once. The no-id form
       // of sonner's dismiss clears the whole live stack. (This is distinct from
       // the NotificationsPanel "Clear" button, which empties history.)
-      [DEFAULT_SHORTCUTS["dismiss all toasts"]]: (e) => {
+      "dismiss all toasts": (e) => {
         e.preventDefault();
         dismiss();
       },
@@ -409,58 +461,58 @@ export function useKeyboardShortcuts() {
       },
 
       // File commands
-      [DEFAULT_SHORTCUTS.open]: (e) => {
+      "open": (e) => {
         e.preventDefault();
         commandContext.execute(OpenProjectCommand);
       },
-      [DEFAULT_SHORTCUTS.new]: (e) => {
+      "new": (e) => {
         e.preventDefault();
         // Open a fresh instance (new tab / native window) at the Welcome screen;
         // the current project stays put. The create-empty flow lives on the
         // Welcome screen's New Project button (NewProjectDialog).
         void openNewInstance();
       },
-      [DEFAULT_SHORTCUTS.save]: (e) => {
+      "save": (e) => {
         e.preventDefault();
         commandContext.execute(SaveProjectCommand);
       },
-      [DEFAULT_SHORTCUTS["save as"]]: (e) => {
+      "save as": (e) => {
         e.preventDefault();
         commandContext.execute(SaveAsProjectCommand);
       },
-      [DEFAULT_SHORTCUTS.close]: async (e) => {
+      "close": async (e) => {
         e.preventDefault();
         await quitApp();
       },
 
       // Copy/paste
-      [DEFAULT_SHORTCUTS["copy instance"]]: (e) => {
+      "copy instance": (e) => {
         e.preventDefault();
         commandContext.execute(CopyInstance);
       },
-      [DEFAULT_SHORTCUTS["paste instance"]]: (e) => {
+      "paste instance": (e) => {
         e.preventDefault();
         commandContext.execute(PasteInstance);
       },
 
       // Track copy/paste
-      [DEFAULT_SHORTCUTS["copy track"]]: (e) => {
+      "copy track": (e) => {
         e.preventDefault();
         commandContext.execute(CopyTrack);
       },
-      [DEFAULT_SHORTCUTS["paste track"]]: (e) => {
+      "paste track": (e) => {
         e.preventDefault();
         commandContext.execute(PasteTrack);
       },
 
       // Delete predictions from area (Ctrl+K)
-      [DEFAULT_SHORTCUTS["delete area predictions"]]: (e) => {
+      "delete area predictions": (e) => {
         e.preventDefault();
         store().toggle("areaDeleteMode");
       },
 
       // Selection / exit placement mode / cancel area-delete
-      [DEFAULT_SHORTCUTS["clear selection"]]: (e) => {
+      "clear selection": (e) => {
         if (isTextInput(e)) return;
         e.preventDefault();
         const s = store();
@@ -475,7 +527,7 @@ export function useKeyboardShortcuts() {
           s.setInstance(null);
         }
       },
-      [DEFAULT_SHORTCUTS["select next"]]: (e) => {
+      "select next": (e) => {
         if (isTextInput(e)) return;
         e.preventDefault();
         const { labeledFrame, instance } = store();
@@ -492,7 +544,7 @@ export function useKeyboardShortcuts() {
 
       // Cycle through instances on the current frame and zoom to fit each one
       // (Shift+Down / Shift+Up), mirroring the legacy sleap desktop app.
-      [DEFAULT_SHORTCUTS["select next instance zoom"]]: (e) => {
+      "select next instance zoom": (e) => {
         if (isTextInput(e)) return;
         e.preventDefault();
         const { labeledFrame, instance } = store();
@@ -507,7 +559,7 @@ export function useKeyboardShortcuts() {
         }
         store().set("fitSelection", true);
       },
-      [DEFAULT_SHORTCUTS["select prev instance zoom"]]: (e) => {
+      "select prev instance zoom": (e) => {
         if (isTextInput(e)) return;
         e.preventDefault();
         const { labeledFrame, instance } = store();
@@ -524,7 +576,7 @@ export function useKeyboardShortcuts() {
       },
 
       // Go to frame (Ctrl+J)
-      [DEFAULT_SHORTCUTS["goto frame"]]: (e) => {
+      "goto frame": (e) => {
         e.preventDefault();
         store().setGoToFrameDialogOpen(true);
       },
@@ -546,7 +598,7 @@ export function useKeyboardShortcuts() {
       },
 
       // Video navigation
-      [DEFAULT_SHORTCUTS["next video"]]: (e) => {
+      "next video": (e) => {
         e.preventDefault();
         const { labels, video } = store();
         if (!labels || !video) return;
@@ -554,7 +606,7 @@ export function useKeyboardShortcuts() {
         const next = labels.videos[(idx + 1) % labels.videos.length];
         if (next) store().setVideo(next);
       },
-      [DEFAULT_SHORTCUTS["prev video"]]: (e) => {
+      "prev video": (e) => {
         e.preventDefault();
         const { labels, video } = store();
         if (!labels || !video) return;
@@ -562,25 +614,25 @@ export function useKeyboardShortcuts() {
         const prev = labels.videos[(idx - 1 + labels.videos.length) % labels.videos.length];
         if (prev) store().setVideo(prev);
       },
-    })));
+    }, overrides)));
 
     // Suggestion navigation fires on Space/Shift+Space *release*, not press,
     // and only if no pan-drag happened while Space was held (see
     // spacePanTracking.ts) -- see the preventDefault-only stubs above.
     const unsubscribeSuggestionNav = tinykeys(
       window,
-      {
-        [DEFAULT_SHORTCUTS["goto next suggestion"]]: (e) => {
+      bindActions<(e: KeyboardEvent) => void>({
+        "goto next suggestion": (e) => {
           if (isTextInput(e)) return;
           if (spacePanState.draggedWhileHeld) return;
           commandContext.execute(GoNextSuggestion);
         },
-        [DEFAULT_SHORTCUTS["goto prev suggestion"]]: (e) => {
+        "goto prev suggestion": (e) => {
           if (isTextInput(e)) return;
           if (spacePanState.draggedWhileHeld) return;
           commandContext.execute(GoPrevSuggestion);
         },
-      },
+      }, overrides),
       { event: "keyup" }
     );
 
@@ -588,5 +640,5 @@ export function useKeyboardShortcuts() {
       unsubscribe();
       unsubscribeSuggestionNav();
     };
-  }, []);
+  }, [overrides]);
 }

@@ -5,8 +5,29 @@ over from the legacy GUI.
 
 ++cmd++ is shown for macOS; on Windows and Linux it is ++ctrl++.
 
-**Help ▸ Keyboard Shortcuts…** shows the most common of these inside the app;
-this page is the full list.
+**Help ▸ Keyboard Shortcuts…** shows these inside the app, and lets you
+change them; this page lists the defaults.
+
+## Changing shortcuts
+
+In **Help ▸ Keyboard Shortcuts…**, click an action's key, then press the new
+key (++esc++ cancels). If another action already uses that key, the app asks
+whether to move it; if you say yes, the other action is left without a key.
+The ✕ next to a key removes it, and ↺ puts an action back on its default.
+Changes apply when you click **Save**, everywhere: on the canvas, in the
+menus (including the macOS menu bar), and in **Help ▸ Search Menus**.
+
+- Your shortcuts are saved on this computer with your other preferences.
+  **File ▸ Reset Preferences to Defaults…** (or **Reset to Defaults** in the
+  dialog) puts them all back.
+- **Export…** saves them as a `shortcuts.yaml` file, and **Import…** loads
+  one, for example to use the same keys on another computer. The file uses
+  the same format as SLEAP's own `shortcuts.yaml`, so you can import your
+  shortcuts from the legacy SLEAP GUI too (there, `Ctrl` means ++cmd++ on
+  macOS).
+- Undo/Redo, the text-size keys, ++cmd+1++–++cmd+9++ (set track) and
+  ++backspace++/++delete++ (delete selected nodes) can't be reassigned. On
+  the macOS desktop app, ++cmd+q++ always quits.
 
 ## File
 
