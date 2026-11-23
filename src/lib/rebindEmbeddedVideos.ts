@@ -1,6 +1,6 @@
 /**
- * After a full save, point the open project's embedded videos at the file
- * just written.
+ * After a full save or an export over the project file, point the open
+ * project's embedded videos at the file just written.
  *
  * A project file over the eager-load limit is opened with backends that read
  * each embedded video's images from the file on disk, by dataset name, through
@@ -13,15 +13,17 @@
  * videos (`video{i}/video` by the new index). Left alone, the views would show
  * wrong images and the next full save would copy them.
  *
- * So after every full save (over the project file, and Save As), each
- * written embedded video that reads the file on disk gets a new backend: on its name in the written
+ * So after every full save (over the project file, and Save As) and every
+ * package exported over the project file, each written embedded video that
+ * reads the file on disk gets a new backend: on its name in the written
  * file's `videos_json`, through one new range reader on that file, built as
  * the loader builds them (deferred: per-video metadata is read on first use).
  * It replaces the old backend inside any grayscale or crop wrapper, at the
  * same video, and the old backends and their reader are closed. Before
- * anything is swapped, the new backends are checked: names must be unique
- * among the embedded videos, and a video whose stored frames were known must
- * find the same frame numbers under its new name.
+ * anything is swapped, the new backends are checked: every disk-read video of
+ * the project must be in the written list, names must be unique among the
+ * embedded videos, and a video whose stored frames were known must find the
+ * same frame numbers under its new name.
  *
  * {@link rebindOrMark}: a rebind clears the stale-name mark; any failure
  * leaves the old backends in place and, when the write replaced the file
@@ -42,9 +44,10 @@ import {
   type VideoBackend,
 } from "@talmolab/sleap-io.js";
 import { fileSize, readRange } from "./nativeRange";
-import { embeddedSource } from "./embeddedVideoSources";
-import { diskBackendOf, markDiskReader, readerOf } from "./diskBackedVideos";
+import { embeddedSource, recordEmbeddedSources } from "./embeddedVideoSources";
+import { diskBackendOf, hasDiskBackedVideos, markDiskReader, readerOf } from "./diskBackedVideos";
 import { clearStaleVideoNames, markStaleVideoNames, warnStaleVideoNames } from "./inPlaceBinding";
+import { readWrittenDatasets } from "./saveLabelsInPlace";
 import { useAppStore } from "@/stores/appStore";
 
 /** A wrapper backend (grayscale, crop) around another one. */
@@ -111,6 +114,14 @@ export async function rebindEmbeddedVideos(
         ]
       : [];
   });
+  // Every disk-read video of the project must be rebound: one left on the old
+  // reader would read the replaced file through its old layout.
+  const missing = labels.videos.findIndex(
+    (video) => video.hasEmbeddedImages && diskBackendOf(video) !== null && !written.includes(video)
+  );
+  if (missing >= 0) {
+    return { ok: false, reason: `video ${missing} is not in the written file` };
+  }
   if (targets.length === 0) return { ok: true, rebound: 0 };
   if (!datasets || datasets.length !== written.length) {
     return { ok: false, reason: "the written file's video list could not be read back" };
@@ -209,11 +220,12 @@ export async function rebindEmbeddedVideos(
 }
 
 /**
- * After a full save of `written` to `path` whose embedded datasets are
- * `datasets` (null if the file couldn't be read back): rebind the project's disk-read videos to it, or
+ * After a write of `written` to `path` (a full save, or a package exported
+ * over the project file) whose embedded datasets are `datasets` (null if the
+ * file couldn't be read back): rebind the project's disk-read videos to it, or
  * mark the labels. `replacedReadersFile` says the write replaced the file the
- * project's disk readers read (a save over the project file; not a Save As
- * to another path): then any failure marks the labels and asks to reopen,
+ * project's disk readers read (any write over the project file; not a Save
+ * As to another path): then any failure marks the labels and asks to reopen,
  * whatever the names. A rebind clears the mark.
  */
 export async function rebindOrMark(
@@ -241,3 +253,21 @@ export async function rebindOrMark(
   warnStaleVideoNames();
 }
 
+/**
+ * After a package of `written` (the project's videos it holds, in its order)
+ * was exported over the project's own file at `path`: record where their
+ * images now are, and rebind the project's disk-read videos to it, or keep
+ * them marked (see `projectFileReplaced`, which the caller runs first). A
+ * video the package left out, or whose stored frames it doesn't all hold,
+ * can't be rebound: the labels then stay marked until the project is reopened.
+ */
+export async function rebindAfterExportOverProject(
+  labels: Labels,
+  path: string,
+  written: readonly Video[]
+): Promise<void> {
+  const datasets = written.some((v) => v.hasEmbeddedImages) ? await readWrittenDatasets(path) : null;
+  recordEmbeddedSources(path, written, datasets);
+  if (!hasDiskBackedVideos(labels)) return;
+  await rebindOrMark(labels, path, written, datasets, true);
+}

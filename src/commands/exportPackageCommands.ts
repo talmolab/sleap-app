@@ -85,6 +85,7 @@ import { useAppStore } from "@/stores/appStore";
 import { withImageFormat, withLegacyLayout } from "@/lib/slpFormatCompat";
 import { projectFileReplaced, refuseStaleVideoNames } from "@/lib/inPlaceBinding";
 import { refuseWhileSaving } from "@/lib/saveInProgress";
+import { hasDiskBackedVideos } from "@/lib/diskBackedVideos";
 import { normalizePackageImage, type PackageImageOptions } from "@/lib/packageImageFormat";
 import { ensureWritable } from "@/lib/slpAccess";
 
@@ -276,11 +277,18 @@ export function packageImageParam(
  * A package exported over the open project's own file replaces it, as a full
  * save does: the fast in-place save must not patch it as the project's file,
  * and a project that reads its embedded images from that file (a large
- * file's open) is marked until it is reopened (see projectFileReplaced).
+ * file's open) is rebound to the package's videos (`written`, in its order),
+ * or marked until it is reopened when that fails (see projectFileReplaced and
+ * rebindAfterExportOverProject).
  */
-function forgetProjectFileIfOverwritten(path: string): void {
+async function forgetProjectFileIfOverwritten(path: string, written: readonly Video[]): Promise<void> {
   const { projectPath, labels } = useAppStore.getState();
-  if (labels && projectPath && path === projectPath) projectFileReplaced(labels);
+  if (!labels || !projectPath || path !== projectPath) return;
+  projectFileReplaced(labels);
+  // Nothing embedded and nothing read from the file on disk: nothing to rebind.
+  if (!written.some((v) => v.hasEmbeddedImages) && !hasDiskBackedVideos(labels)) return;
+  const { rebindAfterExportOverProject } = await import("@/lib/rebindEmbeddedVideos");
+  await rebindAfterExportOverProject(labels, path, written);
 }
 
 /** Is the streaming desktop write (worker + native file writes) available? */
@@ -508,7 +516,7 @@ async function exportLabelsPackageNow(
         // A video with no open decoder can't be embedded and stays a link.
         return embedVideos.some((v) => !v.backend);
       });
-      forgetProjectFileIfOverwritten(destPath);
+      await forgetProjectFileIfOverwritten(destPath, exportLabels.videos);
       toastExported("Labels package exported", destPath, true);
       if (unembedded) warnUnembedded();
       return destPath;
@@ -551,7 +559,7 @@ async function exportLabelsPackageNow(
     });
     const saved = await saveBytesFile(bytes, suggestedName, filter);
     if (!saved) return null; // user cancelled the dialog/picker
-    forgetProjectFileIfOverwritten(saved);
+    await forgetProjectFileIfOverwritten(saved, exportLabels.videos);
 
     toastExported("Labels package exported", saved, false);
 

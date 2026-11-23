@@ -271,13 +271,14 @@ export function refuseStaleVideoNames(labels: Labels | null | undefined, title: 
 /**
  * The project's own file was replaced by something other than a save (an
  * export written over it): the in-place save must not patch it, and if the
- * project reads its images from that file, they are no longer the right ones.
+ * project reads its images from that file, they are no longer the right ones
+ * until its videos are rebound to the new file. Marks them until then; the
+ * caller rebinds (`rebindAfterExportOverProject`), which clears the mark, or
+ * warns and keeps it.
  */
 export function projectFileReplaced(labels: Labels): void {
   clearFileBinding(labels);
-  if (!hasDiskBackedVideos(labels)) return;
-  markStaleVideoNames(labels);
-  warnStaleVideoNames();
+  if (hasDiskBackedVideos(labels)) markStaleVideoNames(labels);
 }
 
 /** Throw for a job that would copy embedded images under stale names. */
