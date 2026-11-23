@@ -83,7 +83,7 @@ import { toastExported } from "@/lib/exportToast";
 import { getPlatform } from "../platform/index";
 import { useAppStore } from "@/stores/appStore";
 import { withImageFormat, withLegacyLayout } from "@/lib/slpFormatCompat";
-import { clearFileBinding } from "@/lib/inPlaceBinding";
+import { clearFileBinding, refuseStaleVideoNames } from "@/lib/inPlaceBinding";
 import { normalizePackageImage, type PackageImageOptions } from "@/lib/packageImageFormat";
 import { ensureWritable } from "@/lib/slpAccess";
 
@@ -458,6 +458,11 @@ async function exportLabelsPackageNow(
   level: ExportPackageLevel,
   options: { suggestedName?: string; image?: PackageImageOptions }
 ): Promise<string | null> {
+  // The open project's embedded images may be read under stale names (see
+  // inPlaceBinding.ts): copying them could store another video's images.
+  if (refuseStaleVideoNames(useAppStore.getState().labels, "Reopen this project before exporting")) {
+    return null;
+  }
 
   const mode = embedModeForLevel(level);
   const image = options.image;

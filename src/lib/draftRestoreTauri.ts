@@ -33,6 +33,7 @@ import {
   type Labels,
 } from "@talmolab/sleap-io.js";
 import { loadSlp, readSlpStreaming } from "@/lib/slpRead";
+import { markDiskBackedVideos } from "@/lib/diskBackedVideos";
 import { useAppStore } from "@/stores/appStore";
 import { toast } from "@/lib/notify";
 import { toastLoadError } from "@/lib/slpAccess";
@@ -49,7 +50,6 @@ import { isSourceChanged } from "@/lib/draftStaleness";
 import { makeTauriJournalStore } from "@/lib/tauriDraft";
 import { replayJournal, baseBakPath } from "@/lib/incrementalAutosave";
 import type { TauriDraftManifestEntry } from "@/lib/tauriDraftManifest";
-import { markDiskBackedVideos } from "@/lib/rebindEmbeddedVideos";
 
 // Same threshold + h5wasm URL as loadProject.ts: files over ~1 GB open via the
 // native range reader (lazy, on-disk) instead of being read whole into WASM.
@@ -93,7 +93,7 @@ async function readLabelsFromPath(
         fileName: path,
       },
     );
-    // Its embedded videos read the file on disk: a full save rebinds them.
+    // Its embedded videos read the file on disk (see diskBackedVideos.ts).
     markDiskBackedVideos(labels);
     return labels;
   }

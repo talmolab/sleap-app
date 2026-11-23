@@ -83,7 +83,6 @@ import {
 } from "./nativeWrite";
 import { fileSize, readRange } from "./nativeRange";
 import { sourceFormatOf, withLegacyLayout } from "./slpFormatCompat";
-import { diskBackendOf } from "./rebindEmbeddedVideos";
 import {
   bindLabelsToFile,
   bindingRefusal,
@@ -91,9 +90,11 @@ import {
   clearFileBinding,
   loadedVideoDataset,
   refreshFileIdentity,
+  readsProjectFile,
   sameFileIdentity,
   sameVideoList,
   statFileIdentity,
+  type FileIdentity,
 } from "./inPlaceBinding";
 
 // Same derivation as loadProject.ts / saveEmbeddedPkgStreaming.ts: h5wasm must be
@@ -717,6 +718,7 @@ export async function saveLabelsInPlace(
   // Waiting for it can take a while, so the file is checked again once it is
   // ours: a change in the meantime refuses, with nothing written.
   let refusedLate: string | null = null;
+  let writtenIdentity: FileIdentity | null = null;
   try {
     await withNativeWriteHandle(async () => {
       refusedLate = bindingRefusal(labels, destPath, await statFileIdentity(destPath));
@@ -753,6 +755,9 @@ export async function saveLabelsInPlace(
         (metadataChanged ? " (+ /metadata)" : "")
     );
 
+    // The file as the app wrote it, taken before the check reads it.
+    writtenIdentity = await statFileIdentity(destPath);
+
     // 5. POST-WRITE VERIFY (required backstop; throws loud on any inconsistency).
     await verifyInPlace(destPath, update, probe.sidecars, probe.videosJson, videoAttrs);
   } catch (err) {
@@ -763,8 +768,15 @@ export async function saveLabelsInPlace(
     throw err;
   }
   console.log(`[saveLabelsInPlace] verify OK -> ${destPath}`);
-  // The file as the app now wrote it: the next in-place save compares with this.
-  refreshFileIdentity(labels, await statFileIdentity(destPath));
+  // The file as the app wrote it, if nothing changed it since: the next
+  // in-place save compares with this.
+  const afterCheck = await statFileIdentity(destPath);
+  refreshFileIdentity(
+    labels,
+    writtenIdentity && afterCheck && sameFileIdentity(writtenIdentity, afterCheck)
+      ? writtenIdentity
+      : null
+  );
   return { ok: true };
 }
 
@@ -791,10 +803,21 @@ export async function recordWrittenFile(
   written: readonly Video[]
 ): Promise<{ staleVideoNames: boolean; datasets: Array<string | null> | null }> {
   clearFileBinding(labels);
-  if (!hasCrossOriginIsolation()) return { staleVideoNames: false, datasets: null };
+  // Fail closed: if the written file can't be read back, any embedded video
+  // that reads the project file may now read another video's images.
+  const unproven = {
+    staleVideoNames: written.some((v) => v.hasEmbeddedImages && readsProjectFile(v)),
+    datasets: null,
+  };
+  // No embedded video: the in-place save never runs, and nothing reads the
+  // file by name, so there is nothing to record or rebind.
+  if (!written.some((v) => v.hasEmbeddedImages)) return { staleVideoNames: false, datasets: null };
+  if (!hasCrossOriginIsolation()) return unproven;
   const identity = await statFileIdentity(path);
   let videosJson: string[] | null;
   try {
+    // Without the file's identity there is no record to take, but its
+    // datasets are still read back for the rebind.
     const size = identity?.size ?? (await fileSize(path));
     const reader = new StreamingH5File();
     await reader.openRange(
@@ -808,17 +831,18 @@ export async function recordWrittenFile(
     }
   } catch (err) {
     console.log("[saveLabelsInPlace] could not read back the written file's videos:", err);
-    return { staleVideoNames: false, datasets: null };
+    return unproven;
   }
   const datasets = writtenDatasets(videosJson);
+  if (!datasets) return unproven;
   const staleVideoNames = written.some(
     (video, index) =>
       video.hasEmbeddedImages &&
       readsProjectFile(video) &&
-      loadedVideoDataset(video) !== (datasets?.[index] ?? null)
+      loadedVideoDataset(video) !== (datasets[index] ?? null)
   );
   const result = { staleVideoNames, datasets };
-  if (!identity || !datasets || datasets.length !== written.length) return result;
+  if (!identity || datasets.length !== written.length) return result;
   // Only now, after every await: the list must still be the one written.
   if (!sameVideoList(labels.videos, written)) return result;
   // And the file must still be the one just written.
@@ -849,9 +873,4 @@ function writtenDatasets(videosJson: string[] | null): Array<string | null> | nu
     );
   }
   return out;
-}
-
-/** Whether a video's backend reads its images from the file on disk. */
-function readsProjectFile(video: Video): boolean {
-  return diskBackendOf(video) !== null;
 }

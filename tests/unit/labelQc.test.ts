@@ -98,4 +98,84 @@ describe("runLabelQc", () => {
     );
     expect(fs).toEqual([]);
   });
+  describe("nodes not labeled (SLP format 3.0)", () => {
+    const N = Number.NaN;
+    /**
+     * A user instance with `points` as sleap-io gives them. A node is
+     * `[x, y]` (visible), "hidden" (labeled, not visible) or "unlabeled"
+     * (`labeled: false`). `flag` controls whether labeled points carry an
+     * explicit `labeled: true` (sleap-io.js 0.6.0) or no flag (older pins).
+     */
+    const withPoints = (nodes: (number[] | "hidden" | "unlabeled")[], flag = true) => {
+      const points = nodes.map((n) =>
+        n === "unlabeled"
+          ? { xy: [N, N], visible: false, complete: false, labeled: false }
+          : n === "hidden"
+            ? { xy: [N, N], visible: false, complete: false, ...(flag ? { labeled: true } : {}) }
+            : { xy: n, visible: true, complete: true, ...(flag ? { labeled: true } : {}) },
+      );
+      return { numpy: () => points.map((p) => (p.visible ? [...p.xy] : [N, N])), points };
+    };
+    const instFindings = (fs: QcFinding[]) =>
+      fs.filter((f) => f.kind === "sparse_instance" || f.kind === "empty_instance");
+
+    it("a partly annotated instance is not sparse", () => {
+      const fs = runLabelQc(
+        mockLabels(null, [
+          frame(0, [withPoints([[1, 1], "unlabeled", "unlabeled", "unlabeled"]), clean(50, 50)]),
+        ]),
+      );
+      expect(instFindings(fs)).toEqual([]);
+    });
+
+    it("hidden labeled nodes still count, and the message says of how many", () => {
+      const fs = runLabelQc(
+        mockLabels(null, [frame(0, [withPoints([[1, 1], "hidden", "unlabeled", "unlabeled"])])]),
+      );
+      expect(instFindings(fs)).toHaveLength(1);
+      expect(fs.find((f) => f.kind === "sparse_instance")).toMatchObject({
+        instanceIdx: 0,
+        message: "Only 1 of 2 labeled node(s) visible",
+      });
+    });
+
+    it("an instance with no labeled node is reported empty, not sparse", () => {
+      const fs = runLabelQc(
+        mockLabels(null, [frame(3, [withPoints(["unlabeled", "unlabeled"]), clean(50, 50)])]),
+      );
+      expect(instFindings(fs)).toHaveLength(1);
+      expect(fs.find((f) => f.kind === "empty_instance")).toMatchObject({
+        frameIdx: 3,
+        instanceIdx: 0,
+        message: "Instance has no labeled nodes",
+      });
+    });
+
+    it("with every node labeled, results match the plain arrays", () => {
+      const cases: (number[] | "hidden")[][] = [
+        [[1, 1]],
+        [[1, 1], "hidden", "hidden"],
+        ["hidden", "hidden"],
+        [[1, 1], [5, 5]],
+      ];
+      for (const flag of [true, false]) {
+        for (const nodes of cases) {
+          const plain = inst(nodes.map((n) => (n === "hidden" ? [N, N] : n)));
+          const before = runLabelQc(mockLabels(null, [frame(0, [plain, clean(50, 50)])]));
+          const after = runLabelQc(
+            mockLabels(null, [frame(0, [withPoints(nodes, flag), clean(50, 50)])]),
+          );
+          expect(after).toEqual(before);
+        }
+      }
+      const sparse = runLabelQc(mockLabels(null, [frame(0, [withPoints([[1, 1], "hidden"])])]));
+      expect(sparse.find((f) => f.kind === "sparse_instance")?.message).toBe(
+        "Only 1 visible node(s)",
+      );
+      const empty = runLabelQc(mockLabels(null, [frame(0, [withPoints(["hidden"])])]));
+      expect(empty.find((f) => f.kind === "empty_instance")?.message).toBe(
+        "Instance has no visible nodes",
+      );
+    });
+  });
 });

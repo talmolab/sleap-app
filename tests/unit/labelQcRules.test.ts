@@ -10,7 +10,10 @@ import {
   isSparseInstance,
   isEmptyInstance,
   hasOutOfRangePoints,
+  labeledNodeCount,
+  hasNoLabeledNodes,
 } from "@/lib/analyze/labelQcRules";
+import { withUnlabeledNodes } from "@/lib/analyze/qc/util";
 
 describe("instanceIoU", () => {
   it("is 1 for identical boxes, 0 for disjoint", () => {
@@ -101,5 +104,60 @@ describe("instance-level rules", () => {
     expect(hasOutOfRangePoints([[5, 5], [50, 50]], 100, 100)).toBe(false);
     // NaN (invisible) points never count as out of range
     expect(hasOutOfRangePoints([[Number.NaN, Number.NaN]], 100, 100)).toBe(false);
+  });
+});
+
+describe("instance-level rules with nodes not labeled", () => {
+  const N = Number.NaN;
+  /** A pose whose nodes flagged `true` were not annotated (SLP format 3.0). */
+  const pose = (rows: number[][], unlabeled: boolean[]) => withUnlabeledNodes(rows, unlabeled);
+
+  it("labeledNodeCount leaves out nodes not labeled; all count without a record", () => {
+    expect(labeledNodeCount([[0, 0], [N, N], [N, N]])).toBe(3);
+    expect(labeledNodeCount(pose([[0, 0], [N, N], [N, N]], [false, false, true]))).toBe(2);
+  });
+
+  it("a node not labeled does not make an instance sparse", () => {
+    // One visible node, the other three never annotated: nothing is missing.
+    const p = pose([[0, 0], [N, N], [N, N], [N, N]], [false, true, true, true]);
+    expect(isSparseInstance(p, 2)).toBe(false);
+    expect(isEmptyInstance(p)).toBe(false);
+    // The same rows with every node labeled (three hidden) are sparse.
+    expect(isSparseInstance([[0, 0], [N, N], [N, N], [N, N]], 2)).toBe(true);
+  });
+
+  it("hidden labeled nodes still count as missing", () => {
+    // 1 visible + 1 hidden labeled + 2 not labeled: 1 of 2 labeled visible.
+    const p = pose([[0, 0], [N, N], [N, N], [N, N]], [false, false, true, true]);
+    expect(isSparseInstance(p, 2)).toBe(true);
+    // A higher setting is capped at the labeled count (3 labeled, all visible).
+    const q = pose([[0, 0], [1, 1], [2, 2], [N, N]], [false, false, false, true]);
+    expect(isSparseInstance(q, 5)).toBe(false);
+    expect(isSparseInstance(pose([[0, 0], [1, 1], [N, N], [N, N]], [false, false, false, true]), 5)).toBe(
+      true,
+    );
+  });
+
+  it("an instance with no labeled node is empty, and says so", () => {
+    const p = pose([[N, N], [N, N]], [true, true]);
+    expect(isEmptyInstance(p)).toBe(true);
+    expect(hasNoLabeledNodes(p)).toBe(true);
+    expect(isSparseInstance(p, 2)).toBe(false);
+    // All hidden but labeled: empty in the usual sense.
+    expect(hasNoLabeledNodes([[N, N], [N, N]])).toBe(false);
+    expect(hasNoLabeledNodes(pose([[N, N], [N, N]], [true, false]))).toBe(false);
+  });
+
+  it("with every node labeled the rules are unchanged", () => {
+    const allLabeled = (rows: number[][]) => pose(rows, rows.map(() => false));
+    for (const rows of [[[0, 0]], [[0, 0], [1, 1]], [[0, 0], [N, N], [N, N]], [[N, N]]]) {
+      for (const m of [1, 2, 3]) {
+        expect(isSparseInstance(allLabeled(rows), m)).toBe(isSparseInstance(rows, m));
+      }
+      expect(isEmptyInstance(allLabeled(rows))).toBe(isEmptyInstance(rows));
+      expect(hasNoLabeledNodes(allLabeled(rows))).toBe(false);
+    }
+    // A one-node instance stays sparse at the default setting, as before.
+    expect(isSparseInstance(allLabeled([[0, 0]]), 2)).toBe(true);
   });
 });

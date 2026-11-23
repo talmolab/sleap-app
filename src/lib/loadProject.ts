@@ -41,7 +41,7 @@ import { installTauriFsResolver } from "./fsResolver";
 import { fileSize, readRange } from "./nativeRange";
 import { bindLabelsToFile, loadedVideoDataset, statFileIdentity } from "./inPlaceBinding";
 import { recordEmbeddedSources } from "./embeddedVideoSources";
-import { markDiskBackedVideos } from "./rebindEmbeddedVideos";
+import { markDiskBackedVideos } from "./diskBackedVideos";
 import { sleapCmd } from "./sleapPlugin";
 import { basenameFromUrl } from "./urlOpen";
 import { isReportedSlpError, toastLoadError, type Format3Policy } from "./slpAccess";
@@ -334,7 +334,8 @@ export async function loadProjectFromPath(
         h5wasmUrl: H5WASM_URL,
         onProgress: reportParseProgress,
       });
-      // Its embedded videos read the file on disk: a full save rebinds them.
+      // Its embedded videos read the file on disk (see diskBackedVideos.ts):
+      // a full save rebinds them (rebindEmbeddedVideos.ts).
       markDiskBackedVideos(labels);
     } else {
       const bytes = await readFile(path);

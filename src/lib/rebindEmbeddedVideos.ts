@@ -27,8 +27,8 @@
  * Eager loads keep the whole file in memory: their backends (the same
  * class, over a reader of the file's bytes) keep reading the file as it was
  * opened, by the names it had then, so they need nothing here. Only readers
- * noted with {@link markDiskBackedVideos} (a large file's open) and the ones
- * opened here are rebound.
+ * noted as reading the disk (`diskBackedVideos.ts`: a large file's open, and
+ * the ones opened here) are rebound.
  */
 import {
   StreamingH5File,
@@ -39,11 +39,7 @@ import {
 } from "@talmolab/sleap-io.js";
 import { fileSize, readRange } from "./nativeRange";
 import { embeddedSource } from "./embeddedVideoSources";
-
-// Same derivation as loadProject.ts: h5wasm is served same-origin so the
-// streaming Worker can load it under cross-origin isolation.
-const H5WASM_URL =
-  typeof location !== "undefined" ? `${location.origin}/h5wasm/h5wasm.js` : undefined;
+import { diskBackendOf, markDiskReader, readerOf } from "./diskBackedVideos";
 
 /** A wrapper backend (grayscale, crop) around another one. */
 interface Wrapper {
@@ -51,59 +47,10 @@ interface Wrapper {
   filename?: string;
 }
 
-interface DiskBackend {
-  /** The backend that reads the file on disk. */
-  leaf: StreamingHdf5VideoBackend;
-  /** The wrapper holding it, or null when it is the video's backend. */
-  parent: Wrapper | null;
-}
-
-/**
- * The range readers that read a project file on disk: those of a large
- * file's open, and those this module opens. An eager load's embedded
- * backends are the same class, but their reader holds the file's bytes in
- * memory, so they keep reading the file as it was when opened, and need no
- * rebind.
- */
-const diskReaders = new WeakSet<object>();
-
-/** The range reader a streaming backend reads through (private in sleap-io.js). */
-function readerOf(backend: StreamingHdf5VideoBackend): { close?: () => Promise<void> } | null {
-  return (backend as unknown as { h5file?: { close?: () => Promise<void> } }).h5file ?? null;
-}
-
-/** The streaming backend of `video`, inside any wrappers, with its wrapper. */
-function streamingBackendOf(video: Video): DiskBackend | null {
-  let parent: Wrapper | null = null;
-  let backend: unknown = video.backend;
-  for (let depth = 0; backend && depth < 4; depth++) {
-    if (backend instanceof StreamingHdf5VideoBackend) return { leaf: backend, parent };
-    const inner = (backend as { inner?: unknown }).inner;
-    if (!inner) return null;
-    parent = backend as Wrapper;
-    backend = inner;
-  }
-  return null;
-}
-
-/**
- * Note that the embedded videos of `labels` read their images from the file
- * on disk (a large file's open, through the range reader).
- */
-export function markDiskBackedVideos(labels: Labels): void {
-  for (const video of labels.videos) {
-    const found = streamingBackendOf(video);
-    const reader = found && readerOf(found.leaf);
-    if (reader) diskReaders.add(reader);
-  }
-}
-
-/** The backend of `video` that reads its embedded images from a file on disk, if any. */
-export function diskBackendOf(video: Video): DiskBackend | null {
-  const found = streamingBackendOf(video);
-  const reader = found && readerOf(found.leaf);
-  return reader && diskReaders.has(reader) ? found : null;
-}
+// Same derivation as loadProject.ts: h5wasm is served same-origin so the
+// streaming Worker can load it under cross-origin isolation.
+const H5WASM_URL =
+  typeof location !== "undefined" ? `${location.origin}/h5wasm/h5wasm.js` : undefined;
 
 /**
  * The first embedded video of `labels` whose images can't be read for a full
@@ -147,7 +94,16 @@ export async function rebindEmbeddedVideos(
 ): Promise<RebindResult> {
   const targets = written.flatMap((video, index) => {
     const disk = video.hasEmbeddedImages ? diskBackendOf(video) : null;
-    return disk ? [{ video, index, ...disk }] : [];
+    return disk
+      ? [
+          {
+            video,
+            index,
+            leaf: disk.leaf as StreamingHdf5VideoBackend,
+            parent: disk.parent as Wrapper | null,
+          },
+        ]
+      : [];
   });
   if (targets.length === 0) return { ok: true, rebound: 0 };
   if (!datasets || datasets.length !== written.length) {
@@ -211,7 +167,7 @@ export async function rebindEmbeddedVideos(
       }
       (video.backendMetadata as Record<string, unknown>).dataset = dataset;
     }
-    diskReaders.add(reader);
+    markDiskReader(reader);
     reader = null; // the new backends own it now
 
     // Close the old backends, and each old reader no open video still reads.
@@ -221,7 +177,7 @@ export async function rebindEmbeddedVideos(
         return disk ? [readerOf(disk.leaf)] : [];
       })
     );
-    const oldReaders = new Set<{ close?: () => Promise<void> } | null>();
+    const oldReaders = new Set<object | null>();
     for (const { leaf } of built) {
       try {
         leaf.close();
@@ -233,7 +189,7 @@ export async function rebindEmbeddedVideos(
     for (const old of oldReaders) {
       if (!old || stillRead.has(old)) continue;
       try {
-        await old.close?.();
+        await (old as { close?: () => Promise<void> }).close?.();
       } catch {
         /* already closed */
       }

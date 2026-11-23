@@ -55,6 +55,14 @@ const hooks: {
   failInPlaceAfterWrite?: boolean;
   /** Fail the rebind's reader open (the only open that names its file). */
   failRebindOpen?: boolean;
+  /** The reader fails (the read-back after a full rewrite). */
+  failReadBack?: boolean;
+  /** The next stat fails. */
+  statThrowOnce?: boolean;
+  /** Save As picks this path. */
+  saveAsPath?: string;
+  /** Use sleap-io.js's real in-memory writer, reading through the backends. */
+  realWriter?: boolean;
   origin?: string;
   originIndex?: Map<unknown, number>;
 } = {};
@@ -63,11 +71,15 @@ class H5Reader {
   private f: H5File | null = null;
   async openRange(_source?: unknown, options?: { filenameHint?: string }) {
     if (hooks.failRebindOpen && options?.filenameHint) throw new Error("injected open failure");
+    if (hooks.failReadBack) throw new Error("injected read-back failure");
     await ready;
     this.f = new H5File(current, "r");
   }
   keys() {
     return this.f!.keys();
+  }
+  async getKeys(path: string) {
+    return (this.f!.get(path) as { keys: () => string[] }).keys();
   }
   async getDatasetMeta(path: string) {
     const ds = this.f!.get(path) as { shape?: number[]; metadata?: unknown } | null;
@@ -125,11 +137,23 @@ vi.mock("@talmolab/sleap-io.js", () => ({
   ...sio,
   StreamingH5File: H5Reader,
   StreamingH5Writer: H5Writer,
-  saveSlpToBytes: (labels: sioModule.Labels, options: unknown) =>
-    hooks.origin ? appSaveSlpToBytes(labels, options) : sio.saveSlpToBytes(labels, options as never),
+  saveSlpToBytes: async (labels: sioModule.Labels, options: unknown) => {
+    if (hooks.realWriter) {
+      if (hooks.failWrite) throw new Error("injected write failure");
+      fileOps.push("fullRewrite");
+      const bytes = await sio.saveSlpToBytes(labels, options as never);
+      await hooks.duringWrite?.();
+      return bytes;
+    }
+    return hooks.origin ? appSaveSlpToBytes(labels, options) : sio.saveSlpToBytes(labels, options as never);
+  },
 }));
 vi.mock("@tauri-apps/plugin-fs", () => ({
   stat: async (p: string) => {
+    if (hooks.statThrowOnce) {
+      hooks.statThrowOnce = false;
+      throw new Error("injected stat failure");
+    }
     const st = statSync(p);
     return { size: st.size, mtime: st.mtime, ino: st.ino, dev: st.dev };
   },
@@ -150,10 +174,11 @@ vi.mock("@/lib/nativeWrite", () => ({
 }));
 vi.mock("@/platform/index", () => ({
   isTauri: true,
+  consumeLastBrowserFileHandle: () => null,
   getPlatform: async () => ({
     isTauri: true,
     writeFile: async (p: string, bytes: Uint8Array) => writeFileSync(p, bytes),
-    showSaveDialog: async () => null,
+    showSaveDialog: async () => hooks.saveAsPath ?? null,
   }),
 }));
 vi.mock("@/lib/saveEmbeddedPkgStreaming", () => ({
@@ -173,13 +198,18 @@ vi.mock("sonner", () => ({
 }));
 
 const { saveProjectAsSlp } = await import("@/lib/saveProject");
+const { isSaveInProgress } = await import("@/lib/saveInProgress");
+const { confirmDiscardUnsavedWork } = await import("@/lib/unsavedGuard");
+const { refuseEditIfViewOnly } = await import("@/lib/slpAccess");
+const { exportLabelsPackage } = await import("@/commands/exportPackageCommands");
+const { buildRemoteLabelsPayload } = await import("@/lib/remoteLabelsPayload");
+const { markDiskBackedVideos } = await import("@/lib/diskBackedVideos");
 const { useAppStore } = await import("@/stores/appStore");
 const { commandContext } = await import("@/commands/CommandContext");
 const { withLegacyLayout } = await import("@/lib/slpFormatCompat");
 const { bindLabelsToFile, bindingRefusal, hasStaleVideoNames, statFileIdentity } = await import(
   "@/lib/inPlaceBinding"
 );
-const { markDiskBackedVideos } = await import("@/lib/rebindEmbeddedVideos");
 
 const FIXTURE = join(import.meta.dir, "../fixtures/sleap_io_multi_noshape.pkg.slp");
 const tmp = mkdtempSync(join(tmpdir(), "sleap-app-save-record-"));
@@ -221,8 +251,13 @@ async function openAsApp(source: string) {
   return labels;
 }
 
-/** Give each embedded video a deferred backend on the project file (large-file open). */
-function loadAsLargeFile(labels: sioModule.Labels) {
+/**
+ * Give each embedded video a deferred backend on the project file, as a large
+ * file's open does; `disk` false gives the same backend class without noting
+ * it as reading the disk, as the app's eager path does (its reader holds the
+ * file's bytes in memory).
+ */
+function loadAsLargeFile(labels: sioModule.Labels, disk = true) {
   const path = current;
   const withFile = async <T,>(fn: (f: H5File) => T): Promise<T> => {
     await ready;
@@ -260,7 +295,7 @@ function loadAsLargeFile(labels: sioModule.Labels) {
       deferred: true,
     });
   }
-  markDiskBackedVideos(labels);
+  if (disk) markDiskBackedVideos(labels);
 }
 
 /** Each labeled frame of the file as `video{i}@frame`. */
@@ -420,5 +455,180 @@ describe("a large file's open after a full rewrite that renumbered its videos", 
     await saveProjectAsSlp(labels, "proj.pkg.slp");
     expect(hasStaleVideoNames(labels)).toBe(false);
     expect(toasts.filter((t) => t.startsWith("warning:"))).toEqual([]);
+  });
+});
+
+describe("full saves that copy images from the project file (fifth review)", () => {
+  it("marks a large file's labels when the written file can't be read back, and refuses the next full save", async () => {
+    const labels = await openAsApp(await appPackage([0, 1, 2]));
+    loadAsLargeFile(labels);
+    hooks.realWriter = true;
+    labels.removeVideo(labels.videos[0]); // B and C renumbered
+    hooks.duringWrite = () => {
+      hooks.failReadBack = true;
+    };
+    await saveProjectAsSlp(labels, "proj.pkg.slp");
+    hooks.failReadBack = false;
+    expect(hasStaleVideoNames(labels)).toBe(true);
+    expect(toasts.some((t) => t.startsWith("warning: Reopen this project"))).toBe(true);
+
+    labels.removeVideo(labels.videos[1]);
+    const before = readFileSync(current);
+    fileOps.length = 0;
+    await saveProjectAsSlp(labels, "proj.pkg.slp");
+    expect(fileOps).toEqual([]);
+    expect(readFileSync(current).equals(before)).toBe(true);
+  });
+
+  it("a stat that fails right after the write leaves no record, but the rebind still reads the file back", async () => {
+    const labels = await openAsApp(await appPackage([0, 1, 2]));
+    loadAsLargeFile(labels);
+    hooks.realWriter = true;
+    labels.removeVideo(labels.videos[0]);
+    hooks.duringWrite = () => {
+      hooks.statThrowOnce = true;
+    };
+    await saveProjectAsSlp(labels, "proj.pkg.slp");
+    expect(bindingRefusal(labels, current, await statFileIdentity(current))).toMatch(/no record/);
+    expect(hasStaleVideoNames(labels)).toBe(false);
+    expect(labels.videos.map((v) => (v.backend as { dataset?: string }).dataset)).toEqual([
+      "video0/video",
+      "video1/video",
+    ]);
+  });
+
+  it("marks them when the stat fails and the rebind fails too", async () => {
+    const labels = await openAsApp(await appPackage([0, 1, 2]));
+    loadAsLargeFile(labels);
+    hooks.realWriter = true;
+    labels.removeVideo(labels.videos[0]);
+    hooks.duringWrite = () => {
+      hooks.statThrowOnce = true;
+      hooks.failRebindOpen = true;
+    };
+    await saveProjectAsSlp(labels, "proj.pkg.slp");
+    expect(hasStaleVideoNames(labels)).toBe(true);
+  });
+
+  it("refuses a full save of a large file's project when the file changed on disk", async () => {
+    const labels = await openAsApp(await appPackage([0, 1, 2]));
+    loadAsLargeFile(labels);
+    hooks.realWriter = true;
+    // Another program rewrites the project with B and A swapped.
+    copyFileSync(await appPackage([1, 0, 2]), `${current}.ext`);
+    renameSync(`${current}.ext`, current);
+    const replaced = readFileSync(current);
+    movePoint(labels, 7);
+    fileOps.length = 0;
+    await saveProjectAsSlp(labels, "proj.pkg.slp");
+    expect(fileOps).toEqual([]);
+    expect(readFileSync(current).equals(replaced)).toBe(true);
+    expect(toasts.some((t) => t.startsWith("error: The project file changed on disk"))).toBe(true);
+    expect(hasStaleVideoNames(labels)).toBe(true);
+
+    // Save As would read the same file: refused as well.
+    hooks.saveAsPath = join(tmp, `saveas-${copies++}.pkg.slp`);
+    fileOps.length = 0;
+    await saveProjectAsSlp(labels, "proj.pkg.slp", true);
+    expect(fileOps).toEqual([]);
+  });
+
+  it("refuses exports and training copies while the labels are marked", async () => {
+    const labels = await openAsApp(await appPackage([0, 1, 2]));
+    loadAsLargeFile(labels);
+    labels.removeVideo(labels.videos[0]);
+    hooks.failRebindOpen = true; // a renumbering save whose rebind fails marks them
+    await saveProjectAsSlp(labels, "proj.pkg.slp");
+    expect(hasStaleVideoNames(labels)).toBe(true);
+    toasts.length = 0;
+    expect(await exportLabelsPackage(labels, "proj.pkg.slp", "user")).toBeNull();
+    expect(toasts.some((t) => t.startsWith("error: Reopen this project before exporting"))).toBe(true);
+    await expect(
+      buildRemoteLabelsPayload(labels, labels.videos.map(() => ({ visible: false })) as never, {
+        embedFramesToPredict: false,
+      })
+    ).rejects.toThrow(/Reopen the project first/);
+  });
+
+  it("an eager load (images in memory) is not marked, and saves in a row stay on the right images", async () => {
+    const labels = await openAsApp(await appPackage([0, 1, 2, 3]));
+    const ops: string[] = [];
+    const save = async () => {
+      fileOps.length = 0;
+      await saveProjectAsSlp(labels, "proj.pkg.slp");
+      ops.push(fileOps.includes("updateLabelsInPlace") ? "in place" : fileOps.join(","));
+    };
+    movePoint(labels, 1);
+    await save();
+    labels.removeVideo(labels.videos[1]);
+    await save();
+    movePoint(labels, 2);
+    await save();
+    labels.removeVideo(labels.videos[0]);
+    await save();
+    movePoint(labels, 3);
+    await save();
+    expect(ops).toEqual(["in place", "fullRewrite", "in place", "fullRewrite", "in place"]);
+    expect(hasStaleVideoNames(labels)).toBe(false);
+    expect(await fileImages(current)).toEqual(["video0/video:[4]", "video3/video:[]"]);
+    expect(await fileFrames(current)).toEqual(["video0@4"]);
+  });
+});
+
+describe("only readers of the file on disk are checked for stale names", () => {
+  it("an eager load with streaming backends over the file's bytes is not marked, and saves in full", async () => {
+    const labels = await openAsApp(await appPackage([0, 1, 2]));
+    loadAsLargeFile(labels, false); // the app's eager path: same class, bytes in memory
+    labels.removeVideo(labels.videos[0]); // B and C renumbered
+    await saveProjectAsSlp(labels, "proj.pkg.slp");
+    expect(hasStaleVideoNames(labels)).toBe(false);
+    expect(toasts.filter((t) => t.startsWith("warning:") || t.startsWith("error:"))).toEqual([]);
+    labels.removeVideo(labels.videos[1]);
+    fileOps.length = 0;
+    await saveProjectAsSlp(labels, "proj.pkg.slp");
+    expect(fileOps).toEqual(["fullRewrite"]);
+  });
+});
+
+describe("the save guard covers more than commands (fifth review)", () => {
+  it("refuses opening or importing another project, and direct edits, while a save runs", async () => {
+    const labels = await openAsApp(await appPackage([0, 1]));
+    labels.removeVideo(labels.videos[0]);
+    const during: unknown[] = [];
+    hooks.duringWrite = async () => {
+      during.push(await confirmDiscardUnsavedWork("Importing a project"), refuseEditIfViewOnly());
+    };
+    await saveProjectAsSlp(labels, "proj.pkg.slp");
+    expect(during).toEqual([false, true]);
+    expect(isSaveInProgress()).toBe(false);
+  });
+
+  it("a project replaced during a Save As doesn't take the new path or lose its changes", async () => {
+    const labels = await openAsApp(await appPackage([0, 1]));
+    const saveAs = join(tmp, `saveas-${copies++}.pkg.slp`);
+    hooks.saveAsPath = saveAs;
+    const imported = new sioModule.Labels({ skeletons: [labels.skeletons[0]] });
+    imported.addVideo(new sioModule.Video({ filename: "/elsewhere/ext.mp4" }));
+    hooks.duringWrite = () => {
+      // As if an import got past the guard and replaced the project.
+      useAppStore.getState().setLabels(imported, "imp.analysis.h5", "/elsewhere/imp.analysis.h5");
+      useAppStore.getState().markChanged();
+    };
+    await saveProjectAsSlp(labels, "proj.pkg.slp", true);
+    const st = useAppStore.getState();
+    expect(st.labels).toBe(imported);
+    expect(st.projectPath).toBe("/elsewhere/imp.analysis.h5");
+    expect(st.filename).toBe("imp.analysis.h5");
+    expect(st.hasChanges).toBe(true);
+  });
+
+  it("clears the busy flag on every early return and error", async () => {
+    const labels = await openAsApp(await appPackage([0, 1, 2]));
+    await saveProjectAsSlp(labels, "proj.pkg.slp", true); // Save As cancelled
+    expect(isSaveInProgress()).toBe(false);
+    labels.removeVideo(labels.videos[0]);
+    hooks.failWrite = true;
+    await saveProjectAsSlp(labels, "proj.pkg.slp");
+    expect(isSaveInProgress()).toBe(false);
   });
 });

@@ -298,7 +298,8 @@ const { withLegacyLayout } = await import("@/lib/slpFormatCompat");
 const { bindLabelsToFile, bindingRefusal, boundDatasets, hasStaleVideoNames, loadedVideoDataset, statFileIdentity } =
   await import("@/lib/inPlaceBinding");
 const { recordEmbeddedSources } = await import("@/lib/embeddedVideoSources");
-const { markDiskBackedVideos, rebindEmbeddedVideos } = await import("@/lib/rebindEmbeddedVideos");
+const { rebindEmbeddedVideos } = await import("@/lib/rebindEmbeddedVideos");
+const { markDiskBackedVideos } = await import("@/lib/diskBackedVideos");
 const { applyRecordedSourceDatasets, saveEmbeddedPkgStreaming } = await import(
   "@/lib/saveEmbeddedPkgStreaming"
 );

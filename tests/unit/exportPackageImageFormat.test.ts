@@ -80,6 +80,7 @@ vi.mock("@/lib/notify", () => ({
 const cleared: unknown[] = [];
 vi.mock("@/lib/inPlaceBinding", () => ({
   clearFileBinding: (labels: unknown) => void cleared.push(labels),
+  refuseStaleVideoNames: () => false,
 }));
 
 const { useAppStore } = await import("@/stores/appStore");

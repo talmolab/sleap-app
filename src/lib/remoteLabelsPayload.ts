@@ -115,6 +115,12 @@ export async function buildRemoteLabelsPayload(
   // is for the caller to warn about).
   const embed: boolean | string =
     hiddenCount === 0 ? false : opts.embedFramesToPredict ? "all+suggestions" : "all";
+  // Embedding reads the project's images; under stale names (see
+  // inPlaceBinding.ts) they could be another video's.
+  if (embed !== false) {
+    const { assertNoStaleVideoNames } = await import("@/lib/inPlaceBinding");
+    assertNoStaleVideoNames(labels);
+  }
   const bytes = await saveSlpToBytes(copy, withLegacyLayout({ embed }));
 
   return {
