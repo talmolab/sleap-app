@@ -83,6 +83,19 @@ function toText(data: string | ArrayBuffer | Uint8Array): string {
 }
 
 /**
+ * PyQt's `OpenSkeleton.load_skeleton` unwrapping: a SLEAP skeleton template
+ * (`sleap/skeletons/*.json`) wraps the graph as `{"nx_graph": ..., ...}`, and a
+ * saved skeleton file may be a one-skeleton list. Returns the bare graph.
+ */
+export function unwrapSkeletonJson(parsed: unknown): Record<string, unknown> | null {
+  const one = Array.isArray(parsed) ? parsed[0] : parsed;
+  if (!one || typeof one !== "object") return null;
+  const obj = one as Record<string, unknown>;
+  const graph = "nx_graph" in obj ? obj.nx_graph : obj;
+  return graph && typeof graph === "object" ? (graph as Record<string, unknown>) : null;
+}
+
+/**
  * Skeletons from a legacy SLEAP HDF5 skeleton file: `Skeleton.save_hdf5`
  * (SLEAP 1.x `sleap/skeleton.py`) writes each skeleton as a JSON-string
  * attribute, named after the skeleton, on a `/skeleton` group. The first one
@@ -92,7 +105,12 @@ export function skeletonFromHdf5Attrs(
   attrs: Record<string, unknown> | null,
   filename: string,
 ): Skeleton {
-  for (const value of Object.values(attrs ?? {})) {
+  for (const attr of Object.values(attrs ?? {})) {
+    // The HDF5 reader hands back each attribute as a `{ value }` wrapper.
+    const value =
+      attr && typeof attr === "object" && "value" in attr
+        ? (attr as { value: unknown }).value
+        : attr;
     const text =
       typeof value === "string"
         ? value
@@ -100,9 +118,8 @@ export function skeletonFromHdf5Attrs(
           ? new TextDecoder().decode(value)
           : null;
     if (!text) continue;
-    const parsed = JSON.parse(text) as unknown;
-    const one = Array.isArray(parsed) ? parsed[0] : parsed;
-    if (one) return readSkeletonJson(one as Record<string, unknown>);
+    const graph = unwrapSkeletonJson(JSON.parse(text));
+    if (graph) return readSkeletonJson(graph);
   }
   throw new Error(`No skeleton found in "${filename}".`);
 }
@@ -161,12 +178,9 @@ export async function parseSkeletonFile(
 
   switch (ext) {
     case "json": {
-      const parsed = JSON.parse(toText(data)) as unknown;
       // PyQt saves a one-skeleton LIST (`save_skeleton([skel], ...)`) and
-      // reads `skel[0]` back; accept both shapes.
-      const json = (Array.isArray(parsed) ? parsed[0] : parsed) as
-        | Record<string, unknown>
-        | undefined;
+      // reads `skel[0]` back; templates wrap the graph in `nx_graph`.
+      const json = unwrapSkeletonJson(JSON.parse(toText(data)));
       const skeleton = json ? readSkeletonJson(json) : null;
       if (!skeleton) {
         throw new Error(`No skeleton found in "${filename}".`);

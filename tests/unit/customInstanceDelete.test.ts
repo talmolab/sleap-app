@@ -98,8 +98,9 @@ describe("customDeleteTargets", () => {
     ).toBe(6);
   });
 
-  // The seekbar clip is inclusive; "except" keeps to the current video.
-  it("handles the selected clip and its complement in this video only", () => {
+  // The seekbar clip is inclusive. "except for selected clip" is PyQt's exact
+  // scope: this video outside the clip AND every frame of the other videos.
+  it("handles the selected clip and PyQt's 'except' scope", () => {
     const { labels, v } = setup();
     const inClip = customDeleteTargets(labels, scope(v, [1, 3]), choice({ frames: "selected clip" }));
     expect(inClip.map(([lf]) => lf.frameIdx)).toEqual([1, 2, 3]);
@@ -108,8 +109,9 @@ describe("customDeleteTargets", () => {
       scope(v, [1, 3]),
       choice({ frames: "current video except for selected clip" })
     );
-    expect(outside.map(([lf]) => lf.frameIdx)).toEqual([0, 4]);
-    expect(outside.every(([lf]) => lf.video === v)).toBe(true);
+    const here = outside.filter(([lf]) => lf.video === v);
+    expect(here.map(([lf]) => lf.frameIdx)).toEqual([0, 4]);
+    expect(outside.filter(([lf]) => lf.video !== v).length).toBe(1); // video w, frame 0
   });
 
   // Track filter: a named track, or "no track identity set".
@@ -147,6 +149,23 @@ describe("DeleteInstancesCustom", () => {
     expect(ctx.undo()).toBe(true);
     expect(s.labels.labeledFrames.length).toBe(6);
     expect(s.labels.tracks.map((t) => t.name)).toEqual(["A"]);
+  });
+
+  // Deleting a track's last instances in all videos removes the track (PyQt's
+  // clean()); ⌘Z brings both the instances and the track back.
+  it("drops a track whose last instances go, and undo restores it", async () => {
+    await ctx.execute(
+      DeleteInstancesCustom,
+      choice({ instanceType: "all instances", frames: "all videos", track: s.A }) as unknown as Record<string, unknown>
+    );
+    expect(s.labels.tracks).toEqual([]);
+    const onA = s.labels.labeledFrames.flatMap((lf) => lf.instances).filter((i) => i.track === s.A);
+    expect(onA.length).toBe(0);
+    expect(s.labels.labeledFrames.flatMap((lf) => lf.instances).length).toBe(7); // 5 + 2 untracked
+
+    expect(ctx.undo()).toBe(true);
+    expect(s.labels.tracks.map((t) => t.name)).toEqual(["A"]);
+    expect(s.labels.labeledFrames.flatMap((lf) => lf.instances).length).toBe(12);
   });
 
   // A negative (background) frame stays even when its instances are deleted.

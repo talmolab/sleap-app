@@ -6,7 +6,6 @@ import type { Instance, LabeledFrame, Track } from "@talmolab/sleap-io.js";
 import { UpdateTopic } from "../types";
 import type { Command } from "./types";
 import type { CommandContext } from "./CommandContext";
-import { toast } from "@/lib/notify";
 import { frameHasContent } from "@/lib/frameLabeling";
 import {
   customDeleteTargets,
@@ -34,10 +33,7 @@ export const DeleteInstancesCustom: Command = {
     if (!labels || !choice) return;
 
     const targets = customDeleteTargets(labels, { video, frameIdx, frameRange }, choice);
-    if (targets.length === 0) {
-      toast.info("No instances match.");
-      return;
-    }
+    if (targets.length === 0) return; // PyQt is silent here too
 
     const snapshot = ctx.takeAllFramesSnapshot("DeleteInstancesCustom");
 
@@ -68,6 +64,5 @@ export const DeleteInstancesCustom: Command = {
       ctx.state.setInstance(null);
     }
     ctx.state.markChanged();
-    toast.success(`Deleted ${targets.length} instance(s)`);
   },
 };

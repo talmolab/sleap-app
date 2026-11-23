@@ -9,9 +9,10 @@
  *   - the two clip options only when a frame range is selected on the seekbar;
  *   - the "with" row only when the project has tracks.
  *
- * One deliberate difference: PyQt's "current video except for selected clip"
- * code also deletes in every OTHER video (`lf.video != video or ...`), which
- * contradicts its own label. Here it means what it says: this video only.
+ * Scopes match PyQt's code exactly, including "current video except for
+ * selected clip", which PyQt implements as `lf.video != video or frame not in
+ * clip`: every frame of every OTHER video, plus this video's frames outside
+ * the clip.
  */
 
 import {
@@ -105,8 +106,9 @@ function framesFor(
     case "selected clip":
       return labels.labeledFrames.filter((lf) => lf.video === video && inClip(lf));
     case "current video except for selected clip":
+      // PyQt: `lf.video != video or lf.frame_idx not in clip_range`.
       return labels.labeledFrames.filter(
-        (lf) => lf.video === video && !inClip(lf)
+        (lf) => lf.video !== video || !inClip(lf)
       );
   }
 }

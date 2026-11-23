@@ -4,7 +4,10 @@
  * format (PyQt's default) as a one-skeleton list.
  */
 import { describe, it, expect } from "../bun-test";
-import { Skeleton, writeSkeletonJson } from "@talmolab/sleap-io.js";
+import { Skeleton } from "@talmolab/sleap-io.js";
+import path from "node:path";
+import { readFileSync } from "node:fs";
+import { openWithRealH5wasm } from "./helpers/h5wasmWorkerMirror";
 import {
   parseSkeletonFile,
   serializeSkeletonJson,
@@ -29,19 +32,40 @@ describe("Save As JSON", () => {
   });
 });
 
-describe("Load From File: HDF5", () => {
-  // SLEAP 1.x save_hdf5: `/skeleton` attrs, one JSON string per skeleton.
-  const attrs = { fly: writeSkeletonJson(makeSkeleton()) };
+const FIX = path.join(import.meta.dir, "..", "fixtures");
 
-  it("reads the first skeleton from the /skeleton group's attributes", () => {
-    const sk = skeletonFromHdf5Attrs(attrs, "fly.h5");
-    expect(sk.nodes.map((n) => n.name)).toEqual(["head", "thorax", "tail"]);
+/**
+ * parseSkeletonFile's HDF5 reader, backed by real h5wasm with the worker's
+ * exact attribute wrapping (`{ value }`) — an injected raw-string reader hid
+ * that every real .h5 load failed with "No skeleton found".
+ */
+const realReader = (file: string) => async () => {
+  const h5 = await openWithRealH5wasm(path.join(FIX, file));
+  try {
+    return h5.keys().includes("skeleton") ? await h5.getAttrs("skeleton") : null;
+  } finally {
+    await h5.close();
+  }
+};
+const load = (file: string) =>
+  parseSkeletonFile(file, new Uint8Array([0]), realReader(file));
+
+describe("Load From File: HDF5 (real files)", () => {
+  // Written by SLEAP 1.4.1 `Skeleton.save_hdf5` (3 nodes, 2 edges).
+  it("loads a SLEAP 1.x HDF5 skeleton", async () => {
+    const sk = await load("skeleton_sleap14.h5");
+    expect(sk.nodes.map((n) => n.name)).toEqual(["head", "thorax", "abdomen"]);
+    expect(sk.edges.length).toBe(2);
   });
 
-  // The attribute may come back as raw bytes (fixed-length numpy string).
-  it("accepts the JSON as bytes", () => {
-    const bytes = { fly: new TextEncoder().encode(attrs.fly) };
-    expect(skeletonFromHdf5Attrs(bytes, "fly.h5").nodes.length).toBe(3);
+  // The fly32 template, saved by SLEAP 1.4.1 `save_hdf5`.
+  it("loads the fly32 template saved as HDF5", async () => {
+    expect((await load("fly32_sleap14.h5")).nodes.length).toBe(32);
+  });
+
+  // A template's {"nx_graph": ...} JSON stored as the attribute is unwrapped.
+  it("unwraps an nx_graph-wrapped attribute", async () => {
+    expect((await load("skeleton_nx_graph.h5")).nodes.length).toBe(32);
   });
 
   it("says so when the file holds no skeleton", () => {
@@ -49,13 +73,14 @@ describe("Load From File: HDF5", () => {
       'No skeleton found in "x.h5".'
     );
   });
+});
 
-  // .h5 and .hdf5 both route to the HDF5 reader.
-  it("routes .h5/.hdf5 through the HDF5 reader", async () => {
-    const reader = async () => attrs;
-    for (const name of ["fly.h5", "fly.HDF5"]) {
-      const sk = await parseSkeletonFile(name, new Uint8Array([1]), reader);
-      expect(sk.nodes.length).toBe(3);
-    }
+describe("Load From File: SLEAP template JSON", () => {
+  // SLEAP's templates (sleap/skeletons/fly32.json) wrap the graph in
+  // `nx_graph`; PyQt unwraps it, and loading it used to crash.
+  it("loads fly32.json", async () => {
+    const text = readFileSync(path.join(FIX, "fly32_template.json"), "utf8");
+    const sk = await parseSkeletonFile("fly32.json", text);
+    expect(sk.nodes.length).toBe(32);
   });
 });
