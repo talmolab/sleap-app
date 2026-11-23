@@ -19,7 +19,9 @@ import { Instance } from "@talmolab/sleap-io.js";
 import type { OverlayModel, NewOverlayModel } from "@/stores/modelOverlayStore";
 import { groupAcrossModels, meanNodeDistance, nodeSpreads, type MatchLayer } from "./matching";
 import { PoseStoreBuilder } from "./poseStore";
-import { videoDims } from "./core";
+import { MOCK_SOURCE_PREFIX, videoDims } from "./core";
+
+export { MOCK_SOURCE_PREFIX };
 
 export type ReviewLayout = "stepper" | "panes" | "grid";
 export const REVIEW_LAYOUTS: readonly ReviewLayout[] = ["stepper", "panes", "grid"];
@@ -88,9 +90,17 @@ export interface ReviewGroup {
   trackName: string | null;
 }
 
-/** Key for remembering a decision on a group. */
-export function reviewKey(frame: number, group: number): string {
-  return `${frame}:${group}`;
+/**
+ * Key for remembering a decision on an item: its frame and exactly which
+ * model poses make it up. A group's number on the frame isn't stable (hiding
+ * a model renumbers the animals), so a decision keyed by it could move to a
+ * different animal; with this key a changed item simply has no decision yet.
+ */
+export function reviewItemKey(item: Pick<ReviewGroup, "frame" | "members">): string {
+  return `${item.frame}|${item.members
+    .map((m) => `${m.modelId}#${m.poseIdx}`)
+    .sort()
+    .join(",")}`;
 }
 
 /**
@@ -197,7 +207,6 @@ export function cropAround(
 // Mock models
 // ---------------------------------------------------------------------------
 
-export const MOCK_SOURCE_PREFIX = "mock://";
 const MOCK_NAMES = ["mock_unet_a", "mock_unet_b", "mock_convnext", "mock_swint", "mock_bad_model"];
 /** Most frames a mock covers (keeps the prototype quick on long videos). */
 const MOCK_MAX_FRAMES = 6000;

@@ -48,7 +48,7 @@ export default function CompareReviewPrototypes() {
     setTimeout(() => {
       try {
         useModelOverlayStore.getState().addModels(labels, makeMockModels(labels, v, skeleton));
-        toast.info("Loaded 5 mock models (session only; × in the corner panel removes them)");
+        toast.info("Loaded 5 mock models. Accepting a mock pose only records the choice; nothing is written to the project. × in the corner panel removes them.");
       } finally {
         setBusy(false);
       }

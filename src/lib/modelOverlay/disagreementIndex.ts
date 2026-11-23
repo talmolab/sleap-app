@@ -19,6 +19,7 @@
 import type { OverlayModel } from "@/stores/modelOverlayStore";
 import type { Video } from "@/types";
 import { groupAcrossModels, modelsShareTracks, nodeSpreads, type MatchLayer } from "./matching";
+import { PoseStore } from "./poseStore";
 
 export interface DisagreementIndex {
   /** The shown models (for this video) the index is for. */
@@ -107,7 +108,10 @@ export function spreadAt(index: DisagreementIndex, row: number): number {
   const v = index.maxSpread[row];
   if (!Number.isNaN(v)) return v;
   const f = index.frames[row];
-  const layers: MatchLayer[] = index.models.map((m) => ({ poses: m.frames.get(f) ?? [] }));
+  // Uncached: a pass over many frames mustn't push the frame on screen out of the store's small cache.
+  const layers: MatchLayer[] = index.models.map((m) => ({
+    poses: m.frames instanceof PoseStore ? m.frames.make(f) : (m.frames.get(f) ?? []),
+  }));
   const s = frameMaxSpread(
     layers.filter((l) => l.poses.length > 0),
     index.byTrack

@@ -5,13 +5,14 @@
  */
 import { describe, it, expect, beforeEach, afterEach } from "../bun-test";
 import { render, screen, fireEvent, cleanup, waitFor } from "@testing-library/react";
-import { Labels, Skeleton } from "@talmolab/sleap-io.js";
+import { Labels, LabeledFrame, Skeleton } from "@talmolab/sleap-io.js";
 import {
   cropAround,
   itemRings,
   makeMockModels,
   readReviewSwitch,
   reviewGroupsOnFrame,
+  reviewItemKey,
   REVIEW_SWITCH_KEY,
 } from "@/lib/modelOverlay/reviewPrototype";
 import { clearDisagreementIndexCache, disagreementIndexFor, fillIndex, disagreementFrames } from "@/lib/modelOverlay/disagreementIndex";
@@ -22,7 +23,11 @@ import { MODEL_COLORS, type OverlayPose } from "@/lib/modelOverlay/core";
 import { ReviewStepperPrototype } from "@/components/video/compareReview/ReviewStepperPrototype";
 import { ReviewPanesPrototype } from "@/components/video/compareReview/ReviewPanesPrototype";
 import { ReviewGridPrototype } from "@/components/video/compareReview/ReviewGridPrototype";
-import { makePredictionLabels, makeVideo, NODES, poseAt } from "./modelOverlayTestData";
+import { makePredictionLabels, makeUser, makeVideo, NODES, poseAt } from "./modelOverlayTestData";
+import { acceptForItem, keysBelongElsewhere, worstFrames } from "@/components/video/compareReview/useReviewQueue";
+import { acceptModelPose } from "@/lib/modelOverlay/canvasActions";
+import { useConfirmStore } from "@/stores/confirmStore";
+import { PoseStore } from "@/lib/modelOverlay/poseStore";
 
 function memStorage() {
   const m = new Map<string, string>();
@@ -186,5 +191,123 @@ describe("review prototype windows", () => {
     render(<ReviewGridPrototype onClose={() => {}} />);
     await waitFor(() => expect(screen.getAllByTestId("review-proto-cell").length).toBeGreaterThan(0));
     expect(screen.getAllByTestId("review-proto-cell").length).toBeLessThanOrEqual(12);
+  });
+});
+
+describe("review fixes", () => {
+  let labels: Labels;
+  let lf: LabeledFrame;
+  let skeleton: Skeleton;
+  const same = poseAt(100, 100);
+  const off: [number, number][] = same.map((p, i) => (i === 0 ? [p[0] + 40, p[1]] : p));
+
+  /** A project frame with a user instance on the animal, and two models that disagree on it. */
+  function setup(source: (name: string) => string) {
+    useAppStore.setState(useAppStore.getInitialState());
+    useModelOverlayStore.getState().clear();
+    useCompareReviewStore.getState().clearAll();
+    useConfirmStore.setState({ request: null });
+    skeleton = new Skeleton({ nodes: NODES, name: "s" });
+    const video = makeVideo();
+    lf = new LabeledFrame({ video, frameIdx: 0 });
+    lf.instances.push(makeUser(skeleton, poseAt(100, 100)));
+    labels = new Labels({ videos: [video], skeletons: [skeleton], labeledFrames: [lf] });
+    useAppStore.getState().setLabels(labels, "test.slp");
+    useAppStore.getState().setFrameIdx(0);
+    useModelOverlayStore.getState().addModels(labels, [
+      { name: "a", source: source("a"), video, frames: new Map([[0, [pose(same)]]]) },
+      { name: "b", source: source("b"), video, frames: new Map([[0, [pose(off)]]]) },
+    ]);
+    const models = useModelOverlayStore.getState().models;
+    return { models, item: reviewGroupsOnFrame(models, 0, false, 10)[0] };
+  }
+  afterEach(() => {
+    cleanup();
+    useConfirmStore.setState({ request: null });
+    useModelOverlayStore.getState().clear();
+  });
+
+  // Review #1: cancelling "Replace your instance?" must not count the item as accepted.
+  it("records an accept only when the project changed", async () => {
+    const { models, item } = setup((n) => `/${n}.slp`);
+    const user = lf.instances[0];
+    let done = acceptForItem(item, models[1].id);
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(useConfirmStore.getState().request).not.toBeNull();
+    useConfirmStore.getState().respond(false);
+    expect(await done).toBe(false);
+    expect(lf.instances[0]).toBe(user);
+    expect(useCompareReviewStore.getState().decisions[reviewItemKey(item)]).toBeUndefined();
+
+    done = acceptForItem(item, models[1].id);
+    await Promise.resolve();
+    await Promise.resolve();
+    useConfirmStore.getState().respond(true);
+    expect(await done).toBe(true);
+    expect(lf.instances[0]).not.toBe(user);
+    expect(useCompareReviewStore.getState().decisions[reviewItemKey(item)]?.accepted).toBe(models[1].id);
+  });
+
+  // Review #2: a mock model (noisy copy of the user's labels) must never overwrite the project.
+  it("never writes a mock model's pose to the project", async () => {
+    const { models, item } = setup((n) => `mock://${n}`);
+    const before = [...lf.instances];
+    expect(await acceptModelPose(models[1].id, 0)).toBe(false);
+    expect(await acceptForItem(item, models[1].id)).toBe(true);
+    expect(lf.instances).toEqual(before);
+    expect(useConfirmStore.getState().request).toBeNull();
+    expect(useCompareReviewStore.getState().decisions[reviewItemKey(item)]?.accepted).toBe(models[1].id);
+  });
+
+  // Review #3: while "Replace your instance?" is open, the prototypes' Esc/←/→ must leave it alone.
+  it("leaves keys to an open dialog or a text field", async () => {
+    setup((n) => `mock://${n}`);
+    const key = (target: EventTarget | null = null) => {
+      const e = new KeyboardEvent("keydown", { key: "Escape" });
+      Object.defineProperty(e, "target", { value: target });
+      return e;
+    };
+    expect(keysBelongElsewhere(key())).toBe(false);
+    expect(keysBelongElsewhere(key(document.createElement("input")))).toBe(true);
+    useConfirmStore.setState({ request: { title: "Replace your instance?", message: "" } as never });
+    expect(keysBelongElsewhere(key())).toBe(true);
+    let closed = false;
+    render(<ReviewPanesPrototype onClose={() => (closed = true)} />);
+    fireEvent.keyDown(window, { key: "Escape" });
+    expect(closed).toBe(false);
+  });
+
+  // Review #4: a decision is tied to the exact model poses, and loading other models forgets it.
+  it("keys decisions by the poses and clears them when the models change", () => {
+    const { models, item } = setup((n) => `/${n}.slp`);
+    useCompareReviewStore.getState().skip(reviewItemKey(item));
+    // Hiding a model: same models loaded, so decisions stay (the item itself changes key).
+    useModelOverlayStore.getState().setVisible(models[0].id, false);
+    expect(Object.keys(useCompareReviewStore.getState().decisions)).toHaveLength(1);
+    expect(reviewItemKey({ ...item, members: item.members.slice(1) })).not.toBe(reviewItemKey(item));
+    // Removing a model (or loading others / another project): decisions are forgotten.
+    useModelOverlayStore.getState().removeModel(models[0].id);
+    expect(useCompareReviewStore.getState().decisions).toEqual({});
+  });
+
+  // Review #5: with more disagreement frames than the cap, the worst ones are kept, wherever they are.
+  it("keeps the worst frames across the whole video", () => {
+    const spread: Record<number, number> = { 1: 5, 2: 50, 3: 6, 900: 40 };
+    expect(worstFrames([1, 2, 3, 900], (f) => spread[f], 2)).toEqual([2, 900]);
+    expect(worstFrames([1, 2], (f) => spread[f], 5)).toEqual([1, 2]);
+  });
+
+  // Review #7: filling the index must not push the frame on screen out of the store's small cache.
+  it("fills the index without evicting the frame on screen", () => {
+    const frames = new Map<number, OverlayPose[]>();
+    for (let f = 0; f < 40; f++) frames.set(f, [pose(poseAt(100 + f, 100))]);
+    const video = makeVideo();
+    const a = { ...model("a", {}, video), frames: PoseStore.from(frames) };
+    const b = { ...model("b", {}, video), frames: PoseStore.from(frames) };
+    const onScreen = a.frames.get(0);
+    clearDisagreementIndexCache();
+    fillIndex(disagreementIndexFor([a, b], video), Infinity);
+    expect(a.frames.get(0)).toBe(onScreen!);
   });
 });

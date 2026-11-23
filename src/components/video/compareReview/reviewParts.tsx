@@ -1,5 +1,5 @@
 /** Review prototypes (dev only): small parts every prototype shows. */
-import { reviewKey, type ReviewGroup } from "@/lib/modelOverlay/reviewPrototype";
+import { reviewItemKey, type ReviewGroup } from "@/lib/modelOverlay/reviewPrototype";
 import { isReviewed, useCompareReviewStore } from "@/stores/compareReviewStore";
 
 /** "Indexing… 40%" while the index fills; then how many items, at what threshold. */
@@ -7,12 +7,14 @@ export function QueueStatus({
   progress,
   count,
   truncated,
+  totalFrames,
   threshold,
   shown,
 }: {
   progress: number;
   count: number;
   truncated: boolean;
+  totalFrames: number;
   threshold: number;
   shown: number;
 }) {
@@ -20,7 +22,7 @@ export function QueueStatus({
   if (shown < 2) text = "Show two or more models to compare.";
   else if (progress < 1) text = `Finding disagreements… ${Math.round(progress * 100)}%`;
   else if (count === 0) text = `No disagreements above ${threshold} px. Lower the threshold in the corner panel.`;
-  else text = `${count} disagreement${count === 1 ? "" : "s"} above ${threshold} px${truncated ? " (first frames only)" : ""}`;
+  else text = `${count} disagreement${count === 1 ? "" : "s"} above ${threshold} px${truncated ? ` — only the worst frames: ${totalFrames} frames disagree in all` : ""}`;
   return (
     <div className="px-2 py-1 text-muted-foreground" data-testid="review-proto-status">
       {text}
@@ -37,7 +39,7 @@ export function ReviewSummary({ items }: { items: readonly ReviewGroup[] }) {
   let skipped = 0;
   let left = 0;
   for (const it of items) {
-    const d = decisions[reviewKey(it.frame, it.group)];
+    const d = decisions[reviewItemKey(it)];
     if (!isReviewed(d)) left++;
     else if (d!.accepted) accepted++;
     else if (d!.rejected.length > 0) rejected++;

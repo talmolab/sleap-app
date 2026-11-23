@@ -14,6 +14,8 @@ import { useAppStore } from "@/stores/appStore";
 import { useModelOverlayStore } from "@/stores/modelOverlayStore";
 import { confirmDialog } from "@/stores/confirmStore";
 import type { ModelOverlayLayer } from "@/canvas/modelOverlayRenderer";
+import { isMockSource } from "@/lib/modelOverlay/core";
+import { toast } from "@/lib/notify";
 
 export interface ClickMods {
   altKey: boolean;
@@ -55,15 +57,21 @@ export function pickModelPose(layers: readonly ModelOverlayLayer[], layer: numbe
  * Accept a model's pose on the current frame. When no prediction matches it
  * but one of your user instances does, ask before replacing that instance
  * (never stack a second instance on a labeled animal); cancelling changes
- * nothing.
+ * nothing. Resolves true only when the project was changed (false on Cancel,
+ * a frame or model that moved on, or a dev-only mock model, which never
+ * writes to the project).
  */
-export async function acceptModelPose(modelId: string, poseIdx: number): Promise<void> {
+export async function acceptModelPose(modelId: string, poseIdx: number): Promise<boolean> {
   const { models } = useModelOverlayStore.getState();
   const { video, frameIdx, labels, skeleton } = useAppStore.getState();
   const model = models.find((m) => m.id === modelId);
-  if (!model || model.video !== video || !labels || !video || !skeleton) return;
+  if (!model || model.video !== video || !labels || !video || !skeleton) return false;
+  if (isMockSource(model.source)) {
+    toast.info("Mock model (dev prototype): nothing is written to the project");
+    return false;
+  }
   const poses = model.frames.get(frameIdx);
-  if (!poses?.[poseIdx]) return;
+  if (!poses?.[poseIdx]) return false;
 
   let replaceUser = false;
   const lf = labels.find({ video, frameIdx })[0];
@@ -79,14 +87,15 @@ export async function acceptModelPose(modelId: string, poseIdx: number): Promise
         confirmLabel: "Replace",
         destructive: true,
       });
-      if (!replaceUser) return;
+      if (!replaceUser) return false;
       // The frame may have moved while the dialog was open.
-      if (useAppStore.getState().frameIdx !== frameIdx || useAppStore.getState().video !== video) return;
+      if (useAppStore.getState().frameIdx !== frameIdx || useAppStore.getState().video !== video) return false;
     }
   }
   commandContext.execute(AcceptModelPose, { poses, poseIdx, modelName: model.name, replaceUser });
   useModelOverlayStore.getState().setSelected(null);
   useAppStore.getState().bumpOverlayVersion();
+  return true;
 }
 
 /** Accept the picked pose (Accept bar). */

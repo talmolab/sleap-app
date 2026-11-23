@@ -11,14 +11,14 @@ import { Button } from "@/components/ui/button";
 import { rgbToCSS } from "@/lib/colorPalettes";
 import { useAppStore } from "@/stores/appStore";
 import { useCompareReviewStore } from "@/stores/compareReviewStore";
-import { cropAround, itemRings, reviewKey } from "@/lib/modelOverlay/reviewPrototype";
+import { cropAround, itemRings, reviewItemKey } from "@/lib/modelOverlay/reviewPrototype";
 import { videoDims } from "@/lib/modelOverlay/core";
-import { acceptForItem, goToItem, useReviewQueue } from "./useReviewQueue";
+import { acceptForItem, goToItem, keysBelongElsewhere, useReviewQueue } from "./useReviewQueue";
 import { ModelCropCanvas, type CropPose } from "./ModelCropCanvas";
 import { QueueStatus, ReviewSummary } from "./reviewParts";
 
 export function ReviewPanesPrototype({ onClose }: { onClose: () => void }) {
-  const { shown, progress, items, truncated, threshold } = useReviewQueue();
+  const { shown, progress, items, truncated, totalFrames, threshold } = useReviewQueue();
   const video = useAppStore((s) => s.video);
   const skeleton = useAppStore((s) => s.skeleton);
   const frameIdx = useAppStore((s) => s.frameIdx);
@@ -57,6 +57,8 @@ export function ReviewPanesPrototype({ onClose }: { onClose: () => void }) {
   // Keyboard: ← → step, Esc closes (only while this window is open).
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
+      // Leave keys to "Replace your instance?" and other dialogs / text fields.
+      if (keysBelongElsewhere(e)) return;
       if (e.key === "Escape") onClose();
       else if (e.key === "ArrowRight") go(1);
       else if (e.key === "ArrowLeft") go(-1);
@@ -68,7 +70,7 @@ export function ReviewPanesPrototype({ onClose }: { onClose: () => void }) {
     return () => window.removeEventListener("keydown", onKey, true);
   });
 
-  const key = item ? reviewKey(item.frame, item.group) : "";
+  const key = item ? reviewItemKey(item) : "";
   const d = decisions[key];
   const cols = Math.min(3, allPoses.length + 1);
   const pane = 260;
@@ -97,7 +99,7 @@ export function ReviewPanesPrototype({ onClose }: { onClose: () => void }) {
             <X className="h-4 w-4" />
           </button>
         </div>
-        <QueueStatus progress={progress} count={items.length} truncated={truncated} threshold={threshold} shown={shown.length} />
+        <QueueStatus progress={progress} count={items.length} truncated={truncated} totalFrames={totalFrames} threshold={threshold} shown={shown.length} />
         {item && video && (
           <>
             <div className="px-3 pb-1 text-muted-foreground">
@@ -152,7 +154,7 @@ export function ReviewPanesPrototype({ onClose }: { onClose: () => void }) {
                           {model.name}
                         </span>
                         <span className="tabular-nums text-muted-foreground">{Number.isFinite(m.distance) ? `${m.distance.toFixed(1)} px` : "–"}</span>
-                        <Button size="sm" variant={accepted ? "default" : "outline"} className="h-6 px-1.5" onClick={() => void acceptForItem(item, m.modelId).then(() => go(1))} title="Accept this pose (undoable), then next">
+                        <Button size="sm" variant={accepted ? "default" : "outline"} className="h-6 px-1.5" onClick={() => void acceptForItem(item, m.modelId).then((ok) => ok && go(1))} title="Accept this pose (undoable), then next">
                           <Check className="h-3 w-3" />
                         </Button>
                         <Button size="sm" variant={rejected ? "destructive" : "outline"} className="h-6 px-1.5" onClick={() => toggleReject(key, m.modelId)} title="Mark this model wrong here">

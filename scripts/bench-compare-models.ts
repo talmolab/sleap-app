@@ -9,9 +9,13 @@
  *   BENCH_FRAMES=20000 BENCH_ANIMALS=1 BENCH_TRACKED=1 bun run scripts/bench-compare-models.ts
  *
  * Synthetic data: every model follows the same smooth path with ~1 px noise,
- * except on a few frames where one model is off by 40 px (a "disagreement").
+ * except on a few frames where one model is off by 30 px (a "disagreement").
  * Those frames sit near the end, so ▶ from frame 0 has to look through most
  * of the video, the slow case.
+ *
+ * "Before" numbers: this script runs unchanged on a checkout without the
+ * disagreement index (main before this PR): the index lines are then skipped,
+ * because the index module is loaded only if it exists.
  */
 import { Labels, LabeledFrame, PredictedInstance, Skeleton, Track, Video } from "@talmolab/sleap-io.js";
 import { analyzePredictionFile, targetFromVideo } from "@/lib/modelOverlay/core";
@@ -25,7 +29,6 @@ import {
 } from "@/hooks/useModelOverlayFrame";
 import { renderModelOverlay, hoverTestModelOverlay } from "@/canvas/modelOverlayRenderer";
 import { buildAnimalIndex, buildTraces } from "@/lib/modelOverlay/traces";
-import { disagreementIndexFor, fillIndex } from "@/lib/modelOverlay/disagreementIndex";
 
 const N_NODES = Number(process.env.BENCH_NODES ?? 60);
 const N_FRAMES = Number(process.env.BENCH_FRAMES ?? 100_000);
@@ -71,10 +74,10 @@ function makeModelLabels(model: number): Labels {
     for (let a = 0; a < N_ANIMALS; a++) {
       const cx = 300 + a * 500 + 100 * Math.sin(f / 500 + a);
       const cy = 400 + 100 * Math.cos(f / 700 + a);
-      const off40 = DISAGREE.has(f) && model === N_MODELS - 1 && a === 0 ? 40 : 0;
+      const offD = DISAGREE.has(f) && model === N_MODELS - 1 && a === 0 ? 30 : 0;
       const start = off;
       for (let n = 0; n < N_NODES; n++) {
-        x[off] = cx + (n % 10) * 8 + (rand() - 0.5) * 2 + off40;
+        x[off] = cx + (n % 10) * 8 + (rand() - 0.5) * 2 + offD;
         y[off] = cy + Math.floor(n / 10) * 8 + (rand() - 0.5) * 2;
         off++;
       }
@@ -100,11 +103,18 @@ function makeModelLabels(model: number): Labels {
   });
 }
 
+/**
+ * Wall time of `fn`, plus its CPU time (user + system) in `cpu` — the CPU
+ * time is the fairer number when other programs compete for the machine.
+ */
+const cpu: Record<string, number> = {};
 function time<T>(label: string, fn: () => T, results: Record<string, number>): T {
+  const c0 = process.cpuUsage();
   const t0 = performance.now();
   const out = fn();
-  const ms = performance.now() - t0;
-  results[label] = ms;
+  results[label] = performance.now() - t0;
+  const c = process.cpuUsage(c0);
+  cpu[label] = (c.user + c.system) / 1000;
   return out;
 }
 
@@ -182,15 +192,23 @@ async function main() {
   results["frame: draw, JS side (avg)"] = tDraw / frames;
   results["frame: hover test per mouse move (avg)"] = tHover / frames;
 
-  // --- ◀ ▶: next disagreement from the start (looks through ~98% of frames), previous from the end.
-  const next1 = time("▶ next disagreement from frame 0 (1st press)", () => findDisagreementFrame(models, projectVideo, 10, 0, 1), results);
+  // --- ◀ ▶. The disagreement index (when this checkout has it) is cached per set
+  // of models; each measurement below says whether it starts cold or warm.
+  const idx = await import("@/lib/modelOverlay/disagreementIndex").catch(() => null);
+  if (idx) {
+    // Background warm-up on a COLD index: what the app does in idle slices after loading.
+    idx.clearDisagreementIndexCache();
+    time("disagreement index warm-up, cold (background, total)", () => idx.fillIndex(idx.disagreementIndexFor(models, projectVideo), Infinity), results);
+    time("▶ from frame 0 once warmed up", () => findDisagreementFrame(models, projectVideo, 10, 0, 1), results);
+    idx.clearDisagreementIndexCache(); // ▶ below starts cold again: pressed before the warm-up finished
+  }
+  // Next disagreement from the start (looks through ~98% of frames), previous from the end.
+  const next1 = time("▶ next disagreement from frame 0 (1st press, cold)", () => findDisagreementFrame(models, projectVideo, 10, 0, 1), results);
   const next2 = time("▶ next disagreement, 2nd press", () => findDisagreementFrame(models, projectVideo, 10, next1 ?? 0, 1), results);
   time("◀ previous disagreement from the last frame", () => findDisagreementFrame(models, projectVideo, 10, N_FRAMES, -1), results);
   time("▶ after the last disagreement (none: whole tail)", () => findDisagreementFrame(models, projectVideo, 10, N_FRAMES - 1, 1), results);
   time("threshold changed to 15 px, then ▶ from 0", () => findDisagreementFrame(models, projectVideo, 15, 0, 1), results);
   if (next1 === null || next2 === null) console.warn("  (warning: no disagreement found)");
-  // Background warm-up: the whole index, as the app fills it in slices after models load.
-  time("whole disagreement index (background warm-up, total)", () => fillIndex(disagreementIndexFor(models, projectVideo), Infinity), results);
 
   // --- Traces: animal index (untracked only) + one node's x/y series.
   const index = byTrack ? undefined : time("traces: link animals across frames (once per set of models)", () => buildAnimalIndex(models), results);
@@ -198,7 +216,10 @@ async function main() {
   time("traces: another node (per node change)", () => buildTraces(models, 8, byTrack ? { kind: "track", name: "track_0" } : { kind: "animal", index: 0 }, index), results);
 
   const width = Math.max(...Object.keys(results).map((k) => k.length));
-  for (const [k, v] of Object.entries(results)) console.log(`  ${k.padEnd(width)}  ${fmt(v)}`);
+  console.log(`  ${"".padEnd(width)}  ${"wall".padStart(9)}  ${"cpu".padStart(9)}`);
+  for (const [k, v] of Object.entries(results)) {
+    console.log(`  ${k.padEnd(width)}  ${fmt(v).padStart(9)}  ${(k in cpu ? fmt(cpu[k]) : "").padStart(9)}`);
+  }
   const mem = process.memoryUsage();
   console.log(`  heap used ${(mem.heapUsed / 2 ** 20).toFixed(0)} MB, rss ${(mem.rss / 2 ** 20).toFixed(0)} MB`);
 }

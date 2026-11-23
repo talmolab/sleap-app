@@ -330,3 +330,14 @@ export function uniqueModelName(name: string, taken: readonly string[]): string 
   while (taken.includes(`${name} (${i})`)) i++;
   return `${name} (${i})`;
 }
+
+/**
+ * Sources of the dev-only mock models (Compare Models review prototypes).
+ * Accepting a mock pose never writes to the project: the mocks are made-up,
+ * and on a labeled project they are noisy copies of the user's own labels.
+ */
+export const MOCK_SOURCE_PREFIX = "mock://";
+
+export function isMockSource(source: string): boolean {
+  return source.startsWith(MOCK_SOURCE_PREFIX);
+}

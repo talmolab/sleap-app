@@ -11,12 +11,12 @@ import { Button } from "@/components/ui/button";
 import { rgbToCSS } from "@/lib/colorPalettes";
 import { useAppStore } from "@/stores/appStore";
 import { isReviewed, useCompareReviewStore } from "@/stores/compareReviewStore";
-import { reviewKey } from "@/lib/modelOverlay/reviewPrototype";
+import { reviewItemKey } from "@/lib/modelOverlay/reviewPrototype";
 import { acceptForItem, goToItem, useReviewQueue } from "./useReviewQueue";
 import { QueueStatus, ReviewSummary } from "./reviewParts";
 
 export function ReviewStepperPrototype({ onClose }: { onClose: () => void }) {
-  const { shown, progress, items, truncated, threshold } = useReviewQueue();
+  const { shown, progress, items, truncated, totalFrames, threshold } = useReviewQueue();
   const skeleton = useAppStore((s) => s.skeleton);
   const frameIdx = useAppStore((s) => s.frameIdx);
   const decisions = useCompareReviewStore((s) => s.decisions);
@@ -43,11 +43,11 @@ export function ReviewStepperPrototype({ onClose }: { onClose: () => void }) {
   const go = (d: number) => setPos(Math.max(0, Math.min(items.length - 1, at + d)));
   const nextUnreviewed = () => {
     for (let i = at + 1; i < items.length; i++) {
-      if (!isReviewed(decisions[reviewKey(items[i].frame, items[i].group)])) return setPos(i);
+      if (!isReviewed(decisions[reviewItemKey(items[i])])) return setPos(i);
     }
     go(1);
   };
-  const key = item ? reviewKey(item.frame, item.group) : "";
+  const key = item ? reviewItemKey(item) : "";
   const d = decisions[key];
 
   return (
@@ -64,7 +64,7 @@ export function ReviewStepperPrototype({ onClose }: { onClose: () => void }) {
           <X className="h-3.5 w-3.5" />
         </button>
       </div>
-      <QueueStatus progress={progress} count={items.length} truncated={truncated} threshold={threshold} shown={shown.length} />
+      <QueueStatus progress={progress} count={items.length} truncated={truncated} totalFrames={totalFrames} threshold={threshold} shown={shown.length} />
       {item && (
         <>
           <div className="flex items-center gap-1 px-2 py-1.5">
@@ -126,7 +126,7 @@ export function ReviewStepperPrototype({ onClose }: { onClose: () => void }) {
                       size="sm"
                       variant={accepted ? "default" : "outline"}
                       className="h-6 px-1.5 text-[11px]"
-                      onClick={() => void acceptForItem(item, m.modelId).then(nextUnreviewed)}
+                      onClick={() => void acceptForItem(item, m.modelId).then((ok) => ok && nextUnreviewed())}
                       title="Make this model's pose a user instance (undoable), then go to the next item"
                     >
                       <Check className="h-3 w-3" />

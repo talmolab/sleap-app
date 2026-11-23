@@ -6,6 +6,7 @@
  */
 import { create } from "zustand";
 import type { ReviewLayout } from "@/lib/modelOverlay/reviewPrototype";
+import { useModelOverlayStore, type OverlayModel } from "@/stores/modelOverlayStore";
 
 export interface ReviewDecision {
   /** The model whose pose was accepted (became a user instance). */
@@ -64,3 +65,21 @@ export const useCompareReviewStore = create<CompareReviewState>()((set) => ({
 export function isReviewed(d: ReviewDecision | undefined): boolean {
   return !!d && (d.accepted !== null || d.rejected.length > 0 || d.skipped);
 }
+
+/** Which models (and which poses) are loaded — not whether they're shown. */
+function modelSetSignature(models: readonly OverlayModel[]): readonly unknown[] {
+  return models.flatMap((m) => [m.id, m.frames, m.video]);
+}
+
+// Decisions belong to the models they were made on: loading, replacing or
+// removing models (or opening another project, which removes them) forgets
+// them. Hiding or showing a model doesn't (its items just change key).
+let lastSignature = modelSetSignature(useModelOverlayStore.getState().models);
+useModelOverlayStore.subscribe((s) => {
+  const sig = modelSetSignature(s.models);
+  const same = sig.length === lastSignature.length && sig.every((v, i) => v === lastSignature[i]);
+  lastSignature = sig;
+  if (!same && Object.keys(useCompareReviewStore.getState().decisions).length > 0) {
+    useCompareReviewStore.getState().clearAll();
+  }
+});

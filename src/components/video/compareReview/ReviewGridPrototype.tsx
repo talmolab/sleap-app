@@ -12,11 +12,11 @@ import { Button } from "@/components/ui/button";
 import { rgbToCSS } from "@/lib/colorPalettes";
 import { useAppStore } from "@/stores/appStore";
 import { useCompareReviewStore } from "@/stores/compareReviewStore";
-import { cropAround, itemRings, reviewKey, type ReviewGroup } from "@/lib/modelOverlay/reviewPrototype";
+import { cropAround, itemRings, reviewItemKey, type ReviewGroup } from "@/lib/modelOverlay/reviewPrototype";
 import { videoDims } from "@/lib/modelOverlay/core";
 import type { OverlayModel } from "@/stores/modelOverlayStore";
 import type { Video } from "@/types";
-import { acceptForItem, goToItem, useReviewQueue } from "./useReviewQueue";
+import { acceptForItem, goToItem, keysBelongElsewhere, useReviewQueue } from "./useReviewQueue";
 import { ModelCropCanvas } from "./ModelCropCanvas";
 import { QueueStatus, ReviewSummary } from "./reviewParts";
 
@@ -36,7 +36,7 @@ function GridCell({
   edges: readonly (readonly [number, number])[];
   onOpen: () => void;
 }) {
-  const key = reviewKey(item.frame, item.group);
+  const key = reviewItemKey(item);
   const d = useCompareReviewStore((s) => s.decisions[key]);
   const skip = useCompareReviewStore((s) => s.skip);
   const reset = useCompareReviewStore((s) => s.reset);
@@ -97,7 +97,7 @@ function GridCell({
 }
 
 export function ReviewGridPrototype({ onClose }: { onClose: () => void }) {
-  const { shown, progress, items, truncated, threshold } = useReviewQueue();
+  const { shown, progress, items, truncated, totalFrames, threshold } = useReviewQueue();
   const video = useAppStore((s) => s.video);
   const skeleton = useAppStore((s) => s.skeleton);
   const [page, setPage] = useState(0);
@@ -114,6 +114,8 @@ export function ReviewGridPrototype({ onClose }: { onClose: () => void }) {
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
+      // Leave keys to "Replace your instance?" and other dialogs / text fields.
+      if (keysBelongElsewhere(e)) return;
       if (e.key === "Escape") onClose();
       else if (e.key === "ArrowRight" || e.key === "PageDown") setPage((x) => Math.min(pages - 1, x + 1));
       else if (e.key === "ArrowLeft" || e.key === "PageUp") setPage((x) => Math.max(0, x - 1));
@@ -149,14 +151,14 @@ export function ReviewGridPrototype({ onClose }: { onClose: () => void }) {
             <X className="h-4 w-4" />
           </button>
         </div>
-        <QueueStatus progress={progress} count={items.length} truncated={truncated} threshold={threshold} shown={shown.length} />
+        <QueueStatus progress={progress} count={items.length} truncated={truncated} totalFrames={totalFrames} threshold={threshold} shown={shown.length} />
         <div className="px-3 pb-1 text-muted-foreground">Click a colour to accept that model's pose · ✓ = fine as is · double-click a crop to open it in the main view</div>
         {video && (
           <div className="min-h-0 overflow-auto px-3 pb-2">
             <div className="grid gap-2" style={{ gridTemplateColumns: `repeat(4, ${CELL}px)` }}>
               {onPage.map((it) => (
                 <GridCell
-                  key={reviewKey(it.frame, it.group)}
+                  key={reviewItemKey(it)}
                   item={it}
                   shown={shown}
                   video={video}
