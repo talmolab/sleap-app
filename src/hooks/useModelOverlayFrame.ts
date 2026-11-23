@@ -5,7 +5,7 @@
  * picked for Accept. Empty when no model is loaded for this video, so the
  * canvas skips the overlay.
  */
-import { useMemo } from "react";
+import { useEffect, useMemo } from "react";
 import { useAppStore } from "@/stores/appStore";
 import {
   useModelOverlayStore,
@@ -20,6 +20,7 @@ import {
   type Disagreement,
 } from "@/lib/modelOverlay/matching";
 import type { Video } from "@/types";
+import { disagreementIndexFor, fillIndexAsync, nextDisagreement } from "@/lib/modelOverlay/disagreementIndex";
 
 /** Pure: the layers for `video` at `frameIdx`. */
 export function modelOverlayLayers(
@@ -86,13 +87,16 @@ export function useModelOverlayFrame(): ModelOverlayFrame {
     [layers, byTrack, threshold, highlight]
   );
   const selected = useMemo(() => selectedOnFrame(layers, sel, video, frameIdx), [layers, sel, video, frameIdx]);
+  useDisagreementWarmup(models, video);
   return useMemo(() => ({ layers, disagreements, selected }), [layers, disagreements, selected]);
 }
 
 /**
  * The next (dir 1) or previous (dir -1) frame after `from` where the shown
  * models disagree on any node, or null. Only frames where two or more models
- * have poses are checked.
+ * have poses are checked. Goes through the cached per-frame spread index
+ * (lib/modelOverlay/disagreementIndex.ts), so repeated presses and threshold
+ * changes don't redo the matching.
  */
 export function findDisagreementFrame(
   models: readonly OverlayModel[],
@@ -101,18 +105,24 @@ export function findDisagreementFrame(
   from: number,
   dir: 1 | -1
 ): number | null {
-  const shown = models.filter((m) => m.visible && m.video === video);
-  if (shown.length < 2) return null;
-  const counts = new Map<number, number>();
-  for (const m of shown) for (const f of m.frames.keys()) counts.set(f, (counts.get(f) ?? 0) + 1);
-  const frames = [...counts.entries()]
-    .filter(([f, n]) => n >= 2 && (dir === 1 ? f > from : f < from))
-    .map(([f]) => f)
-    .sort((a, b) => (dir === 1 ? a - b : b - a));
-  const byTrack = shownModelsShareTracks(models, video);
-  for (const f of frames) {
-    if (frameDisagreements(modelOverlayLayers(shown, video, f), byTrack, threshold).length > 0) return f;
-  }
-  return null;
+  return nextDisagreement(disagreementIndexFor(models, video), threshold, from, dir);
 }
 
+/**
+ * While two or more models are shown, work out the disagreement index in the
+ * background (small slices between frames), so ◀ ▶ on a long video is a
+ * lookup by the time the user presses it.
+ */
+export function useDisagreementWarmup(models: readonly OverlayModel[], video: Video | null): void {
+  useEffect(() => {
+    const index = disagreementIndexFor(models, video);
+    if (index.models.length < 2 || index.computed >= index.frames.length) return;
+    const ctrl = new AbortController();
+    // Start after the first paint of the new models.
+    const t = setTimeout(() => void fillIndexAsync(index, { signal: ctrl.signal, sliceMs: 8 }), 300);
+    return () => {
+      clearTimeout(t);
+      ctrl.abort();
+    };
+  }, [models, video]);
+}

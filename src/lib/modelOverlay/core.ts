@@ -24,6 +24,7 @@
 import { PredictedInstance } from "@talmolab/sleap-io.js";
 import type { Labels, Skeleton, Video } from "@/types";
 import type { RGB } from "@/lib/colorPalettes";
+import { PoseStoreBuilder, type PoseFrames, type PoseStore } from "./poseStore";
 
 /** One model's pose on one frame, in the project's node order. */
 export interface OverlayPose {
@@ -232,30 +233,35 @@ export function modelNameFromProvenance(provenance: Record<string, unknown> | nu
   return pathBaseName(fileName).replace(/\.slp$/i, "");
 }
 
-/** Predicted instances of `video`, grouped by frame, reordered to the project's nodes. */
-export function extractPoses(labels: Labels, video: Video, nodeMap: readonly number[]): Map<number, OverlayPose[]> {
-  const out = new Map<number, OverlayPose[]>();
+/**
+ * Predicted instances of `video`, grouped by frame, reordered to the project's
+ * nodes, in a compact {@link PoseStore} (one flat array per model rather than
+ * an array per pose; see poseStore.ts for why).
+ */
+export function extractPoses(labels: Labels, video: Video, nodeMap: readonly number[]): PoseStore {
   const n = nodeMap.length;
-  for (const lf of labels.labeledFrames) {
-    if (lf.video !== video) continue;
+  const lfs = labels.labeledFrames.filter((lf) => lf.video === video);
+  let capacity = 0;
+  for (const lf of lfs) capacity += lf.instances.length;
+  const b = new PoseStoreBuilder(n, capacity);
+  for (const lf of lfs) {
     for (const inst of lf.instances) {
       if (!(inst instanceof PredictedInstance)) continue;
-      const pts = inst.points;
-      const xy = new Float64Array(n * 2);
+      // numpy() reads io's columnar storage directly (no per-point view objects);
+      // hidden points come back as NaN.
+      const pts = inst.numpy({ invisibleAsNaN: true });
+      const score = Number.isFinite(inst.score) ? inst.score : null;
+      const off = b.begin(lf.frameIdx, score, inst.track?.name ?? null);
+      const xy = b.buffer;
       for (let i = 0; i < n; i++) {
         const p = pts[nodeMap[i]];
-        const ok = p && p.visible !== false && Number.isFinite(p.xy[0]) && Number.isFinite(p.xy[1]);
-        xy[2 * i] = ok ? p.xy[0] : NaN;
-        xy[2 * i + 1] = ok ? p.xy[1] : NaN;
+        const ok = p && Number.isFinite(p[0]) && Number.isFinite(p[1]);
+        xy[off + 2 * i] = ok ? p[0] : NaN;
+        xy[off + 2 * i + 1] = ok ? p[1] : NaN;
       }
-      const score = Number.isFinite(inst.score) ? inst.score : null;
-      const pose: OverlayPose = { xy, score, trackName: inst.track?.name ?? null };
-      const list = out.get(lf.frameIdx);
-      if (list) list.push(pose);
-      else out.set(lf.frameIdx, [pose]);
     }
   }
-  return out;
+  return b.build();
 }
 
 /** A prediction file checked against the project: usable, with poses, or not, with the reason. */
@@ -263,7 +269,7 @@ export type CandidateAnalysis =
   | {
       ok: true;
       name: string;
-      frames: Map<number, OverlayPose[]>;
+      frames: PoseFrames;
       /** Frames that have at least one predicted pose. */
       frameCount: number;
       /** The file's video was found by path or only by file name. */

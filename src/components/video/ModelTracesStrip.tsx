@@ -5,16 +5,17 @@
  * frame. Click a plot to go to that frame; drag to zoom in, double-click to
  * zoom back out (uPlot's own gestures). Built on the app's UPlotChart.
  */
-import { useMemo } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { X } from "lucide-react";
 import type uPlot from "uplot";
 import { UPlotChart } from "@/components/charts/UPlotChart";
 import { useAppStore } from "@/stores/appStore";
-import { useModelOverlayStore } from "@/stores/modelOverlayStore";
+import { useModelOverlayStore, type OverlayModel } from "@/stores/modelOverlayStore";
 import { rgbToCSS } from "@/lib/colorPalettes";
 import { shownModelsShareTracks } from "@/hooks/useModelOverlayFrame";
 import {
-  buildAnimalIndex,
+  buildAnimalIndexAsync,
+  type AnimalIndex,
   buildTraces,
   traceAnimalCount,
   traceRange,
@@ -55,11 +56,26 @@ export function ModelTracesStrip() {
   const byTrack = useMemo(() => shownModelsShareTracks(allModels, video), [allModels, video]);
   const trackNames = useMemo(() => traceTrackNames(models, byTrack), [models, byTrack]);
   // Linking animals across frames is the slow part: once per set of shown
-  // models, not per node or frame.
-  const animalIndex = useMemo(
-    () => (open && trackNames.length === 0 && models.length > 0 ? buildAnimalIndex(models) : null),
-    [open, trackNames, models]
-  );
+  // models, not per node or frame, and in time slices so a long video doesn't
+  // freeze the window (progress shown meanwhile).
+  const needIndex = open && trackNames.length === 0 && models.length > 0;
+  const [indexState, setIndexState] = useState<{ models: OverlayModel[]; index: AnimalIndex } | null>(null);
+  const [linkProgress, setLinkProgress] = useState<number | null>(null);
+  useEffect(() => {
+    if (!needIndex) return;
+    const ctrl = new AbortController();
+    setLinkProgress(0);
+    void buildAnimalIndexAsync(models, {
+      signal: ctrl.signal,
+      onProgress: (done, total) => setLinkProgress(total > 0 ? done / total : 1),
+    }).then((index) => {
+      if (!index) return;
+      setIndexState({ models, index });
+      setLinkProgress(null);
+    });
+    return () => ctrl.abort();
+  }, [needIndex, models]);
+  const animalIndex = needIndex && indexState?.models === models ? indexState.index : null;
   const animalCount = animalIndex ? traceAnimalCount(animalIndex) : 0;
   const nodeNames = useMemo(() => skeleton?.nodes.map((n) => n.name) ?? [], [skeleton]);
   const safeNode = node < nodeNames.length ? node : 0;
@@ -175,6 +191,11 @@ export function ModelTracesStrip() {
           <X className="h-3 w-3" />
         </button>
       </div>
+      {needIndex && !animalIndex && (
+        <div className="py-2 text-muted-foreground" data-testid="model-traces-linking">
+          Following animals from frame to frame… {Math.round((linkProgress ?? 0) * 100)}%
+        </div>
+      )}
       {dataX && dataY && (
         <div className="grid grid-cols-1 gap-0">
           <div className="flex items-center gap-1">

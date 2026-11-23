@@ -21,6 +21,7 @@ import { findDisagreementFrame } from "@/hooks/useModelOverlayFrame";
 import { useModelOverlayUiStore } from "@/stores/modelOverlayUiStore";
 import { DISAGREEMENT_COLOR } from "@/canvas/modelOverlayRenderer";
 import { toggleProjectInstances } from "@/lib/modelOverlay/canvasActions";
+import { poseCountOn } from "@/lib/modelOverlay/poseStore";
 
 /** Shown under a selected model's row when it has no pose on this frame. */
 export const NO_POSES_ON_FRAME = "No predicted instances on this frame";
@@ -211,7 +212,7 @@ export function ModelOverlayLegend({ disagreementCount }: { disagreementCount: n
           </div>
         )}
         {forVideo.map((m) => {
-          const onFrame = m.frames.get(frameIdx)?.length ?? 0;
+          const onFrame = poseCountOn(m.frames, frameIdx);
           const selected = selectedModelId === m.id;
           return (
             <div key={m.id}>

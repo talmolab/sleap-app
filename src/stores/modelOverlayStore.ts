@@ -10,7 +10,8 @@
 import { create } from "zustand";
 import type { Labels, Video } from "@/types";
 import type { RGB } from "@/lib/colorPalettes";
-import { nextModelColor, uniqueModelName, type OverlayPose } from "@/lib/modelOverlay/core";
+import { nextModelColor, uniqueModelName } from "@/lib/modelOverlay/core";
+import { trackNamesOf, type PoseFrames } from "@/lib/modelOverlay/poseStore";
 import type { TraceTarget } from "@/lib/modelOverlay/traces";
 import { useAppStore } from "@/stores/appStore";
 
@@ -25,7 +26,7 @@ export interface OverlayModel {
   /** The project video these poses belong to. */
   video: Video;
   /** Poses per frame, in the project's node order. */
-  frames: Map<number, OverlayPose[]>;
+  frames: PoseFrames;
   /** Every track name in the file (empty when it has no tracks). */
   trackNames: Set<string>;
 }
@@ -45,7 +46,7 @@ export interface NewOverlayModel {
   name: string;
   source: string;
   video: Video;
-  frames: Map<number, OverlayPose[]>;
+  frames: PoseFrames;
 }
 
 interface ModelOverlayState {
@@ -81,12 +82,6 @@ interface ModelOverlayState {
 }
 
 let nextId = 1;
-
-function trackNamesOf(frames: Map<number, OverlayPose[]>): Set<string> {
-  const names = new Set<string>();
-  for (const poses of frames.values()) for (const p of poses) if (p.trackName !== null) names.add(p.trackName);
-  return names;
-}
 
 export const useModelOverlayStore = create<ModelOverlayState>()((set) => ({
   models: [],
