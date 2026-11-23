@@ -10,6 +10,7 @@ import { UpdateTopic } from "../types";
 import type { Command } from "./types";
 import type { CommandContext } from "./CommandContext";
 import { useAppStore } from "../stores/appStore";
+import { frameHasContent } from "@/lib/frameLabeling";
 
 /**
  * Swap `oldTrack`<->`newTrack` across `frames` (assumed already sorted by
@@ -334,13 +335,61 @@ export const DeleteInstanceAndTrack: Command = {
 
     ctx.pushUndoSnapshot(snapshot);
     ctx.state.setInstance(null);
-    ctx.state.setLabeledFrame(current.instances.length > 0 ? current : null);
+    ctx.state.setLabeledFrame(frameHasContent(current) ? current : null);
     ctx.state.markChanged();
   },
 };
 
 /**
- * Remove a track from labels.tracks and unassign it from all instances.
+ * Everything on a frame that can carry a track: its instances, its boxes,
+ * centroids, masks and ROIs, and each object of its label images.
+ */
+export function* trackHolders(lf: LabeledFrame): Generator<{ track?: Track | null }> {
+  yield* lf.instances;
+  for (const [key, list] of Object.entries(lf)) {
+    if (key === "instances" || !Array.isArray(list)) continue;
+    for (const ann of list as unknown[]) {
+      if (typeof ann !== "object" || ann === null) continue;
+      const objects = (ann as { objects?: unknown }).objects;
+      if (objects instanceof Map) {
+        for (const obj of objects.values()) yield obj as { track?: Track | null };
+      } else if ("track" in ann) {
+        yield ann as { track?: Track | null };
+      }
+    }
+  }
+}
+
+/**
+ * Unassign the given tracks (all when `tracks` is null) from everything in the
+ * project. These touch every frame, so they take an all-frames undo snapshot:
+ * the default one only covers the current frame, and undo left every other
+ * frame's instances untracked (#487 audit). Returns whether anything changed.
+ */
+function unassignTracks(ctx: CommandContext, commandName: string, tracks: Set<Track> | null): boolean {
+  const { labels } = ctx.state;
+  if (!labels) return false;
+  const snapshot = ctx.takeAllFramesSnapshot(commandName);
+  let changed = false;
+  for (const lf of labels.labeledFrames) {
+    for (const holder of trackHolders(lf)) {
+      if (holder.track && (!tracks || tracks.has(holder.track))) {
+        holder.track = null;
+        changed = true;
+      }
+    }
+  }
+  const before = labels.tracks.length;
+  labels.tracks = tracks ? labels.tracks.filter((t) => !tracks.has(t)) : [];
+  if (!changed && labels.tracks.length === before) return false;
+  ctx.pushUndoSnapshot(snapshot);
+  ctx.state.markChanged();
+  return true;
+}
+
+/**
+ * Remove a track from labels.tracks and unassign it from all instances and
+ * annotations (boxes, centroids, masks, ROIs, label-image objects).
  * Does NOT delete any instances.
  *
  * Params:
@@ -350,6 +399,7 @@ export const DeleteInstanceAndTrack: Command = {
 export const DeleteTrack: Command = {
   name: "DeleteTrack",
   topics: [UpdateTopic.Tracks, UpdateTopic.Instance],
+  skipAutoSnapshot: true,
   execute(ctx: CommandContext, params?: Record<string, unknown>) {
     const { labels } = ctx.state;
     if (!labels) return;
@@ -365,27 +415,13 @@ export const DeleteTrack: Command = {
     }
     if (!track) return;
 
-    // Remove track from all instances across all labeled frames
-    for (const lf of labels.labeledFrames) {
-      for (const inst of lf.instances) {
-        if (inst.track === track) {
-          inst.track = undefined;
-        }
-      }
-    }
-
-    // Remove track from labels.tracks
-    const trackIdx = labels.tracks.indexOf(track);
-    if (trackIdx >= 0) {
-      labels.tracks.splice(trackIdx, 1);
-    }
-
-    ctx.state.markChanged();
+    unassignTracks(ctx, "DeleteTrack", new Set([track]));
   },
 };
 
 /**
- * Find and remove tracks not assigned to any instance across all labeled frames.
+ * Find and remove tracks not assigned to anything (an instance or an
+ * annotation) across all labeled frames.
  */
 export const DeleteUnusedTracks: Command = {
   name: "DeleteUnusedTracks",
@@ -394,13 +430,12 @@ export const DeleteUnusedTracks: Command = {
     const { labels } = ctx.state;
     if (!labels) return;
 
-    // Collect all tracks that are in use
+    // Collect all tracks that are in use — a box or centroid using a track
+    // keeps it, or deleting it would leave that annotation on a lost track.
     const usedTracks = new Set<Track>();
     for (const lf of labels.labeledFrames) {
-      for (const inst of lf.instances) {
-        if (inst.track) {
-          usedTracks.add(inst.track);
-        }
+      for (const holder of trackHolders(lf)) {
+        if (holder.track) usedTracks.add(holder.track);
       }
     }
 
@@ -415,28 +450,15 @@ export const DeleteUnusedTracks: Command = {
 };
 
 /**
- * Clear all tracks from labels.tracks and unassign tracks from all instances.
+ * Clear all tracks from labels.tracks and unassign tracks from all instances
+ * and annotations.
  */
 export const DeleteAllTracks: Command = {
   name: "DeleteAllTracks",
   topics: [UpdateTopic.Tracks, UpdateTopic.Instance],
+  skipAutoSnapshot: true,
   execute(ctx: CommandContext) {
-    const { labels } = ctx.state;
-    if (!labels) return;
-
-    // Unassign tracks from all instances
-    for (const lf of labels.labeledFrames) {
-      for (const inst of lf.instances) {
-        if (inst.track) {
-          inst.track = undefined;
-        }
-      }
-    }
-
-    // Clear all tracks
-    labels.tracks = [];
-
-    ctx.state.markChanged();
+    unassignTracks(ctx, "DeleteAllTracks", null);
   },
 };
 
