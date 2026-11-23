@@ -1,25 +1,11 @@
 {
   "bundle": {
     "externalBin": [],
-    "linux": {
-      "deb": {
-        "files": {
-          "/usr/lib/SLEAP/ffmpeg": "binaries/ffmpeg-x86_64-unknown-linux-gnu",
-          "/usr/lib/SLEAP/ffprobe": "binaries/ffprobe-x86_64-unknown-linux-gnu"
-        }
-      },
-      "rpm": {
-        "files": {
-          "/usr/lib/SLEAP/ffmpeg": "binaries/ffmpeg-x86_64-unknown-linux-gnu",
-          "/usr/lib/SLEAP/ffprobe": "binaries/ffprobe-x86_64-unknown-linux-gnu"
-        }
-      },
-      "appimage": {
-        "files": {
-          "/usr/bin/ffmpeg": "binaries/ffmpeg-x86_64-unknown-linux-gnu",
-          "/usr/bin/ffprobe": "binaries/ffprobe-x86_64-unknown-linux-gnu"
-        }
-      }
+    "resources": {
+      "binaries/FFMPEG_LICENSE_NOTICE.md": "binaries/FFMPEG_LICENSE_NOTICE.md",
+      "resources/overlay_serve.py": "resources/overlay_serve.py",
+      "binaries/ffmpeg-x86_64-unknown-linux-gnu": "ffmpeg",
+      "binaries/ffprobe-x86_64-unknown-linux-gnu": "ffprobe"
     }
   }
 }

@@ -139,16 +139,18 @@ fn tool_bin_dirs() -> Vec<PathBuf> {
 /// Prepend so our known-good uv/shims win; keep the rest so system tools
 /// (curl, sh, python) still resolve.
 ///
-/// On a Linux .deb / .rpm install the package's private ffmpeg dir goes first of
+/// On Linux the bundled ffmpeg/ffprobe dir (the app's resource dir) goes first of
 /// all (#507): ffmpeg is no longer in /usr/bin, so sleap-nn / sleap-io find it
-/// through this PATH only. A no-op everywhere else.
+/// through this PATH only. A no-op on macOS / Windows.
 fn augmented_path() -> std::ffi::OsString {
-    let mut paths =
-        crate::bundled_tools::with_tools_dir_first(crate::bundled_tools::package_tools_dir(), tool_bin_dirs());
+    let tools = crate::bundled_tools::children_tools_dir();
+    let mut paths = crate::bundled_tools::with_tools_dir_first(tools.clone(), tool_bin_dirs());
     if let Some(existing) = std::env::var_os("PATH") {
         paths.extend(std::env::split_paths(&existing));
     }
-    std::env::join_paths(&paths).unwrap_or_else(|_| std::env::var_os("PATH").unwrap_or_default())
+    std::env::join_paths(&paths).unwrap_or_else(|_| {
+        crate::bundled_tools::prepend_raw(tools.as_deref(), std::env::var_os("PATH").unwrap_or_default())
+    })
 }
 
 /// Parent env minus the AppImage-injected PYTHONHOME/PYTHONPATH, with PATH

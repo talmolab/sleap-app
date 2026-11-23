@@ -35,8 +35,8 @@
       "allow": [
         { "name": "binaries/ffmpeg", "sidecar": true, "args": true },
         { "name": "binaries/ffprobe", "sidecar": true, "args": true },
-        { "name": "linux-pkg-ffmpeg", "cmd": "/usr/lib/SLEAP/ffmpeg", "args": true },
-        { "name": "linux-pkg-ffprobe", "cmd": "/usr/lib/SLEAP/ffprobe", "args": true }
+        { "name": "bundled-ffmpeg", "cmd": "$RESOURCE/ffmpeg", "args": true },
+        { "name": "bundled-ffprobe", "cmd": "$RESOURCE/ffprobe", "args": true }
       ]
     },
     {
@@ -44,8 +44,8 @@
       "allow": [
         { "name": "binaries/ffmpeg", "sidecar": true, "args": true },
         { "name": "binaries/ffprobe", "sidecar": true, "args": true },
-        { "name": "linux-pkg-ffmpeg", "cmd": "/usr/lib/SLEAP/ffmpeg", "args": true },
-        { "name": "linux-pkg-ffprobe", "cmd": "/usr/lib/SLEAP/ffprobe", "args": true }
+        { "name": "bundled-ffmpeg", "cmd": "$RESOURCE/ffmpeg", "args": true },
+        { "name": "bundled-ffprobe", "cmd": "$RESOURCE/ffprobe", "args": true }
       ]
     },
     "shell:allow-kill",

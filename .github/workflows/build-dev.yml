@@ -433,10 +433,10 @@ jobs:
           [ -n "$APPIMAGE" ] || { echo "::error::no .AppImage under ${{ matrix.bundle-dir }}/appimage"; exit 1; }
           bash scripts/appimage-gstreamer.sh verify "$APPIMAGE"
 
-      # #507: the .deb/.rpm must install ffmpeg/ffprobe privately in
-      # /usr/lib/SLEAP (never /usr/bin, where they clashed with the system's
-      # ffmpeg), while the AppImage keeps them in its own usr/bin. `rpm` (apt
-      # list above) is only needed to list the .rpm's contents.
+      # #507: Linux ships ffmpeg/ffprobe as resources -- /usr/lib/SLEAP in the
+      # .deb/.rpm (never /usr/bin, where they clashed with the system's ffmpeg)
+      # and usr/lib/SLEAP inside the AppImage. `rpm` (apt list above) is only
+      # needed to list the .rpm's contents.
       - name: Verify Linux package ffmpeg layout
         if: matrix.target == 'linux'
         shell: bash

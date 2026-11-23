@@ -44,36 +44,41 @@ host triple with `rustc -Vv | grep host`.
 > per-arch file panics at compile; missing the universal file fails at
 > "copy external binaries" during bundling.
 
-## Linux: where the packages install them (#507)
+## Linux: shipped as resources, not sidecars (#507)
 
 `externalBin` always places sidecars next to the main binary. For the `.deb` /
 `.rpm` that is `/usr/bin`, which made the packages install a system-wide
 `/usr/bin/ffmpeg` that clashed with the distro's (or RPM Fusion's) own ffmpeg.
 So on Linux, `tauri.linux.conf.json` (merged over `tauri.conf.json` on Linux
-only) empties `externalBin` and installs the two tools with per-format `files`
-maps instead:
+only) empties `externalBin` and ships the two tools as **resources** at the root
+of Tauri's resource dir:
 
-| Bundle | Path | On PATH? |
-|--------|------|----------|
-| `.deb`, `.rpm` | `/usr/lib/SLEAP/ffmpeg`, `/usr/lib/SLEAP/ffprobe` | no (private) |
-| `.AppImage` | `usr/bin/ffmpeg` inside the image (unchanged) | only inside the image |
-| macOS / Windows | next to the app binary (unchanged) | no |
+| Build | Where ffmpeg/ffprobe are | On the system PATH? |
+|-------|--------------------------|---------------------|
+| `.deb`, `.rpm` | `/usr/lib/SLEAP/` | no (private) |
+| `.AppImage` | `usr/lib/SLEAP/` inside the image | no |
+| `tauri dev` (Linux) | `src-tauri/target/<profile>/` (tauri-build copies resources there) | no |
+| macOS / Windows | sidecars next to the app binary (unchanged) | no |
 
-At runtime (`src/bundled_tools.rs`), an app running as `/usr/bin/sleap-app`
-with `/usr/lib/SLEAP/ffmpeg` present:
+`/usr/lib/SLEAP` is Tauri's resource dir for the package (it already holds the
+app's other resources, and the rpm owns it); Debian allows `/usr/lib/<pkg>` for
+a package's internal executables, Fedora's libexecdir equivalent.
 
-- spawns them from the frontend through the scoped `linux-pkg-ffmpeg` /
-  `linux-pkg-ffprobe` shell entries (absolute paths; see
-  `src/lib/transcode/ffmpegCommand.ts`) instead of `Command.sidecar` — which
-  would otherwise resolve to the *system* `/usr/bin/ffmpeg`;
-- prepends `/usr/lib/SLEAP` to the `PATH` of the processes it launches
+The Linux `resources` map replaces the base list, so it repeats the base
+resources at their usual paths — keep the two in sync.
+
+Because `externalBin` is empty on Linux, the shell plugin refuses **every**
+`Command.sidecar(...)` there. So on Linux (`src/bundled_tools.rs`,
+`src/lib/transcode/ffmpegCommand.ts`):
+
+- the frontend always uses the scoped `bundled-ffmpeg` / `bundled-ffprobe`
+  shell entries, whose `cmd` is `$RESOURCE/<tool>`;
+- the resource dir is prepended to the `PATH` of the processes the app launches
   (sleap-nn, sleap-io, …), never to the user's own shell.
 
-Because `externalBin` is empty on Linux, `build.rs` copies
-`binaries/{ffmpeg,ffprobe}-<triple>` next to the compiled binary itself, so
-`tauri dev` keeps its sidecars. The `files` sources name the
-`x86_64-unknown-linux-gnu` triple — the only Linux target `fetch-ffmpeg.sh`
-supports. CI checks the result with `scripts/verify-linux-packages.sh`.
+The resource sources name the `x86_64-unknown-linux-gnu` triple — the only
+Linux target `fetch-ffmpeg.sh` supports. CI checks the built bundles with
+`scripts/verify-linux-packages.sh`.
 
 ## Encoder / license policy
 

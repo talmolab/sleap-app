@@ -5,14 +5,14 @@
 #   bash scripts/verify-linux-packages.sh <bundle-dir>
 #   # e.g. src-tauri/target/release/bundle
 #
-# - .deb and .rpm: ffmpeg + ffprobe must be in the package's private dir
-#   /usr/lib/SLEAP/ (executable), and NOTHING named ffmpeg/ffprobe may be in
-#   /usr/bin -- that is what clashed with the distro's / RPM Fusion's ffmpeg.
-# - .AppImage: unchanged layout -- ffmpeg + ffprobe stay in the image's own
-#   usr/bin (never installed onto the system).
-#
-# The private path must match LINUX_PACKAGE_TOOLS_DIR in
-# src-tauri/src/bundled_tools.rs and src-tauri/tauri.linux.conf.json.
+# On Linux the tools ship as Tauri *resources* (tauri.linux.conf.json), so they
+# must sit at the root of the resource dir, where the app runs them from
+# (`$RESOURCE/ffmpeg`, see src-tauri/src/bundled_tools.rs):
+# - .deb and .rpm: /usr/lib/SLEAP/{ffmpeg,ffprobe}, executable, and NOTHING
+#   named ffmpeg/ffprobe in /usr/bin -- that is what clashed with the distro's /
+#   RPM Fusion's ffmpeg.
+# - .AppImage: usr/lib/SLEAP/{ffmpeg,ffprobe} inside the image, executable
+#   (and no stray usr/bin copy the app would never use).
 #
 # Needs: dpkg-deb (always on Ubuntu) and rpm (`apt-get install rpm`).
 
@@ -64,7 +64,7 @@ command -v rpm >/dev/null || { echo "::error::rpm is not installed (apt-get inst
 RPM_LIST="$(rpm -qp --nosignature --qf '[%{FILEMODES:perms} %{FILENAMES}\n]' "$RPM")"
 check rpm "$RPM_LIST"
 
-# --- .AppImage (layout must be unchanged) -------------------------------
+# --- .AppImage ------------------------------------------------------------
 APPIMAGE="$(one appimage '*.AppImage')"
 echo "== $(basename "$APPIMAGE")"
 tmp="$(mktemp -d)"
@@ -73,11 +73,14 @@ chmod +x "$APPIMAGE"
 appimage="$(cd "$(dirname "$APPIMAGE")" && pwd)/$(basename "$APPIMAGE")"
 (cd "$tmp" && "$appimage" --appimage-extract >/dev/null)
 for tool in ffmpeg ffprobe; do
-  f="$tmp/squashfs-root/usr/bin/$tool"
+  f="$tmp/squashfs-root$PRIVATE/$tool"
   if [ -x "$f" ] && [ -f "$f" ]; then
-    echo "ok   AppImage: usr/bin/$tool"
+    echo "ok   AppImage: ${PRIVATE#/}/$tool"
   else
-    err "AppImage: usr/bin/$tool is missing or not executable"
+    err "AppImage: ${PRIVATE#/}/$tool is missing or not executable"
+  fi
+  if [ -e "$tmp/squashfs-root/usr/bin/$tool" ]; then
+    err "AppImage: unexpected usr/bin/$tool (the app runs ${PRIVATE#/}/$tool)"
   fi
 done
 

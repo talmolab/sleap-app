@@ -5,8 +5,8 @@
  * bundle. Kept separate from {@link file://./transcodeVideo.ts} so that module's
  * orchestration stays unit-testable with plain fakes.
  *
- * The ffmpeg binary is a Tauri `externalBin` sidecar (on a Linux .deb / .rpm a
- * private copy in /usr/lib/SLEAP — see ./ffmpegCommand.ts) — see
+ * The ffmpeg binary is a Tauri `externalBin` sidecar on macOS / Windows and a
+ * bundled resource on Linux (see ./ffmpegCommand.ts) — see
  * `src-tauri/binaries/README.md` for how the per-platform libopenh264 build is
  * fetched and named. It runs as a native child process (disk→disk); the source
  * bytes never touch the WebView heap.
@@ -18,27 +18,27 @@ import { ffmpegCommandSpec, type BundledTool } from "./ffmpegCommand.js";
 const CACHE_ROOT = "video-cache";
 
 /**
- * The Linux .deb / .rpm private tools dir, or null (sidecar everywhere else).
- * Asked once per session; any failure (older backend, browser) means sidecar.
+ * The Linux tools dir (resource dir), or null on macOS / Windows (sidecars).
+ * Asked once per session; any failure (older backend) means sidecar.
  */
-let privateToolsDir: Promise<string | null> | null = null;
-function linuxPackageToolsDir(): Promise<string | null> {
-  privateToolsDir ??= (async () => {
+let toolsDir: Promise<string | null> | null = null;
+function linuxToolsDir(): Promise<string | null> {
+  toolsDir ??= (async () => {
     try {
       const { invoke } = await import("@tauri-apps/api/core");
       const { sleapCmd } = await import("@/lib/sleapPlugin");
-      return (await invoke<string | null>(sleapCmd("linux_package_tools_dir"))) ?? null;
+      return (await invoke<string | null>(sleapCmd("linux_tools_dir"))) ?? null;
     } catch {
       return null;
     }
   })();
-  return privateToolsDir;
+  return toolsDir;
 }
 
-/** A shell `Command` for the bundled `tool` (sidecar, or the .deb/.rpm private copy). */
+/** A shell `Command` for the bundled `tool` (sidecar, or the Linux resource copy). */
 async function bundledToolCommand(tool: BundledTool, args: string[]) {
   const { Command } = await import("@tauri-apps/plugin-shell");
-  const spec = ffmpegCommandSpec(tool, await linuxPackageToolsDir());
+  const spec = ffmpegCommandSpec(tool, await linuxToolsDir());
   return spec.kind === "scoped"
     ? Command.create(spec.name, args)
     : Command.sidecar(spec.name, args);
