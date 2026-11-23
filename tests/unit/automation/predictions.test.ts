@@ -5,11 +5,15 @@ import { useModelOverlayStore } from "@/stores/modelOverlayStore";
 import { useProposalStore } from "@/stores/proposalStore";
 import { ConvertPredictionToInstance } from "@/commands/editCommands";
 import {
+  cachedCandidates,
   clearDisagreementCache,
+  disagreementScanProgress,
   findPrediction,
   listPredictionCandidates,
   parsePredictionId,
+  predictionDisagreement,
   quantiles,
+  scanDisagreements,
   sortCandidates,
 } from "@/automation/predictions";
 import { registry } from "@/automation/tools";
@@ -101,8 +105,9 @@ describe("prediction candidates", () => {
   });
 
   // Why: when Compare Models shows models that disagree, that animal needs a look even if its scores are high.
-  it("lists predictions the compared models disagree on, with each model's placement", () => {
+  it("lists predictions the compared models disagree on, with each model's placement", async () => {
     loadDisagreeingModels();
+    expect(await scanDisagreements(fx.video)).toEqual({ checked: 1, total: 1, complete: true });
     const list = listPredictionCandidates();
     const b = list.candidates.find((c) => c.instance === fx.b)!;
     expect(b.disagreement?.models.map((m) => m.model)).toEqual(["m1", "m2"]);
@@ -115,13 +120,58 @@ describe("prediction candidates", () => {
   });
 
   // Why: a disagreeing animal the project has no prediction for can't be corrected; Claude is told how many.
-  it("counts disagreements that match no project prediction", () => {
+  it("counts disagreements that match no project prediction", async () => {
     const pose = (dy: number) => ({ xy: new Float64Array([400, 400, 410, 410, 430, 420 + dy]), score: 1, trackName: null });
     useModelOverlayStore.getState().addModels(fx.labels, [
       { name: "m1", source: "m1.slp", video: fx.video, frames: new Map([[60, [pose(0)]]]) },
       { name: "m2", source: "m2.slp", video: fx.video, frames: new Map([[60, [pose(50)]]]) },
     ]);
+    await scanDisagreements(fx.video);
     expect(listPredictionCandidates().unmatchedDisagreements).toBe(1);
+  });
+
+  // Why: a new disagreement threshold must not rescan the whole video (that froze the app on long videos).
+  it("applies a new threshold to the finished scan without rescanning", async () => {
+    loadDisagreeingModels();
+    await scanDisagreements(fx.video);
+    useModelOverlayStore.getState().setThreshold(25); // B's tail spreads 20 px
+    expect(disagreementScanProgress(fx.video).complete).toBe(true);
+    expect(listPredictionCandidates().candidates.some((c) => c.instance === fx.b)).toBe(false);
+    useModelOverlayStore.getState().setThreshold(10);
+    expect(listPredictionCandidates().candidates.some((c) => c.instance === fx.b)).toBe(true);
+  });
+
+  // Why: on a long video one call may only check part of it; the next call must carry on, not start over.
+  it("scans in time-boxed steps that pick up where the last stopped", async () => {
+    const pose = (dy: number) => ({ xy: new Float64Array([100, 100, 110, 110, 130, 120 + dy]), score: 1, trackName: null });
+    const frames = (dy: number) => new Map(Array.from({ length: 50 }, (_, f) => [f, [pose(dy)]] as [number, ReturnType<typeof pose>[]]));
+    useModelOverlayStore.getState().addModels(fx.labels, [
+      { name: "m1", source: "m1.slp", video: fx.video, frames: frames(0) },
+      { name: "m2", source: "m2.slp", video: fx.video, frames: frames(30) },
+    ]);
+    const first = await scanDisagreements(fx.video, 0);
+    expect(first).toEqual({ checked: 1, total: 50, complete: false });
+    const second = await scanDisagreements(fx.video, 0);
+    expect(second.checked).toBe(2);
+    expect((await scanDisagreements(fx.video)).complete).toBe(true);
+  });
+
+  // Why: render_prediction needs one frame's disagreement without waiting for a whole-video scan.
+  it("finds one frame's disagreement before any scan", () => {
+    loadDisagreeingModels();
+    const lf = fx.labels.find({ video: fx.video, frameIdx: 30 })[0];
+    expect(predictionDisagreement(lf, fx.b)?.nodes).toEqual([{ node: 2, spreadPx: 20 }]);
+    expect(disagreementScanProgress(fx.video).checked).toBe(0);
+  });
+
+  // Why: paging through the list must not redo the whole scan each time, but an edit must refresh it.
+  it("reuses the candidate list between pages until something changes", () => {
+    const a = cachedCandidates({}, "score");
+    expect(cachedCandidates({}, "score").list).toBe(a.list);
+    expect(cachedCandidates({ maxNodeScore: 0.9 }, "score").list).not.toBe(a.list);
+    const b = cachedCandidates({}, "score");
+    useAppStore.getState().markChanged();
+    expect(cachedCandidates({}, "score").list).not.toBe(b.list);
   });
 
   // Why: score_summary is sampled for huge projects but must stay sensible.

@@ -22,6 +22,7 @@ import { AcceptCorrectedPrediction } from "@/commands/proposalCommands";
 import type { CommandContext } from "@/commands/CommandContext";
 import { AutomationError } from "@/automation/errors";
 import { qcMarkKey } from "@/lib/qcReviewed";
+import { handledPredictions } from "@/lib/handledPredictions";
 import type { Instance, LabeledFrame, PredictedInstance } from "@/types";
 
 /** Node index → source-frame position, or null = not visible. */
@@ -87,6 +88,14 @@ interface ProposalState {
    */
   claudeReview: boolean;
   setClaudeReview: (on: boolean) => void;
+  /**
+   * In that mode, the proposal stepped to (← / →). Kept here rather than
+   * worked out from the selection: one instance can have several proposals
+   * (a rejected one and its replacement, two QC flags), and the selection
+   * can't tell them apart.
+   */
+  claudeShown: string | null;
+  setClaudeShown: (id: string | null) => void;
 }
 
 /** Longest reason shown in the undo label. */
@@ -115,11 +124,16 @@ export function findPredictionByPose(lf: LabeledFrame | null, fingerprint: strin
 
 /**
  * The instance a proposal is about, if it still exists: the user instance for
- * a fix or ignore; for a correction, the prediction with the pose Claude saw.
+ * a fix or ignore; for a correction, the prediction with the pose Claude saw —
+ * unless the user has labeled that animal since (a user instance was made
+ * from it or overlaps it), when accepting would label it twice.
  */
 export function proposalInstance(p: ProposalWhere): Instance | null {
   const lf = proposalFrame(p);
-  if (p.kind === "correct") return findPredictionByPose(lf, p.fingerprint ?? "", p.instIdx);
+  if (p.kind === "correct") {
+    const pred = findPredictionByPose(lf, p.fingerprint ?? "", p.instIdx);
+    return pred && lf && !handledPredictions(lf).has(pred) ? pred : null;
+  }
   return lf?.userInstances[p.instIdx] ?? null;
 }
 
@@ -194,14 +208,15 @@ function undoLabel(reason: string): string {
 }
 
 export const useProposalStore = create<ProposalState>((set, get) => {
-  /** Add a proposal, replacing any still-pending one for the same flag. */
+  /**
+   * Add a proposal, replacing any for the same target the user can still
+   * accept: a pending one, or an accepted one they undid. Otherwise both
+   * would show (two ghosts) and both could be accepted.
+   */
   const add = (p: Proposal) => {
-    set({
-      proposals: [
-        ...get().proposals.filter((x) => !(targetKey(x) === targetKey(p) && x.status === "pending")),
-        p,
-      ],
-    });
+    const superseded = (x: Proposal) =>
+      targetKey(x) === targetKey(p) && (x.status === "pending" || proposalState(x) === "undone");
+    set({ proposals: [...get().proposals.filter((x) => !superseded(x)), p] });
     return p;
   };
   const setStatus = (id: string, status: ProposalStatus) =>
@@ -280,7 +295,7 @@ export const useProposalStore = create<ProposalState>((set, get) => {
         throw new AutomationError(
           "OUTDATED",
           p.kind === "correct"
-            ? "This prediction changed or was already accepted after Claude's suggestion, so it can't be applied. Ask Claude to look again."
+            ? "This prediction changed, or that animal was labeled, after Claude's suggestion, so it can't be applied. Ask Claude to look again."
             : "This instance changed after Claude's suggestion, so it can't be applied. Ask Claude to look again.",
         );
       }
@@ -335,12 +350,17 @@ export const useProposalStore = create<ProposalState>((set, get) => {
     },
 
     clear: () => {
-      if (get().proposals.length > 0) set({ proposals: [] });
+      if (get().proposals.length > 0 || get().claudeShown !== null) set({ proposals: [], claudeShown: null });
     },
 
     claudeReview: false,
     setClaudeReview: (on) => {
-      if (get().claudeReview !== on) set({ claudeReview: on });
+      if (get().claudeReview !== on) set(on ? { claudeReview: true } : { claudeReview: false, claudeShown: null });
+    },
+
+    claudeShown: null,
+    setClaudeShown: (id) => {
+      if (get().claudeShown !== id) set({ claudeShown: id });
     },
   };
 });

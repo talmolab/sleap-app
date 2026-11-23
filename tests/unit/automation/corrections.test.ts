@@ -1,6 +1,6 @@
 // Why: a correction becomes a user instance only when the user accepts it, as one undo step, and never from a stale picture.
 import { describe, it, expect, beforeEach } from "../../bun-test";
-import { PredictedInstance } from "@talmolab/sleap-io.js";
+import { Instance, PredictedInstance } from "@talmolab/sleap-io.js";
 import { useAppStore } from "@/stores/appStore";
 import {
   correctionResult,
@@ -11,6 +11,7 @@ import {
 } from "@/stores/proposalStore";
 import { ConvertPredictionToInstance } from "@/commands/editCommands";
 import { classifyDirty } from "@/lib/autosaveDirty";
+import { proposalGhosts } from "@/hooks/useProposalGhosts";
 import { AutomationError } from "@/automation/errors";
 import { loadPredictionFixture } from "../helpers/automationFixture";
 
@@ -104,6 +105,51 @@ describe("correction proposals", () => {
     stale[0] = [1, 1, true];
     store().addCorrection(targetA, { 2: [150, 125] }, { pose: stale });
     expect(proposalState(store().proposals[0])).toBe("outdated");
+  });
+
+  // Why: if the user labeled that animal themselves (by hand, or from the prediction), accepting would label it twice.
+  it("is outdated once a user instance overlaps its prediction, and accept refuses", async () => {
+    const p = store().addCorrection(targetA, { 2: [150, 125] }, { pose: poseOf(fx.a) });
+    lf30().instances.push(
+      Instance.fromNumpy({
+        pointsData: [
+          [101, 100],
+          [111, 110],
+          [131, 121],
+        ],
+        skeleton: fx.skeleton,
+      }),
+    );
+    expect(proposalState(store().proposals[0])).toBe("outdated");
+    expect(await codeOf(() => store().accept(p.id, fx.ctx))).toBe("OUTDATED");
+    expect(lf30().userInstances).toHaveLength(1);
+  });
+
+  // Why: a user instance made from the prediction (fromPredicted) means it is dealt with, even after the user moved it away.
+  it("is outdated once a user instance links to its prediction", () => {
+    store().addCorrection(targetA, { 2: [150, 125] }, { pose: poseOf(fx.a) });
+    const moved = Instance.fromNumpy({
+      pointsData: [
+        [500, 400],
+        [510, 410],
+        [530, 420],
+      ],
+      skeleton: fx.skeleton,
+    });
+    moved.fromPredicted = fx.a;
+    lf30().instances.push(moved);
+    expect(proposalState(store().proposals[0])).toBe("outdated");
+  });
+
+  // Why: after undoing an accepted correction, a new one for the same prediction must replace it, not sit beside it.
+  it("a new correction replaces an undone one for the same prediction", async () => {
+    const p = store().addCorrection(targetA, { 2: [150, 125] }, { pose: poseOf(fx.a) });
+    await store().accept(p.id, fx.ctx);
+    fx.ctx.undo();
+    expect(proposalState(store().proposals[0])).toBe("undone");
+    store().addCorrection({ ...targetA, reason: "r2" }, { 2: [170, 140] }, { pose: poseOf(fx.a) });
+    expect(store().proposals.map((x) => [x.reason, proposalState(x)])).toEqual([["r2", "pending"]]);
+    expect(proposalGhosts(store().proposals, lf30(), fx.video, 0)).toHaveLength(1);
   });
 
   // Why: "accept as is" makes the prediction a label without changing any node.

@@ -5,7 +5,9 @@
  * The proposal shown is the latest one for the selected instance on this
  * frame (for a correction: the prediction, or the user instance accepting it
  * made); with none for it (or nothing selected), the first pending one on the
- * frame.
+ * frame. In Claude's-suggestions mode, the one stepped to, while it is on
+ * screen and about the selection. With an instance selected, A / X only act
+ * on its own proposal, so they never change an animal the user isn't looking at.
  *
  * "Claude's suggestions" mode (proposalStore.claudeReview): the same Review
  * window, but ← / → and Prev / Next step through Claude's proposals — every
@@ -44,6 +46,11 @@ export function currentProposal(): Proposal | null {
   const videoIdx = labels.videos.indexOf(app.video);
   const here = proposals.filter((p) => p.videoIdx === videoIdx && p.frameIdx === app.frameIdx);
   if (here.length === 0) return null;
+  const { claudeReview, claudeShown } = useProposalStore.getState();
+  if (claudeReview && claudeShown) {
+    const shown = here.find((p) => p.id === claudeShown);
+    if (shown && (!app.instance || proposalIsAbout(shown, app.instance))) return shown;
+  }
   const mine = here.filter((p) => proposalIsAbout(p, app.instance));
   if (mine.length > 0) return mine[mine.length - 1];
   return here.find((p) => canAccept(p)) ?? null;
@@ -75,7 +82,10 @@ export function rejectProposal(id: string): void {
 export function handleProposalKey(key: "accept" | "reject"): boolean {
   if (!useQcStore.getState().reviewOpen) return false;
   const p = currentProposal();
-  if (!p) return false;
+  // With an instance selected, only its own suggestion: the row falls back to
+  // another animal's when the selected one has none, and A mustn't change that.
+  const selected = useAppStore.getState().instance;
+  if (!p || (selected && !proposalIsAbout(p, selected))) return false;
   if (key === "accept") {
     // An outdated one is refused with a message (handled, so A isn't passed on).
     if (p.status !== "pending" && !canAccept(p)) return false;
@@ -109,6 +119,7 @@ export function goToProposal(p: Proposal): void {
   const app = useAppStore.getState();
   const video = app.labels?.videos[p.videoIdx];
   if (!video) return;
+  useProposalStore.getState().setClaudeShown(p.id);
   if (app.video !== video) app.setVideo(video);
   // setFrameIdx clears the selection, so select after it.
   useAppStore.getState().setFrameIdx(p.frameIdx);

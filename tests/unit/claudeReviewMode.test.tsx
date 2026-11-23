@@ -97,6 +97,45 @@ describe("Claude's suggestions mode", () => {
     expect(app().frameIdx).toBe(40);
   });
 
+  // Why: one prediction can have two suggestions (a rejected one and its replacement); ← must still walk past both.
+  it("← / → step through two suggestions on the same prediction", () => {
+    const tA = { flagId: "v0:f30:p0:aaaaaa", videoIdx: 0, frameIdx: 30, instIdx: 0, reason: "r1" };
+    const p1 = store().addCorrection(tA, { 2: [150, 125] }, { pose: poseOf(fx.a) });
+    store().reject(p1.id);
+    store().addCorrection({ ...tA, reason: "r2" }, { 2: [151, 126] }, { pose: poseOf(fx.a) });
+    store().addCorrection(
+      { flagId: "v0:f40:p0:cccccc", videoIdx: 0, frameIdx: 40, instIdx: 0, reason: "c" },
+      { 0: [205, 95] },
+      { pose: poseOf(fx.c) },
+    );
+    openClaudeReview(); // on r2, the first one to decide
+    renderReview();
+    const seen: string[] = [];
+    for (let i = 0; i < 4; i++) {
+      act(() => {
+        handleQcReviewKey("frame prev");
+      });
+      const pos = screen.getByTestId("claude-review-header").querySelector(".font-mono")?.textContent;
+      seen.push(`${currentProposal()?.reason} ${pos}`);
+    }
+    expect(seen).toEqual(["r1 1 / 3", "c 3 / 3", "r2 2 / 3", "r1 1 / 3"]);
+    act(() => {
+      handleQcReviewKey("frame next");
+    });
+    expect(currentProposal()?.reason).toBe("r2");
+  });
+
+  // Why: with another animal selected, A must not accept a suggestion for an animal the user isn't looking at.
+  it("A does nothing when the selected instance has no suggestion", () => {
+    propose();
+    useQcStore.setState({ reviewOpen: true });
+    app().setFrameIdx(30);
+    app().setInstance(fx.b);
+    store().reject(store().proposals[1].id); // B's own suggestion is decided; A's is pending
+    expect(handleProposalKey("accept")).toBe(false);
+    expect(lf(30).userInstances).toHaveLength(0);
+  });
+
   // Why: the footer's Prev / Next do the same as ← / →.
   it("footer Prev / Next step through suggestions", () => {
     propose();

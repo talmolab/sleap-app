@@ -23,14 +23,15 @@ import { findQcFlag, flagTarget, listQcFlags, requireLabels, type QcFlag } from 
 import { DEFAULT_MAX_EDGE, getRender, renderFlag, renderPrediction, type RenderRecord } from "./render";
 import { frameToRender, renderToFrame } from "./coords";
 import {
+  cachedCandidates,
   comparedModels,
   DEFAULT_MAX_INSTANCE_SCORE,
   DEFAULT_MAX_NODE_SCORE,
+  DEFAULT_SCAN_BUDGET_MS,
   findPrediction,
-  listPredictionCandidates,
   parsePredictionId,
   predictionDisagreement,
-  sortCandidates,
+  scanDisagreements,
   type CandidateOrder,
 } from "./predictions";
 import { textResult, ToolRegistry, type Tool } from "./registry";
@@ -389,7 +390,7 @@ const PREDICTION_ID = {
 export const listPredictionsTool: Tool = {
   name: "list_predictions_to_review",
   description:
-    "Predicted instances (the model's poses) worth a second look, least confident first: those whose instance score or some node's score is below a threshold, and — when two or more models are shown in Compare Model Predictions — those whose nodes the models place far apart. Predictions the user already turned into user instances, or that overlap a user instance, are left out. Each has an id to pass to render_prediction and propose_correction, why it is listed, and the status of Claude's latest correction for it, if any. score_summary gives the spread of scores in the project, to pick thresholds by. Errors if the project has no predictions.",
+    "Predicted instances (the model's poses) worth a second look, least confident first: those whose instance score or some node's score is below a threshold, and — when two or more models are shown in Compare Model Predictions — those whose nodes the models place far apart. Predictions the user already turned into user instances, or that overlap a user instance, are left out. Each has an id to pass to render_prediction and propose_correction, why it is listed, and the status of Claude's latest correction for it, if any. score_summary gives the spread of scores in the project, to pick thresholds by. On a long video the model-disagreement check runs a few seconds per call and continues on the next call (compare_models.disagreement_scan says how far it got). Errors if the project has no predictions.",
   inputSchema: {
     type: "object",
     properties: {
@@ -429,13 +430,21 @@ export const listPredictionsTool: Tool = {
     }
     const maxInstanceScore = (args.max_instance_score as number | undefined) ?? DEFAULT_MAX_INSTANCE_SCORE;
     const maxNodeScore = (args.max_node_score as number | undefined) ?? DEFAULT_MAX_NODE_SCORE;
-    const list = listPredictionCandidates({
-      maxInstanceScore,
-      maxNodeScore,
-      disagreement: args.include_disagreement as boolean | undefined,
-      videoIdx: args.video as number | undefined,
-    });
-    const sorted = sortCandidates(list.candidates, (args.order as CandidateOrder | undefined) ?? "score");
+    const videoIdx = args.video as number | undefined;
+    const withDisagreement = args.include_disagreement !== false;
+    const videos = labels.videos.filter((v, i) => (videoIdx === undefined || videoIdx === i) && comparedModels(v).length >= 2);
+    // Check more frames for model disagreement, a few seconds at most, without freezing the app.
+    const scans = [];
+    for (const v of withDisagreement ? videos : []) {
+      scans.push(await scanDisagreements(v, DEFAULT_SCAN_BUDGET_MS / videos.length));
+    }
+    const scanned = scans.reduce((a, p) => a + p.checked, 0);
+    const toScan = scans.reduce((a, p) => a + p.total, 0);
+    const scanComplete = scans.every((p) => p.complete);
+    const { list, sorted } = cachedCandidates(
+      { maxInstanceScore, maxNodeScore, disagreement: withDisagreement, videoIdx },
+      (args.order as CandidateOrder | undefined) ?? "score",
+    );
     const offset = (args.offset as number | undefined) ?? 0;
     const limit = (args.limit as number | undefined) ?? 50;
     const latest = latestCorrections();
@@ -451,7 +460,20 @@ export const listPredictionsTool: Tool = {
       },
       compare_models:
         comparing.length >= 2
-          ? { models: [...new Set(comparing.map((m) => m.name))], unmatched_disagreements: list.unmatchedDisagreements }
+          ? {
+              models: [...new Set(comparing.map((m) => m.name))],
+              unmatched_disagreements: list.unmatchedDisagreements,
+              disagreement_scan: withDisagreement
+                ? {
+                    frames_checked: scanned,
+                    frames_to_check: toScan,
+                    complete: scanComplete,
+                    note: scanComplete
+                      ? undefined
+                      : "Only part of the video has been checked for model disagreement so far; call again to check more. Low-score results are complete.",
+                  }
+                : undefined,
+            }
           : null,
       score_summary: list.scoreSummary,
       predictions: sorted.slice(offset, offset + limit).map((c) => {
@@ -638,7 +660,7 @@ export const proposeCorrectionTool: Tool = {
         proposal_id: p.id,
         status: "outdated",
         message:
-          "The prediction changed after your render_prediction, so this proposal can't be accepted. Call render_prediction again and propose from the new picture.",
+          "The prediction changed after your render_prediction, or the user has labeled that animal, so this proposal can't be accepted. Call list_predictions_to_review again for the current list.",
       });
     }
     return textResult({
@@ -656,7 +678,7 @@ export const proposeCorrectionTool: Tool = {
 export const listProposalsTool: Tool = {
   name: "list_proposals",
   description:
-    "Claude's proposals in this session and where each stands: pending; accepted; rejected; 'outdated' (the instance changed after it was made — or, for a correction, the prediction is gone or changed — so it can't be accepted: look again); or 'undone' (accepted, then the user undid it). kind is fix or ignore (QC flags) or correct (predictions). Fix and correction positions are in frame coordinates, by node name.",
+    "Claude's proposals in this session and where each stands: pending; accepted; rejected; 'outdated' (the instance changed after it was made — or, for a correction, the prediction is gone or changed, or the user labeled that animal — so it can't be accepted: look again); or 'undone' (accepted, then the user undid it). kind is fix or ignore (QC flags) or correct (predictions). Fix and correction positions are in frame coordinates, by node name.",
   inputSchema: {
     type: "object",
     properties: {

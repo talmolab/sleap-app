@@ -33,7 +33,8 @@
  *     <proposals.json> is list_proposals' text, taken BEFORE accepting any
  *     correction (accepting shifts the frame's prediction indices). Reports
  *     errors found (right node moved), pixel error to the truth, misses,
- *     decoys left right vs. broken, and other nodes moved away from the truth.
+ *     decoys not reviewed / left right / broken, and other nodes moved away
+ *     from the truth. Rejected or outdated proposals are counted, not scored.
  */
 import { readFileSync, writeFileSync } from "node:fs";
 
@@ -363,8 +364,11 @@ export interface CorrectionScore {
   within10PxPct: number | null;
   /** Found errors that ended closer to the truth than the planted error was. */
   improvedPct: number | null;
-  /** Decoys with no correction, accepted as is, or every node Claude placed within 5 px of the truth. */
+  /** Decoys Claude made no (live) proposal for. */
+  decoysNotReviewed: number;
+  /** Reviewed decoys accepted as is, or with every node Claude placed within 5 px of the truth. */
   decoysLeftRight: number;
+  /** Of the reviewed decoys. */
   decoysLeftRightPct: number | null;
   /** Decoys Claude proposed accepting as is. */
   decoysAcceptedAsIs: number;
@@ -374,6 +378,8 @@ export interface CorrectionScore {
   collateralNodes: number;
   /** Corrections on predictions the plant didn't touch. */
   otherCorrections: number;
+  /** Corrections left out of the scores because they were rejected or had gone outdated. */
+  rejectedOrOutdated: number;
 }
 
 /** Nodes in `after` that end up away from the truth (moved > 5 px, or hidden though visible). */
@@ -394,7 +400,16 @@ function nodesAwayFromTruth(after: Record<string, [number, number] | null>, trut
 export function scoreCorrections(planted: PlantedPrediction[], proposals: ProposalOut[]): CorrectionScore {
   const key = (v: number, f: number, i: number) => `${v}:${f}:${i}`;
   const latest = new Map<string, ProposalOut>();
-  for (const p of proposals) if (p.kind === "correct" && p.prediction !== undefined) latest.set(key(p.video, p.frame, p.prediction), p);
+  let rejectedOrOutdated = 0;
+  for (const p of proposals) {
+    if (p.kind !== "correct" || p.prediction === undefined) continue;
+    // A rejected or outdated one isn't Claude's answer any more (and an outdated one's index may be stale).
+    if (p.status === "rejected" || p.status === "outdated") {
+      rejectedOrOutdated++;
+      continue;
+    }
+    latest.set(key(p.video, p.frame, p.prediction), p);
+  }
   const plantedAt = new Map(planted.map((p) => [key(p.videoIdx, p.frameIdx, p.predIdx), p]));
 
   const errors = planted.filter((p) => p.kind === "error");
@@ -426,13 +441,18 @@ export function scoreCorrections(planted: PlantedPrediction[], proposals: Propos
     px.push(e);
     if (e < p.distance) improved++;
   }
+  let decoysNotReviewed = 0;
   let decoysLeftRight = 0;
   let decoysAcceptedAsIs = 0;
   let decoysBroken = 0;
   for (const p of decoys) {
     const prop = latest.get(key(p.videoIdx, p.frameIdx, p.predIdx));
-    const after = prop?.after ?? {};
-    if (prop && Object.keys(after).length === 0) decoysAcceptedAsIs++;
+    if (!prop) {
+      decoysNotReviewed++;
+      continue;
+    }
+    const after = prop.after ?? {};
+    if (Object.keys(after).length === 0) decoysAcceptedAsIs++;
     const away = nodesAwayFromTruth(after, p.truth);
     collateralNodes += nodesAwayFromTruth(after, p.truth, p.nodeName);
     if (away === 0) decoysLeftRight++;
@@ -453,12 +473,14 @@ export function scoreCorrections(planted: PlantedPrediction[], proposals: Propos
     within5PxPct: pct(px.filter((e) => e <= 5).length, px.length),
     within10PxPct: pct(px.filter((e) => e <= 10).length, px.length),
     improvedPct: pct(improved, px.length),
+    decoysNotReviewed,
     decoysLeftRight,
-    decoysLeftRightPct: pct(decoysLeftRight, decoys.length),
+    decoysLeftRightPct: pct(decoysLeftRight, decoys.length - decoysNotReviewed),
     decoysAcceptedAsIs,
     decoysBroken,
     collateralNodes,
     otherCorrections,
+    rejectedOrOutdated,
   };
 }
 

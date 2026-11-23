@@ -155,6 +155,7 @@ describe("scoreCorrections", () => {
       corr(4, 0, {}), // decoy accepted as is: right
       corr(4, 1, { b: [50, 50] }), // decoy broken
       corr(9, 0, { a: [1, 1] }), // not planted
+      { ...corr(5, 0, { a: [10, 10] }), status: "rejected" }, // set aside, not scored
     ]);
     expect(s).toMatchObject({
       errors: 4,
@@ -167,11 +168,14 @@ describe("scoreCorrections", () => {
       medianErrorPx: 5,
       within5PxPct: 100,
       improvedPct: 100,
-      decoysLeftRight: 2, // one as is, one never proposed
+      decoysNotReviewed: 1, // frame 6: never proposed, so not counted as "left right"
+      decoysLeftRight: 1, // the one accepted as is
+      decoysLeftRightPct: 50,
       decoysAcceptedAsIs: 1,
       decoysBroken: 1,
       collateralNodes: 1,
       otherCorrections: 1,
+      rejectedOrOutdated: 1,
     });
   });
 });

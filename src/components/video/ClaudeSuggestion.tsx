@@ -50,7 +50,7 @@ function statusText(p: Proposal, st: ReturnType<typeof proposalState>): string |
   if (st === "rejected") return "Rejected";
   if (st === "outdated") {
     return p.kind === "correct"
-      ? "Outdated: the prediction changed or was accepted since Claude looked"
+      ? "Outdated: the prediction changed, or that animal was labeled, since Claude looked"
       : "Outdated: the instance changed since Claude looked";
   }
   if (st === "undone") return "Undone";
@@ -60,7 +60,7 @@ function statusText(p: Proposal, st: ReturnType<typeof proposalState>): string |
 function acceptTitle(p: Proposal, outdated: boolean): string {
   if (outdated) {
     return p.kind === "correct"
-      ? "The prediction changed after Claude's suggestion; ask Claude to look again"
+      ? "The prediction changed, or that animal was labeled, after Claude's suggestion; ask Claude to look again"
       : "The instance changed after Claude's suggestion; ask Claude to look again";
   }
   if (p.kind === "ignore") return "Mark this instance OK, as 3 does (A)";
@@ -75,6 +75,7 @@ export function ClaudeSuggestionRow() {
   useAppStore((s) => s.labeledFrame);
   useAppStore((s) => s.editSeq);
   useProposalStore((s) => s.proposals);
+  useProposalStore((s) => s.claudeShown);
   const p = currentProposal();
   if (!p) return null;
   const st = proposalState(p);
@@ -137,6 +138,7 @@ export function ClaudeSuggestionRow() {
 /** The Review window's header in Claude's-suggestions mode. */
 export function ClaudeReviewHeader() {
   const proposals = useProposalStore((s) => s.proposals);
+  useProposalStore((s) => s.claudeShown);
   useAppStore((s) => s.instance);
   useAppStore((s) => s.editSeq);
   const frameIdx = useAppStore((s) => s.frameIdx);
@@ -191,6 +193,7 @@ export function ClaudeReviewHeader() {
 /** The Review window's footer in Claude's-suggestions mode. */
 export function ClaudeReviewFooter() {
   const proposals = useProposalStore((s) => s.proposals);
+  useProposalStore((s) => s.claudeShown);
   useAppStore((s) => s.instance);
   useAppStore((s) => s.frameIdx);
   useAppStore((s) => s.labeledFrame);
