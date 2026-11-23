@@ -65,6 +65,7 @@ import {
   onDiskTableFromMeta,
   StreamingH5File,
   StreamingH5Writer,
+  StreamingHdf5VideoBackend,
   type RangeSink,
   type RangeSource,
   type Labels,
@@ -84,9 +85,14 @@ import {
 import { fileSize, readRange } from "./nativeRange";
 import { sourceFormatOf, withLegacyLayout } from "./slpFormatCompat";
 import {
+  bindLabelsToFile,
   bindingRefusal,
   boundDatasets,
+  clearFileBinding,
+  loadedVideoDataset,
   refreshFileIdentity,
+  sameFileIdentity,
+  sameVideoList,
   statFileIdentity,
 } from "./inPlaceBinding";
 
@@ -708,39 +714,143 @@ export async function saveLabelsInPlace(
   // size the probe already measured rather than a second fileSize() round-trip.
   const destSize = probe.size;
   // Exclusive use of the app's one native write handle (an export may hold it).
-  await withNativeWriteHandle(async () => {
-    await writeOpenAppend(destPath); // open existing WITHOUT truncating
-    const destSink: RangeSink = {
-      writeAt: (o, b) => writeAt(o, b),
-      readAt: (o, l) => readAt(o, l),
-      truncate: (l) => truncateFile(l),
-      close: () => writeClose(),
-    };
-    const writer = new StreamingH5Writer();
-    try {
-      await writer.openWrite(destSink, destPath, destSize, H5WASM_URL);
-      const res = await writer.updateLabelsInPlace(update);
-      if (res.success !== true) {
-        throw new Error(
-          `saveLabelsInPlace: updateLabelsInPlace failed: ${res.error ?? JSON.stringify(res)}`
-        );
+  // Waiting for it can take a while, so the file is checked again once it is
+  // ours: a change in the meantime refuses, with nothing written.
+  let refusedLate: string | null = null;
+  try {
+    await withNativeWriteHandle(async () => {
+      refusedLate = bindingRefusal(labels, destPath, await statFileIdentity(destPath));
+      if (refusedLate) return;
+      await writeOpenAppend(destPath); // open existing WITHOUT truncating
+      const destSink: RangeSink = {
+        writeAt: (o, b) => writeAt(o, b),
+        readAt: (o, l) => readAt(o, l),
+        truncate: (l) => truncateFile(l),
+        close: () => writeClose(),
+      };
+      const writer = new StreamingH5Writer();
+      try {
+        await writer.openWrite(destSink, destPath, destSize, H5WASM_URL);
+        const res = await writer.updateLabelsInPlace(update);
+        if (res.success !== true) {
+          throw new Error(
+            `saveLabelsInPlace: updateLabelsInPlace failed: ${res.error ?? JSON.stringify(res)}`
+          );
+        }
+      } finally {
+        // Belt-and-suspenders close, mirroring the streaming writer: close the
+        // worker first (flushes h5wasm through the bridge), then the native handle.
+        await writer.close().catch(() => {});
+        await writeClose().catch(() => {});
       }
-    } finally {
-      // Belt-and-suspenders close, mirroring the streaming writer: close the
-      // worker first (flushes h5wasm through the bridge), then the native handle.
-      await writer.close().catch(() => {});
-      await writeClose().catch(() => {});
+    });
+    if (refusedLate) {
+      console.log(`[saveLabelsInPlace] not in-place-writable: ${refusedLate}`);
+      return { ok: false, reason: refusedLate };
     }
-  });
-  console.log(
-    `[saveLabelsInPlace] patched label tables in place -> ${destPath}` +
-      (metadataChanged ? " (+ /metadata)" : "")
-  );
+    console.log(
+      `[saveLabelsInPlace] patched label tables in place -> ${destPath}` +
+        (metadataChanged ? " (+ /metadata)" : "")
+    );
 
-  // 5. POST-WRITE VERIFY (required backstop; throws loud on any inconsistency).
-  await verifyInPlace(destPath, update, probe.sidecars, probe.videosJson, videoAttrs);
+    // 5. POST-WRITE VERIFY (required backstop; throws loud on any inconsistency).
+    await verifyInPlace(destPath, update, probe.sidecars, probe.videosJson, videoAttrs);
+  } catch (err) {
+    // A write that failed, or can't be confirmed, leaves no record: the next
+    // save rewrites the file in full, whatever the file system's time
+    // resolution says about it.
+    clearFileBinding(labels);
+    throw err;
+  }
   console.log(`[saveLabelsInPlace] verify OK -> ${destPath}`);
   // The file as the app now wrote it: the next in-place save compares with this.
   refreshFileIdentity(labels, await statFileIdentity(destPath));
   return { ok: true };
+}
+
+/**
+ * After the app wrote `labels` to `path` in full: record the file for the
+ * in-place save (`inPlaceBinding.ts`), with each embedded video's dataset as
+ * the written `videos_json` names it (a video with no embedded frames may keep
+ * its old name). `written` is the video list the writer was given: if the
+ * loaded list is no longer exactly that list (an undo or redo ran during the
+ * write), or the file can't be read back, the record is cleared instead, and
+ * the next save rewrites the file in full.
+ *
+ * Returns whether an embedded video now reads its images from the file under
+ * a name the file has given to another video (a large file's open, whose
+ * backends read the file on disk): the caller then marks the labels (see
+ * `markStaleVideoNames`) and asks the user to reopen.
+ */
+export async function recordWrittenFile(
+  labels: Labels,
+  path: string,
+  written: readonly Video[]
+): Promise<{ staleVideoNames: boolean }> {
+  clearFileBinding(labels);
+  const identity = await statFileIdentity(path);
+  if (!identity || !hasCrossOriginIsolation()) return { staleVideoNames: false };
+  let videosJson: string[] | null;
+  try {
+    const reader = new StreamingH5File();
+    await reader.openRange(
+      { size: identity.size, readRange: (o, l) => readRange(path, o, l) },
+      { h5wasmUrl: H5WASM_URL }
+    );
+    try {
+      videosJson = await readJsonStringDataset(reader, "videos_json");
+    } finally {
+      await reader.close().catch(() => {});
+    }
+  } catch (err) {
+    console.log("[saveLabelsInPlace] could not read back the written file's videos:", err);
+    return { staleVideoNames: false };
+  }
+  const datasets = writtenDatasets(videosJson);
+  const staleVideoNames = written.some(
+    (video, index) =>
+      video.hasEmbeddedImages &&
+      readsProjectFile(video) &&
+      loadedVideoDataset(video) !== (datasets?.[index] ?? null)
+  );
+  if (!datasets || datasets.length !== written.length) return { staleVideoNames };
+  // Only now, after every await: the list must still be the one written.
+  if (!sameVideoList(labels.videos, written)) return { staleVideoNames };
+  // And the file must still be the one just written.
+  const again = await statFileIdentity(path);
+  if (!again || !sameFileIdentity(again, identity)) return { staleVideoNames };
+  bindLabelsToFile(labels, path, identity, datasets);
+  return { staleVideoNames };
+}
+
+/** Each entry's embedded dataset in `videos_json` (null if external); null if unparseable. */
+function writtenDatasets(videosJson: string[] | null): Array<string | null> | null {
+  if (!videosJson) return null;
+  const out: Array<string | null> = [];
+  for (const [index, entry] of videosJson.entries()) {
+    let parsed: VideoJsonEntry;
+    try {
+      parsed = JSON.parse(entry);
+    } catch {
+      return null;
+    }
+    const backend = parsed.backend ?? {};
+    out.push(
+      backend.filename !== "."
+        ? null
+        : typeof backend.dataset === "string" && backend.dataset
+          ? backend.dataset
+          : `video${index}/video`
+    );
+  }
+  return out;
+}
+
+/** Whether a video's backend reads its images from the file on disk. */
+function readsProjectFile(video: Video): boolean {
+  const backend = video.backend as { inner?: unknown } | null;
+  return (
+    backend instanceof StreamingHdf5VideoBackend ||
+    (backend?.inner ?? null) instanceof StreamingHdf5VideoBackend
+  );
 }

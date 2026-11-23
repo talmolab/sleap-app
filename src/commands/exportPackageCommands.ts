@@ -83,6 +83,7 @@ import { toastExported } from "@/lib/exportToast";
 import { getPlatform } from "../platform/index";
 import { useAppStore } from "@/stores/appStore";
 import { withImageFormat, withLegacyLayout } from "@/lib/slpFormatCompat";
+import { clearFileBinding } from "@/lib/inPlaceBinding";
 import { normalizePackageImage, type PackageImageOptions } from "@/lib/packageImageFormat";
 import { ensureWritable } from "@/lib/slpAccess";
 
@@ -268,6 +269,16 @@ export function packageImageParam(
   if (!image || typeof image !== "object") return undefined;
   if (image.format !== "png" && image.format !== "jpg") return undefined;
   return normalizePackageImage(image.format, image.quality);
+}
+
+/**
+ * A package exported over the open project's own file replaces it: the fast
+ * in-place save must not patch it as the project's file (its next save then
+ * rewrites the file in full). Its size and time would usually differ anyway.
+ */
+function forgetProjectFileIfOverwritten(path: string): void {
+  const { projectPath, labels } = useAppStore.getState();
+  if (labels && projectPath && path === projectPath) clearFileBinding(labels);
 }
 
 /** Is the streaming desktop write (worker + native file writes) available? */
@@ -487,6 +498,7 @@ async function exportLabelsPackageNow(
         // A video with no open decoder can't be embedded and stays a link.
         return embedVideos.some((v) => !v.backend);
       });
+      forgetProjectFileIfOverwritten(destPath);
       toastExported("Labels package exported", destPath, true);
       if (unembedded) warnUnembedded();
       return destPath;
@@ -529,6 +541,7 @@ async function exportLabelsPackageNow(
     });
     const saved = await saveBytesFile(bytes, suggestedName, filter);
     if (!saved) return null; // user cancelled the dialog/picker
+    forgetProjectFileIfOverwritten(saved);
 
     toastExported("Labels package exported", saved, false);
 

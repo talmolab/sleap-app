@@ -11,17 +11,19 @@
  * video whose old dataset name now belongs to another video, and another
  * program can replace the file with one of the same layout. So:
  *
- * - The file must be the one the app last read or wrote: its size and
- *   modification time are recorded when the project is opened, after every
- *   full rewrite, and after each verified in-place save, and must still match.
+ * - The file must be the one the app last read or wrote: its size,
+ *   modification time and (where the platform gives them) inode and device
+ *   are recorded when the project is opened, after every full rewrite, and
+ *   after each verified in-place save, and must still match.
  * - The loaded video list must map one to one, in order, onto that file's
- *   entries, by object identity: each Video is recorded with the index (and,
- *   when embedded, the dataset) it had in that file. A video the map doesn't
+ *   entries, by object identity: each Video is recorded with the index and,
+ *   when embedded, the dataset it has in that file. A video the map doesn't
  *   know (restored by undo after a rewrite, or a replaced video), another
  *   order or another count refuses.
  *
- * No binding (a project opened some other way, a stat that failed) refuses the
- * in-place save: the full re-save is always correct, and records a binding.
+ * No binding (a project opened some other way, a stat that failed, a full
+ * rewrite whose video list changed while it ran) refuses the in-place save:
+ * the full re-save is always correct, and records a binding.
  */
 import type { Labels, Video } from "@talmolab/sleap-io.js";
 
@@ -29,6 +31,9 @@ import type { Labels, Video } from "@talmolab/sleap-io.js";
 export interface FileIdentity {
   size: number;
   mtimeMs: number;
+  /** Inode and device (Unix), when the platform reports them. */
+  ino?: number | null;
+  dev?: number | null;
 }
 
 /** Where a loaded video sits in the bound file. */
@@ -49,23 +54,37 @@ interface FileBinding {
 const bindings = new WeakMap<Labels, FileBinding>();
 
 /**
- * The size and modification time of `path` (desktop), or null when they
- * can't be read: no binding is recorded then, and the in-place save refuses.
+ * The size, modification time, inode and device of `path` (desktop), or null
+ * when size or time can't be read: no binding is recorded then, and the
+ * in-place save refuses.
  */
 export async function statFileIdentity(path: string): Promise<FileIdentity | null> {
   try {
     const { stat } = await import("@tauri-apps/plugin-fs");
-    const info = await stat(path);
+    const info = (await stat(path)) as {
+      size?: number;
+      mtime?: Date | string | number | null;
+      ino?: number | null;
+      dev?: number | null;
+    };
     const mtimeMs = info.mtime ? new Date(info.mtime).getTime() : NaN;
     if (typeof info.size !== "number" || !Number.isFinite(mtimeMs)) return null;
-    return { size: info.size, mtimeMs };
+    return {
+      size: info.size,
+      mtimeMs,
+      ino: typeof info.ino === "number" ? info.ino : null,
+      dev: typeof info.dev === "number" ? info.dev : null,
+    };
   } catch {
     return null;
   }
 }
 
+/** Same size and time, and same inode and device where both sides have them. */
 export function sameFileIdentity(a: FileIdentity, b: FileIdentity): boolean {
-  return a.size === b.size && a.mtimeMs === b.mtimeMs;
+  const same = (x: number | null | undefined, y: number | null | undefined) =>
+    x == null || y == null || x === y;
+  return a.size === b.size && a.mtimeMs === b.mtimeMs && same(a.ino, b.ino) && same(a.dev, b.dev);
 }
 
 /** The dataset an embedded video's images were read from, as loaded. */
@@ -77,19 +96,22 @@ export function loadedVideoDataset(video: Video): string | null {
   return typeof fromMetadata === "string" && fromMetadata ? fromMetadata : null;
 }
 
+/** The same Video objects, in the same order. */
+export function sameVideoList(a: readonly Video[], b: readonly Video[]): boolean {
+  return a.length === b.length && a.every((v, i) => v === b[i]);
+}
+
 /**
- * Record that `labels` match the file at `path`, as it is now (`identity`):
- *  - "loaded": they were just read from it; each embedded video's dataset is
- *    the one it was read from.
- *  - "written": they were just written to it in full; sleap-io.js stores the
- *    images of the video at index i in `video{i}/video`.
+ * Record that `labels` match the file at `path`, as it is now (`identity`).
+ * `datasets` gives each embedded video's dataset in the file, by index (null
+ * for an external video): "loaded" takes the ones the videos were read from.
  * A null identity clears the binding instead.
  */
 export function bindLabelsToFile(
   labels: Labels,
   path: string,
   identity: FileIdentity | null,
-  how: "loaded" | "written"
+  datasets: "loaded" | ReadonlyArray<string | null>
 ): void {
   if (!identity) {
     bindings.delete(labels);
@@ -99,9 +121,9 @@ export function bindLabelsToFile(
   labels.videos.forEach((video, index) => {
     const dataset = !video.hasEmbeddedImages
       ? null
-      : how === "written"
-        ? `video${index}/video`
-        : loadedVideoDataset(video);
+      : datasets === "loaded"
+        ? loadedVideoDataset(video)
+        : (datasets[index] ?? null);
     videos.set(video, { index, dataset });
   });
   bindings.set(labels, { path, identity, count: labels.videos.length, videos });
@@ -112,7 +134,7 @@ export function clearFileBinding(labels: Labels): void {
   bindings.delete(labels);
 }
 
-/** After a verified in-place save: the file's new size and time. */
+/** After a verified in-place save: the file's new identity. */
 export function refreshFileIdentity(labels: Labels, identity: FileIdentity | null): void {
   const binding = bindings.get(labels);
   if (!binding) return;
@@ -152,4 +174,26 @@ export function bindingRefusal(
 export function boundDatasets(labels: Labels): Array<string | null> {
   const binding = bindings.get(labels);
   return labels.videos.map((video) => binding?.videos.get(video)?.dataset ?? null);
+}
+
+// ---------------------------------------------------------------------------
+// Embedded videos read under names the file no longer has
+// ---------------------------------------------------------------------------
+
+const staleNames = new WeakSet<Labels>();
+
+/**
+ * Mark labels whose embedded videos read their images from the project file
+ * by a dataset name that a full rewrite has since given to another video (a
+ * large file's open: its backends read the file on disk). Their images, and a
+ * further full write that copies them, would be another video's: the save
+ * refuses that until the project is reopened (the in-place save, which keeps
+ * the images, still runs).
+ */
+export function markStaleVideoNames(labels: Labels): void {
+  staleNames.add(labels);
+}
+
+export function hasStaleVideoNames(labels: Labels): boolean {
+  return staleNames.has(labels);
 }

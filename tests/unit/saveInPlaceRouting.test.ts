@@ -29,6 +29,7 @@ let fileSizeResult = 1000; // bytes; small by default → in-memory path
 let savePath: string | null = "/picked.pkg.slp";
 
 // --- mocks (declared before importing the module under test) -----------------
+const bindingCalls: string[] = [];
 const saveLabelsInPlaceMock = vi.fn(async () => {
   if (inPlaceThrows) throw new Error("simulated mid-write in-place failure");
   return inPlaceResult;
@@ -47,6 +48,10 @@ vi.mock("@talmolab/sleap-io.js", () => ({
 }));
 vi.mock("@/lib/saveLabelsInPlace", () => ({
   saveLabelsInPlace: saveLabelsInPlaceMock,
+  recordWrittenFile: async (_l: unknown, path: string, written: unknown[]) => {
+    bindingCalls.push(`record ${path} ${written.length}`);
+    return { staleVideoNames: false };
+  },
 }));
 vi.mock("@/lib/saveEmbeddedPkgStreaming", () => ({
   saveEmbeddedPkgStreaming: saveEmbeddedPkgStreamingMock,
@@ -81,15 +86,10 @@ vi.mock("sonner", () => ({
 
 // The in-place save's record of the file (inPlaceBinding.ts): cleared before
 // every full rewrite and set again to the file just written.
-const bindingCalls: string[] = [];
 vi.mock("@/lib/inPlaceBinding", () => ({
-  statFileIdentity: async (path: string) => {
-    bindingCalls.push(`stat ${path}`);
-    return { size: 1, mtimeMs: 2 };
-  },
   clearFileBinding: () => void bindingCalls.push("clear"),
-  bindLabelsToFile: (_l: unknown, path: string, identity: unknown, how: string) =>
-    void bindingCalls.push(`bind ${path} ${JSON.stringify(identity)} ${how}`),
+  hasStaleVideoNames: () => false,
+  markStaleVideoNames: () => {},
 }));
 saveSlpToBytesMock.mockImplementation(async () => {
   bindingCalls.push("write");
@@ -146,12 +146,7 @@ describe("saveProjectAsSlp — in-place routing", () => {
     useAppStore.setState({ projectPath: "/proj.pkg.slp" });
     inPlaceResult = { ok: false, reason: "tracks changed" };
     await saveProjectAsSlp(fakeLabels(true), "proj.pkg.slp");
-    expect(bindingCalls).toEqual([
-      "clear",
-      "write",
-      "stat /proj.pkg.slp",
-      'bind /proj.pkg.slp {"size":1,"mtimeMs":2} written',
-    ]);
+    expect(bindingCalls).toEqual(["clear", "write", "record /proj.pkg.slp 1"]);
   });
 
   it("leaves the record to the in-place save when it succeeds", async () => {
@@ -165,12 +160,7 @@ describe("saveProjectAsSlp — in-place routing", () => {
     useAppStore.setState({ projectPath: "/proj.pkg.slp" });
     savePath = "/newname.pkg.slp";
     await saveProjectAsSlp(fakeLabels(true), "proj.pkg.slp", true);
-    expect(bindingCalls).toEqual([
-      "clear",
-      "write",
-      "stat /newname.pkg.slp",
-      'bind /newname.pkg.slp {"size":1,"mtimeMs":2} written',
-    ]);
+    expect(bindingCalls).toEqual(["clear", "write", "record /newname.pkg.slp 1"]);
   });
 
   it("in-place embedded save tries saveLabelsInPlace FIRST and stops on {ok:true}", async () => {

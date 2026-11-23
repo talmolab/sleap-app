@@ -45,6 +45,10 @@ const sio = { ...sioModule } as typeof sioModule & {
 let current = "";
 const fileOps: string[] = [];
 const hooks: {
+  /** Runs when the in-place save gets the write handle, before it writes. */
+  onWriteHandle?: () => void;
+  /** Throw from the writer after it wrote. */
+  failAfterWrite?: boolean;
   afterWrite?: (f: H5File) => void;
   failVerifyRead?: string;
   changeVideosJsonAfterWrite?: boolean;
@@ -103,6 +107,7 @@ class H5Writer {
       f.close();
     }
     fileOps.push("updateLabelsInPlace");
+    if (hooks.failAfterWrite) throw new Error("injected failure after writing");
     return { success: true };
   }
   async close() {}
@@ -124,7 +129,10 @@ vi.mock("@/lib/nativeRange", () => ({
   readRange: async () => new Uint8Array(0),
 }));
 vi.mock("@/lib/nativeWrite", () => ({
-  withNativeWriteHandle: <T,>(work: () => Promise<T>) => work(),
+  withNativeWriteHandle: <T,>(work: () => Promise<T>) => {
+    hooks.onWriteHandle?.();
+    return work();
+  },
   writeOpenAppend: async () => void fileOps.push("writeOpenAppend"),
   writeAt: async () => {},
   readAt: async () => new Uint8Array(0),
@@ -132,7 +140,7 @@ vi.mock("@/lib/nativeWrite", () => ({
   writeClose: async () => {},
 }));
 
-const { saveLabelsInPlace } = await import("@/lib/saveLabelsInPlace");
+const { saveLabelsInPlace, recordWrittenFile } = await import("@/lib/saveLabelsInPlace");
 const { withLegacyLayout } = await import("@/lib/slpFormatCompat");
 const { bindLabelsToFile, clearFileBinding, statFileIdentity } = await import(
   "@/lib/inPlaceBinding"
@@ -149,6 +157,8 @@ beforeEach(() => {
   g.SharedArrayBuffer ??= ArrayBuffer;
   fileOps.length = 0;
   delete hooks.afterWrite;
+  delete hooks.onWriteHandle;
+  delete hooks.failAfterWrite;
   delete hooks.failVerifyRead;
   delete hooks.changeVideosJsonAfterWrite;
 });
@@ -227,13 +237,14 @@ async function open(source: string, lazy = false) {
  */
 async function fullRewrite(labels: sioModule.Labels, change: (copy: sioModule.Labels) => void) {
   clearFileBinding(labels);
+  const written = [...labels.videos];
   const copy = await sio.loadSlp(current);
   change(copy);
   const bytes = await sio.saveSlpToBytes(copy, withLegacyLayout({}));
   for (const v of copy.videos) (v.backend as { close?: () => void } | null)?.close?.();
   writeFileSync(`${current}.tmp`, bytes);
   renameSync(`${current}.tmp`, current);
-  bindLabelsToFile(labels, current, await statFileIdentity(current), "written");
+  await recordWrittenFile(labels, current, written);
 }
 
 /** Each labeled frame of the file as `video{i}@frame`. */
@@ -338,6 +349,29 @@ describe("in-place save: the file and its videos must be the ones loaded", () =>
     // B's frame and C's frame are still on B's and C's images.
     expect(await fileFrames(current)).toEqual(framesBefore);
     expect(framesBefore).toEqual(["video0@3", "video1@4"]);
+  });
+});
+
+describe("between the check and the write", () => {
+  it("refuses, writing nothing, when the file changed while waiting for the write handle", async () => {
+    const labels = await open(await appPackage([0, 1, 2]));
+    const other = await appPackage([0, 1, 2, 3]);
+    hooks.onWriteHandle = () => copyFileSync(other, current);
+    movePoint(labels, 3);
+    const res = await saveLabelsInPlace(labels, current);
+    expect(res.ok).toBe(false);
+    if (!res.ok) expect(res.reason).toMatch(/changed on disk/);
+    expect(fileOps).toEqual([]);
+  });
+
+  it("keeps no record after a write that failed", async () => {
+    const labels = await open(await appPackage([0, 1, 2]));
+    hooks.failAfterWrite = true;
+    movePoint(labels, 3);
+    await expect(saveLabelsInPlace(labels, current)).rejects.toThrow(/injected failure/);
+    delete hooks.failAfterWrite;
+    fileOps.length = 0;
+    await expectRefused(labels, /no record of this file/);
   });
 });
 

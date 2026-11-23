@@ -77,6 +77,12 @@ vi.mock("@/lib/notify", () => ({
   toast: { success: vi.fn(), error: toastError, warning: vi.fn(), info: vi.fn() },
 }));
 
+const cleared: unknown[] = [];
+vi.mock("@/lib/inPlaceBinding", () => ({
+  clearFileBinding: (labels: unknown) => void cleared.push(labels),
+}));
+
+const { useAppStore } = await import("@/stores/appStore");
 const {
   exportLabelsPackage,
   writeLabelsPackageToPath,
@@ -209,6 +215,20 @@ describe("training job package builders", () => {
     await writeLabelsPackageToPath(mp4Labels(), "user", "/tmp/x.pkg.slp", () => true, JPEG);
     expect(calls[0].path).toBe("memory");
     expect(calls[0].opts.imageFormat).toBe("jpg");
+  });
+});
+
+describe("a package exported over the open project's file", () => {
+  it("makes the in-place save forget the file; another path doesn't", async () => {
+    const project = { videos: [] } as never;
+    cleared.length = 0;
+    useAppStore.setState({ labels: project, projectPath: "/data/proj.pkg.slp" });
+    await exportLabelsPackage(mp4Labels(), "labels.slp", "user"); // saved to /out/labels.pkg.slp
+    expect(cleared).toEqual([]);
+    useAppStore.setState({ projectPath: "/out/labels.pkg.slp" });
+    await exportLabelsPackage(mp4Labels(), "labels.slp", "user");
+    expect(cleared).toEqual([project]);
+    useAppStore.setState(useAppStore.getInitialState());
   });
 });
 

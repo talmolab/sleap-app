@@ -23,6 +23,7 @@ import {
   type RecordMetadata,
 } from "@/lib/slpFormatCompat";
 import { refuseEditIfViewOnly } from "@/lib/slpAccess";
+import { refuseWhileSaving } from "@/lib/saveInProgress";
 
 /** Record of an executed command for change tracking. */
 export interface ChangeRecord {
@@ -632,6 +633,10 @@ export class CommandContext {
     ) {
       return;
     }
+    // No data change while a save runs: it would change what is being written.
+    if ((this.isMutating(command) || command.editsWithoutTopics) && refuseWhileSaving()) {
+      return;
+    }
 
     // Snapshot before mutating commands for undo
     // (commands with skipAutoSnapshot handle their own snapshots)
@@ -669,6 +674,7 @@ export class CommandContext {
 
   /** Undo the last mutating command. Returns true if an undo was performed. */
   undo(): boolean {
+    if (refuseWhileSaving()) return false;
     const snapshot = this.undoStack.pop();
     if (!snapshot) return false;
 
@@ -699,6 +705,7 @@ export class CommandContext {
 
   /** Redo the last undone command. Returns true if a redo was performed. */
   redo(): boolean {
+    if (refuseWhileSaving()) return false;
     const snapshot = this.redoStack.pop();
     if (!snapshot) return false;
 
