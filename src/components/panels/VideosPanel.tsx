@@ -49,7 +49,8 @@ import {
 } from "../../lib/resolveVideos";
 import {
   VideoImportList,
-  toVideoImportEntries,
+  prepareVideoImportEntries,
+  hdf5ImportOptions,
   type VideoImportEntry,
 } from "@/components/dialogs/VideoImportList";
 import { displayFrameCount } from "@/lib/videoFrameCount";
@@ -479,14 +480,19 @@ export function VideosPanel() {
     }
   };
 
-  /** Add every staged video from the Import Videos dialog, with its chosen grayscale flag. */
+  /** Add every staged video from the Import Videos dialog, with its chosen options. */
   const handleConfirmImport = async () => {
     if (!labels || !pendingImport) return;
     setImporting(true);
     try {
       const added: Video[] = [];
       for (const pv of pendingImport) {
-        const video = await addVideoFileToLabels(labels, pv, pv.grayscale);
+        const video = await addVideoFileToLabels(
+          labels,
+          pv,
+          pv.grayscale,
+          hdf5ImportOptions(pv)
+        );
         if (video) added.push(video);
       }
       if (added.length > 0) labels.reindex();
@@ -702,7 +708,9 @@ export function VideosPanel() {
       <Separator />
       <div className="px-2 pt-2">
         <VideoDropzone
-          onFiles={(picked) => setPendingImport(toVideoImportEntries(picked))}
+          onFiles={(picked) =>
+            void prepareVideoImportEntries(picked).then(setPendingImport)
+          }
           data-tutorial="add-videos-button"
         />
       </div>
@@ -765,7 +773,7 @@ export function VideosPanel() {
           <DialogHeader>
             <DialogTitle>Import Videos</DialogTitle>
             <DialogDescription>
-              Choose which video(s) to import as grayscale.
+              Choose the import options for each video.
             </DialogDescription>
           </DialogHeader>
           {pendingImport && (

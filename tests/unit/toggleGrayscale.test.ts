@@ -25,6 +25,7 @@ function fakeBackend(channels: number): VideoBackend {
     shape: [10, 4, 4, channels],
     fps: 30,
     getFrame: async () => null,
+    close: () => {},
   } as VideoBackend;
 }
 
