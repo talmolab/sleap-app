@@ -43,6 +43,12 @@ describe("packageImageFormat", () => {
     expect(clampJpegQuality(80.6)).toBe(81);
     expect(clampJpegQuality("x")).toBe(95);
     expect(clampJpegQuality(Number.NaN)).toBe(95);
+    // Missing is the default, not 0 (which would clamp to the lowest quality).
+    expect(clampJpegQuality(null)).toBe(95);
+    expect(clampJpegQuality("")).toBe(95);
+    expect(clampJpegQuality(undefined)).toBe(95);
+    expect(clampJpegQuality(true)).toBe(95);
+    expect(clampJpegQuality("80")).toBe(80);
   });
 });
 

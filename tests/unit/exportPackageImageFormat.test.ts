@@ -241,6 +241,14 @@ describe("package commands", () => {
     });
     // No quality: the default, never NaN; out of range: clamped.
     expect(packageImageParam({ image: { format: "jpg" } })).toEqual({ format: "jpg", quality: 95 });
+    expect(packageImageParam({ image: { format: "jpg", quality: null } })).toEqual({
+      format: "jpg",
+      quality: 95,
+    });
+    expect(packageImageParam({ image: { format: "jpg", quality: "" } })).toEqual({
+      format: "jpg",
+      quality: 95,
+    });
     expect(packageImageParam({ image: { format: "jpg", quality: 400 } })).toEqual({
       format: "jpg",
       quality: 100,

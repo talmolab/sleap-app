@@ -38,9 +38,17 @@ export function isJpegChoice(image: PackageImageOptions | null | undefined): boo
   return image?.format === "jpg";
 }
 
-/** A JPEG quality clamped to 1-100 and made whole; the default for junk. */
+/**
+ * A JPEG quality clamped to 1-100 and made whole. Anything that is not a
+ * finite number or a numeric string (missing, null, empty) is the default.
+ */
 export function clampJpegQuality(quality: unknown): number {
-  const q = typeof quality === "number" ? quality : Number(quality);
+  const q =
+    typeof quality === "number"
+      ? quality
+      : typeof quality === "string" && quality.trim() !== ""
+        ? Number(quality)
+        : Number.NaN;
   if (!Number.isFinite(q)) return DEFAULT_JPEG_QUALITY;
   return Math.min(MAX_JPEG_QUALITY, Math.max(MIN_JPEG_QUALITY, Math.round(q)));
 }
