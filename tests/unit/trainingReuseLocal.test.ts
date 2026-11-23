@@ -26,10 +26,34 @@ const runInferenceMock = vi.fn(async (cfg: InferenceConfig) => {
 });
 
 vi.mock("@/platform", () => ({ isTauri: true, getPlatform: async () => ({}) }));
-vi.mock("@tauri-apps/plugin-fs", () => ({ exists: async () => false, remove: async () => {} }));
+/** Fake model folders on disk: run dir -> its training_config.yaml (each also holds best.ckpt). */
+const modelFolders: Record<string, string> = {};
+const headYaml = (head: string, nodes: string[] | null = null, anchor?: string) =>
+  [
+    nodes ? `data_config:\n  skeletons:\n    - nodes: [${nodes.map((n) => `{name: ${n}}`).join(", ")}]` : "",
+    `model_config:\n  head_configs:\n    ${head}:\n      confmaps: {${anchor ? `anchor_part: ${anchor}` : ""}}`,
+  ].join("\n");
+vi.mock("@tauri-apps/plugin-fs", () => ({
+  exists: async () => false,
+  remove: async () => {},
+  readTextFile: async (p: string) => {
+    const dir = p.replace(/\/training_config\.yaml$/, "");
+    if (!(dir in modelFolders)) throw new Error(`ENOENT ${p}`);
+    return modelFolders[dir];
+  },
+  readDir: async (p: string) => {
+    if (!(p in modelFolders)) throw new Error(`ENOENT ${p}`);
+    return [{ name: "training_config.yaml", isDirectory: false }, { name: "best.ckpt", isDirectory: false }];
+  },
+}));
+const exportCalls: { modelPaths: string[]; outputDir: string }[] = [];
 vi.mock("@/platform/backend", () => ({
   runTraining: runTrainingMock,
   runInference: runInferenceMock,
+  runExport: async (args: { modelPaths: string[]; outputDir: string }) => {
+    exportCalls.push(args);
+    return { success: true, command: "" };
+  },
   cancelCommand: async () => {},
   startZmqRelay: async () => {},
   stopZmqRelay: async () => {},
@@ -63,6 +87,10 @@ beforeEach(() => {
   runTrainingMock.mockClear();
   runInferenceMock.mockClear();
   inferenceCalls.length = 0;
+  exportCalls.length = 0;
+  for (const k of Object.keys(modelFolders)) delete modelFolders[k];
+  modelFolders[REUSED_CENTROID] = headYaml("centroid");
+  modelFolders["/data/models/old.ci"] = headYaml("centered_instance");
   const s = useTrainingStore.getState();
   s.setConfig("modelType", "top_down");
   s.addConfigFile(s.parseYamlConfig(profile("baseline_medium_rf.centroid.yaml"), "c.yaml", "centroid")!);
@@ -140,5 +168,90 @@ describe("reusing a trained model for one stage (local)", () => {
     useTrainingStore.getState().setConfigReuse("centroid", null);
     await useTrainingStore.getState().startTraining({});
     expect(runTrainingMock).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe("reuse review fixes (local)", () => {
+  // The trained centered-instance stage must crop around the reused centroid model's anchor,
+  // even if the Pipeline tab's anchor picker was changed after the pick — or inference feeds it off-center crops.
+  it("trains the other stage with the reused model's anchor part, whatever was edited", async () => {
+    useTrainingStore.getState().setConfigReuse("centroid", {
+      model: { path: REUSED_CENTROID, runName: null, headKey: "centroid", nodeNames: null, anchorPart: "thorax" },
+    });
+    useTrainingStore.getState().updateConfigHyperparams("centered_instance", { anchorPart: "head" });
+    // The edit snaps back at once...
+    const ci = () => useTrainingStore.getState().config.configs.find((c) => c.slot === "centered_instance")!;
+    expect(ci().hyperparams.anchorPart).toBe("thorax");
+    // ...and Start enforces it even if the store was changed behind its back.
+    useTrainingStore.setState((st) => ({
+      config: {
+        ...st.config,
+        configs: st.config.configs.map((c) => (c.slot === "centered_instance" ? { ...c, hyperparams: { ...c.hyperparams, anchorPart: "head" } } : c)),
+      },
+    }));
+    await useTrainingStore.getState().startTraining({});
+    const trainedYaml = String(runTrainingMock.mock.calls[0][0]);
+    expect(trainedYaml).toContain("anchor_part: thorax");
+    expect(trainedYaml).not.toContain("anchor_part: head");
+  });
+
+  // A reused folder deleted or moved since it was picked must stop Start, not fail hours later at inference.
+  it("refuses at Start when the reused model's folder is gone", async () => {
+    reuseCentroid();
+    delete modelFolders[REUSED_CENTROID];
+    await useTrainingStore.getState().startTraining({ inferenceTarget: "suggestions" });
+    expect(runTrainingMock).not.toHaveBeenCalled();
+    expect(useTrainingStore.getState().error).toContain("no longer there");
+  });
+
+  // A pick made in another project (different skeleton) must not carry over silently.
+  it("refuses at Start when the reused model's skeleton doesn't match this project", async () => {
+    modelFolders[REUSED_CENTROID] = headYaml("centroid", ["nose", "tail"]);
+    reuseCentroid();
+    useAppStore.setState({ skeleton: { nodes: [{ name: "head" }, { name: "thorax" }] } as never });
+    await useTrainingStore.getState().startTraining({ inferenceTarget: "suggestions" });
+    expect(runTrainingMock).not.toHaveBeenCalled();
+    expect(useTrainingStore.getState().error).toContain("different skeleton");
+    useAppStore.setState({ skeleton: null } as never);
+  });
+
+  // Every stage reused with inference off would "complete" doing nothing.
+  it("refuses when every stage is reused and post-training inference is off", async () => {
+    reuseCentroid();
+    useTrainingStore.getState().setConfigReuse("centered_instance", {
+      model: { path: "/data/models/old.ci", runName: null, headKey: "centered_instance", nodeNames: null },
+    });
+    await useTrainingStore.getState().startTraining({ inferenceTarget: "nothing" });
+    expect(useTrainingStore.getState().status).toBe("error");
+    expect(useTrainingStore.getState().error).toContain("nothing to run");
+  });
+
+  // Export Model… after the run exports the whole pipeline into this project's models/exported,
+  // not next to a reused model that may live in another project.
+  it("exports the full pipeline into this project's models folder", async () => {
+    modelFolders["/other/models/c"] = headYaml("centroid");
+    useTrainingStore.getState().setConfigReuse("centroid", {
+      model: { path: "/other/models/c", runName: null, headKey: "centroid", nodeNames: null },
+    });
+    await useTrainingStore.getState().startTraining({ inferenceTarget: "nothing" });
+    const st = useTrainingStore.getState();
+    expect(st.pipelineModelDirs[0]).toBe("/other/models/c");
+    expect(st.pipelineModelDirs).toHaveLength(2);
+    expect(st.pipelineExportDir).toBe("/data/models/exported");
+
+    const { useExportStore } = await import("@/stores/exportStore");
+    useExportStore.getState().openExport(st.pipelineModelDirs, { outputDir: st.pipelineExportDir! });
+    await useExportStore.getState().startExport("onnx", "fp16");
+    expect(exportCalls.at(-1)).toMatchObject({ modelPaths: st.pipelineModelDirs, outputDir: "/data/models/exported" });
+  });
+
+  // Swapping a reused stage's config file must not untick "Use a trained model".
+  it("keeps the reuse choice when the stage's config is replaced", () => {
+    reuseCentroid();
+    const s = useTrainingStore.getState();
+    s.addConfigFile(s.parseYamlConfig(profile("baseline_large_rf.centroid.yaml"), "big.yaml", "centroid")!);
+    const c = useTrainingStore.getState().config.configs.find((x) => x.slot === "centroid")!;
+    expect(c.filename).toBe("big.yaml");
+    expect(c.reuse?.model?.path).toBe(REUSED_CENTROID);
   });
 });

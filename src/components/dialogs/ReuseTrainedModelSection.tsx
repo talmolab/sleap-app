@@ -8,7 +8,7 @@ import {
 } from "@/components/ui/select";
 import { toast } from "@/lib/notify";
 import { useAppStore } from "@/stores/appStore";
-import { getSlotLabel, useTrainingStore, type ConfigFile, type ConfigHyperparams, type ModelType } from "@/stores/trainingStore";
+import { getSlotLabel, useTrainingStore, type ConfigFile, type ModelType } from "@/stores/trainingStore";
 import {
   baseName,
   dirOf,
@@ -40,13 +40,11 @@ export function ReuseTrainedModelSection({
   modelType,
   configFile,
   skeletonNodes,
-  onUpdate,
 }: {
   slot: string;
   modelType: ModelType;
   configFile: ConfigFile;
   skeletonNodes: string[];
-  onUpdate: (updates: Partial<ConfigHyperparams>) => void;
 }) {
   const setConfigReuse = useTrainingStore((s) => s.setConfigReuse);
   const trainingLabelsPath = useTrainingStore((s) => s.config.trainingLabelsPath);
@@ -79,14 +77,9 @@ export function ReuseTrainedModelSection({
     [scanned, modelType, slot, skeletonNodes],
   );
 
-  const pick = (model: ReusedModel) => {
-    setConfigReuse(slot, { model });
-    // A top-down pair must crop around the same part the reused model was
-    // trained with, so the stage being trained adopts its anchor.
-    if (ANCHOR_PAIR_TYPES.includes(modelType) && model.anchorPart !== undefined) {
-      onUpdate({ anchorPart: model.anchorPart });
-    }
-  };
+  // The store pins the reused model's anchor part / box settings on the
+  // stage that still trains (applyReusePins), here and again at Start.
+  const pick = (model: ReusedModel) => setConfigReuse(slot, { model });
 
   const browse = async () => {
     try {
@@ -116,7 +109,10 @@ export function ReuseTrainedModelSection({
         runName: info.runName,
         headKey: info.headKey,
         nodeNames: info.nodeNames,
+        cropMode: info.cropMode ?? null,
         ...(info.anchorPart !== undefined ? { anchorPart: info.anchorPart } : {}),
+        ...(info.bboxSource !== undefined ? { bboxSource: info.bboxSource } : {}),
+        ...(info.bboxPadding !== undefined ? { bboxPadding: info.bboxPadding } : {}),
       });
     } catch {
       // Cancelled, or not in the desktop app.

@@ -8,7 +8,7 @@
 
 import { describe, it, expect, beforeEach, afterEach, vi } from "../bun-test";
 import { render, screen, fireEvent, waitFor, cleanup } from "@testing-library/react";
-import { useTrainingStore, defaultHyperparams, type ConfigFile, type ConfigHyperparams } from "@/stores/trainingStore";
+import { useTrainingStore, defaultHyperparams, type ConfigFile } from "@/stores/trainingStore";
 import { useAppStore } from "@/stores/appStore";
 
 vi.mock("@/lib/platform", () => ({ isTauri: true, isMac: false, modKey: "Ctrl" }));
@@ -63,7 +63,7 @@ function makeConfig(slot: string, reuse?: ConfigFile["reuse"]): ConfigFile {
 }
 
 /** Renders the centroid tab's section wired to the real store, like the dialog does. */
-function Harness({ onUpdate }: { onUpdate: (u: Partial<ConfigHyperparams>) => void }) {
+function Harness() {
   const cf = useTrainingStore((s) => s.config.configs.find((c) => c.slot === "centroid"))!;
   return (
     <ReuseTrainedModelSection
@@ -71,7 +71,6 @@ function Harness({ onUpdate }: { onUpdate: (u: Partial<ConfigHyperparams>) => vo
       modelType="top_down"
       configFile={cf}
       skeletonNodes={["head", "thorax"]}
-      onUpdate={onUpdate}
     />
   );
 }
@@ -87,7 +86,7 @@ afterEach(cleanup);
 describe("Use a trained model — head tab section", () => {
   // Checking the box marks the stage as reused, with nothing picked yet.
   it("checking the box sets the stage to reuse", () => {
-    render(<Harness onUpdate={() => {}} />);
+    render(<Harness />);
     fireEvent.click(screen.getByLabelText("Use a trained model"));
     expect(useTrainingStore.getState().config.configs[0].reuse).toEqual({ model: null });
     expect(screen.getByText(/Pick a trained model, or uncheck/)).toBeInTheDocument();
@@ -95,7 +94,7 @@ describe("Use a trained model — head tab section", () => {
 
   // Only centroid runs are offered; the one trained on other nodes is shown but can't be picked.
   it("lists same-head models and disables a different skeleton", async () => {
-    render(<Harness onUpdate={() => {}} />);
+    render(<Harness />);
     fireEvent.click(screen.getByLabelText("Use a trained model"));
     const trigger = await screen.findByRole("combobox");
     await waitFor(() => expect(trigger.textContent).toContain("Select a trained Centroid model"));
@@ -114,9 +113,7 @@ describe("Use a trained model — head tab section", () => {
 
   // Picking stores the model and hands its anchor part to the stage that still trains.
   it("picking a model stores it and syncs the anchor part", async () => {
-    const updates: Partial<ConfigHyperparams>[] = [];
-    const onUpdate = (u: Partial<ConfigHyperparams>) => { updates.push(u); };
-    render(<Harness onUpdate={onUpdate} />);
+    render(<Harness />);
     fireEvent.click(screen.getByLabelText("Use a trained model"));
     const trigger = await screen.findByRole("combobox");
     await waitFor(() => expect(trigger.textContent).toContain("Select a trained Centroid model"));
@@ -126,14 +123,14 @@ describe("Use a trained model — head tab section", () => {
     const reuse = useTrainingStore.getState().config.configs[0].reuse;
     expect(reuse?.model?.path).toBe("/proj/models/250101_120000.centroid.n=40");
     expect(reuse?.model?.nodeNames).toEqual(["head", "thorax"]);
-    expect(updates).toEqual([{ anchorPart: "thorax" }]);
+    expect(useTrainingStore.getState().config.configs[0].hyperparams.anchorPart).toBe("thorax");
     expect(screen.getByText(/This stage won't be trained/)).toBeInTheDocument();
   });
 
   // Unchecking puts the stage back to training.
   it("unchecking clears the reuse", () => {
     useTrainingStore.getState().setConfigReuse("centroid", { model: null });
-    render(<Harness onUpdate={() => {}} />);
+    render(<Harness />);
     fireEvent.click(screen.getByLabelText("Use a trained model"));
     expect(useTrainingStore.getState().config.configs[0].reuse).toBeNull();
   });
@@ -181,6 +178,16 @@ describe("Use a trained model — in the Training Configuration dialog", () => {
     openCentroidTab();
     expect(screen.getByLabelText("Use a trained model")).toBeChecked();
     expect(screen.queryByText("Train from scratch")).not.toBeInTheDocument();
+  });
+
+  // A reused top-down stage fixes the anchor part: the Pipeline tab's picker is locked and says why.
+  it("locks the Pipeline tab's anchor part while a reused model sets it", () => {
+    const reused = makeConfig("centroid", {
+      model: { path: "/proj/models/c", runName: null, headKey: "centroid", nodeNames: null, anchorPart: "thorax" },
+    });
+    renderDialog([reused, makeConfig("centered_instance")]);
+    expect(screen.getByLabelText("Anchor Part")).toBeDisabled();
+    expect(screen.getByTestId("anchor-part-locked").textContent).toContain("reused Centroid model");
   });
 
   // Unchecked, the tab looks as before.

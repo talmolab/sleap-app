@@ -15,7 +15,7 @@ import { findTrainedModels, type DiscoveredModel, type ModelFsAccess } from "./m
 import { parseTrainingConfig } from "./metrics/loadModelMetrics";
 import { headTypeMatches, cropModeOf, type CropMode } from "./bboxModels";
 import { slotToHeadType } from "./trainingProfiles";
-import type { ConfigFile, ModelType } from "@/stores/trainingStore";
+import type { BboxSource, ConfigFile, ConfigHyperparams, ModelType } from "@/stores/trainingStore";
 
 /** A trained model picked to stand in for one pipeline stage. */
 export interface ReusedModel {
@@ -27,6 +27,11 @@ export interface ReusedModel {
   nodeNames: string[] | null;
   /** The top-down anchor part it was trained with (`null`: bounding-box center). `undefined`: not a top-down head. */
   anchorPart?: string | null;
+  /** Centered-instance crop mode (box vs fixed), when known — tells the two centered-instance heads apart. */
+  cropMode?: CropMode | null;
+  /** A box detector's `data_config.bbox_source` / `bbox_padding`, when recorded. */
+  bboxSource?: BboxSource;
+  bboxPadding?: number;
 }
 
 /**
@@ -69,6 +74,8 @@ export function skeletonCompat(
 export interface ScannedModel extends DiscoveredModel {
   nodeNames: string[] | null;
   anchorPart?: string | null;
+  bboxSource?: BboxSource;
+  bboxPadding?: number;
 }
 
 /** One row of a slot's trained-model picker. */
@@ -100,7 +107,10 @@ export function reuseCandidatesForSlot(
         runName: m.runName,
         headKey: m.headKey,
         nodeNames: m.nodeNames,
+        cropMode: m.cropMode ?? null,
         ...(m.anchorPart !== undefined ? { anchorPart: m.anchorPart } : {}),
+        ...(m.bboxSource !== undefined ? { bboxSource: m.bboxSource } : {}),
+        ...(m.bboxPadding !== undefined ? { bboxPadding: m.bboxPadding } : {}),
       },
       mtimeMs: m.mtimeMs,
       compat: skeletonCompat(m.nodeNames, projectNodes),
@@ -131,15 +141,16 @@ export function reuseModelProblem(
 
 /**
  * Why training can't start with the current reuse choices, or `null`: a
- * checked box with no model picked, or — on a Connect worker — every stage
- * reused (the worker's inference job reads the labels file a train job
- * uploads, so there must be something to train there; run inference instead).
+ * checked box with no model picked; or every stage reused when there is then
+ * nothing to do — on a Connect worker always (its inference job reads the
+ * labels file a train job uploads, so something must train there), locally
+ * when post-training inference is off.
  */
 export function reuseStartProblem(
   slots: string[],
   configs: ConfigFile[],
   label: (slot: string) => string,
-  opts: { remote?: boolean } = {},
+  opts: { remote?: boolean; inferenceTarget?: string } = {},
 ): string | null {
   for (const slot of slots) {
     const cf = configs.find((c) => c.slot === slot);
@@ -147,8 +158,107 @@ export function reuseStartProblem(
       return `Pick a trained model for ${label(slot)}, or uncheck "Use a trained model".`;
     }
   }
-  if (opts.remote && slots.length > 0 && slotsToTrain(slots, configs).length === 0) {
-    return "Every stage uses a trained model, so there is nothing to train on the worker. Run inference from the Inference panel instead.";
+  if (slots.length > 0 && slotsToTrain(slots, configs).length === 0) {
+    if (opts.remote) {
+      return "Every stage uses a trained model, so there is nothing to train on the worker. Run inference from the Inference panel instead.";
+    }
+    if (!opts.inferenceTarget || opts.inferenceTarget === "nothing") {
+      return "Every stage uses a trained model and post-training inference is off, so there is nothing to run. Pick frames to predict on, or train a stage.";
+    }
+  }
+  return null;
+}
+
+/**
+ * Settings the stages that still train must share with a reused model —
+ * otherwise inference feeds the new model input it never saw in training:
+ * a top-down pair's anchor part (centered-instance crops are centered on the
+ * part the centroid model finds), and a box-crop pair's box source/padding.
+ * `null` when no reused model pins anything. `stage` names the reused slot.
+ */
+export function reusePinnedHyperparams(
+  modelType: ModelType,
+  configs: ConfigFile[],
+): { stage: string; values: Partial<ConfigHyperparams> } | null {
+  for (const cf of configs) {
+    const m = cf.reuse?.model;
+    if (!m) continue;
+    if ((modelType === "top_down" || modelType === "top_down_id") && m.anchorPart !== undefined) {
+      return { stage: cf.slot, values: { anchorPart: m.anchorPart } };
+    }
+    if (modelType === "top_down_bbox") {
+      const values: Partial<ConfigHyperparams> = {};
+      if (m.bboxSource !== undefined) values.bboxSource = m.bboxSource;
+      if (m.bboxPadding !== undefined) values.bboxPadding = m.bboxPadding;
+      if (Object.keys(values).length > 0) return { stage: cf.slot, values };
+    }
+  }
+  return null;
+}
+
+/** The note shown on a locked anchor / box field: which reused model sets it. `null` when nothing is pinned. */
+export function reusePinNote(
+  modelType: ModelType,
+  configs: ConfigFile[],
+  label: (slot: string) => string,
+): string | null {
+  const pinned = reusePinnedHyperparams(modelType, configs);
+  return pinned
+    ? `Set by the reused ${label(pinned.stage)} model — the stage you train must match it.`
+    : null;
+}
+
+/**
+ * `configs` with the reused model's pinned settings (see
+ * `reusePinnedHyperparams`) written onto every stage. Returns `configs`
+ * itself when nothing changes, so store updates stay cheap.
+ */
+export function applyReusePins(modelType: ModelType, configs: ConfigFile[]): ConfigFile[] {
+  const pinned = reusePinnedHyperparams(modelType, configs);
+  if (!pinned) return configs;
+  const entries = Object.entries(pinned.values) as [keyof ConfigHyperparams, unknown][];
+  let changed = false;
+  const out = configs.map((c) => {
+    if (entries.every(([k, v]) => c.hyperparams[k] === v)) return c;
+    changed = true;
+    return { ...c, hyperparams: { ...c.hyperparams, ...pinned.values } };
+  });
+  return changed ? out : configs;
+}
+
+/** What a model folder holds now, re-read at Start (`null`: no readable config). */
+export type ReadModelFolder = (path: string) => Promise<{ headKey: string; nodeNames: string[] | null; cropMode?: CropMode | null; hasCheckpoint: boolean } | null>;
+
+/**
+ * Re-check every reused model when training starts — the pick may be old
+ * (moved or deleted since, or carried over from another project). With
+ * `readFolder` (local runs) each folder is re-read: it must still exist with
+ * a checkpoint. Head type always, and skeleton when `projectNodes` is given
+ * (not for a worker-side labels file), must still fit. `null` when all fit.
+ */
+export async function reusedModelsStartProblem(
+  slots: string[],
+  configs: ConfigFile[],
+  modelType: ModelType,
+  label: (slot: string) => string,
+  opts: { projectNodes?: string[] | null; readFolder?: ReadModelFolder } = {},
+): Promise<string | null> {
+  for (const slot of slots) {
+    const stored = configs.find((c) => c.slot === slot)?.reuse?.model;
+    if (!stored) continue;
+    let current: { headKey: string; nodeNames: string[] | null; cropMode?: CropMode | null } = stored;
+    if (opts.readFolder) {
+      const info = await opts.readFolder(stored.path).catch(() => null);
+      if (!info) {
+        return `The trained model picked for ${label(slot)} is no longer there (${stored.path}). Pick it again, or uncheck "Use a trained model".`;
+      }
+      if (!info.hasCheckpoint) {
+        return `The trained model picked for ${label(slot)} has no checkpoint (.ckpt) anymore (${stored.path}).`;
+      }
+      current = info;
+    }
+    const problem = reuseModelProblem(current, modelType, slot, opts.projectNodes ?? null);
+    if (problem) return `${label(slot)}: ${problem} Pick another model, or uncheck "Use a trained model".`;
   }
   return null;
 }
@@ -210,6 +320,7 @@ export function describeModelConfig(path: string, yamlText: string): Omit<Scanne
     // Unknown crop mode is fine.
   }
   const anchorPart = anchorPartOf(yamlText);
+  const box = bboxSettingsOf(yamlText);
   return {
     path,
     headKey: info.headKey ?? "",
@@ -217,7 +328,23 @@ export function describeModelConfig(path: string, yamlText: string): Omit<Scanne
     runName: info.runName,
     nodeNames: info.nodeNames,
     ...(anchorPart !== undefined ? { anchorPart } : {}),
+    ...box,
   };
+}
+
+/** A box detector's recorded box source / padding (`data_config`), whichever are present. */
+export function bboxSettingsOf(yamlText: string): { bboxSource?: BboxSource; bboxPadding?: number } {
+  try {
+    const doc = yaml.load(yamlText) as Record<string, unknown> | null;
+    const data = (doc?.data_config ?? {}) as Record<string, unknown>;
+    const out: { bboxSource?: BboxSource; bboxPadding?: number } = {};
+    const src = data.bbox_source;
+    if (src === "auto" || src === "bboxes" || src === "instances" || src === "masks") out.bboxSource = src;
+    if (typeof data.bbox_padding === "number") out.bboxPadding = data.bbox_padding;
+    return out;
+  } catch {
+    return {};
+  }
 }
 
 function joinPath(dir: string, name: string): string {
@@ -250,7 +377,14 @@ export async function scanReusableModels(
       seen.add(m.path);
       try {
         const described = describeModelConfig(m.path, await readText(joinPath(m.path, "training_config.yaml"), fs));
-        out.push({ ...m, nodeNames: described.nodeNames, ...(described.anchorPart !== undefined ? { anchorPart: described.anchorPart } : {}) });
+        const { nodeNames, anchorPart, bboxSource, bboxPadding } = described;
+        out.push({
+          ...m,
+          nodeNames,
+          ...(anchorPart !== undefined ? { anchorPart } : {}),
+          ...(bboxSource !== undefined ? { bboxSource } : {}),
+          ...(bboxPadding !== undefined ? { bboxPadding } : {}),
+        });
       } catch {
         out.push({ ...m, nodeNames: null });
       }

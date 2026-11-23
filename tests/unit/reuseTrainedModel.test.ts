@@ -5,8 +5,13 @@
  */
 
 import { describe, it, expect } from "../bun-test";
+import { isPartialTopDownRun } from "@/lib/launcherSpec";
 import {
   anchorPartOf,
+  applyReusePins,
+  bboxSettingsOf,
+  reusePinnedHyperparams,
+  reusedModelsStartProblem,
   pipelineModelPaths,
   readModelFolder,
   reuseCandidatesForSlot,
@@ -15,6 +20,7 @@ import {
   scanReusableModels,
   skeletonCompat,
   slotsToTrain,
+  type ReadModelFolder,
   type ScannedModel,
 } from "@/lib/reuseTrainedModel";
 import { defaultHyperparams, type ConfigFile } from "@/stores/trainingStore";
@@ -119,8 +125,8 @@ describe("slotsToTrain / reuseStartProblem", () => {
   // Locally every stage may be reused (just inference, like PyQt); on a worker there must be something to train.
   it("allows all stages reused locally but not on a worker", () => {
     const configs = [cfg("centroid", { model: model("/m/c") }), cfg("centered_instance", { model: model("/m/ci", "centered_instance") })];
-    expect(reuseStartProblem(slots, configs, label)).toBeNull();
-    expect(reuseStartProblem(slots, configs, label, { remote: true })).toContain("nothing to train on the worker");
+    expect(reuseStartProblem(slots, configs, label, { inferenceTarget: "suggestions" })).toBeNull();
+    expect(reuseStartProblem(slots, configs, label, { remote: true, inferenceTarget: "suggestions" })).toContain("nothing to train on the worker");
   });
 });
 
@@ -208,5 +214,71 @@ trainer_config:
     expect(info?.headKey).toBe("centroid");
     expect(info?.hasCheckpoint).toBe(false);
     expect(await readModelFolder("/x/empty", fs)).toBeNull();
+  });
+});
+
+describe("reuse review fixes", () => {
+  const slots = ["centroid", "centered_instance"];
+
+  // A reused centroid model fixes the anchor part for the stage that trains.
+  it("pins a reused top-down model's anchor part on every stage", () => {
+    const configs = [
+      cfg("centroid", { model: { ...model("/m/c"), anchorPart: "thorax" } }),
+      { ...cfg("centered_instance"), hyperparams: { ...defaultHyperparams, anchorPart: "head" } },
+    ];
+    expect(reusePinnedHyperparams("top_down", configs)).toEqual({ stage: "centroid", values: { anchorPart: "thorax" } });
+    const pinned = applyReusePins("top_down", configs);
+    expect(pinned.map((c) => c.hyperparams.anchorPart)).toEqual(["thorax", "thorax"]);
+    // Nothing to change: the same array comes back.
+    expect(applyReusePins("top_down", pinned)).toBe(pinned);
+  });
+
+  // A reused box detector fixes box source/padding for the box-crop stage it feeds.
+  it("pins a reused box detector's box settings in a box-crop pipeline", () => {
+    const configs = [
+      cfg("bbox", { model: { ...model("/m/det", "bbox_centernet"), bboxSource: "instances", bboxPadding: 8 } }),
+      cfg("centered_instance"),
+    ];
+    const pinned = applyReusePins("top_down_bbox", configs);
+    expect(pinned[1].hyperparams.bboxSource).toBe("instances");
+    expect(pinned[1].hyperparams.bboxPadding).toBe(8);
+    expect(bboxSettingsOf("data_config:\n  bbox_source: instances\n  bbox_padding: 8\n")).toEqual({ bboxSource: "instances", bboxPadding: 8 });
+  });
+
+  // Nothing reused (or a model with nothing to pin): settings untouched.
+  it("pins nothing without a reused model", () => {
+    const configs = [cfg("centroid"), cfg("centered_instance")];
+    expect(applyReusePins("top_down", configs)).toBe(configs);
+  });
+
+  // Locally, all stages reused is fine only when inference will run.
+  it("refuses all-reused locally when post-training inference is off", () => {
+    const configs = [cfg("centroid", { model: model("/m/c") }), cfg("centered_instance", { model: model("/m/ci", "centered_instance") })];
+    expect(reuseStartProblem(slots, configs, label, { inferenceTarget: "nothing" })).toContain("nothing to run");
+    expect(reuseStartProblem(slots, configs, label, {})).toContain("nothing to run");
+    expect(reuseStartProblem(slots, configs, label, { inferenceTarget: "suggestions" })).toBeNull();
+  });
+
+  // Start re-checks each pick: gone, no checkpoint, wrong skeleton.
+  it("re-checks reused models at Start", async () => {
+    const configs = [cfg("centroid", { model: { ...model("/m/c"), nodeNames: NODES } }), cfg("centered_instance")];
+    const read = (info: Awaited<ReturnType<ReadModelFolder>>): ReadModelFolder => async () => info;
+    expect(await reusedModelsStartProblem(slots, configs, "top_down", label, { readFolder: read(null) })).toContain("no longer there");
+    expect(await reusedModelsStartProblem(slots, configs, "top_down", label, {
+      readFolder: read({ headKey: "centroid", nodeNames: NODES, hasCheckpoint: false }),
+    })).toContain("no checkpoint");
+    expect(await reusedModelsStartProblem(slots, configs, "top_down", label, { projectNodes: ["a", "b"] })).toContain("different skeleton");
+    expect(await reusedModelsStartProblem(slots, configs, "top_down", label, {
+      projectNodes: NODES,
+      readFolder: read({ headKey: "centroid", nodeNames: NODES, hasCheckpoint: true }),
+    })).toBeNull();
+  });
+
+  // "Run again" on a Connect run that trained one top-down stage (the other reused) explains itself.
+  it("recognizes a one-stage top-down run", () => {
+    expect(isPartialTopDownRun(["centered_instance"])).toBe(true);
+    expect(isPartialTopDownRun(["centroid"])).toBe(true);
+    expect(isPartialTopDownRun(["centroid", "centered_instance"])).toBe(false);
+    expect(isPartialTopDownRun(["bottomup"])).toBe(false);
   });
 });

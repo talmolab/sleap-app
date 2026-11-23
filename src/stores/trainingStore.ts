@@ -26,7 +26,15 @@ import type { VideoVisibility } from "@/lib/remoteVisibility";
 import type { JobTelemetry } from "@/lib/protocolV1/jobTelemetry";
 import type { InferenceConfig, PendingRemoteMerge } from "@/stores/inferenceStore";
 import { isBboxHeadKey } from "@/lib/bboxModels";
-import { pipelineModelPaths, reuseStartProblem, slotsToTrain, type ReuseSelection } from "@/lib/reuseTrainedModel";
+import {
+  applyReusePins,
+  pipelineModelPaths,
+  readModelFolder,
+  reusedModelsStartProblem,
+  reuseStartProblem,
+  slotsToTrain,
+  type ReuseSelection,
+} from "@/lib/reuseTrainedModel";
 
 const MAX_BATCH_SAMPLES = 20000; // bound batchSamples; drop oldest beyond this
 const MAX_LOG_LINES = 1000; // bound the training log so it doesn't grow unbounded during long runs
@@ -745,6 +753,10 @@ interface TrainingState {
   currentModelIndex: number;
   wandbUrl: string | null;
   modelOutputDirs: string[];
+  /** The whole pipeline a local run ended with — newly trained models plus any reused ones, in pipeline order (what Export Model… exports). */
+  pipelineModelDirs: string[];
+  /** Where Export Model… writes that pipeline: this project's `models/exported` (a reused model may live in another project's folder). */
+  pipelineExportDir: string | null;
   log: string[]; // single shared log for all models
   /** Remote runs only; `null` when not requested / not reached. */
   postTrainingInference: PostTrainingInference | null;
@@ -1599,6 +1611,15 @@ async function removeRunFolder(path: string): Promise<boolean | null> {
   }
 }
 
+/** Re-read a reused model's folder from disk (desktop), for the Start-time check. */
+async function readLocalModelFolder(path: string) {
+  const fs = await import("@tauri-apps/plugin-fs");
+  return readModelFolder(path, {
+    readTextFile: (p) => fs.readTextFile(p),
+    readDir: async (p) => (await fs.readDir(p)).map((e) => ({ name: e.name, isDirectory: e.isDirectory })),
+  });
+}
+
 async function localTrainingLabelsPath(config: TrainingConfig): Promise<string> {
   return (
     config.trainingLabelsPath ||
@@ -1658,6 +1679,8 @@ const initialState = {
   currentModelIndex: 0,
   wandbUrl: null as string | null,
   modelOutputDirs: [] as string[],
+  pipelineModelDirs: [] as string[],
+  pipelineExportDir: null as string | null,
   log: [] as string[],
   postTrainingInference: null as PostTrainingInference | null,
   resetSeq: 0,
@@ -1673,7 +1696,9 @@ export const useTrainingStore = create<TrainingState>()((set, get) => ({
     set((state) => ({
       config: {
         ...state.config,
-        [key]: key === "configs" ? syncTopDownAnchor(value as ConfigFile[]) : value,
+        [key]: key === "configs"
+          ? applyReusePins(state.config.modelType, syncTopDownAnchor(value as ConfigFile[]))
+          : value,
       },
     })),
 
@@ -1690,7 +1715,8 @@ export const useTrainingStore = create<TrainingState>()((set, get) => ({
       return {
         config: {
           ...state.config,
-          configs: syncTopDownAnchor(
+          // A reused model's anchor / box settings win over an edit (see applyReusePins).
+          configs: applyReusePins(state.config.modelType, syncTopDownAnchor(
             state.config.configs.map((c) =>
               c.slot === slot
                 ? { ...c, hyperparams: { ...c.hyperparams, ...updates } }
@@ -1699,7 +1725,7 @@ export const useTrainingStore = create<TrainingState>()((set, get) => ({
                   : c,
             ),
             "anchorPart" in updates ? slot : undefined,
-          ),
+          )),
         },
       };
     }),
@@ -1708,13 +1734,13 @@ export const useTrainingStore = create<TrainingState>()((set, get) => ({
     set((state) => ({
       config: {
         ...state.config,
-        configs: syncTopDownAnchor(
+        configs: applyReusePins(state.config.modelType, syncTopDownAnchor(
           state.config.configs.map((c) =>
             c.slot === slot
               ? { ...c, hyperparams: { ...c.originalHyperparams } }
               : c,
           ),
-        ),
+        )),
       },
     })),
 
@@ -1732,24 +1758,33 @@ export const useTrainingStore = create<TrainingState>()((set, get) => ({
     set((state) => ({
       config: {
         ...state.config,
-        configs: state.config.configs.map((c) =>
-          c.slot === slot ? { ...c, reuse } : c,
+        // Picking a reused model pins its anchor / box settings on the pair.
+        configs: applyReusePins(
+          state.config.modelType,
+          state.config.configs.map((c) => (c.slot === slot ? { ...c, reuse } : c)),
         ),
       },
     })),
 
   addConfigFile: (file) =>
-    set((state) => ({
-      config: {
-        ...state.config,
-        configs: syncTopDownAnchor(
-          [...state.config.configs.filter((c) => c.slot !== file.slot), file],
-          // A newly loaded config that names an anchor sets it for the pair;
-          // one without (a stock profile) adopts the partner's.
-          file.hyperparams.anchorPart !== null ? file.slot : undefined,
-        ),
-      },
-    })),
+    set((state) => {
+      // Swapping a stage's config (profile, trained run, browsed or dropped
+      // file) keeps its "Use a trained model" choice unless the new file
+      // says otherwise — the box must never untick silently.
+      const prevReuse = state.config.configs.find((c) => c.slot === file.slot)?.reuse;
+      const incoming = file.reuse === undefined && prevReuse ? { ...file, reuse: prevReuse } : file;
+      return {
+        config: {
+          ...state.config,
+          configs: applyReusePins(state.config.modelType, syncTopDownAnchor(
+            [...state.config.configs.filter((c) => c.slot !== file.slot), incoming],
+            // A newly loaded config that names an anchor sets it for the pair;
+            // one without (a stock profile) adopts the partner's.
+            file.hyperparams.anchorPart !== null ? file.slot : undefined,
+          )),
+        },
+      };
+    }),
 
   removeConfigFile: (slot) =>
     set((state) => ({
@@ -2150,7 +2185,7 @@ export const useTrainingStore = create<TrainingState>()((set, get) => ({
     // really uses several different skeletons (a worker-side file is its own).
     if (remoteOpts?.labelsSource !== "worker-file" && (await blockedByMultiSkeleton("Training"))) return;
     const localOpts = opts && !("remote" in opts) ? opts as LocalTrainingOptions : undefined;
-    const { config } = get();
+    let { config } = get();
 
     // Local sleap-nn reads the labels file from disk; don't let it silently
     // train on a stale project file while the window holds unsaved labels.
@@ -2191,6 +2226,8 @@ export const useTrainingStore = create<TrainingState>()((set, get) => ({
       currentModelIndex: 0,
       wandbUrl: null,
       modelOutputDirs: [],
+      pipelineModelDirs: [],
+      pipelineExportDir: null,
       log: reusedLines,
       postTrainingInference: null,
       dryRun: null,
@@ -2201,15 +2238,39 @@ export const useTrainingStore = create<TrainingState>()((set, get) => ({
       return;
     }
 
-    const reuseProblem = reuseStartProblem(
-      slots,
-      config.configs,
-      (slot) => getSlotLabel(slot).replace(" Config", ""),
-      { remote: !!remoteOpts?.remote },
-    );
+    const stageLabel = (slot: string) => getSlotLabel(slot).replace(" Config", "");
+    const reuseProblem = reuseStartProblem(slots, config.configs, stageLabel, {
+      remote: !!remoteOpts?.remote,
+      inferenceTarget: remoteOpts ? remoteOpts.inferenceTarget : localOpts?.inferenceTarget,
+    });
     if (reuseProblem) {
       set({ status: "error", error: reuseProblem });
       return;
+    }
+    if (slots.length !== slotsToTrain(slots, config.configs).length) {
+      // The stages that train must match the reused model's anchor part /
+      // box settings, whatever was edited since it was picked.
+      const pinned = applyReusePins(config.modelType, config.configs);
+      if (pinned !== config.configs) {
+        set((s) => ({ config: { ...s.config, configs: pinned } }));
+        config = get().config;
+      }
+      // Re-check the picks now: a folder may have moved since, or the pick
+      // may come from another project. Locally the folder is re-read; the
+      // skeleton is checked unless the labels are a worker-side file.
+      const { useAppStore } = await import("@/stores/appStore");
+      const projectNodes =
+        remoteOpts?.labelsSource === "worker-file"
+          ? null
+          : (useAppStore.getState().skeleton?.nodes.map((n) => n.name) ?? null);
+      const startProblem = await reusedModelsStartProblem(slots, config.configs, config.modelType, stageLabel, {
+        projectNodes,
+        readFolder: remoteOpts ? undefined : readLocalModelFolder,
+      });
+      if (startProblem) {
+        set({ status: "error", error: startProblem });
+        return;
+      }
     }
 
     if (remoteOpts?.remote) {
@@ -2220,6 +2281,35 @@ export const useTrainingStore = create<TrainingState>()((set, get) => ({
       const workerLabel = () =>
         (useConnectStore.getState().pairedWorkers ?? []).find((w) => w.nodeId === remoteOpts.workerId)?.label ??
         remoteOpts.workerId;
+
+      // A reused stage's model must be readable on the worker for the
+      // post-training track job: translate its local folder with the same
+      // shared-folder / path-rule logic videos use, and refuse up front
+      // (before anything is uploaded or trained) if the worker can't see it.
+      const reusedWorkerPaths = new Map<string, string>();
+      const remoteInferenceTarget = remoteOpts.inferenceTarget;
+      const reusedLocalPaths = config.configs
+        .filter((c) => slots.includes(c.slot) && c.reuse?.model)
+        .map((c) => c.reuse!.model!.path);
+      if (remoteInferenceTarget && remoteInferenceTarget !== "nothing" && reusedLocalPaths.length > 0) {
+        const { checkVideoVisibility } = await import("@/lib/remoteVisibility");
+        const seen = await checkVideoVisibility(reusedLocalPaths, {
+          rules: pathRulesFor(remoteOpts.workerId),
+          mounts: mounts.map((m) => m.path),
+          stat: (p) => statWorkerPath(p),
+        });
+        const hidden = seen.filter((v) => !v.visible || !v.worker);
+        if (hidden.length > 0) {
+          set({
+            status: "error",
+            error:
+              `The worker can't see the trained model you chose to reuse (${hidden.map((v) => v.local).join(", ")}). ` +
+              `Put it in a folder the worker shares, add a path rule for it, or uncheck "Use a trained model" to train that stage on the worker.`,
+          });
+          return;
+        }
+        for (const v of seen) reusedWorkerPaths.set(v.local, v.worker as string);
+      }
 
       const { useAppStore } = await import("@/stores/appStore");
       const { labels, projectPath, filename } = useAppStore.getState();
@@ -2341,35 +2431,6 @@ export const useTrainingStore = create<TrainingState>()((set, get) => ({
         if (!allVisible && !embedsEverythingForSuggestions) {
           allowedVideoIndices = visibility.filter((v) => v.visible).map((v) => v.index);
         }
-      }
-
-      // A reused stage's model must be readable on the worker for the
-      // post-training track job: translate its local folder with the same
-      // shared-folder / path-rule logic videos use, and refuse up front
-      // (before anything trains) if the worker can't see it.
-      const reusedWorkerPaths = new Map<string, string>();
-      const remoteInferenceTarget = remoteOpts.inferenceTarget;
-      const reusedLocalPaths = config.configs
-        .filter((c) => slots.includes(c.slot) && c.reuse?.model)
-        .map((c) => c.reuse!.model!.path);
-      if (remoteInferenceTarget && remoteInferenceTarget !== "nothing" && reusedLocalPaths.length > 0) {
-        const { checkVideoVisibility } = await import("@/lib/remoteVisibility");
-        const seen = await checkVideoVisibility(reusedLocalPaths, {
-          rules: pathRulesFor(remoteOpts.workerId),
-          mounts: mounts.map((m) => m.path),
-          stat: (p) => statWorkerPath(p),
-        });
-        const hidden = seen.filter((v) => !v.visible || !v.worker);
-        if (hidden.length > 0) {
-          set({
-            status: "error",
-            error:
-              `The worker can't see the trained model you chose to reuse (${hidden.map((v) => v.local).join(", ")}). ` +
-              `Put it in a folder the worker shares, add a path rule for it, or uncheck "Use a trained model" to train that stage on the worker.`,
-          });
-          return;
-        }
-        for (const v of seen) reusedWorkerPaths.set(v.local, v.worker as string);
       }
 
       // Build TrainJobSpec — apply hyperparam overrides to YAML. See
@@ -2943,6 +3004,7 @@ export const useTrainingStore = create<TrainingState>()((set, get) => ({
         // plus any reused ones, in pipeline order (PyQt's run_gui_training
         // returns the reused config path for a `dont_retrain` head).
         const pipelinePaths = pipelineModelPaths(slots, config.configs, trainedBySlot);
+        set({ pipelineModelDirs: pipelinePaths, pipelineExportDir: `${modelDir}/exported` });
 
         // ── Post-training model export (ONNX / TensorRT) ──────
         // Auto-export the trained model to a portable runtime when the user picked a
@@ -2952,8 +3014,9 @@ export const useTrainingStore = create<TrainingState>()((set, get) => ({
         let exportDir: string | null = null;
         if (exportFormat && exportFormat !== "none" && pipelinePaths.length > 0) {
           const { runExport } = await import("@/platform/backend");
-          const { defaultExportOutputDir } = await import("@/stores/exportStore");
-          const outputDir = defaultExportOutputDir(pipelinePaths);
+          // This project's models/exported — not next to the first model,
+          // which may be a reused one from another project's folder.
+          const outputDir = `${modelDir}/exported`;
           // List the run dirs being bundled so a top-down export reads clearly as
           // both heads (e.g. "centroid.n=1 + centered_instance.n=1"), not centroid-only.
           const exportRunNames = pipelinePaths
@@ -3180,6 +3243,7 @@ export const useTrainingStore = create<TrainingState>()((set, get) => ({
     const { config } = get();
     // A stage reusing a trained model isn't trained, so there's nothing to dry-run.
     const slots = slotsToTrain(getConfigSlots(config.modelType), config.configs);
+    if (slots.length === 0) return;
     const id = ++dryRunSeq;
     set({
       dryRun: {

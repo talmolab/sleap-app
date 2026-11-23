@@ -44,6 +44,7 @@ import { confirmDialog } from "@/stores/confirmStore";
 import { headTypeMatches } from "@/lib/bboxModels";
 import { BboxTrainingFields } from "@/components/panels/BboxTrainingFields";
 import { ReuseTrainedModelSection } from "@/components/dialogs/ReuseTrainedModelSection";
+import { reusePinNote } from "@/lib/reuseTrainedModel";
 
 /** Tailwind text color per visibility tier, matching the Training panel's log coloring. */
 const VISIBILITY_COLOR: Record<ReturnType<typeof visibilityTier>, string> = {
@@ -380,11 +381,14 @@ function PipelineAnchorPartField({
   onUpdate,
   skeletonNodes,
   nodeVisibility,
+  lockedReason = null,
 }: {
   hp: ConfigHyperparams;
   onUpdate: (updates: Partial<ConfigHyperparams>) => void;
   skeletonNodes: string[];
   nodeVisibility: Map<string, NodeVisibility>;
+  /** A reused stage's model fixes the anchor part (lib/reuseTrainedModel.ts): locked, with this note. */
+  lockedReason?: string | null;
 }) {
   return (
     <div id={PIPELINE_FIELD_DEFS.anchorPart.id} data-search-field="" className="flex items-center gap-2 scroll-mt-4">
@@ -392,8 +396,8 @@ function PipelineAnchorPartField({
         {PIPELINE_FIELD_DEFS.anchorPart.label}
         <HintBubble text="The body part used to center the crop around each animal. Choose one that is consistently visible and near the center of the animal." />
       </span>
-      <Select value={hp.anchorPart ?? "__auto__"} onValueChange={(v) => onUpdate({ anchorPart: v === "__auto__" ? null : v })}>
-        <SelectTrigger className="h-8 text-sm w-40"><SelectValue placeholder="Auto" /></SelectTrigger>
+      <Select value={hp.anchorPart ?? "__auto__"} onValueChange={(v) => onUpdate({ anchorPart: v === "__auto__" ? null : v })} disabled={!!lockedReason}>
+        <SelectTrigger className="h-8 text-sm w-40" aria-label={PIPELINE_FIELD_DEFS.anchorPart.label}><SelectValue placeholder="Auto" /></SelectTrigger>
         <SelectContent>
           <SelectItem value="__auto__">Auto (bbox center)</SelectItem>
           {skeletonNodes.map((n) => {
@@ -413,6 +417,7 @@ function PipelineAnchorPartField({
           })}
         </SelectContent>
       </Select>
+      {lockedReason && <span className="text-xs text-muted-foreground" data-testid="anchor-part-locked">{lockedReason}</span>}
     </div>
   );
 }
@@ -652,7 +657,6 @@ function HeadTabContent({
           modelType={modelType}
           configFile={configFile}
           skeletonNodes={skeletonNodes}
-          onUpdate={onUpdate}
         />
       )}
 
@@ -1545,6 +1549,7 @@ export function TrainingConfigDialog({
                             onUpdate={(updates) => onUpdateSlot("centered_instance", updates)}
                             skeletonNodes={skeletonNodes}
                             nodeVisibility={nodeVisibility}
+                            lockedReason={reusePinNote(modelType, configs, (s) => getSlotLabel(s).replace(" Config", ""))}
                           />
                         ) : null;
                       })()}
@@ -1581,6 +1586,7 @@ export function TrainingConfigDialog({
                         configs={configs}
                         onUpdateSlot={onUpdateSlot}
                         size="md"
+                        boxSettingsLockedBy={reusePinNote(modelType, configs, (s) => getSlotLabel(s).replace(" Config", ""))}
                       />
                     </div>
                   )}

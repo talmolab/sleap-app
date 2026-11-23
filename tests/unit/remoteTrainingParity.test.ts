@@ -799,6 +799,21 @@ describe("startTraining (remote) — reusing a trained model for one stage", () 
     expect(useTrainingStore.getState().status).toBe("completed");
   });
 
+  // The visibility check runs before the labels are prepared/uploaded (and before any
+  // "Large upload" prompt): with no project open, the reused-model error still comes first.
+  it("checks the reused model before preparing a window upload", async () => {
+    fakeLabels = null;
+    const opts = setUpReusedCentroid(REUSED);
+    await useTrainingStore.getState().startTraining({
+      remote: true,
+      workerId: opts.workerId,
+      labelsSource: "window",
+      inferenceTarget: "suggestions",
+    });
+    expect(submitCalls).toHaveLength(0);
+    expect(useTrainingStore.getState().error).toContain("can't see the trained model");
+  });
+
   // A checked box with no model picked can't run.
   it("refuses when a stage is set to reuse but no model is picked", async () => {
     await useTrainingStore.getState().startTraining(setUpReusedCentroid(null));
