@@ -67,6 +67,7 @@ import { getActiveTrackOverrides } from "../../lib/trackColorOverrides";
 import { COLORMAPS } from "../../lib/colormaps";
 import { renderTrails } from "../../canvas/TrailRenderer";
 import { bboxColor, buildRenderedBboxes, renderBboxes, renderBboxHandles, renderBboxPreview, type RenderedBbox } from "../../canvas/BboxRenderer";
+import { buildRenderedCentroids, renderCentroids, type RenderedCentroid } from "../../canvas/CentroidRenderer";
 import { dragRect, handleCursor, hitTestBbox, MIN_BBOX_SIZE, rectFromPoints, rectOfCorners, type BboxHandle } from "@/lib/bboxEditing";
 import { AddBbox, DeleteBbox, SetBboxGeometry, posesToBboxes } from "@/commands/bboxCommands";
 import { instanceInsideRect } from "@/lib/bboxLinking";
@@ -213,6 +214,7 @@ export function VideoPlayer() {
   const showLabels = useAppStore((s) => s.showLabels);
   const showEdges = useAppStore((s) => s.showEdges);
   const showBboxes = useAppStore((s) => s.showBboxes);
+  const showCentroids = useAppStore((s) => s.showCentroids);
   const showNonVisibleNodes = useAppStore((s) => s.showNonVisibleNodes);
   const hiddenInstances = useAppStore((s) => s.hiddenInstances);
   const viewOnlyInstance = useAppStore((s) => s.viewOnlyInstance);
@@ -1564,6 +1566,43 @@ export function VideoPlayer() {
   ]);
   renderedBboxesRef.current = renderedBboxes;
 
+  // Centroids on this frame (a Centroid Only run's predictions, for one),
+  // colored like boxes: by track, yellow when predicted and "Color predicted"
+  // is off, else bright blue.
+  const renderedCentroids = useMemo<RenderedCentroid[]>(() => {
+    if (!labeledFrame || !showInstances || !showCentroids || !video) return [];
+    const centroids = labeledFrame.centroids ?? [];
+    if (centroids.length === 0) return [];
+    const tracks = labels?.tracks ?? [];
+    const colorTarget = resolveColorTarget(distinctlyColor, projectHasTracks);
+    return buildRenderedCentroids(centroids, {
+      toImage: (x, y) => toImageCoords(video, x, y),
+      colorFor: (c, idx) =>
+        bboxColor({
+          index: idx,
+          isPredicted: c.isPredicted,
+          colorPredicted,
+          colorTarget,
+          track: c.track ?? c.instance?.track ?? null,
+          tracks,
+          palette,
+          trackColorOverrides,
+        }),
+    });
+  }, [
+    labeledFrame,
+    showInstances,
+    showCentroids,
+    video,
+    labels,
+    palette,
+    distinctlyColor,
+    colorPredicted,
+    projectHasTracks,
+    trackColorOverrides,
+    overlayVersion,
+  ]);
+
   // A box selection belongs to one frame.
   useEffect(() => {
     useAppStore.getState().set("selectedBboxIdx", null);
@@ -1845,6 +1884,11 @@ export function VideoPlayer() {
       renderBboxHandles(ctx, rectOfCorners(selectedRb.corners), selectedRb.color, baseScale * zoom);
     }
     if (bboxPreview) renderBboxPreview(ctx, bboxPreview, baseScale * zoom);
+    renderCentroids(ctx, renderedCentroids, {
+      zoom: baseScale * zoom,
+      opacity: poseOpacity / 100,
+      showLabels,
+    });
     // Boxes from Poses dialog: preview the boxes it would add on this frame.
     if (bboxPosePreviewPadding !== null && labeledFrame && video) {
       for (const b of posesToBboxes(labeledFrame, bboxPosePreviewPadding)) {
@@ -1966,6 +2010,7 @@ export function VideoPlayer() {
   }, [
     renderedInstances,
     renderedBboxes,
+    renderedCentroids,
     bboxPreview,
     bboxPosePreviewPadding,
     labeledFrame,

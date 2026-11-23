@@ -55,6 +55,7 @@ import {
 import { buildTutorialSteps, type TutorialStep } from "@/lib/tutorial/steps";
 import { isTauri } from "@/platform/index";
 import { STEP_SIZES, isValidStepSize } from "@/lib/shortcuts";
+import type { SavedInferenceSettings } from "@/lib/inferenceSettings";
 
 // Required before immer can draft Set/Map fields (hiddenInstances /
 // showNonVisibleOverride). Idempotent global; must run before store creation.
@@ -186,6 +187,10 @@ export interface AppState {
   showEdges: boolean;
   /** Draw bounding boxes (`LabeledFrame.bboxes`) on the canvas. */
   showBboxes: boolean;
+  /** Draw centroids (`LabeledFrame.centroids`, e.g. a Centroid Only run's) on the canvas. */
+  showCentroids: boolean;
+  /** The Inference panel's settings, remembered between sessions (see lib/inferenceSettings.ts). */
+  inferenceSettings: SavedInferenceSettings | null;
   showNonVisibleNodes: boolean;
   /**
    * Currently-visible portion of the video frame, in frame/scene pixel
@@ -816,6 +821,8 @@ export const PERSISTED_KEYS: (keyof AppState)[] = [
   "showLabels",
   "showEdges",
   "showBboxes",
+  "showCentroids",
+  "inferenceSettings",
   "showNonVisibleNodes",
   "showCrosshair",
   "colorPredicted",
@@ -924,6 +931,8 @@ export const useAppStore = create<AppState>()(
       showLabels: true,
       showEdges: true,
       showBboxes: true,
+      showCentroids: true,
+      inferenceSettings: null,
       showNonVisibleNodes: true,
       visibleSceneRect: null,
       showCrosshair: false,

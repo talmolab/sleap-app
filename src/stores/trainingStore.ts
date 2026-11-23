@@ -583,7 +583,28 @@ export interface RemoteTrainingOptions {
   sampleCount?: number;
   skipUserLabeled?: boolean;
   existingPredictions?: "clear_all" | "replace" | "keep";
+  /** Max instances and overlap filtering for the post-training inference. */
+  postInference?: PostTrainingInferenceSettings;
 }
+
+/**
+ * Inference-only settings of the Training window that apply to the inference
+ * run after training (PyQt's training dialog has the same two): a cap on
+ * instances per frame, and filtering of overlapping instances.
+ */
+export interface PostTrainingInferenceSettings {
+  maxInstances: number | null;
+  filterOverlapping: boolean;
+  filterMethod: "iou" | "oks";
+  filterThreshold: number;
+}
+
+export const DEFAULT_POST_TRAINING_INFERENCE: PostTrainingInferenceSettings = {
+  maxInstances: null,
+  filterOverlapping: false,
+  filterMethod: "iou",
+  filterThreshold: 0.8,
+};
 
 /**
  * Remote post-training inference: the track job the app submits after every
@@ -605,6 +626,8 @@ export interface LocalTrainingOptions {
   sampleCount?: number;
   skipUserLabeled?: boolean;
   existingPredictions?: "clear_all" | "replace" | "keep";
+  /** Max instances and overlap filtering for the post-training inference. */
+  postInference?: PostTrainingInferenceSettings;
   /** Post-training model export ("none" = don't export). Desktop-only. */
   exportFormat?: "none" | "onnx" | "tensorrt";
   /** Run post-training inference on the exported model (falls back to the checkpoint on failure). */
@@ -931,6 +954,25 @@ export function resolveRemoteMaxStride(
  * inference option is the fixed default post-training inference has always
  * used.
  */
+/**
+ * The device post-training inference runs on: the accelerator training used,
+ * when every config agrees on one, else "auto".
+ */
+export function postTrainingDevice(configs: readonly ConfigFile[]): InferenceConfig["device"] {
+  const accels = new Set(configs.map((c) => c.hyperparams.accelerator));
+  return accels.size === 1 ? [...accels][0] : "auto";
+}
+
+/**
+ * Batch size for post-training inference: the smallest training batch size of
+ * the trained models (inference needs less memory than training, so it fits),
+ * or 4 without configs.
+ */
+export function postTrainingBatchSize(configs: readonly ConfigFile[]): number {
+  const sizes = configs.map((c) => c.hyperparams.batchSize).filter((n) => Number.isFinite(n) && n > 0);
+  return sizes.length > 0 ? Math.min(...sizes) : 4;
+}
+
 export function buildPostTrainingInferenceConfig(opts: {
   modelType: ModelType;
   modelPaths: string[];
@@ -942,7 +984,11 @@ export function buildPostTrainingInferenceConfig(opts: {
   existingPredictions?: "clear_all" | "replace" | "keep";
   device?: InferenceConfig["device"];
   runtime?: InferenceConfig["runtime"];
+  /** Defaults to 4. Local runs pass the trained models' smallest training batch size. */
+  batchSize?: number;
+  postInference?: PostTrainingInferenceSettings;
 }): InferenceConfig {
+  const post = opts.postInference ?? DEFAULT_POST_TRAINING_INFERENCE;
   const pipelineMap: Record<string, InferenceConfig["pipeline"]> = {
     single_animal: "single-animal",
     top_down: "top-down",
@@ -961,10 +1007,10 @@ export function buildPostTrainingInferenceConfig(opts: {
     sampleCount: opts.sampleCount ?? 20,
     excludeUserLabeled: opts.skipUserLabeled ?? false,
     existingPredictions: opts.existingPredictions ?? "replace",
-    batchSize: 4,
+    batchSize: opts.batchSize ?? 4,
     device: opts.device ?? "auto",
     runtime: opts.runtime ?? "auto",
-    maxInstances: null,
+    maxInstances: post.maxInstances,
     peakThreshold: 0.2,
     integralRefinement: true,
     integralPatchSize: 5,
@@ -996,9 +1042,9 @@ export function buildPostTrainingInferenceConfig(opts: {
     kfNodeIndices: [],
     kfResetGapSize: 5,
     ensureChannels: "auto",
-    filterOverlapping: false,
-    filterMethod: "iou",
-    filterThreshold: 0.8,
+    filterOverlapping: post.filterOverlapping,
+    filterMethod: post.filterMethod,
+    filterThreshold: post.filterThreshold,
     filterMinVisibleNodes: null,
     filterMinVisibleNodeFraction: null,
     filterMinMeanNodeScore: null,
@@ -2465,6 +2511,7 @@ export const useTrainingStore = create<TrainingState>()((set, get) => ({
               sampleCount: remoteOpts.sampleCount,
               skipUserLabeled: remoteOpts.skipUserLabeled,
               existingPredictions: remoteOpts.existingPredictions,
+              postInference: remoteOpts.postInference,
             });
             // Worker-file training's actual video list/frame counts live
             // only on the worker — this window may have no project open at
@@ -2936,8 +2983,12 @@ export const useTrainingStore = create<TrainingState>()((set, get) => ({
             sampleCount: localOpts?.sampleCount,
             skipUserLabeled: localOpts?.skipUserLabeled,
             existingPredictions: localOpts?.existingPredictions,
-            device: useExported ? exportDevice : "auto",
+            // The device training ran on (e.g. CPU forced because the GPU
+            // failed), not "auto", which could pick the failing GPU again.
+            device: useExported ? exportDevice : postTrainingDevice(config.configs),
             runtime: useExported ? exportRuntime : "auto",
+            batchSize: postTrainingBatchSize(config.configs),
+            postInference: localOpts?.postInference,
           });
 
           try {

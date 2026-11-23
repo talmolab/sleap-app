@@ -60,6 +60,19 @@ function trackOptionFields(config: InferenceConfig) {
     model_paths: config.modelPaths,
     batch_size: config.batchSize,
     peak_threshold: config.peakThreshold,
+    max_instances: config.maxInstances ?? undefined,
+    integral_refinement: config.integralRefinement ? ("integral" as const) : ("none" as const),
+    integral_patch_size: config.integralRefinement ? config.integralPatchSize : undefined,
+    ...(config.pipeline === "bottom-up" || config.pipeline === "bottom-up-id"
+      ? {
+          n_points: config.nPoints,
+          max_edge_length_ratio: config.maxEdgeLengthRatio,
+          dist_penalty_weight: config.distPenaltyWeight,
+          min_line_scores: config.minLineScores,
+        }
+      : {}),
+    device: config.device !== "auto" ? config.device : undefined,
+    runtime: config.runtime && config.runtime !== "auto" ? config.runtime : undefined,
     exclude_user_labeled: config.excludeUserLabeled || undefined,
     robust: config.tracking ? config.robust : undefined,
     ensure_channels: config.ensureChannels !== "auto" ? config.ensureChannels : undefined,
