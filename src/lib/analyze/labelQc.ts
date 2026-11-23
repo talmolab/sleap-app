@@ -13,8 +13,12 @@ import {
   isSparseInstance,
   isEmptyInstance,
   visibleNodeCount,
+  labeledNodeCount,
+  hasNoLabeledNodes,
   hasOutOfRangePoints,
 } from "@/lib/analyze/labelQcRules";
+import { withUnlabeledNodes } from "@/lib/analyze/qc/util";
+import { isUnlabeledPoint, type PointLike } from "@/lib/slpFormatCompat";
 import { unbranchedSkeletonChains, chainOrderStats } from "@/lib/analyze/labelQcGeometry";
 import {
   buildChiralityModel,
@@ -65,7 +69,10 @@ export interface QcFinding {
 }
 
 export interface QcOptions {
-  /** Instances with fewer than this many visible nodes are "sparse". Default 2. */
+  /**
+   * Instances with fewer than this many visible nodes are "sparse" (capped at
+   * the number of nodes labelled, when some are not). Default 2.
+   */
   minVisibleNodes?: number;
   /** Share of symmetric pairs that must look flipped for a chirality flag. Default 0.5. */
   chiralityThreshold?: number;
@@ -97,6 +104,16 @@ function skeletonPairs(skel: SkeletonLike): [number, number][] {
     }
   }
   return pairs.length > 0 ? pairs : inferSymmetryPairsByName(skel.nodeNames ?? []);
+}
+
+/**
+ * An instance's points for the rules: `[x, y]` per node, NaN where not
+ * visible, with the nodes its source did not annotate (SLP format 3.0)
+ * recorded so the node-count rules leave them out.
+ */
+function rulePoints(inst: { numpy(): number[][]; points?: readonly PointLike[] }): number[][] {
+  const pts = inst.numpy();
+  return inst.points ? withUnlabeledNodes(pts, inst.points.map((p) => isUnlabeledPoint(p))) : pts;
 }
 
 export function runLabelQc(labels: Labels, opts: QcOptions = {}): QcFinding[] {
@@ -190,7 +207,7 @@ export function runLabelQc(labels: Labels, opts: QcOptions = {}): QcFinding[] {
         });
       }
 
-      const pts = insts.map((inst) => inst.numpy());
+      const pts = insts.map(rulePoints);
 
       for (const d of detectDuplicates(pts, { iouThreshold: duplicateIou })) {
         const detail =
@@ -213,7 +230,9 @@ export function runLabelQc(labels: Labels, opts: QcOptions = {}): QcFinding[] {
         if (isEmptyInstance(p)) {
           findings.push({
             kind: "empty_instance",
-            message: "Instance has no visible nodes",
+            message: hasNoLabeledNodes(p)
+              ? "Instance has no labeled nodes"
+              : "Instance has no visible nodes",
             video,
             videoIdx: v,
             frameIdx: lf.frameIdx,
@@ -222,7 +241,10 @@ export function runLabelQc(labels: Labels, opts: QcOptions = {}): QcFinding[] {
         } else if (isSparseInstance(p, minVisible)) {
           findings.push({
             kind: "sparse_instance",
-            message: `Only ${visibleNodeCount(p)} visible node(s)`,
+            message:
+              labeledNodeCount(p) < p.length
+                ? `Only ${visibleNodeCount(p)} of ${labeledNodeCount(p)} labeled node(s) visible`
+                : `Only ${visibleNodeCount(p)} visible node(s)`,
             video,
             videoIdx: v,
             frameIdx: lf.frameIdx,
