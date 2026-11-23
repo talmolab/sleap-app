@@ -40,6 +40,12 @@ import {
   type VideoPrefixSwap,
 } from "@/lib/videoPrefixSwaps";
 import { stepLabeled, type NavigationDomain } from "@/lib/navigableFrames";
+import {
+  DEFAULT_PACKAGE_IMAGE,
+  normalizePackageImage,
+  type PackageImageFormat,
+  type PackageImageOptions,
+} from "@/lib/packageImageFormat";
 import { dirtyFrameTracker } from "@/lib/autosaveDirty";
 import { cachedNavigableDomain } from "@/lib/navigationDomainCache";
 export type { NavigationDomain };
@@ -422,6 +428,17 @@ export interface AppState {
    */
   videoPrefixSwaps: VideoPrefixSwap[];
 
+  // === Package export frame format (persisted preference) ===
+  /**
+   * The frame format last chosen in a package export dialog (Export Labels
+   * Package, Extract Clip Labels Package): "png" (the default) or "jpg".
+   * Persisted, so the dialogs open on the user's last choice. Read via
+   * getState() — don't subscribe with a selector.
+   */
+  packageImageFormat: PackageImageFormat;
+  /** The JPEG quality (1-100) last chosen with it (default 95). */
+  packageJpegQuality: number;
+
   // === Labeling mode state (transient, not persisted) ===
   labelingMode: "select" | "place";
   placementNodeIdx: number | null;
@@ -682,6 +699,8 @@ export interface AppState {
   /** Set a per-track color override (hex) for the active project. Local viewing
    * preference — persisted, never written into the `.slp`. */
   setTrackColor: (trackName: string, hex: string) => void;
+  /** Remember the frame format chosen in a package export dialog. */
+  setPackageImage: (image: PackageImageOptions) => void;
   /** Clear a track's color override → it reverts to the positional palette color. */
   resetTrackColor: (trackName: string) => void;
   /** Migrate a track's color override across a rename (called by SetTrackName). */
@@ -851,6 +870,8 @@ export const PERSISTED_KEYS: (keyof AppState)[] = [
   "hasOptedIntoLatestChannel",
   "packagesSetupNudgeDismissed",
   "videoPrefixSwaps",
+  "packageImageFormat",
+  "packageJpegQuality",
   // Layout + scale persistence (PyQt saveState/restoreState parity).
   "panelOrder",
   "hiddenPanels",
@@ -1001,6 +1022,10 @@ export const useAppStore = create<AppState>()(
 
       // Video path resolution (persisted preference)
       videoPrefixSwaps: [] as VideoPrefixSwap[],
+
+      // Package export frame format (persisted preference)
+      packageImageFormat: DEFAULT_PACKAGE_IMAGE.format,
+      packageJpegQuality: DEFAULT_PACKAGE_IMAGE.quality,
 
       // Labeling mode state (transient)
       labelingMode: "select" as "select" | "place",
@@ -1446,6 +1471,14 @@ export const useAppStore = create<AppState>()(
         set((state) => {
           state.hasChanges = false;
         }),
+
+      setPackageImage: (image) => {
+        const { format, quality } = normalizePackageImage(image.format, image.quality);
+        set((state) => {
+          state.packageImageFormat = format;
+          state.packageJpegQuality = quality;
+        });
+      },
 
       setTrackColor: (trackName, hex) => {
         // `get()` returns committed (plain, non-draft) state, so the pure
@@ -2100,6 +2133,12 @@ export const useAppStore = create<AppState>()(
           // Legacy single-open-panel field, migrated into sidebarOpenPanels.
           sidebarActivePanel?: string;
         };
+        // A hand-edited or corrupt package frame format reads as PNG, and its
+        // JPEG quality is clamped to 1-100.
+        const packageImage = normalizePackageImage(
+          p.packageImageFormat ?? current.packageImageFormat,
+          p.packageJpegQuality ?? current.packageJpegQuality,
+        );
         const merged = {
           ...current,
           ...p,
@@ -2114,6 +2153,8 @@ export const useAppStore = create<AppState>()(
           // nowhere (or NaN frames): fall back to the default.
           mediumStepSize: isValidStepSize(p.mediumStepSize) ? p.mediumStepSize : current.mediumStepSize,
           largeStepSize: isValidStepSize(p.largeStepSize) ? p.largeStepSize : current.largeStepSize,
+          packageImageFormat: packageImage.format,
+          packageJpegQuality: packageImage.quality,
           panelOrder: reconcilePanelOrder(p.panelOrder),
           hiddenPanels: reconcileHiddenPanels(p.hiddenPanels),
           // Seed the open-panel stack: a stored set wins; a legacy single

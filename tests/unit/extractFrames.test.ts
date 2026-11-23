@@ -116,6 +116,24 @@ describe("buildExtractFramesArgs", () => {
     expect(args.join(" ")).toContain(EXTRACT_PNG_ARGS.join(" "));
     expect(args[args.length - 1]).toBe("/tmp/%06d.png");
   });
+
+  it("is the same PNG command for every package format", () => {
+    // Pinned in full: JPEG packages extract PNG too (sleap-io.js encodes the
+    // JPEG), so this list is what every desktop package export runs.
+    expect(
+      buildExtractFramesArgs({
+        input: "/in.mp4",
+        filterFile: "/tmp/select.txt",
+        outPattern: "/tmp/%06d.png",
+        frameCount: 3,
+      })
+    ).toEqual([
+      "-y", "-i", "/in.mp4", "-map", "0:v:0", "-an", "-/vf", "/tmp/select.txt",
+      "-fps_mode", "passthrough", "-frames:v", "3",
+      "-c:v", "png", "-pred", "sub", "-compression_level", "4",
+      "-progress", "pipe:1", "-nostats", "-stats_period", "0.1", "/tmp/%06d.png",
+    ]);
+  });
 });
 
 describe("extractableVideoPath", () => {

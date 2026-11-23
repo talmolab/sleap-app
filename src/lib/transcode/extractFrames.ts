@@ -11,6 +11,12 @@
  * settings below (2,560 color frames ≈ 23 s), the selected frames picked by
  * number.
  *
+ * Frames are extracted as PNG whatever format the package stores. For a JPEG
+ * package, sleap-io.js decodes each PNG and encodes the JPEG in its writer's
+ * worker, so the frames get libjpeg's tables and colours, as they do in the
+ * browser and in Python. (ffmpeg's own JPEG encoder has no libjpeg quality,
+ * and its colour conversion depends on the ffmpeg build.)
+ *
  * One ffmpeg run per video writes exactly the requested frames, in order, to
  * a temp folder under the app cache. The export reads each PNG once ffmpeg has
  * finished it (it's not the newest file, or ffmpeg has exited) and deletes it,

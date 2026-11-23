@@ -42,6 +42,7 @@ import { writeZip, textSource, ZipCancelled, ZIP_SIZE_LIMIT, type ZipSource } fr
 import { toastExported } from "@/lib/exportToast";
 import { toast } from "@/lib/notify";
 import { getPlatform } from "@/platform";
+import type { PackageImageOptions } from "@/lib/packageImageFormat";
 
 /** What the dialog knows about the job (the rest is read from the app). */
 export interface TrainingConfigRequest {
@@ -231,9 +232,14 @@ async function writeZipFile(
 
 /**
  * "Export Training Job Package...". Returns where the zip was saved, or
- * null if nothing was written (cancelled or failed).
+ * null if nothing was written (cancelled or failed). `options.image` is the
+ * package's frame format; the Training dialog passes none, so its packages
+ * keep PNG frames.
  */
-export async function exportTrainingJobPackage(req: TrainingConfigRequest): Promise<string | null> {
+export async function exportTrainingJobPackage(
+  req: TrainingConfigRequest,
+  options: { image?: PackageImageOptions } = {},
+): Promise<string | null> {
   const { labels, filename } = useAppStore.getState();
   if (!labels) return null;
   // The package holds a 2.x copy of the project: a View only project asks to
@@ -269,7 +275,7 @@ export async function exportTrainingJobPackage(req: TrainingConfigRequest): Prom
         try {
           const twoPasses = !(await canStreamPackage());
           unembedded = await withEmbedProgress(twoPasses, (onProgress) =>
-            writeLabelsPackageToPath(labels, level, tmpPkg, onProgress),
+            writeLabelsPackageToPath(labels, level, tmpPkg, onProgress, options.image),
           );
           const pkgSize = await fileSize(tmpPkg);
           if (pkgSize + textBytes > ZIP_SIZE_LIMIT) throw tooLarge(pkgSize + textBytes);
@@ -289,7 +295,9 @@ export async function exportTrainingJobPackage(req: TrainingConfigRequest): Prom
       }
 
       // Browser: build the package in memory, zip it, then download / save.
-      const bytes = await withEmbedProgress(true, (onProgress) => labelsPackageBytes(labels, level, onProgress));
+      const bytes = await withEmbedProgress(true, (onProgress) =>
+        labelsPackageBytes(labels, level, onProgress, options.image),
+      );
       if (bytes.byteLength + textBytes > ZIP_SIZE_LIMIT) throw tooLarge(bytes.byteLength + textBytes);
       const zippable: Zippable = { [pkgName]: [bytes, { level: 0 }] };
       for (const f of job.files) zippable[f.name] = strToU8(f.text);

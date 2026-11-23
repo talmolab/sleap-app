@@ -36,7 +36,8 @@ import {
   appendEncodedVideos,
 } from "@talmolab/sleap-io.js";
 import type { EmbedOption, Labels, SlpWriteOptions } from "@talmolab/sleap-io.js";
-import { withLegacyLayout } from "@/lib/slpFormatCompat";
+import { withImageFormat, withLegacyLayout } from "@/lib/slpFormatCompat";
+import type { PackageImageOptions } from "@/lib/packageImageFormat";
 
 // Same derivation as loadProject.ts / saveEmbeddedPkgStreaming.ts: h5wasm served
 // same-origin (works with or without cross-origin isolation).
@@ -148,9 +149,10 @@ export async function saveEmbeddedPkgOpfs(
  * an mp4 project) into the pre-acquired `destHandle`, the same way as
  * {@link saveEmbeddedPkgOpfs}: the small structure is seeded into an OPFS file,
  * then each embedded frame is read here (an mp4 decodes in its own worker) and
- * PNG-encoded + appended by the writer's worker, so the window stays responsive
- * and only a few frames are in memory at a time. Finally the OPFS file is
- * streamed into `destHandle`. Returns the saved file name.
+ * encoded (PNG, or JPEG with `image`) + appended by the writer's worker, so
+ * the window stays responsive and only a few frames are in memory at a time.
+ * Finally the OPFS file is streamed into `destHandle`. Returns the saved file
+ * name.
  *
  * `onProgress` returning `false` cancels (io throws `ExportCancelled`); the
  * staging file is removed on any failure, and the destination is left as the
@@ -159,12 +161,23 @@ export async function saveEmbeddedPkgOpfs(
 export async function exportNewPkgOpfs(
   labels: Labels,
   destHandle: FileSystemFileHandle,
-  options: { embed: EmbedOption; onProgress?: SlpWriteOptions["onProgress"] }
+  options: {
+    embed: EmbedOption;
+    onProgress?: SlpWriteOptions["onProgress"];
+    /** The package's frame format; absent or PNG writes as before. */
+    image?: PackageImageOptions;
+  }
 ): Promise<string> {
-  const structureBytes = await saveSlpStructureToBytes(labels, withLegacyLayout({ embed: options.embed }));
-  const plan = await buildSerializableEmbedPlan(labels, options.embed, "", {
-    allowEncode: true,
-  });
+  const structureBytes = await saveSlpStructureToBytes(
+    labels,
+    withLegacyLayout(withImageFormat({ embed: options.embed }, options.image))
+  );
+  const plan = await buildSerializableEmbedPlan(
+    labels,
+    options.embed,
+    "",
+    withImageFormat({ allowEncode: true }, options.image)
+  );
 
   const opfsPath = newOpfsPath();
   try {

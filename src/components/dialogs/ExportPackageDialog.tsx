@@ -4,7 +4,9 @@
  * PyQt parity: choose one of three "levels" and export a self-contained
  * embedded-image `.pkg.slp` (see exportPackageCommands.ts for the io mapping and
  * the continuous-video embedding gap). Each option previews a LIVE frame count
- * from the current project.
+ * from the current project. The frame images are stored as PNG (the default)
+ * or JPEG at a chosen quality (`PackageImageFormatFields`); the dialog opens
+ * on the user's last choice.
  */
 
 import { useCallback, useState } from "react";
@@ -26,6 +28,7 @@ import {
 } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
 import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
+import { PackageImageFormatFields, usePackageImageChoice } from "./PackageImageFormatFields";
 
 interface ExportPackageDialogProps {
   open: boolean;
@@ -68,13 +71,17 @@ export function ExportPackageDialog({
 }: ExportPackageDialogProps) {
   const labels = useAppStore((s) => s.labels);
   const [level, setLevel] = useState<ExportPackageLevel>("training");
+  const image = usePackageImageChoice(open);
+  const { choice, valid, remember } = image;
 
   const handleExport = useCallback(async () => {
+    if (!valid) return;
+    remember();
     // Close first, as PyQt does: the export's progress overlay (with Cancel)
     // sits below dialogs, so an open dialog would hide it for the whole export.
     onOpenChange(false);
-    await commandContext.execute(COMMAND_BY_LEVEL[level]);
-  }, [level, onOpenChange]);
+    await commandContext.execute(COMMAND_BY_LEVEL[level], { image: choice });
+  }, [level, choice, valid, remember, onOpenChange]);
 
   if (!labels) return null;
 
@@ -127,11 +134,19 @@ export function ExportPackageDialog({
           })}
         </RadioGroup>
 
+        <PackageImageFormatFields
+          value={choice}
+          onChange={image.setChoice}
+          idPrefix="pkg"
+        />
+
         <div className="flex justify-end gap-2">
           <Button variant="outline" onClick={() => onOpenChange(false)}>
             Cancel
           </Button>
-          <Button onClick={handleExport}>Export</Button>
+          <Button onClick={handleExport} disabled={!valid}>
+            Export
+          </Button>
         </div>
       </DialogContent>
     </Dialog>

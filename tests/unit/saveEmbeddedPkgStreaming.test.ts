@@ -11,6 +11,7 @@ import { describe, it, expect, beforeEach, vi } from "../bun-test";
 class ExportCancelled extends Error {}
 
 const calls: string[] = [];
+const structureOpts: object[] = [];
 const files = new Map<string, number>(); // path -> size
 let appendImpl: (opts: { onProgress?: (c: number, t: number) => unknown }) => Promise<void>;
 let plan: {
@@ -22,7 +23,10 @@ let framesOnDisk: Record<string, number>;
 
 vi.mock("@talmolab/sleap-io.js", () => ({
   ExportCancelled,
-  saveSlpStructureToBytes: async () => new Uint8Array(10),
+  saveSlpStructureToBytes: async (_l: unknown, opts: object) => {
+    structureOpts.push(opts);
+    return new Uint8Array(10);
+  },
   buildSerializableEmbedPlan: async (_l: unknown, _e: unknown, source: string, opts: object) => {
     calls.push(`plan(${JSON.stringify(source)},${JSON.stringify(opts)})`);
     return plan;
@@ -93,11 +97,13 @@ vi.mock("@tauri-apps/api/path", () => ({
 }));
 
 const { saveEmbeddedPkgStreaming } = await import("@/lib/saveEmbeddedPkgStreaming");
+const { __setJpegFramesSupported } = await import("@/lib/slpFormatCompat");
 
 const labels = {} as never;
 
 beforeEach(() => {
   calls.length = 0;
+  structureOpts.length = 0;
   files.clear();
   (globalThis as { crossOriginIsolated?: boolean }).crossOriginIsolated = true;
   plan = { sourcePath: "", entries: [], encodeEntries: [{ videoIndex: 0, frameNumbers: [0, 5, 9] }] };
@@ -125,6 +131,30 @@ describe("saveEmbeddedPkgStreaming — new embed (no source file)", () => {
     expect(calls.indexOf("appendEncodedVideos(1)")).toBeLessThan(calls.indexOf("copy"));
     expect(calls.indexOf("copy")).toBeLessThan(calls.indexOf("rename"));
     expect(files.has("/out/x.pkg.slp")).toBe(true);
+  });
+
+  it("writes the structure and plans the frames in the chosen format (JPEG); PNG adds nothing", async () => {
+    __setJpegFramesSupported(true);
+    try {
+      await saveEmbeddedPkgStreaming(labels, "/out/x.pkg.slp", null, {
+        embed: "user",
+        image: { format: "jpg", quality: 70 },
+      });
+      await saveEmbeddedPkgStreaming(labels, "/out/x.pkg.slp", null, {
+        embed: "user",
+        image: { format: "png", quality: 70 },
+      });
+    } finally {
+      __setJpegFramesSupported(null);
+    }
+    expect(structureOpts).toEqual([
+      { embed: "user", imageFormat: "jpg", imageQuality: 70, unlabeledAs: "absent" },
+      { embed: "user", unlabeledAs: "absent" },
+    ]);
+    expect(calls.filter((c) => c.startsWith("plan"))).toEqual([
+      'plan("",{"allowEncode":true,"imageFormat":"jpg","imageQuality":70})',
+      'plan("",{"allowEncode":true})',
+    ]);
   });
 
   it("hands a frame reader (desktop: ffmpeg) through to io", async () => {

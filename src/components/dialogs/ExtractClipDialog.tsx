@@ -5,7 +5,9 @@
  * clip's Frames Per Second (default: the video's) before writing it. This
  * dialog also shows the selected range and what it holds, and offers opening
  * the new project when done (PyQt always opens it). The menu items are only
- * enabled with a range selected on the seekbar, as in PyQt.
+ * enabled with a range selected on the seekbar, as in PyQt. The package
+ * variant also offers the frame format (PNG or JPEG), as Export Labels
+ * Package does, and shares its remembered choice.
  */
 
 import { useCallback, useEffect, useState } from "react";
@@ -28,6 +30,7 @@ import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { PackageImageFormatFields, usePackageImageChoice } from "./PackageImageFormatFields";
 
 const TITLE = {
   clip: "Extract Clip and Labels",
@@ -50,6 +53,8 @@ export function ExtractClipDialog() {
   const videoFps = video?.fps && video.fps > 0 ? Math.round(video.fps) : 30;
   const [fps, setFps] = useState(videoFps);
   const [openWhenDone, setOpenWhenDone] = useState(true);
+  const image = usePackageImageChoice(variant === "package");
+  const { choice, valid: imageValid, remember } = image;
   useEffect(() => {
     if (variant) setFps(videoFps);
   }, [variant, videoFps]);
@@ -63,13 +68,17 @@ export function ExtractClipDialog() {
 
   const handleExtract = useCallback(async () => {
     if (!variant) return;
+    if (variant === "package") {
+      if (!imageValid) return;
+      remember();
+    }
     // Close first so the extract's progress overlay (below dialogs) shows.
     setVariant(null);
     await commandContext.execute(
       variant === "clip" ? ExtractClipAndLabelsCommand : ExtractClipLabelsPackageCommand,
-      variant === "clip" ? { fps, openWhenDone } : { openWhenDone }
+      variant === "clip" ? { fps, openWhenDone } : { openWhenDone, image: choice }
     );
-  }, [variant, fps, openWhenDone, setVariant]);
+  }, [variant, fps, openWhenDone, choice, imageValid, remember, setVariant]);
 
   if (!variant) return null;
 
@@ -112,6 +121,13 @@ export function ExtractClipDialog() {
               />
             </div>
           )}
+          {variant === "package" && (
+            <PackageImageFormatFields
+              value={choice}
+              onChange={image.setChoice}
+              idPrefix="extract"
+            />
+          )}
           {isTauri && (
             <label htmlFor="extract-open" className="flex items-center gap-2 text-sm">
               <Checkbox
@@ -128,7 +144,14 @@ export function ExtractClipDialog() {
           <Button variant="outline" onClick={() => setVariant(null)}>
             Cancel
           </Button>
-          <Button onClick={handleExtract} disabled={!range || (variant === "clip" && !fpsValid)}>
+          <Button
+            onClick={handleExtract}
+            disabled={
+              !range ||
+              (variant === "clip" && !fpsValid) ||
+              (variant === "package" && !imageValid)
+            }
+          >
             Extract
           </Button>
         </div>

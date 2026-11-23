@@ -16,21 +16,30 @@ let isTauri = false;
 const disk = new Map<string, Uint8Array>();
 const removed: string[] = [];
 let packageLevel: string | null = null;
+let packageImage: unknown = "unset";
 let browserSave: { bytes: Uint8Array; name: string } | null = null;
 let writeTarget: string | null = null;
 
 vi.mock("@/commands/exportPackageCommands", () => ({
   canStreamPackage: async () => true,
   derivePackageFilename: (f: string | null) => `${(f ?? "labels").replace(/\.slp$/i, "")}.pkg.slp`,
-  labelsPackageBytes: async (_l: unknown, level: string) => {
+  labelsPackageBytes: async (_l: unknown, level: string, _p: unknown, image?: unknown) => {
     packageLevel = level;
+    packageImage = image;
     return FAKE_PKG;
   },
   warnUnembedded: () => {},
   withEmbedProgress: (_two: boolean, work: (p: () => boolean) => unknown) => work(() => true),
   withExportLock: (work: () => unknown) => work(),
-  writeLabelsPackageToPath: async (_l: unknown, level: string, path: string) => {
+  writeLabelsPackageToPath: async (
+    _l: unknown,
+    level: string,
+    path: string,
+    _p: unknown,
+    image?: unknown,
+  ) => {
     packageLevel = level;
+    packageImage = image;
     disk.set(path, FAKE_PKG);
     return false;
   },
@@ -159,6 +168,20 @@ describe("Export Training Job Package", () => {
     const saved = await mod.exportTrainingJobPackage(request);
     expect(saved).toBe("proj.slp.training_job.zip");
     checkPackage(browserSave!.bytes);
+  });
+
+  // The Training dialog passes no frame format (PNG, as before); a caller's
+  // format reaches the package on both paths.
+  it("passes a frame format on to the package, desktop and browser", async () => {
+    const image = { format: "jpg" as const, quality: 90 };
+    for (const tauri of [true, false]) {
+      isTauri = tauri;
+      packageImage = "unset";
+      await mod.exportTrainingJobPackage(request);
+      expect(packageImage).toBeUndefined();
+      await mod.exportTrainingJobPackage(request, { image });
+      expect(packageImage).toEqual(image);
+    }
   });
 
   // PyQt embeds suggested frames only when inference will run on them.
