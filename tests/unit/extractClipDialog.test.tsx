@@ -2,11 +2,13 @@
  * Labels → Extract Clip options dialog (PyQt's Export Clip Options): shows the
  * seekbar range and what it holds, asks for the clip's fps (default: the
  * video's), closes before running so the progress overlay shows, and passes
- * the options to the command. Without a range, Extract is disabled.
+ * the options to the command. Without a range, Extract is disabled. The
+ * package variant offers the frame format, as Export Labels Package does.
  */
-import { describe, it, expect, beforeEach, vi } from "../bun-test";
+import { describe, it, expect, beforeEach, afterEach, vi } from "../bun-test";
 import { render, screen, fireEvent, waitFor } from "@testing-library/react";
 import { useAppStore } from "@/stores/appStore";
+import { __setJpegFramesSupported } from "@/lib/slpFormatCompat";
 
 const events: Array<{ name: string; params?: unknown; dialogOpen: unknown }> = [];
 vi.mock("@/commands/CommandContext", () => ({
@@ -28,8 +30,15 @@ const labels = {
 
 beforeEach(() => {
   events.length = 0;
-  useAppStore.setState({ labels: labels as never, video: video as never, frameRange: [10, 40] });
+  useAppStore.setState({
+    labels: labels as never,
+    video: video as never,
+    frameRange: [10, 40],
+    packageImageFormat: "png",
+    packageJpegQuality: 95,
+  });
 });
+afterEach(() => __setJpegFramesSupported(null));
 
 describe("ExtractClipDialog", () => {
   it("shows the range, then runs the clip command with the fps, closed first", async () => {
@@ -49,14 +58,33 @@ describe("ExtractClipDialog", () => {
     });
   });
 
-  it("runs the package command without an fps", async () => {
+  it("runs the package command without an fps, with PNG frames by default", async () => {
     useAppStore.getState().setExtractClipDialog("package");
     render(<ExtractClipDialog />);
     expect(screen.queryByLabelText("Frames per second")).toBeNull();
     fireEvent.click(screen.getByText("Extract"));
     await waitFor(() => expect(events.length).toBe(1));
     expect(events[0].name).toBe("ExtractClipLabelsPackage");
-    expect(events[0].params).toEqual({ openWhenDone: true });
+    expect(events[0].params).toEqual({ openWhenDone: true, image: { format: "png", quality: 95 } });
+  });
+
+  it("runs the package command with JPEG frames when chosen, and remembers it", async () => {
+    __setJpegFramesSupported(true);
+    useAppStore.getState().setExtractClipDialog("package");
+    render(<ExtractClipDialog />);
+    fireEvent.click(screen.getByRole("radio", { name: "JPEG" }));
+    fireEvent.change(screen.getByLabelText("Quality"), { target: { value: "70" } });
+    fireEvent.click(screen.getByText("Extract"));
+    await waitFor(() => expect(events.length).toBe(1));
+    expect(events[0].params).toEqual({ openWhenDone: true, image: { format: "jpg", quality: 70 } });
+    expect(useAppStore.getState().packageImageFormat).toBe("jpg");
+    expect(useAppStore.getState().packageJpegQuality).toBe(70);
+  });
+
+  it("offers no frame format for a clip (its video is not a package)", () => {
+    useAppStore.getState().setExtractClipDialog("clip");
+    render(<ExtractClipDialog />);
+    expect(screen.queryByText("Frame images")).toBeNull();
   });
 
   it("can't extract without a selected range", () => {

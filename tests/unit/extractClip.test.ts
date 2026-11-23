@@ -6,6 +6,7 @@
  * The encoder, platform, package export and new-window opening are mocked;
  * sleap-io is real.
  */
+import { normalizePackageImage } from "@/lib/packageImageFormat";
 import { describe, it, expect, beforeEach, vi } from "../bun-test";
 import {
   Instance,
@@ -20,7 +21,12 @@ import {
 const written = new Map<string, Uint8Array>();
 let saveDialogResult: string | null = "/out/sub.slp";
 const opened: string[] = [];
-const packageCalls: Array<{ labels: Labels; level: string; suggestedName?: string }> = [];
+const packageCalls: Array<{
+  labels: Labels;
+  level: string;
+  suggestedName?: string;
+  image?: unknown;
+}> = [];
 let packageResult: string | null = "/out/sub.pkg.slp";
 const encodedFrames: number[] = [];
 
@@ -37,13 +43,23 @@ vi.mock("@/lib/newInstance", () => ({
   openNewInstance: async (o: { file?: string }) => void opened.push(o.file ?? ""),
 }));
 vi.mock("@/commands/exportPackageCommands", () => ({
+  // As the real one: a known format, its quality cleaned.
+  packageImageParam: (p?: { image?: { format?: string; quality?: unknown } }) =>
+    p?.image?.format === "png" || p?.image?.format === "jpg"
+      ? normalizePackageImage(p.image.format, p.image.quality)
+      : undefined,
   exportLabelsPackage: async (
     labels: Labels,
     _filename: string | null,
     level: string,
-    options: { suggestedName?: string }
+    options: { suggestedName?: string; image?: unknown }
   ) => {
-    packageCalls.push({ labels, level, suggestedName: options?.suggestedName });
+    packageCalls.push({
+      labels,
+      level,
+      suggestedName: options?.suggestedName,
+      image: options?.image,
+    });
     return packageResult;
   },
 }));
@@ -263,6 +279,26 @@ describe("Extract Clip Labels Package", () => {
     });
     expect(packageCalls.length).toBe(2);
     expect(opened).toEqual([]);
+  });
+
+  it("passes on the frame format chosen in the dialog, cleaned (none: PNG, as before)", async () => {
+    const { labels, video } = project();
+    await ExtractClipLabelsPackageCommand.execute(ctx(labels, video, [10, 40]));
+    const image = { format: "jpg" as const, quality: 85 };
+    await ExtractClipLabelsPackageCommand.execute(ctx(labels, video, [10, 40]), { image });
+    // A caller other than the dialog: junk is dropped, a bad quality cleaned.
+    await ExtractClipLabelsPackageCommand.execute(ctx(labels, video, [10, 40]), {
+      image: { format: "webp" },
+    } as never);
+    await ExtractClipLabelsPackageCommand.execute(ctx(labels, video, [10, 40]), {
+      image: { format: "jpg" },
+    } as never);
+    expect(packageCalls.map((c) => c.image)).toEqual([
+      undefined,
+      image,
+      undefined,
+      { format: "jpg", quality: 95 },
+    ]);
   });
 
   it("needs a selected range, as PyQt", async () => {
