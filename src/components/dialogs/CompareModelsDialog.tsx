@@ -71,10 +71,17 @@ export function tickedByDefault(key: string, r: CheckSummary): boolean {
 /** The grey note under a usable row, if any. */
 export function rowNote(key: string, r: CheckSummary): string | null {
   if (!r.ok) return null;
-  if (isTrainingSplitFile(key)) return "Predictions on a training split: only covers that split's labeled frames";
+  const notes: string[] = [];
+  if (isTrainingSplitFile(key)) notes.push("Predictions on a training split: only covers that split's labeled frames");
   if (r.matchedBy === "probable")
-    return "Probably this video: same file name, but neither file records the frame count or size to confirm it";
-  return null;
+    notes.push("Probably this video: same file name, but neither file records the frame count or size to confirm it");
+  if (r.ignoredSkeletons) {
+    const n = r.ignoredSkeletons;
+    notes.push(
+      `Using ${r.skeletonName ? `${r.skeletonName} ` : "this skeleton's "}predictions only (${n} other skeleton${n === 1 ? "" : "s"} ignored)`,
+    );
+  }
+  return notes.length > 0 ? notes.join(" · ") : null;
 }
 
 export function CompareModelsDialog() {

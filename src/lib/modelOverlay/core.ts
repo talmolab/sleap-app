@@ -232,14 +232,25 @@ export function modelNameFromProvenance(provenance: Record<string, unknown> | nu
   return pathBaseName(fileName).replace(/\.slp$/i, "");
 }
 
-/** Predicted instances of `video`, grouped by frame, reordered to the project's nodes. */
-export function extractPoses(labels: Labels, video: Video, nodeMap: readonly number[]): Map<number, OverlayPose[]> {
-  const out = new Map<number, OverlayPose[]>();
+/**
+ * Predicted instances of `video`, grouped by frame, reordered to the project's
+ * nodes. With `only`, just that skeleton's instances (a file with several
+ * skeletons, e.g. mice + pellets — #99), added to `into` when given.
+ */
+export function extractPoses(
+  labels: Labels,
+  video: Video,
+  nodeMap: readonly number[],
+  only?: Skeleton,
+  into: Map<number, OverlayPose[]> = new Map(),
+): Map<number, OverlayPose[]> {
+  const out = into;
   const n = nodeMap.length;
   for (const lf of labels.labeledFrames) {
     if (lf.video !== video) continue;
     for (const inst of lf.instances) {
       if (!(inst instanceof PredictedInstance)) continue;
+      if (only && inst.skeleton !== only) continue;
       const pts = inst.points;
       const xy = new Float64Array(n * 2);
       for (let i = 0; i < n; i++) {
@@ -268,6 +279,12 @@ export type CandidateAnalysis =
       frameCount: number;
       /** The file's video was found by path or only by file name. */
       matchedBy: "path" | "name" | "probable";
+      /**
+       * A file with several skeletons (mice + pellets, #99): how many of its
+       * other skeletons were left out, and the used skeleton's name.
+       */
+      ignoredSkeletons?: number;
+      skeletonName?: string | null;
     }
   | { ok: false; name: string; reason: string };
 
@@ -297,14 +314,35 @@ export function analyzePredictionFile(
     }
   }
   if (!anyPredicted) return { ok: false, name, reason: "No predictions for this video" };
-  if (used.length > 1) {
-    return { ok: false, name, reason: "Predictions use more than one skeleton" };
+  if (used.length === 1) {
+    const sk = checkSkeleton(projectNodeNames, used[0]);
+    if (!sk.ok) return { ok: false, name, reason: sk.reason };
+    const frames = extractPoses(labels, vm.video, sk.nodeMap);
+    return { ok: true, name, frames, frameCount: frames.size, matchedBy: vm.by };
   }
-  const sk = checkSkeleton(projectNodeNames, used[0]);
-  if (!sk.ok) return { ok: false, name, reason: sk.reason };
 
-  const frames = extractPoses(labels, vm.video, sk.nodeMap);
-  return { ok: true, name, frames, frameCount: frames.size, matchedBy: vm.by };
+  // Several skeletons (e.g. mice + pellets, #99): compare only the
+  // predictions whose skeleton has the project's node names.
+  const checks = used.map((skel) => checkSkeleton(projectNodeNames, skel));
+  const matching = checks.filter((c): c is Extract<SkeletonCheck, { ok: true }> => c.ok);
+  if (matching.length === 0) {
+    return {
+      ok: false,
+      name,
+      reason: `None of its ${used.length} skeletons has this skeleton's nodes (${projectNodeNames.join(", ")})`,
+    };
+  }
+  const frames = new Map<number, OverlayPose[]>();
+  for (const c of matching) extractPoses(labels, vm.video, c.nodeMap, c.skeleton, frames);
+  return {
+    ok: true,
+    name,
+    frames,
+    frameCount: frames.size,
+    matchedBy: vm.by,
+    ignoredSkeletons: used.length - matching.length,
+    skeletonName: matching[0].skeleton.name?.trim() || null,
+  };
 }
 
 /**
