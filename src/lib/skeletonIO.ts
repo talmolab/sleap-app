@@ -126,7 +126,12 @@ export async function parseSkeletonFile(
     }
 
     case "slp": {
-      const labels = await loadSlp(toArrayBuffer(data), { openVideos: false });
+      // filenameHint names the file in a read error (e.g. a refused SLP
+      // format), which would otherwise say "slp-data.slp".
+      const labels = await loadSlp(toArrayBuffer(data), {
+        openVideos: false,
+        h5: { filenameHint: filename },
+      });
       // A project file with several different skeletons: don't guess which one
       // is meant. Identical duplicates (old files) are one skeleton: use [0].
       const distinct = distinctSkeletonCount(labels);
