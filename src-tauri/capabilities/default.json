@@ -34,14 +34,18 @@
       "identifier": "shell:allow-spawn",
       "allow": [
         { "name": "binaries/ffmpeg", "sidecar": true, "args": true },
-        { "name": "binaries/ffprobe", "sidecar": true, "args": true }
+        { "name": "binaries/ffprobe", "sidecar": true, "args": true },
+        { "name": "linux-pkg-ffmpeg", "cmd": "/usr/lib/SLEAP/ffmpeg", "args": true },
+        { "name": "linux-pkg-ffprobe", "cmd": "/usr/lib/SLEAP/ffprobe", "args": true }
       ]
     },
     {
       "identifier": "shell:allow-execute",
       "allow": [
         { "name": "binaries/ffmpeg", "sidecar": true, "args": true },
-        { "name": "binaries/ffprobe", "sidecar": true, "args": true }
+        { "name": "binaries/ffprobe", "sidecar": true, "args": true },
+        { "name": "linux-pkg-ffmpeg", "cmd": "/usr/lib/SLEAP/ffmpeg", "args": true },
+        { "name": "linux-pkg-ffprobe", "cmd": "/usr/lib/SLEAP/ffprobe", "args": true }
       ]
     },
     "shell:allow-kill",

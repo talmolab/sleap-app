@@ -1,6 +1,35 @@
 use tauri_build::{Attributes, DefaultPermissionRule, InlinedPlugin};
 
+/// Linux only (#507): `tauri.linux.conf.json` empties `externalBin` so the .deb /
+/// .rpm don't install ffmpeg into /usr/bin. That also stops tauri-build from
+/// copying the sidecars next to the compiled binary, which `tauri dev` (and the
+/// AppImage-less local run) relies on for `Command.sidecar("binaries/ffmpeg")`.
+/// Do that one copy here instead, exactly as tauri-build would have. Missing
+/// sources are skipped silently (same as an un-fetched checkout before).
+fn copy_linux_dev_sidecars() {
+    if std::env::var("CARGO_CFG_TARGET_OS").as_deref() != Ok("linux") {
+        return;
+    }
+    let (Ok(target), Ok(out_dir)) = (std::env::var("TARGET"), std::env::var("OUT_DIR")) else {
+        return;
+    };
+    // OUT_DIR = <target>/<profile>/build/<pkg>-<hash>/out -> <target>/<profile>
+    let Some(profile_dir) = std::path::Path::new(&out_dir).ancestors().nth(3) else {
+        return;
+    };
+    for tool in ["ffmpeg", "ffprobe"] {
+        let src = format!("binaries/{tool}-{target}");
+        if std::path::Path::new(&src).is_file() {
+            // Only for files that exist: a missing path would rerun this script
+            // on every build.
+            println!("cargo:rerun-if-changed={src}");
+            let _ = std::fs::copy(&src, profile_dir.join(tool));
+        }
+    }
+}
+
 fn main() {
+    copy_linux_dev_sidecars();
     // SPIKE (spike/tauri-localhost-origin): register `read_range` + `file_size` as an
     // INLINED plugin ("sleap") rather than bare app commands. From the http://localhost
     // origin the WebView is "remote", and Tauri blocks bare custom commands there; only
@@ -23,6 +52,8 @@ fn main() {
                     // file / native
                     "read_range",
                     "file_size",
+                    // Linux .deb/.rpm private ffmpeg dir (#507)
+                    "linux_package_tools_dir",
                     // native menu bar (macOS)
                     "set_app_menu",
                     "write_open",

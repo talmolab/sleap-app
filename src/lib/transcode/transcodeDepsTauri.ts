@@ -5,19 +5,44 @@
  * bundle. Kept separate from {@link file://./transcodeVideo.ts} so that module's
  * orchestration stays unit-testable with plain fakes.
  *
- * The ffmpeg binary is a Tauri `externalBin` sidecar — see
+ * The ffmpeg binary is a Tauri `externalBin` sidecar (on a Linux .deb / .rpm a
+ * private copy in /usr/lib/SLEAP — see ./ffmpegCommand.ts) — see
  * `src-tauri/binaries/README.md` for how the per-platform libopenh264 build is
  * fetched and named. It runs as a native child process (disk→disk); the source
  * bytes never touch the WebView heap.
  */
 
 import { createProgressAssembler, type TranscodeDeps } from "./transcodeVideo.js";
-
-/** Tauri `externalBin` base names (resolve to `binaries/<name>-<target-triple>`). */
-const FFMPEG_SIDECAR = "binaries/ffmpeg";
-const FFPROBE_SIDECAR = "binaries/ffprobe";
+import { ffmpegCommandSpec, type BundledTool } from "./ffmpegCommand.js";
 /** Cache lives under the OS cache dir (disposable), not app-local data. */
 const CACHE_ROOT = "video-cache";
+
+/**
+ * The Linux .deb / .rpm private tools dir, or null (sidecar everywhere else).
+ * Asked once per session; any failure (older backend, browser) means sidecar.
+ */
+let privateToolsDir: Promise<string | null> | null = null;
+function linuxPackageToolsDir(): Promise<string | null> {
+  privateToolsDir ??= (async () => {
+    try {
+      const { invoke } = await import("@tauri-apps/api/core");
+      const { sleapCmd } = await import("@/lib/sleapPlugin");
+      return (await invoke<string | null>(sleapCmd("linux_package_tools_dir"))) ?? null;
+    } catch {
+      return null;
+    }
+  })();
+  return privateToolsDir;
+}
+
+/** A shell `Command` for the bundled `tool` (sidecar, or the .deb/.rpm private copy). */
+async function bundledToolCommand(tool: BundledTool, args: string[]) {
+  const { Command } = await import("@tauri-apps/plugin-shell");
+  const spec = ffmpegCommandSpec(tool, await linuxPackageToolsDir());
+  return spec.kind === "scoped"
+    ? Command.create(spec.name, args)
+    : Command.sidecar(spec.name, args);
+}
 
 /** Build the production desktop {@link TranscodeDeps}. Tauri-only. */
 export function createTauriTranscodeDeps(): TranscodeDeps {
@@ -78,15 +103,12 @@ export function createTauriTranscodeDeps(): TranscodeDeps {
     },
 
     async exec(tool, args) {
-      const { Command } = await import("@tauri-apps/plugin-shell");
-      const sidecar = tool === "ffprobe" ? FFPROBE_SIDECAR : FFMPEG_SIDECAR;
-      const output = await Command.sidecar(sidecar, args).execute();
+      const output = await (await bundledToolCommand(tool, args)).execute();
       return { stdout: output.stdout, stderr: output.stderr, code: output.code };
     },
 
     async runTranscode(args, onProgress, signal, onStderr) {
-      const { Command } = await import("@tauri-apps/plugin-shell");
-      const command = Command.sidecar(FFMPEG_SIDECAR, args);
+      const command = await bundledToolCommand("ffmpeg", args);
 
       // The plugin emits stdout line-by-line; assemble whole `-progress` blocks
       // before parsing so each update carries a complete {frame, outTimeMs}.

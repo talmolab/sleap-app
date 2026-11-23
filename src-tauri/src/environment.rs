@@ -138,8 +138,13 @@ fn tool_bin_dirs() -> Vec<PathBuf> {
 /// A PATH with the well-known tool bin dirs PREPENDED to the inherited PATH.
 /// Prepend so our known-good uv/shims win; keep the rest so system tools
 /// (curl, sh, python) still resolve.
+///
+/// On a Linux .deb / .rpm install the package's private ffmpeg dir goes first of
+/// all (#507): ffmpeg is no longer in /usr/bin, so sleap-nn / sleap-io find it
+/// through this PATH only. A no-op everywhere else.
 fn augmented_path() -> std::ffi::OsString {
-    let mut paths = tool_bin_dirs();
+    let mut paths =
+        crate::bundled_tools::with_tools_dir_first(crate::bundled_tools::package_tools_dir(), tool_bin_dirs());
     if let Some(existing) = std::env::var_os("PATH") {
         paths.extend(std::env::split_paths(&existing));
     }
