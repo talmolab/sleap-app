@@ -10,6 +10,13 @@ import { UpdateTopic } from "../types";
 import type { Command } from "./types";
 import type { CommandContext } from "./CommandContext";
 import { useAppStore } from "../stores/appStore";
+import {
+  clearBboxTracks,
+  repairBboxLinks,
+  syncLinkedBboxTracks,
+  tracksUsedByBboxes,
+} from "@/lib/bboxLinks";
+import { frameHasContent } from "@/lib/frameLabeling";
 
 /**
  * Swap `oldTrack`<->`newTrack` across `frames` (assumed already sorted by
@@ -32,6 +39,11 @@ function applyTrackSwapForward(
     const reverseInstances = lf.instances.filter((inst) => inst.track === newTrack);
     for (const inst of matchingInstances) inst.track = newTrack;
     for (const inst of reverseInstances) inst.track = oldTrack;
+    // Boxes on these tracks swap with them, linked or not.
+    for (const box of lf.bboxes) {
+      if (box.track === oldTrack) box.track = newTrack;
+      else if (box.track === newTrack) box.track = oldTrack;
+    }
   }
 }
 
@@ -49,6 +61,7 @@ export const AddTrack: Command = {
 
     labels.tracks.push(track);
     instance.track = track;
+    if (ctx.state.labeledFrame) syncLinkedBboxTracks(ctx.state.labeledFrame);
 
     ctx.state.markChanged();
   },
@@ -111,6 +124,7 @@ export const SetInstanceTrack: Command = {
       if (instance.fromPredicted) {
         instance.fromPredicted.track = newTrack;
       }
+      if (labeledFrame) syncLinkedBboxTracks(labeledFrame);
     }
 
     ctx.state.markChanged();
@@ -183,6 +197,8 @@ export const TransposeInstances: Command = {
     const tempTrack = first.track;
     first.track = second.track;
     second.track = tempTrack;
+    const current = videoFrames.find((lf) => lf.frameIdx === frameIdx);
+    if (current) syncLinkedBboxTracks(current);
 
     if (propagate) {
       applyTrackSwapForward(
@@ -324,17 +340,19 @@ export const DeleteInstanceAndTrack: Command = {
     // The selected instance first, then (on a track) every instance on that
     // track in this video, matching legacy's order of removal.
     current.instances = current.instances.filter((inst) => inst !== instance);
+    repairBboxLinks(current);
     if (track) {
       for (const lf of frames) {
         if (lf.instances.some((inst) => inst.track === track)) {
           lf.instances = lf.instances.filter((inst) => inst.track !== track);
+          repairBboxLinks(lf);
         }
       }
     }
 
     ctx.pushUndoSnapshot(snapshot);
     ctx.state.setInstance(null);
-    ctx.state.setLabeledFrame(current.instances.length > 0 ? current : null);
+    ctx.state.setLabeledFrame(frameHasContent(current) ? current : null);
     ctx.state.markChanged();
   },
 };
@@ -374,6 +392,8 @@ export const DeleteTrack: Command = {
       }
     }
 
+    clearBboxTracks(labels, new Set([track]));
+
     // Remove track from labels.tracks
     const trackIdx = labels.tracks.indexOf(track);
     if (trackIdx >= 0) {
@@ -394,8 +414,8 @@ export const DeleteUnusedTracks: Command = {
     const { labels } = ctx.state;
     if (!labels) return;
 
-    // Collect all tracks that are in use
-    const usedTracks = new Set<Track>();
+    // Collect all tracks that are in use, by instances or boxes
+    const usedTracks = tracksUsedByBboxes(labels);
     for (const lf of labels.labeledFrames) {
       for (const inst of lf.instances) {
         if (inst.track) {
@@ -432,6 +452,8 @@ export const DeleteAllTracks: Command = {
         }
       }
     }
+
+    clearBboxTracks(labels, null);
 
     // Clear all tracks
     labels.tracks = [];
