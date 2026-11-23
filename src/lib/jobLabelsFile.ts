@@ -172,6 +172,10 @@ export function createJobLabelsCopy(
     path() {
       pending ??= (async () => {
         if (!labels) throw new Error("No project loaded");
+        const { isSaveInProgress } = await import("@/lib/saveInProgress");
+        if (isSaveInProgress()) {
+          throw new Error("A save of the project is running; start the job when it finishes.");
+        }
         await sweepStaleJobCopies();
         const [{ join }, { mkdir }] = await Promise.all([
           import("@tauri-apps/api/path"),

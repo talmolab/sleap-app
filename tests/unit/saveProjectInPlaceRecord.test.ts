@@ -196,12 +196,18 @@ const { refuseEditIfViewOnly } = await import("@/lib/slpAccess");
 const { exportLabelsPackage } = await import("@/commands/exportPackageCommands");
 const { buildRemoteLabelsPayload } = await import("@/lib/remoteLabelsPayload");
 const { markDiskBackedVideos } = await import("@/lib/diskBackedVideos");
+const { ExtractClipAndLabelsCommand } = await import("@/commands/extractClipCommands");
+const { createJobLabelsCopy } = await import("@/lib/jobLabelsFile");
 const { useAppStore } = await import("@/stores/appStore");
 const { commandContext } = await import("@/commands/CommandContext");
 const { withLegacyLayout } = await import("@/lib/slpFormatCompat");
-const { bindLabelsToFile, bindingRefusal, hasStaleVideoNames, statFileIdentity } = await import(
-  "@/lib/inPlaceBinding"
-);
+const {
+  bindLabelsToFile,
+  bindingRefusal,
+  clearFileBinding,
+  hasStaleVideoNames,
+  statFileIdentity,
+} = await import("@/lib/inPlaceBinding");
 
 const FIXTURE = join(import.meta.dir, "../fixtures/sleap_io_multi_noshape.pkg.slp");
 const tmp = mkdtempSync(join(tmpdir(), "sleap-app-save-record-"));
@@ -248,39 +254,46 @@ async function openAsApp(source: string) {
  * file's open does; `disk` false gives the same backend class without noting
  * it as reading the disk, as the app's eager path does (its reader holds the
  * file's bytes in memory).
+ *
+ * The reader stands in for the app's: it opens the file once and keeps the
+ * HDF5 structure it read then, while every read fetches the bytes now at the
+ * path. (It reads a private copy, refreshed in place from the path before each
+ * call, so the open handle keeps its cached structure over the new bytes.)
+ * After a save replaces the file, it reads the new file at the old offsets.
  */
 function loadAsLargeFile(labels: sioModule.Labels, disk = true) {
   const path = current;
+  const snapshot = `${path}.reader-${copies++}`;
+  copyFileSync(path, snapshot);
+  let file: H5File | null = null;
   const withFile = async <T,>(fn: (f: H5File) => T): Promise<T> => {
     await ready;
-    const f = new H5File(path, "r");
-    try {
-      return fn(f);
-    } finally {
-      f.close();
-    }
+    writeFileSync(snapshot, readFileSync(path)); // same inode, the bytes now at the path
+    file ??= new H5File(snapshot, "r");
+    return fn(file);
+  };
+  const reader = {
+    getKeys: (p: string) => withFile((f) => (f.get(p) as { keys: () => string[] }).keys()),
+    getDatasetValue: (p: string) =>
+      withFile((f) => ({ value: (f.get(p) as { value: unknown }).value })),
+    getAttrs: (p: string) =>
+      withFile((f) =>
+        Object.fromEntries(
+          Object.entries((f.get(p) as { attrs: Record<string, { value: unknown }> }).attrs).map(
+            ([k, a]) => [k, a.value]
+          )
+        )
+      ),
+    getDatasetMeta: (p: string) =>
+      withFile((f) => {
+        const d = f.get(p) as { shape: number[]; dtype: string };
+        return { shape: d.shape, dtype: d.dtype };
+      }),
   };
   for (const v of labels.videos) {
     (v as { backend: unknown }).backend = new sioModule.StreamingHdf5VideoBackend({
       filename: path,
-      h5file: {
-        getKeys: (p: string) => withFile((f) => (f.get(p) as { keys: () => string[] }).keys()),
-        getDatasetValue: (p: string) =>
-          withFile((f) => ({ value: (f.get(p) as { value: unknown }).value })),
-        getAttrs: (p: string) =>
-          withFile((f) =>
-            Object.fromEntries(
-              Object.entries((f.get(p) as { attrs: Record<string, { value: unknown }> }).attrs).map(
-                ([k, a]) => [k, a.value]
-              )
-            )
-          ),
-        getDatasetMeta: (p: string) =>
-          withFile((f) => {
-            const d = f.get(p) as { shape: number[]; dtype: string };
-            return { shape: d.shape, dtype: d.dtype };
-          }),
-      } as never,
+      h5file: reader as never,
       datasetPath: v.backendMetadata.dataset as string,
       format: "png",
       shape: v.backendMetadata.shape as never,
@@ -422,11 +435,53 @@ describe("a large file's open after a full rewrite that renumbered its videos", 
     expect(readFileSync(current).equals(before)).toBe(true);
   });
 
-  it("doesn't ask when nothing was renumbered (the last video removed)", async () => {
+  it("asks too when nothing was renumbered: the reader's view of the file is the old one", async () => {
     const labels = await openAsApp(await appPackage([0, 1, 2]));
     loadAsLargeFile(labels);
-    labels.removeVideo(labels.videos[2]);
+    const A = labels.videos[0];
+    const before = await A.getFrameBuffer(2);
+    labels.removeVideo(labels.videos[2]); // A and B keep their names
     await saveProjectAsSlp(labels, "proj.pkg.slp");
+    expect(hasStaleVideoNames(labels)).toBe(true);
+    expect(toasts.some((t) => t.startsWith("warning: Reopen this project"))).toBe(true);
+    // What the mark protects against: the old reader no longer gives A's image.
+    let after: unknown = null;
+    try {
+      after = await A.getFrameBuffer(2);
+    } catch (err) {
+      after = err;
+    }
+    expect(after).not.toEqual(before);
+  });
+
+  it("asks after a save over the file that keeps the whole video list (no in-place record)", async () => {
+    const labels = await openAsApp(await appPackage([0, 1, 2]));
+    loadAsLargeFile(labels);
+    clearFileBinding(labels); // e.g. after a failed in-place check: the next save is full
+    movePoint(labels, 4);
+    await saveProjectAsSlp(labels, "proj.pkg.slp");
+    expect(fileOps).toEqual(["fullRewrite"]);
+    expect(hasStaleVideoNames(labels)).toBe(true);
+    // Further full saves, exports and clips wait until the project is reopened.
+    labels.removeVideo(labels.videos[2]);
+    const file = readFileSync(current);
+    fileOps.length = 0;
+    toasts.length = 0;
+    await saveProjectAsSlp(labels, "proj.pkg.slp");
+    expect(fileOps).toEqual([]);
+    expect(readFileSync(current).equals(file)).toBe(true);
+    expect(await exportLabelsPackage(labels, "proj.pkg.slp", "user")).toBeNull();
+    useAppStore.setState({ video: labels.videos[0], frameRange: [0, 3] });
+    await ExtractClipAndLabelsCommand.execute(commandContext);
+    expect(toasts.some((t) => t.startsWith("error: Reopen this project before extracting a clip"))).toBe(true);
+  });
+
+  it("doesn't ask after a Save As to another file: the reader's file is untouched", async () => {
+    const labels = await openAsApp(await appPackage([0, 1, 2]));
+    loadAsLargeFile(labels);
+    labels.removeVideo(labels.videos[0]);
+    hooks.saveAsPath = join(tmp, `saveas-${copies++}.pkg.slp`);
+    await saveProjectAsSlp(labels, "proj.pkg.slp", true);
     expect(hasStaleVideoNames(labels)).toBe(false);
     expect(toasts.filter((t) => t.startsWith("warning:"))).toEqual([]);
   });
@@ -585,5 +640,56 @@ describe("the save guard covers more than commands (fifth review)", () => {
     hooks.failWrite = true;
     await saveProjectAsSlp(labels, "proj.pkg.slp");
     expect(isSaveInProgress()).toBe(false);
+  });
+});
+
+describe("an export written over the project's own file (sixth review)", () => {
+  it("marks a large file's open, as a full save does", async () => {
+    const labels = await openAsApp(await appPackage([0, 1, 2]));
+    loadAsLargeFile(labels);
+    hooks.saveAsPath = current; // the export's default name is the project's
+    expect(await exportLabelsPackage(labels, "proj.pkg.slp", "user")).toBe(current);
+    expect(hasStaleVideoNames(labels)).toBe(true);
+    expect(toasts.some((t) => t.startsWith("warning: Reopen this project"))).toBe(true);
+    expect(bindingRefusal(labels, current, await statFileIdentity(current))).toMatch(/no record/);
+    // The next full save is refused.
+    labels.removeVideo(labels.videos[2]);
+    fileOps.length = 0;
+    await saveProjectAsSlp(labels, "proj.pkg.slp");
+    expect(fileOps).toEqual([]);
+  });
+
+  it("only forgets the in-place record for an eager load (its images are in memory)", async () => {
+    const labels = await openAsApp(await appPackage([0, 1, 2]));
+    hooks.saveAsPath = current;
+    expect(await exportLabelsPackage(labels, "proj.pkg.slp", "user")).toBe(current);
+    expect(hasStaleVideoNames(labels)).toBe(false);
+    expect(bindingRefusal(labels, current, await statFileIdentity(current))).toMatch(/no record/);
+  });
+});
+
+describe("exports and job copies wait for a running save (sixth review)", () => {
+  it("refuses Export Labels Package, Extract Clip and the job's copy during a save", async () => {
+    const labels = await openAsApp(await appPackage([0, 1]));
+    labels.removeVideo(labels.videos[0]);
+    useAppStore.setState({ video: labels.videos[0], frameRange: [0, 3] });
+    const during: unknown[] = [];
+    hooks.duringWrite = async () => {
+      during.push(await exportLabelsPackage(labels, "proj.pkg.slp", "user"));
+      toasts.length = 0;
+      await ExtractClipAndLabelsCommand.execute(commandContext);
+      during.push(toasts.some((t) => t.startsWith("info: Saving…")));
+      during.push(
+        await createJobLabelsCopy("training")
+          .path()
+          .then(() => "written", (err: Error) => err.message)
+      );
+    };
+    await saveProjectAsSlp(labels, "proj.pkg.slp");
+    expect(during).toEqual([
+      null,
+      true,
+      "A save of the project is running; start the job when it finishes.",
+    ]);
   });
 });

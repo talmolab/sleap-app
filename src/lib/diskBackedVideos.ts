@@ -1,6 +1,14 @@
 /**
  * Which embedded videos read their images from the project file on disk.
  *
+ * Such a reader opens the file once and keeps its HDF5 structure, while each
+ * read fetches the bytes from the file now at that path. After any full save
+ * over the file (a new file renamed into place), it reads bytes at the old
+ * file's offsets from the new one: other images, or none, whatever the
+ * dataset names. So the save marks the labels until the project is reopened
+ * (see `markStaleVideoNames`), unless the backends are reopened on the new
+ * file.
+ *
  * A large file's open (the range reader) gives each embedded video a
  * streaming backend that reads the file on disk by dataset name. An eager
  * load's embedded backends can be the same class (in the app, sleap-io.js
@@ -26,6 +34,9 @@ interface DiskBackend {
 
 /** The range readers that read a project file on disk. */
 const diskReaders = new WeakSet<object>();
+
+/** Labels whose open noted at least one such reader. */
+const diskLabels = new WeakSet<Labels>();
 
 /** The range reader a streaming backend reads through (private in sleap-io.js). */
 function readerOf(backend: object): object | null {
@@ -60,8 +71,19 @@ export function markDiskBackedVideos(labels: Labels): void {
   for (const video of labels.videos) {
     const found = streamingBackendOf(video);
     const reader = found && readerOf(found.leaf);
-    if (reader) diskReaders.add(reader);
+    if (reader) {
+      diskReaders.add(reader);
+      diskLabels.add(labels);
+    }
   }
+}
+
+/**
+ * Whether any video of `labels` was opened reading the file on disk, even
+ * one removed since (an undo can bring it back, still on that reader).
+ */
+export function hasDiskBackedVideos(labels: Labels): boolean {
+  return diskLabels.has(labels) || labels.videos.some((video) => diskBackendOf(video) !== null);
 }
 
 /** The backend of `video` that reads its embedded images from a file on disk, if any. */
