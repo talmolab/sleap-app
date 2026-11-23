@@ -18,6 +18,7 @@ import type { Labels } from "@/types";
 import type { JobResult, TrainJobSpec } from "@/lib/sleapConnect";
 import { buildRemoteTrackSpecs } from "@/lib/remoteTrackSpec";
 import { resolvePostTrainingTarget } from "@/lib/postTrainingTarget";
+import { mergeModeForRun } from "@/lib/predictionMergeMode";
 import {
   LABELS_EMBED_WARN_BYTES,
   LABELS_EMBED_HARD_CAP_BYTES,
@@ -802,10 +803,11 @@ export function getConfigSlots(modelType: ModelType): string[] {
 }
 
 /** Get display label for a config slot */
-export function getSlotLabel(slot: string): string {
+export function getSlotLabel(slot: string, modelType?: ModelType): string {
   switch (slot) {
     case "centroid": return "Centroid Config";
-    case "centered_instance": return "Centered Instance Config";
+    case "centered_instance":
+      return modelType === "top_down_id" ? "Multi-Class Top-Down Config" : "Centered Instance Config";
     case "bbox": return "Box Detector Config";
     default: return "Config";
   }
@@ -2144,7 +2146,7 @@ export const useTrainingStore = create<TrainingState>()((set, get) => ({
     const models: ModelProgress[] = slots.map((slot) => {
       const cf = config.configs.find((c) => c.slot === slot);
       return {
-        ...emptyModelProgress(getSlotLabel(slot).replace(" Config", ""), cf?.hyperparams.maxEpochs ?? 100),
+        ...emptyModelProgress(getSlotLabel(slot, config.modelType).replace(" Config", ""), cf?.hyperparams.maxEpochs ?? 100),
         plateauPatience: cf?.hyperparams.earlyStoppingPatience ?? null,
         plateauMinDelta: cf?.hyperparams.plateauMinDelta ?? null,
       };
@@ -2950,7 +2952,7 @@ export const useTrainingStore = create<TrainingState>()((set, get) => ({
               }
             };
 
-            const mergeOutputSlp = async (outputPath: string) => {
+            const mergeOutputSlp = async (outputPath: string, runIndex = 0) => {
               const platform = await getPlatform();
               const bytes = await platform.readFile(outputPath);
               console.log("[training] Read predictions file: %d bytes", bytes.byteLength);
@@ -2965,7 +2967,7 @@ export const useTrainingStore = create<TrainingState>()((set, get) => ({
               );
               await commandContext.execute(MergePredictions, {
                 predictions,
-                mode: localOpts?.existingPredictions ?? "replace",
+                mode: mergeModeForRun(localOpts?.existingPredictions ?? "replace", runIndex),
               });
             };
 
@@ -2983,6 +2985,7 @@ export const useTrainingStore = create<TrainingState>()((set, get) => ({
             if (inferenceTarget === "random") {
               // Per-video random sampling
               const videos = currentLabels?.videos ?? [];
+              let merged = 0;
               for (let vi = 0; vi < videos.length; vi++) {
                 const nFrames = videos[vi].shape?.[0] ?? 0;
                 if (nFrames === 0) continue;
@@ -2991,7 +2994,7 @@ export const useTrainingStore = create<TrainingState>()((set, get) => ({
                 const result = await runInferenceWithFallback(perVideoConfig);
                 if (cancelled()) break;
                 if (result.success && result.outputPath) {
-                  await mergeOutputSlp(result.outputPath);
+                  await mergeOutputSlp(result.outputPath, merged++);
                 }
               }
             } else {
@@ -3097,7 +3100,7 @@ export const useTrainingStore = create<TrainingState>()((set, get) => ({
         id,
         status: "running",
         models: slots.map((slot) => ({
-          label: getSlotLabel(slot).replace(" Config", ""),
+          label: getSlotLabel(slot, config.modelType).replace(" Config", ""),
           status: "pending",
           summary: null,
           error: null,

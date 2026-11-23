@@ -824,7 +824,8 @@ function TrainingPanelContent() {
       for (const cf of config.configs) {
         // Also drop a config whose slot now wants a different kind of head:
         // Top-Down's fixed-crop centered-instance config doesn't carry over to
-        // Top-Down (Box Crops), which loads its box-crop preset instead.
+        // Top-Down (Box Crops) or Top-Down + ID, which load their box-crop or
+        // multi-class top-down preset instead.
         if (
           !newSlots.includes(cf.slot) ||
           slotToHeadType(prevModelType.current, cf.slot) !== slotToHeadType(config.modelType, cf.slot)
@@ -1383,7 +1384,7 @@ function TrainingPanelContent() {
             return (
               <div key={slot} className="space-y-1">
                 <span className="text-[10px] text-muted-foreground flex items-center gap-1">
-                  {getSlotLabel(slot)}
+                  {getSlotLabel(slot, config.modelType)}
                   <HelpTooltip text="Config file for this model in the pipeline. Auto-discovered training_config.yaml files from prior runs are picked up automatically; you can also browse to a specific config or a directory of already-trained model checkpoints to reuse." />
                 </span>
                 <ConfigSlot
@@ -1629,7 +1630,7 @@ function TrainingPanelContent() {
                   <TabsList className="w-full h-7">
                     {config.configs.map((cf) => (
                       <TabsTrigger key={cf.slot} value={cf.slot} className="flex-1 text-[10px] h-6">
-                        {getSlotLabel(cf.slot).replace(" Config", "")}
+                        {getSlotLabel(cf.slot, config.modelType).replace(" Config", "")}
                       </TabsTrigger>
                     ))}
                   </TabsList>
@@ -1697,7 +1698,7 @@ function TrainingPanelContent() {
               {memoryEstimates.map(({ slot, gpu, cache }) => (
                 <div key={slot} className="space-y-1">
                   <div className="flex items-center justify-between gap-2 text-[11px]">
-                    <span className="font-medium shrink-0">{getSlotLabel(slot).replace(" Config", "")}</span>
+                    <span className="font-medium shrink-0">{getSlotLabel(slot, config.modelType).replace(" Config", "")}</span>
                     {gpu ? (
                       <span className={`text-right ${GPU_MEMORY_LEVEL_COLOR[gpu.level]}`}>
                         ~{formatBytes(gpu.totalBytes)} — {gpu.message}

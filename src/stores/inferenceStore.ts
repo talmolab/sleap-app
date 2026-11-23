@@ -10,6 +10,7 @@ import { useAppStore } from "@/stores/appStore";
 import { multiSkeletonBlock } from "@/lib/multiSkeleton";
 import { appendLogLine, subprocessFailureMessage } from "@/lib/processLog";
 import { buildRemoteTrackSpecs } from "@/lib/remoteTrackSpec";
+import { mergeModeForRun } from "@/lib/predictionMergeMode";
 
 export interface InferenceProgress {
   nProcessed: number;
@@ -295,8 +296,15 @@ export async function fetchAndMergeRemoteResult(
  * failure; the caller keeps its pending state so the action stays retriable.
  */
 export async function mergeRemoteResults(pending: PendingRemoteMerge): Promise<void> {
+  let merged = 0;
   for (const result of pending.results) {
-    await fetchAndMergeRemoteResult(result, pending.mode, pending.trackOnly);
+    const predictions = await loadRemotePredictions(result);
+    if (!predictions) continue;
+    await mergePredictionsIntoProject(
+      predictions,
+      mergeModeForRun(pending.mode, merged++),
+      pending.trackOnly,
+    );
   }
 }
 
@@ -563,6 +571,7 @@ export const useInferenceStore = create<InferenceState>()((set) => ({
             }
           };
 
+          let merged = 0;
           for (let vi = 0; vi < labels.videos.length; vi++) {
             const video = labels.videos[vi];
             const nFrames = video.shape?.[0] ?? 0;
@@ -584,7 +593,7 @@ export const useInferenceStore = create<InferenceState>()((set) => ({
               await loadAndMergePredictionBytes(
                 bytes,
                 result.outputPath,
-                config.existingPredictions,
+                mergeModeForRun(config.existingPredictions, merged++),
                 config.trackOnly,
               );
             }
