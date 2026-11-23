@@ -8,7 +8,8 @@ Everything is written from inside the output directory with relative names,
 so the packages record no path of the machine they were made on: any
 absolute path the save still records is made relative, each package is
 copied into a fresh file (so no stale bytes remain), and the script fails if
-an absolute path is left in the raw bytes or in any decoded string.
+a path of this machine (its directories, the home directory) or a /home/,
+/Users/ or /tmp/ path is left in the raw bytes or in any decoded string.
 """
 import json
 import os
@@ -18,9 +19,16 @@ import h5py
 import numpy as np
 import sleap_io as sio
 
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+START_DIR = os.getcwd()
 os.chdir(sys.argv[1])
 OUT_DIR = os.getcwd()
-FORBIDDEN = ["/scr/", "/home/", "/tmp/", "/Users/", OUT_DIR]
+# Paths of the machine running this (worked out here, not written in), and
+# the usual roots of user paths.
+FORBIDDEN = sorted(
+    {OUT_DIR, SCRIPT_DIR, START_DIR, os.path.expanduser("~"), "/home/", "/Users/", "/tmp/"}
+    - {"", "/", "~"}
+)
 
 
 def mkvid(name, n, h, w):
