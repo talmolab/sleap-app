@@ -127,6 +127,7 @@ Use this to track which PyQt features have been ported to sleap-app.
 
 - [x] Training Configuration Dialog (LearningDialog training mode)
 - [x] Inference Configuration Dialog (LearningDialog inference mode)
+  - N/A — **not planned:** MoveNet lightning / thunder pretrained inference (PyQt `config/pipeline_form.yaml:346`). sleap-nn has no MoveNet predictor: it was a TensorFlow Hub model in SLEAP ≤ 1.4's `sleap.nn`, removed in talmolab/sleap#2247. PyQt still lists the two options, but on sleap-nn they pass `--model_paths movenet-lightning` and fail with "Model path does not exist" (checked with SLEAP 1.6.6). Revisit only if sleap-nn adds a MoveNet predictor.
 - [x] Training Monitor (live loss plots) — PR #128 (per-batch scatter + per-epoch train/val curves, best-val marker, runtime/ETA/plateau, validation-image panel)
 - [x] Custom Instance Delete Dialog (enhanced Delete Predictions dialog with type/track filters)
 - [ ] Delete User-Frame Predictions Dialog
