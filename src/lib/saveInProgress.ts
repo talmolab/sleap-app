@@ -2,8 +2,11 @@
  * Whether a project save is running. While it is, no second save starts and
  * no edit, undo or redo runs (CommandContext refuses them): the writers read
  * the labels across many awaits, and what the save records about the file for
- * the fast in-place save must describe what it wrote. The progress overlay
- * blocks the mouse; this covers the keyboard and the menus.
+ * the fast in-place save must describe what it wrote. Every route that
+ * changes or replaces the project checks it: commands, undo and redo
+ * (CommandContext), direct edits and video changes (`refuseEditIfViewOnly`),
+ * opening or importing another project (`confirmDiscardUnsavedWork`) and
+ * Replace Video; closing the window waits for the save too.
  */
 import { toast } from "@/lib/notify";
 
@@ -24,15 +27,18 @@ export async function whileSaving<T>(work: () => Promise<T>): Promise<T> {
 }
 
 /**
- * True (with a short note) when a save is running, so the caller does
- * nothing: an edit, undo or redo now would change what is being written.
+ * True (with a short note, unless `quiet`) when a save is running, so the
+ * caller does nothing: a change now would change what is being written. The
+ * change is not applied later.
  */
-export function refuseWhileSaving(): boolean {
+export function refuseWhileSaving(opts?: { quiet?: boolean }): boolean {
   if (!isSaveInProgress()) return false;
-  toast.info("Saving…", {
-    id: "save-in-progress",
-    description: "Edits, undo and redo wait until the save finishes.",
-    duration: 1600,
-  });
+  if (!opts?.quiet) {
+    toast.info("Saving…", {
+      id: "save-in-progress",
+      description: "That change wasn't applied. Try again when the save finishes.",
+      duration: 2500,
+    });
+  }
   return true;
 }

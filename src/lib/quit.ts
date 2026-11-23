@@ -1,6 +1,8 @@
 import { isTauri } from "./platform";
 import { useAppStore } from "../stores/appStore";
 import { hasUnsavedWork } from "./unsavedGuard";
+import { isSaveInProgress } from "./saveInProgress";
+import { toast } from "./notify";
 import { markCleanShutdown } from "./diagnostics/sessionLog";
 
 let pendingQuitResolve: ((confirmed: boolean) => void) | null = null;
@@ -196,6 +198,15 @@ export async function setupCloseHandler(): Promise<void> {
   const appWindow = getCurrentWindow();
 
   await appWindow.onCloseRequested(async (event) => {
+    // A save is writing the project's file (an in-place patch can't be cut
+    // off safely): keep the window open until it finishes.
+    if (isSaveInProgress()) {
+      event.preventDefault();
+      toast.info("A save is running", {
+        description: "Close the window when it finishes.",
+      });
+      return;
+    }
     // No unsaved work: let the default close proceed (Tauri closes just this
     // window, or exits if it's the last one).
     if (!hasUnsavedWork(useAppStore.getState())) return;

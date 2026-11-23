@@ -40,6 +40,7 @@ import { resolveExternalVideos } from "./resolveVideos";
 import { installTauriFsResolver } from "./fsResolver";
 import { fileSize, readRange } from "./nativeRange";
 import { bindLabelsToFile, statFileIdentity } from "./inPlaceBinding";
+import { markDiskBackedVideos } from "./diskBackedVideos";
 import { sleapCmd } from "./sleapPlugin";
 import { basenameFromUrl } from "./urlOpen";
 import { isReportedSlpError, toastLoadError, type Format3Policy } from "./slpAccess";
@@ -332,6 +333,8 @@ export async function loadProjectFromPath(
         h5wasmUrl: H5WASM_URL,
         onProgress: reportParseProgress,
       });
+      // Its embedded videos read the file on disk (see diskBackedVideos.ts).
+      markDiskBackedVideos(labels);
     } else {
       const bytes = await readFile(path);
       store.setLoading(true, `Parsing ${filename}...`);

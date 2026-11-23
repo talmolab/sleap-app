@@ -88,8 +88,11 @@ vi.mock("sonner", () => ({
 // every full rewrite and set again to the file just written.
 vi.mock("@/lib/inPlaceBinding", () => ({
   clearFileBinding: () => void bindingCalls.push("clear"),
-  hasStaleVideoNames: () => false,
   markStaleVideoNames: () => {},
+  readsProjectFile: () => false,
+  recordedFileChanged: () => false,
+  refuseStaleVideoNames: () => false,
+  statFileIdentity: async () => null,
 }));
 saveSlpToBytesMock.mockImplementation(async () => {
   bindingCalls.push("write");

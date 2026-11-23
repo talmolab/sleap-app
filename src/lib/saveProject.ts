@@ -18,8 +18,11 @@ import {
 import { recordWrittenFile, saveLabelsInPlace } from "@/lib/saveLabelsInPlace";
 import {
   clearFileBinding,
-  hasStaleVideoNames,
   markStaleVideoNames,
+  readsProjectFile,
+  recordedFileChanged,
+  refuseStaleVideoNames,
+  statFileIdentity,
 } from "@/lib/inPlaceBinding";
 import { isSaveInProgress, whileSaving } from "@/lib/saveInProgress";
 import {
@@ -224,21 +227,38 @@ async function recordRewrite(labels: Labels, path: string, written: Video[]): Pr
   markStaleVideoNames(labels);
   toast.warning("Reopen this project before you continue", {
     description:
-      "This save renumbered its embedded videos, and the open project still reads their " +
-      "images under the old names. Saves that keep the video list still work; any other " +
-      "save waits until the project is reopened.",
+      "This save renumbered its embedded videos (or its file couldn't be read back), and " +
+      "the open project may still read their images under the old names: the images " +
+      "shown for some videos may be wrong until you reopen. Saves that keep the video " +
+      "list still work; full saves, exports and training copies wait until then.",
     duration: Infinity,
   });
 }
 
-/** Refuse a full write of labels whose embedded videos read stale names. */
-function refuseStaleVideoNames(labels: Labels): boolean {
-  if (!hasStaleVideoNames(labels)) return false;
-  toast.error("Reopen this project before saving it in full", {
+/** Whether `labels` are still the open project (the store's, if any). */
+function isCurrent(labels: Labels): boolean {
+  const open = useAppStore.getState().labels;
+  return open === labels || open === null;
+}
+
+/**
+ * Before a full write that copies embedded images from the project file:
+ * refuse when its names are stale, or when the file changed on disk since
+ * the app last read or wrote it and the project reads its images from it
+ * (a large file's open). True if refused; nothing is written.
+ */
+async function refuseFullWrite(labels: Labels, sourcePath: string | null): Promise<boolean> {
+  if (refuseStaleVideoNames(labels, "Reopen this project before saving it in full")) return true;
+  if (!sourcePath || !labels.videos.some((v) => v.hasEmbeddedImages && readsProjectFile(v))) {
+    return false;
+  }
+  if (!recordedFileChanged(labels, sourcePath, await statFileIdentity(sourcePath))) return false;
+  markStaleVideoNames(labels);
+  toast.error("The project file changed on disk", {
     description:
-      "An earlier save renumbered its embedded videos, and the open project still reads " +
-      "their images under the old names, so a full save would store the wrong images. " +
-      "Nothing was written.",
+      "It changed since the app opened or last saved it, and this project reads its " +
+      "embedded images from that file, so a save would store the wrong images. Reopen " +
+      "the project. Nothing was written.",
   });
   return true;
 }
@@ -353,7 +373,7 @@ async function saveProjectAsSlpNow(
           }
         }
         if (!savedInPlace) {
-          if (refuseStaleVideoNames(labels)) return;
+          if (await refuseFullWrite(labels, sourcePath)) return;
           // Full rewrite (streaming or in-memory) — distinct text from the
           // in-place path, with the file size when we have an estimate.
           store.setLoading(true, `Rewriting file${sizeSuffix(estimatedOutputBytes)}...`);
@@ -390,7 +410,7 @@ async function saveProjectAsSlpNow(
 
         // Save-As is always a full write to a new path; show it (with size when
         // known) so it reads consistently with the in-place vs rewrite text.
-        if (refuseStaleVideoNames(labels)) return;
+        if (await refuseFullWrite(labels, sourcePath)) return;
         store.setLoading(true, `Writing file${sizeSuffix(estimatedOutputBytes)}...`);
         clearFileBinding(labels);
         const written = [...labels.videos];
@@ -409,13 +429,15 @@ async function saveProjectAsSlpNow(
             await platform.writeFile(savePath, bytes);
           }
         }
-        store.set("projectPath", savePath);
+        // The project may have been replaced meanwhile (it can't be, while a
+        // save runs, but never point another project at this file).
+        if (isCurrent(labels)) store.set("projectPath", savePath);
         await recordRewrite(labels, savePath, written);
         // Track the newly-saved name (basename) so the window title updates and,
         // for the .vNNN versioning, the NEXT Save As increments from the name we
         // just wrote instead of the stale opened name. The browser Save-As path
         // already does this via handle.name.
-        store.set("filename", savePath.split(/[/\\]/).pop() ?? savePath);
+        if (isCurrent(labels)) store.set("filename", savePath.split(/[/\\]/).pop() ?? savePath);
         displayName = savePath;
       }
 
@@ -423,7 +445,7 @@ async function saveProjectAsSlpNow(
       // redundant — drop it + its manifest entry so it can't trigger a spurious
       // "recover unsaved work?" prompt on the next launch. (A cancelled Save-As
       // returned above, before reaching here, so the draft is kept in that case.)
-      const tauriDraft = store.labelsDraftPath;
+      const tauriDraft = isCurrent(labels) ? store.labelsDraftPath : null;
       if (tauriDraft) {
         void removeTauriDraft(tauriDraft);
         store.set("labelsDraftPath", null);
@@ -572,8 +594,10 @@ async function saveProjectAsSlpNow(
     // window title gate their entire display on it, so they'd stay stuck on
     // "No project loaded" until the file is reopened via loadProject (which
     // does set it) rather than actually reflecting the freshly-saved project.
-    store.set("filename", displayName.split(/[\\/]/).pop() ?? displayName);
-    store.clearChanges();
+    if (isCurrent(labels)) {
+      store.set("filename", displayName.split(/[\\/]/).pop() ?? displayName);
+      store.clearChanges();
+    }
     // Labels opened for editing from an SLP format 3.0 file now live in a 2.x
     // file: say so, so the in-place save patches it again next time. Their
     // records keep their marks, so later saves drop the same fields silently.

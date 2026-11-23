@@ -247,6 +247,8 @@ export async function exportTrainingJobPackage(
   const { ensureWritable, confirmUnlabeledAsHidden } = await import("@/lib/slpAccess");
   if (!(await ensureWritable(labels, "export"))) return null;
   if (!(await confirmUnlabeledAsHidden(labels, "training"))) return null;
+  const { refuseStaleVideoNames } = await import("@/lib/inPlaceBinding");
+  if (refuseStaleVideoNames(labels, "Reopen this project before exporting")) return null;
   // PyQt: embed the suggested frames too only when inference targets them.
   const level: ExportPackageLevel = req.inferenceTarget === "suggestions" ? "training" : "user";
   const pkgName = baseName(derivePackageFilename(filename));

@@ -65,7 +65,6 @@ import {
   onDiskTableFromMeta,
   StreamingH5File,
   StreamingH5Writer,
-  StreamingHdf5VideoBackend,
   type RangeSink,
   type RangeSource,
   type Labels,
@@ -91,9 +90,11 @@ import {
   clearFileBinding,
   loadedVideoDataset,
   refreshFileIdentity,
+  readsProjectFile,
   sameFileIdentity,
   sameVideoList,
   statFileIdentity,
+  type FileIdentity,
 } from "./inPlaceBinding";
 
 // Same derivation as loadProject.ts / saveEmbeddedPkgStreaming.ts: h5wasm must be
@@ -717,6 +718,7 @@ export async function saveLabelsInPlace(
   // Waiting for it can take a while, so the file is checked again once it is
   // ours: a change in the meantime refuses, with nothing written.
   let refusedLate: string | null = null;
+  let writtenIdentity: FileIdentity | null = null;
   try {
     await withNativeWriteHandle(async () => {
       refusedLate = bindingRefusal(labels, destPath, await statFileIdentity(destPath));
@@ -753,6 +755,9 @@ export async function saveLabelsInPlace(
         (metadataChanged ? " (+ /metadata)" : "")
     );
 
+    // The file as the app wrote it, taken before the check reads it.
+    writtenIdentity = await statFileIdentity(destPath);
+
     // 5. POST-WRITE VERIFY (required backstop; throws loud on any inconsistency).
     await verifyInPlace(destPath, update, probe.sidecars, probe.videosJson, videoAttrs);
   } catch (err) {
@@ -763,8 +768,15 @@ export async function saveLabelsInPlace(
     throw err;
   }
   console.log(`[saveLabelsInPlace] verify OK -> ${destPath}`);
-  // The file as the app now wrote it: the next in-place save compares with this.
-  refreshFileIdentity(labels, await statFileIdentity(destPath));
+  // The file as the app wrote it, if nothing changed it since: the next
+  // in-place save compares with this.
+  const afterCheck = await statFileIdentity(destPath);
+  refreshFileIdentity(
+    labels,
+    writtenIdentity && afterCheck && sameFileIdentity(writtenIdentity, afterCheck)
+      ? writtenIdentity
+      : null
+  );
   return { ok: true };
 }
 
@@ -788,8 +800,14 @@ export async function recordWrittenFile(
   written: readonly Video[]
 ): Promise<{ staleVideoNames: boolean }> {
   clearFileBinding(labels);
+  // Fail closed: if the written file can't be read back, any embedded video
+  // that reads the project file may now read another video's images.
+  const unproven = { staleVideoNames: written.some((v) => v.hasEmbeddedImages && readsProjectFile(v)) };
+  // No embedded video: the in-place save never runs, so there is nothing to
+  // record and no need to read the file back.
+  if (!written.some((v) => v.hasEmbeddedImages)) return { staleVideoNames: false };
   const identity = await statFileIdentity(path);
-  if (!identity || !hasCrossOriginIsolation()) return { staleVideoNames: false };
+  if (!identity || !hasCrossOriginIsolation()) return unproven;
   let videosJson: string[] | null;
   try {
     const reader = new StreamingH5File();
@@ -804,16 +822,17 @@ export async function recordWrittenFile(
     }
   } catch (err) {
     console.log("[saveLabelsInPlace] could not read back the written file's videos:", err);
-    return { staleVideoNames: false };
+    return unproven;
   }
   const datasets = writtenDatasets(videosJson);
+  if (!datasets) return unproven;
   const staleVideoNames = written.some(
     (video, index) =>
       video.hasEmbeddedImages &&
       readsProjectFile(video) &&
-      loadedVideoDataset(video) !== (datasets?.[index] ?? null)
+      loadedVideoDataset(video) !== (datasets[index] ?? null)
   );
-  if (!datasets || datasets.length !== written.length) return { staleVideoNames };
+  if (datasets.length !== written.length) return { staleVideoNames };
   // Only now, after every await: the list must still be the one written.
   if (!sameVideoList(labels.videos, written)) return { staleVideoNames };
   // And the file must still be the one just written.
@@ -846,11 +865,3 @@ function writtenDatasets(videosJson: string[] | null): Array<string | null> | nu
   return out;
 }
 
-/** Whether a video's backend reads its images from the file on disk. */
-function readsProjectFile(video: Video): boolean {
-  const backend = video.backend as { inner?: unknown } | null;
-  return (
-    backend instanceof StreamingHdf5VideoBackend ||
-    (backend?.inner ?? null) instanceof StreamingHdf5VideoBackend
-  );
-}
