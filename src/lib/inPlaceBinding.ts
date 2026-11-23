@@ -185,10 +185,12 @@ const staleNames = new WeakSet<Labels>();
 /**
  * Mark labels whose embedded videos read their images from the project file
  * by a dataset name that a full rewrite has since given to another video (a
- * large file's open: its backends read the file on disk). Their images, and a
- * further full write that copies them, would be another video's: the save
- * refuses that until the project is reopened (the in-place save, which keeps
- * the images, still runs).
+ * large file's open: its backends read the file on disk), because rebinding
+ * them to the written file failed (`rebindEmbeddedVideos.ts`; after a
+ * successful rebind they read the new names). Their images, and a further
+ * full write that copies them, would be another video's: the save refuses
+ * that until the project is reopened (the in-place save, which keeps the
+ * images, still runs).
  */
 export function markStaleVideoNames(labels: Labels): void {
   staleNames.add(labels);

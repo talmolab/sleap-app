@@ -16,8 +16,10 @@
  *   the right videos, also with a video that has no embedded frames (whose
  *   dataset keeps its old name).
  * - A large file's open reads its images from the file by name: after a full
- *   rewrite that renumbered them the user is told to reopen, and a further
- *   full save is refused until then (it would copy another video's images).
+ *   rewrite its videos are rebound to the written file (covered in
+ *   rebindEmbeddedVideos.test.ts). If that fails and the rewrite renumbered
+ *   them, the user is told to reopen, and a further full save is refused until
+ *   then (it would copy another video's images).
  *
  * Packages are app-written from `sleap_io_multi_noshape.pkg.slp` (A: frames 2
  * and 5, B: frame 3, C: frame 4, D: no embedded frames). The app's in-memory
@@ -51,13 +53,16 @@ const hooks: {
   duringWrite?: () => void | Promise<void>;
   failWrite?: boolean;
   failInPlaceAfterWrite?: boolean;
+  /** Fail the rebind's reader open (the only open that names its file). */
+  failRebindOpen?: boolean;
   origin?: string;
   originIndex?: Map<unknown, number>;
 } = {};
 
 class H5Reader {
   private f: H5File | null = null;
-  async openRange() {
+  async openRange(_source?: unknown, options?: { filenameHint?: string }) {
+    if (hooks.failRebindOpen && options?.filenameHint) throw new Error("injected open failure");
     await ready;
     this.f = new H5File(current, "r");
   }
@@ -174,6 +179,7 @@ const { withLegacyLayout } = await import("@/lib/slpFormatCompat");
 const { bindLabelsToFile, bindingRefusal, hasStaleVideoNames, statFileIdentity } = await import(
   "@/lib/inPlaceBinding"
 );
+const { markDiskBackedVideos } = await import("@/lib/rebindEmbeddedVideos");
 
 const FIXTURE = join(import.meta.dir, "../fixtures/sleap_io_multi_noshape.pkg.slp");
 const tmp = mkdtempSync(join(tmpdir(), "sleap-app-save-record-"));
@@ -254,6 +260,7 @@ function loadAsLargeFile(labels: sioModule.Labels) {
       deferred: true,
     });
   }
+  markDiskBackedVideos(labels);
 }
 
 /** Each labeled frame of the file as `video{i}@frame`. */
@@ -363,10 +370,28 @@ describe("Save records the video list it wrote", () => {
 });
 
 describe("a large file's open after a full rewrite that renumbered its videos", () => {
-  it("asks to reopen, and refuses another full save until then; an in-place save still runs", async () => {
+  it("rebinds its videos: no warning, and a further full save goes ahead", async () => {
     const labels = await openAsApp(await appPackage([0, 1, 2]));
     loadAsLargeFile(labels);
     labels.removeVideo(labels.videos[0]); // B and C get new names
+    await saveProjectAsSlp(labels, "proj.pkg.slp");
+    expect(hasStaleVideoNames(labels)).toBe(false);
+    expect(toasts.filter((t) => t.startsWith("warning:"))).toEqual([]);
+    expect(labels.videos.map((v) => (v.backend as { dataset?: string }).dataset)).toEqual([
+      "video0/video",
+      "video1/video",
+    ]);
+    labels.removeVideo(labels.videos[1]);
+    fileOps.length = 0;
+    await saveProjectAsSlp(labels, "proj.pkg.slp");
+    expect(fileOps).toEqual(["fullRewrite"]);
+  });
+
+  it("when the rebind fails: asks to reopen, and refuses another full save until then; an in-place save still runs", async () => {
+    const labels = await openAsApp(await appPackage([0, 1, 2]));
+    loadAsLargeFile(labels);
+    labels.removeVideo(labels.videos[0]); // B and C get new names
+    hooks.failRebindOpen = true;
     await saveProjectAsSlp(labels, "proj.pkg.slp");
     expect(hasStaleVideoNames(labels)).toBe(true);
     expect(toasts.some((t) => t.startsWith("warning: Reopen this project"))).toBe(true);

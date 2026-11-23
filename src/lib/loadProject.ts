@@ -39,7 +39,9 @@ import { confirmDiscardUnsavedWork } from "./unsavedGuard";
 import { resolveExternalVideos } from "./resolveVideos";
 import { installTauriFsResolver } from "./fsResolver";
 import { fileSize, readRange } from "./nativeRange";
-import { bindLabelsToFile, statFileIdentity } from "./inPlaceBinding";
+import { bindLabelsToFile, loadedVideoDataset, statFileIdentity } from "./inPlaceBinding";
+import { recordEmbeddedSources } from "./embeddedVideoSources";
+import { markDiskBackedVideos } from "./rebindEmbeddedVideos";
 import { sleapCmd } from "./sleapPlugin";
 import { basenameFromUrl } from "./urlOpen";
 import { isReportedSlpError, toastLoadError, type Format3Policy } from "./slpAccess";
@@ -332,6 +334,8 @@ export async function loadProjectFromPath(
         h5wasmUrl: H5WASM_URL,
         onProgress: reportParseProgress,
       });
+      // Its embedded videos read the file on disk: a full save rebinds them.
+      markDiskBackedVideos(labels);
     } else {
       const bytes = await readFile(path);
       store.setLoading(true, `Parsing ${filename}...`);
@@ -358,6 +362,9 @@ export async function loadProjectFromPath(
 
     store.setLabels(labels, filename, path);
     bindLabelsToFile(labels, path, fileIdentity, "loaded");
+    // Where each embedded video's images are in this file (the streaming
+    // writer copies them from here by these names; see embeddedVideoSources.ts).
+    recordEmbeddedSources(path, labels.videos, labels.videos.map(loadedVideoDataset));
     await openFirstLabeledFrame(labels);
 
     toast.success(`Loaded ${filename}`, {

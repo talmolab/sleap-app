@@ -49,6 +49,7 @@ import { isSourceChanged } from "@/lib/draftStaleness";
 import { makeTauriJournalStore } from "@/lib/tauriDraft";
 import { replayJournal, baseBakPath } from "@/lib/incrementalAutosave";
 import type { TauriDraftManifestEntry } from "@/lib/tauriDraftManifest";
+import { markDiskBackedVideos } from "@/lib/rebindEmbeddedVideos";
 
 // Same threshold + h5wasm URL as loadProject.ts: files over ~1 GB open via the
 // native range reader (lazy, on-disk) instead of being read whole into WASM.
@@ -80,7 +81,7 @@ async function readLabelsFromPath(
     bytes = 0;
   }
   if (bytes > RANGE_READER_THRESHOLD) {
-    return readSlpStreaming(
+    const labels = await readSlpStreaming(
       { size: bytes, readRange: (o: number, l: number) => readRange(path, o, l) },
       {
         openVideos: !lazyMeta,
@@ -92,6 +93,9 @@ async function readLabelsFromPath(
         fileName: path,
       },
     );
+    // Its embedded videos read the file on disk: a full save rebinds them.
+    markDiskBackedVideos(labels);
+    return labels;
   }
   const raw = await readFile(path);
   return loadSlp(raw, {

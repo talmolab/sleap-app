@@ -65,7 +65,6 @@ import {
   onDiskTableFromMeta,
   StreamingH5File,
   StreamingH5Writer,
-  StreamingHdf5VideoBackend,
   type RangeSink,
   type RangeSource,
   type Labels,
@@ -84,6 +83,7 @@ import {
 } from "./nativeWrite";
 import { fileSize, readRange } from "./nativeRange";
 import { sourceFormatOf, withLegacyLayout } from "./slpFormatCompat";
+import { diskBackendOf } from "./rebindEmbeddedVideos";
 import {
   bindLabelsToFile,
   bindingRefusal,
@@ -777,24 +777,28 @@ export async function saveLabelsInPlace(
  * write), or the file can't be read back, the record is cleared instead, and
  * the next save rewrites the file in full.
  *
- * Returns whether an embedded video now reads its images from the file under
- * a name the file has given to another video (a large file's open, whose
- * backends read the file on disk): the caller then marks the labels (see
- * `markStaleVideoNames`) and asks the user to reopen.
+ * Returns the written file's embedded datasets by index (null for an external
+ * video; `datasets` null when the file couldn't be read back), which the
+ * caller rebinds the open project's embedded videos to
+ * (`rebindEmbeddedVideos.ts`), and whether an embedded video's backend reads
+ * the file on disk under a name the file has given to another video
+ * (`staleVideoNames`): if that rebind fails, the caller then marks the labels
+ * (see `markStaleVideoNames`) and asks the user to reopen.
  */
 export async function recordWrittenFile(
   labels: Labels,
   path: string,
   written: readonly Video[]
-): Promise<{ staleVideoNames: boolean }> {
+): Promise<{ staleVideoNames: boolean; datasets: Array<string | null> | null }> {
   clearFileBinding(labels);
+  if (!hasCrossOriginIsolation()) return { staleVideoNames: false, datasets: null };
   const identity = await statFileIdentity(path);
-  if (!identity || !hasCrossOriginIsolation()) return { staleVideoNames: false };
   let videosJson: string[] | null;
   try {
+    const size = identity?.size ?? (await fileSize(path));
     const reader = new StreamingH5File();
     await reader.openRange(
-      { size: identity.size, readRange: (o, l) => readRange(path, o, l) },
+      { size, readRange: (o, l) => readRange(path, o, l) },
       { h5wasmUrl: H5WASM_URL }
     );
     try {
@@ -804,7 +808,7 @@ export async function recordWrittenFile(
     }
   } catch (err) {
     console.log("[saveLabelsInPlace] could not read back the written file's videos:", err);
-    return { staleVideoNames: false };
+    return { staleVideoNames: false, datasets: null };
   }
   const datasets = writtenDatasets(videosJson);
   const staleVideoNames = written.some(
@@ -813,14 +817,15 @@ export async function recordWrittenFile(
       readsProjectFile(video) &&
       loadedVideoDataset(video) !== (datasets?.[index] ?? null)
   );
-  if (!datasets || datasets.length !== written.length) return { staleVideoNames };
+  const result = { staleVideoNames, datasets };
+  if (!identity || !datasets || datasets.length !== written.length) return result;
   // Only now, after every await: the list must still be the one written.
-  if (!sameVideoList(labels.videos, written)) return { staleVideoNames };
+  if (!sameVideoList(labels.videos, written)) return result;
   // And the file must still be the one just written.
   const again = await statFileIdentity(path);
-  if (!again || !sameFileIdentity(again, identity)) return { staleVideoNames };
+  if (!again || !sameFileIdentity(again, identity)) return result;
   bindLabelsToFile(labels, path, identity, datasets);
-  return { staleVideoNames };
+  return result;
 }
 
 /** Each entry's embedded dataset in `videos_json` (null if external); null if unparseable. */
@@ -848,9 +853,5 @@ function writtenDatasets(videosJson: string[] | null): Array<string | null> | nu
 
 /** Whether a video's backend reads its images from the file on disk. */
 function readsProjectFile(video: Video): boolean {
-  const backend = video.backend as { inner?: unknown } | null;
-  return (
-    backend instanceof StreamingHdf5VideoBackend ||
-    (backend?.inner ?? null) instanceof StreamingHdf5VideoBackend
-  );
+  return diskBackendOf(video) !== null;
 }

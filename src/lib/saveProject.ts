@@ -21,6 +21,8 @@ import {
   hasStaleVideoNames,
   markStaleVideoNames,
 } from "@/lib/inPlaceBinding";
+import { recordEmbeddedSources } from "@/lib/embeddedVideoSources";
+import { rebindEmbeddedVideos, unreadableEmbeddedVideo } from "@/lib/rebindEmbeddedVideos";
 import { isSaveInProgress, whileSaving } from "@/lib/saveInProgress";
 import {
   shouldStreamEmbeddedSave,
@@ -214,13 +216,28 @@ async function ensureReadWritePermission(
 
 /**
  * After a full write of `labels` to `path`: record the file for the in-place
- * save (only if the video list is still `written`), and if the project's
- * embedded videos now read their images under names the file gave to other
- * videos, say so and refuse further full writes until it is reopened.
+ * save (only if the video list is still `written`), record where each written
+ * embedded video's images now are, and rebind the videos that read their
+ * images from the file on disk to the file just written (a large file's
+ * open). If that rebind fails and their names changed (or can't be read
+ * back), say so and refuse further full writes until the project is reopened.
  */
 async function recordRewrite(labels: Labels, path: string, written: Video[]): Promise<void> {
-  const { staleVideoNames } = await recordWrittenFile(labels, path, written);
-  if (!staleVideoNames) return;
+  const { staleVideoNames, datasets } = await recordWrittenFile(labels, path, written);
+  recordEmbeddedSources(path, written, datasets);
+  const rebind = await rebindEmbeddedVideos(labels, path, written, datasets);
+  if (rebind.ok) {
+    if (rebind.rebound > 0) {
+      console.log(`[save] Rebound ${rebind.rebound} embedded video(s) to ${path}`);
+      // Re-read the frame on screen, and the frame counts, from the new backends.
+      const store = useAppStore.getState();
+      store.markVideoUpdated();
+      store.bumpBackendSwapNonce();
+    }
+    return;
+  }
+  console.warn(`[save] Could not rebind the embedded videos to ${path}: ${rebind.reason}`);
+  if (!staleVideoNames && datasets) return; // same names: the old backends still read them
   markStaleVideoNames(labels);
   toast.warning("Reopen this project before you continue", {
     description:
@@ -239,6 +256,24 @@ function refuseStaleVideoNames(labels: Labels): boolean {
       "An earlier save renumbered its embedded videos, and the open project still reads " +
       "their images under the old names, so a full save would store the wrong images. " +
       "Nothing was written.",
+  });
+  return true;
+}
+
+/**
+ * Refuse a full write from `sourcePath` of labels with an embedded video
+ * whose images that file no longer holds: it was removed before a full save
+ * and restored by undo, and its images were read from the file on disk.
+ */
+function refuseUnreadableVideos(labels: Labels, sourcePath: string | null): boolean {
+  const video = sourcePath ? unreadableEmbeddedVideo(labels, sourcePath) : null;
+  if (!video) return false;
+  const index = labels.videos.indexOf(video);
+  toast.error("Can't save this project in full", {
+    description:
+      `The images of video ${index + 1} are no longer in the project file: an earlier ` +
+      "save wrote the file without that video. Remove the video, or reopen the project, " +
+      "before saving in full. Nothing was written.",
   });
   return true;
 }
@@ -354,6 +389,7 @@ async function saveProjectAsSlpNow(
         }
         if (!savedInPlace) {
           if (refuseStaleVideoNames(labels)) return;
+          if (refuseUnreadableVideos(labels, sourcePath)) return;
           // Full rewrite (streaming or in-memory) — distinct text from the
           // in-place path, with the file size when we have an estimate.
           store.setLoading(true, `Rewriting file${sizeSuffix(estimatedOutputBytes)}...`);
@@ -391,6 +427,7 @@ async function saveProjectAsSlpNow(
         // Save-As is always a full write to a new path; show it (with size when
         // known) so it reads consistently with the in-place vs rewrite text.
         if (refuseStaleVideoNames(labels)) return;
+        if (refuseUnreadableVideos(labels, sourcePath)) return;
         store.setLoading(true, `Writing file${sizeSuffix(estimatedOutputBytes)}...`);
         clearFileBinding(labels);
         const written = [...labels.videos];
