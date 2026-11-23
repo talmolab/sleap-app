@@ -1732,6 +1732,17 @@
     <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
       
         <li class="md-nav__item">
+  <a href="#changing-shortcuts" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        Changing shortcuts
+      </span>
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#file" class="md-nav__link">
     <span class="md-ellipsis">
       <span class="md-typeset">
@@ -2208,6 +2219,17 @@
     <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
       
         <li class="md-nav__item">
+  <a href="#changing-shortcuts" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        Changing shortcuts
+      </span>
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#file" class="md-nav__link">
     <span class="md-ellipsis">
       <span class="md-typeset">
@@ -2350,8 +2372,35 @@
 <p>These match <a href="https://docs.sleap.ai">SLEAP</a>'s defaults, so muscle memory carries
 over from the legacy GUI.</p>
 <p><span class="keys"><kbd class="key-command">Cmd</kbd></span> is shown for macOS; on Windows and Linux it is <span class="keys"><kbd class="key-control">Ctrl</kbd></span>.</p>
-<p><strong>Help ▸ Keyboard Shortcuts…</strong> shows the most common of these inside the app;
-this page is the full list.</p>
+<p><strong>Help ▸ Keyboard Shortcuts…</strong> shows these inside the app, and lets you
+change them; this page lists the defaults.</p>
+<h2 id="changing-shortcuts">Changing shortcuts<a class="headerlink" href="#changing-shortcuts" title="Permanent link">&para;</a></h2>
+<p>In <strong>Help ▸ Keyboard Shortcuts…</strong>, click an action's key, then press the new
+key (<span class="keys"><kbd class="key-escape">Esc</kbd></span> cancels). If another action already uses that key, the app asks
+whether to move it; if you say yes, the other action is left without a key.
+The ✕ next to a key removes it, and ↺ puts an action back on its default.
+Changes apply when you click <strong>Save</strong>, everywhere: on the canvas, in the
+menus (including the macOS menu bar), and in <strong>Help ▸ Search Menus</strong>.</p>
+<ul>
+<li>Your shortcuts are saved on this computer with your other preferences.
+  <strong>File ▸ Reset Preferences to Defaults…</strong> (or <strong>Reset to Defaults</strong> in the
+  dialog) puts them all back.</li>
+<li><strong>Export…</strong> saves them as a <code>shortcuts.yaml</code> file, and <strong>Import…</strong> loads
+  one, for example to use the same keys on another computer. The file uses
+  the same format as SLEAP's own <code>shortcuts.yaml</code>, so you can import your
+  shortcuts from the legacy SLEAP GUI too (there, <code>Ctrl</code> means <span class="keys"><kbd class="key-command">Cmd</kbd></span> on
+  macOS). Entries you never changed in SLEAP keep this app's keys (for
+  example <span class="keys"><kbd class="key-t">T</kbd></span> for node names and <span class="keys"><kbd class="key-shift">Shift</kbd><span>+</span><kbd class="key-m">M</kbd></span> for Merge Instance).</li>
+<li>Some keys can't be assigned: Undo/Redo, the text-size keys,
+  <span class="keys"><kbd class="key-command">Cmd</kbd><span>+</span><kbd class="key-1">1</kbd></span>–<span class="keys"><kbd class="key-command">Cmd</kbd><span>+</span><kbd class="key-9">9</kbd></span> (set track), <span class="keys"><kbd class="key-backspace">Backspace</kbd></span>/<span class="keys"><kbd class="key-delete">Del</kbd></span> (delete selected
+  nodes) and <span class="keys"><kbd class="key-space">Space</kbd></span> (hold to pan; only the suggestion keys may use it).
+  Nor can keys the system or browser keep: <span class="keys"><kbd class="key-command">Cmd</kbd><span>+</span><kbd class="key-tab">Tab</kbd></span> and <span class="keys"><kbd class="key-command">Cmd</kbd><span>+</span><kbd class="key-space">Space</kbd></span> on
+  macOS; <span class="keys"><kbd class="key-command">Cmd</kbd><span>+</span><kbd class="key-q">Q</kbd></span>, <span class="keys"><kbd class="key-command">Cmd</kbd><span>+</span><kbd class="key-h">H</kbd></span>, <span class="keys"><kbd class="key-command">Cmd</kbd><span>+</span><kbd class="key-m">M</kbd></span> and <span class="keys"><kbd class="key-command">Cmd</kbd><span>+</span><kbd class="key-w">W</kbd></span> in the macOS desktop
+  app; and in a browser, its tab and window keys such as <span class="keys"><kbd class="key-command">Cmd</kbd><span>+</span><kbd class="key-w">W</kbd></span>,
+  <span class="keys"><kbd class="key-command">Cmd</kbd><span>+</span><kbd class="key-t">T</kbd></span> and <span class="keys"><kbd class="key-command">Cmd</kbd><span>+</span><kbd class="key-n">N</kbd></span>.</li>
+<li>Shortcuts without <span class="keys"><kbd class="key-command">Cmd</kbd></span>/<span class="keys"><kbd class="key-control">Ctrl</kbd></span> (a letter, an arrow) do nothing while
+  you're typing in a text field.</li>
+</ul>
 <h2 id="file">File<a class="headerlink" href="#file" title="Permanent link">&para;</a></h2>
 <table>
 <thead>
