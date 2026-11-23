@@ -775,6 +775,8 @@ interface TrainingState {
   cancelDryRun: () => Promise<void>;
   clearDryRun: () => void;
   recordEpoch: (modelIndex: number, sample: EpochSample) => void;
+  /** Replace the train loss already recorded for `epoch` of model `modelIndex`. */
+  setEpochTrainLoss: (modelIndex: number, epoch: number, trainLoss: number) => void;
   recordBatch: (modelIndex: number, sample: BatchInput) => void;
   recordBatches: (modelIndex: number, samples: BatchInput[]) => void;
   markEpochBegin: (modelIndex: number, epoch: number) => void;
@@ -1570,6 +1572,27 @@ async function pathExists(path: string): Promise<boolean> {
   } catch {
     return false;
   }
+}
+
+/**
+ * The run folder name sleap-nn will really train into. When
+ * `<ckptDir>/<runName>/best.ckpt` already exists, sleap-nn silently switches
+ * to the first free `<runName>-<i>` (`_setup_ckpt_path` in model_trainer.py)
+ * and never reports it, so the app kept pointing post-training inference,
+ * metrics and Cancel cleanup at the earlier run. Applying the same rule here
+ * and passing the result as the run name makes the app's name the one used.
+ */
+export async function resolveLocalRunName(
+  ckptDir: string,
+  runName: string,
+  exists: (path: string) => Promise<boolean> = pathExists,
+): Promise<string> {
+  if (!(await exists(`${ckptDir}/${runName}/best.ckpt`))) return runName;
+  for (let i = 1; i < 10000; i++) {
+    const candidate = `${runName}-${i}`;
+    if (!(await exists(`${ckptDir}/${candidate}`))) return candidate;
+  }
+  return runName;
 }
 
 /**
@@ -2635,6 +2658,10 @@ export const useTrainingStore = create<TrainingState>()((set, get) => ({
       // Holder for the ZMQ progress-relay subscription; cleaned up in finally.
       let unlistenProgress: (() => void) | null = null;
       const batchBuffer: { epoch: number; batch: number; loss: number }[] = [];
+      // Running mean of the current epoch's batch losses: sleap-nn sends
+      // epoch_end before its LightningModule logs that epoch's `train/loss`,
+      // so the `train/loss` in epoch_end N is epoch N-1's (none in epoch 0).
+      const epochBatchLoss = { sum: 0, count: 0 };
       let batchFlushTimer: ReturnType<typeof setInterval> | null = null;
 
       // sleap-nn's tqdm progress bar repaints via carriage return many times/sec, and
@@ -2662,6 +2689,8 @@ export const useTrainingStore = create<TrainingState>()((set, get) => ({
           const i = get().currentModelIndex;
           const ev = data.event;
           if (ev === "epoch_begin") {
+            epochBatchLoss.sum = 0;
+            epochBatchLoss.count = 0;
             if (typeof data.epoch === "number") get().markEpochBegin(i, data.epoch);
           } else if (ev === "epoch_end") {
             // Flush buffered batches first so epochSize (from lastBatchNumber) is fresh.
@@ -2669,10 +2698,18 @@ export const useTrainingStore = create<TrainingState>()((set, get) => ({
               get().recordBatches(get().currentModelIndex, batchBuffer.splice(0, batchBuffer.length));
             }
             const logs = data.logs ?? {};
-            const trainLoss = logs["train/loss"] ?? logs["loss"] ?? null;
+            // sleap-nn's own `train/loss` is the mean of the same batch
+            // losses, so this matches it; it replaces it below an epoch later.
+            const trainLoss = epochBatchLoss.count > 0 ? epochBatchLoss.sum / epochBatchLoss.count : null;
+            epochBatchLoss.sum = 0;
+            epochBatchLoss.count = 0;
             const valLoss = logs["val/loss"] ?? null;
             if (typeof data.epoch === "number") {
               get().recordEpoch(i, { epoch: data.epoch, trainLoss, valLoss });
+              const previousTrainLoss = logs["train/loss"];
+              if (data.epoch > 0 && typeof previousTrainLoss === "number") {
+                get().setEpochTrainLoss(i, data.epoch - 1, previousTrainLoss);
+              }
             }
           } else if (ev === "train_begin") {
             if (data.wandb_url) set({ wandbUrl: data.wandb_url });
@@ -2686,6 +2723,11 @@ export const useTrainingStore = create<TrainingState>()((set, get) => ({
               typeof loss === "number"
             ) {
               batchBuffer.push({ epoch: data.epoch, batch: data.batch, loss });
+            }
+            // Only the step loss: `train/loss` here is still the previous epoch's.
+            if (typeof logs["loss"] === "number") {
+              epochBatchLoss.sum += logs["loss"];
+              epochBatchLoss.count += 1;
             }
           }
         });
@@ -2731,11 +2773,17 @@ export const useTrainingStore = create<TrainingState>()((set, get) => ({
             log: i > 0 ? appendLog(s.log, `— Starting ${s.models[i]?.label}...`) : s.log,
           }));
 
-          const { configYaml, runName } = prepareLocalRun(cf, localLabels, localSizeStats);
+          const prepared = prepareLocalRun(cf, localLabels, localSizeStats);
+          const { configYaml } = prepared;
+          const runName = await resolveLocalRunName(modelDir, prepared.runName);
+          if (runName !== prepared.runName) {
+            set((s) => ({
+              log: appendLog(s.log, `— models/${prepared.runName} already holds a trained model; this run is saved as models/${runName}.`),
+            }));
+          }
           const runDir = `${modelDir}/${runName}`;
           // Whether this run's folder is ours to delete on Cancel: only if it
-          // didn't exist yet. (A reused custom run name can point at an earlier,
-          // finished run; sleap-nn then writes to "<name>-1" instead.)
+          // didn't exist yet (sleap-nn reuses a folder that has no best.ckpt).
           const runDirExisted = await pathExists(runDir);
 
           set((s) => ({
@@ -3265,6 +3313,19 @@ export const useTrainingStore = create<TrainingState>()((set, get) => ({
                 : m.bestValLoss,
             metrics,
           };
+        }),
+      };
+    }),
+
+  setEpochTrainLoss: (modelIndex, epoch, trainLoss) =>
+    set((state) => {
+      if (modelIndex < 0 || modelIndex >= state.models.length) return state;
+      return {
+        models: state.models.map((m, i) => {
+          if (i !== modelIndex) return m;
+          const epochSamples = m.epochSamples.map((s) => (s.epoch === epoch ? { ...s, trainLoss } : s));
+          const last = epochSamples[epochSamples.length - 1];
+          return { ...m, epochSamples, loss: last?.epoch === epoch ? trainLoss : m.loss };
         }),
       };
     }),

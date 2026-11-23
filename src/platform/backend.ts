@@ -9,7 +9,7 @@ import { isTauri } from "./index";
 import { sleapCmd } from "@/lib/sleapPlugin";
 import { saveSlpToBytes } from "@talmolab/sleap-io.js";
 import type { InferenceConfig } from "@/stores/inferenceStore";
-import { buildInferenceArgs, pickInferenceSubcommand } from "./inferenceArgs";
+import { buildInferenceArgs, pickInferenceSubcommand, randomSampleFrameCount } from "./inferenceArgs";
 import type { UnlistenFn } from "@tauri-apps/api/event";
 import { formatRunTimestamp as formatPredictionsTimestamp } from "@/lib/timestamp";
 import { buildTrainingArgs } from "./trainingArgs";
@@ -630,9 +630,12 @@ export async function runInference(
   let sampledFrames: number[] | undefined;
   if (config.frameRange === "random_video") {
     const { useAppStore } = await import("@/stores/appStore");
-    const activeVideo = useAppStore.getState().video;
-    const nFrames = activeVideo?.shape?.[0] ?? 0;
-    if (nFrames === 0) throw new Error("Cannot sample: current video has no frames");
+    const { labels, video: activeVideo } = useAppStore.getState();
+    const nFrames = randomSampleFrameCount(config.videoIndex, labels?.videos, activeVideo);
+    if (nFrames === 0) {
+      const which = config.videoIndex === "all" ? "the current video" : `video ${config.videoIndex + 1}`;
+      throw new Error(`Cannot sample: ${which} has an unknown frame count`);
+    }
     sampledFrames = sampleRandomFrames(nFrames, config.sampleCount);
   }
 

@@ -377,9 +377,10 @@ function ConfigSlot({
     try {
       const { join } = await import("@tauri-apps/api/path");
       const { readTextFile } = await import("@tauri-apps/plugin-fs");
-      const yamlText = await readTextFile(await join(run.path, "training_config.yaml"));
+      const { readTrainedRunConfig } = await import("@/lib/trainedConfigAutoload");
+      const { yamlText, filename } = await readTrainedRunConfig(run.path, { join, readTextFile });
       const checkpointPath = run.checkpointFile ? await join(run.path, run.checkpointFile) : null;
-      const parsed = parseYamlConfig(yamlText, "training_config.yaml", slot, checkpointPath);
+      const parsed = parseYamlConfig(yamlText, filename, slot, checkpointPath);
       if (parsed) addConfigFile(parsed);
     } catch {
       // Unreadable/missing despite discovery — leave the current config as-is.
@@ -435,7 +436,7 @@ function ConfigSlot({
             ))}
             {forThisHead.map((run) => (
               <SelectItem key={run.path} value={run.path}>
-                [Trained] {run.runName ?? run.path} (training_config.yaml)
+                [Trained] {run.runName ?? run.path}
               </SelectItem>
             ))}
             {configFile && !matchingRun && !baselineProfiles.some((p) => p.filename === configFile.filename) && (
