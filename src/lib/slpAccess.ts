@@ -12,6 +12,7 @@
  *   writers refuse it too). The banner and the save/export prompts offer to
  *   allow editing, which shows the same list first.
  */
+import { refuseWhileSaving } from "@/lib/saveInProgress";
 import type { Labels } from "@talmolab/sleap-io.js";
 import { useAppStore } from "@/stores/appStore";
 import { askSlpFormat, useSlpAccessNonce } from "@/stores/slpFormatStore";
@@ -376,6 +377,8 @@ export function handleViewOnlyWriteError(err: unknown, action: AllowEditAction =
  * selection (the banner already says the project is View only).
  */
 export function refuseEditIfViewOnly(opts?: { quiet?: boolean }): boolean {
+  // Nor while a save runs: the change would alter what is being written.
+  if (refuseWhileSaving(opts)) return true;
   const labels = useAppStore.getState().labels;
   if (!isViewOnlyLabels(labels)) return false;
   if (opts?.quiet) return true;

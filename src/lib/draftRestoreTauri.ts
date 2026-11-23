@@ -33,6 +33,7 @@ import {
   type Labels,
 } from "@talmolab/sleap-io.js";
 import { loadSlp, readSlpStreaming } from "@/lib/slpRead";
+import { markDiskBackedVideos } from "@/lib/diskBackedVideos";
 import { useAppStore } from "@/stores/appStore";
 import { toast } from "@/lib/notify";
 import { toastLoadError } from "@/lib/slpAccess";
@@ -80,7 +81,7 @@ async function readLabelsFromPath(
     bytes = 0;
   }
   if (bytes > RANGE_READER_THRESHOLD) {
-    return readSlpStreaming(
+    const labels = await readSlpStreaming(
       { size: bytes, readRange: (o: number, l: number) => readRange(path, o, l) },
       {
         openVideos: !lazyMeta,
@@ -92,6 +93,9 @@ async function readLabelsFromPath(
         fileName: path,
       },
     );
+    // Its embedded videos read the file on disk (see diskBackedVideos.ts).
+    markDiskBackedVideos(labels);
+    return labels;
   }
   const raw = await readFile(path);
   return loadSlp(raw, {

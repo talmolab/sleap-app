@@ -5,7 +5,7 @@
  * using the File System Access API when available, with anchor fallback.
  */
 
-import type { Labels } from "@talmolab/sleap-io.js";
+import type { Labels, Video } from "@talmolab/sleap-io.js";
 import { saveSlpToBytes } from "@talmolab/sleap-io.js";
 import { useAppStore } from "../stores/appStore";
 import { toast } from "@/lib/notify";
@@ -15,7 +15,18 @@ import {
   saveEmbeddedPkgStreaming,
   tempPathFor,
 } from "@/lib/saveEmbeddedPkgStreaming";
-import { saveLabelsInPlace } from "@/lib/saveLabelsInPlace";
+import { recordWrittenFile, saveLabelsInPlace } from "@/lib/saveLabelsInPlace";
+import {
+  clearFileBinding,
+  markStaleVideoNames,
+  recordedFileChanged,
+  refuseStaleVideoNames,
+  statFileIdentity,
+} from "@/lib/inPlaceBinding";
+import { recordEmbeddedSources } from "@/lib/embeddedVideoSources";
+import { rebindOrMark } from "@/lib/rebindEmbeddedVideos";
+import { isSaveInProgress, whileSaving } from "@/lib/saveInProgress";
+import { hasDiskBackedVideos } from "@/lib/diskBackedVideos";
 import {
   shouldStreamEmbeddedSave,
   decideBrowserSaveAction,
@@ -207,6 +218,55 @@ async function ensureReadWritePermission(
 }
 
 /**
+ * After a full write of `labels` to `path`: record the file for the in-place
+ * save (only if the video list is still `written`), record where each written
+ * embedded video's images now are, and rebind the videos that read their
+ * images from the file on disk to the file just written (a large file's
+ * open), which clears any stale-name mark. If the rebind fails and the write
+ * replaced the file those videos read (a save over the project file, whatever
+ * the names), mark them stale: say so, and refuse further full writes, exports
+ * and training copies until the project is reopened.
+ */
+async function recordRewrite(
+  labels: Labels,
+  path: string,
+  written: Video[],
+  sourcePath: string | null
+): Promise<void> {
+  const { staleVideoNames, datasets } = await recordWrittenFile(labels, path, written, sourcePath);
+  recordEmbeddedSources(path, written, datasets);
+  await rebindOrMark(labels, path, written, datasets, staleVideoNames);
+}
+
+/** Whether `labels` are still the open project (the store's, if any). */
+function isCurrent(labels: Labels): boolean {
+  const open = useAppStore.getState().labels;
+  return open === labels || open === null;
+}
+
+/**
+ * Before a full write that copies embedded images from the project file:
+ * refuse when its names are stale, when a video's images are no longer in
+ * that file (restored by undo after a save that left it out; see
+ * retiredVideoMessage), or when the file changed on disk
+ * since the app last read or wrote it and the project reads its images from
+ * it (a large file's open). True if refused; nothing is written.
+ */
+async function refuseFullWrite(labels: Labels, sourcePath: string | null): Promise<boolean> {
+  if (refuseStaleVideoNames(labels, "Reopen this project before saving it in full")) return true;
+  if (!sourcePath || !hasDiskBackedVideos(labels)) return false;
+  if (!recordedFileChanged(labels, sourcePath, await statFileIdentity(sourcePath))) return false;
+  markStaleVideoNames(labels);
+  toast.error("The project file changed on disk", {
+    description:
+      "It changed since the app opened or last saved it, and this project reads its " +
+      "embedded images from that file, so a save would store the wrong images. Reopen " +
+      "the project. Nothing was written.",
+  });
+  return true;
+}
+
+/**
  * Save a Labels object as an SLP file.
  *
  * Uses the File System Access API (showSaveFilePicker) when available for a
@@ -220,6 +280,23 @@ export async function saveProjectAsSlp(
   labels: Labels,
   filename?: string,
   forceDialog = false
+): Promise<void> {
+  // One save at a time, and no edit, undo or redo while it runs (see
+  // saveInProgress.ts): the writers read the labels across many awaits, and
+  // the file's record for the in-place save must describe what was written.
+  if (isSaveInProgress()) {
+    toast.info("A save is already running", {
+      description: "Wait for it to finish before saving again.",
+    });
+    return;
+  }
+  await whileSaving(() => saveProjectAsSlpNow(labels, filename, forceDialog));
+}
+
+async function saveProjectAsSlpNow(
+  labels: Labels,
+  filename: string | undefined,
+  forceDialog: boolean
 ): Promise<void> {
   const store = useAppStore.getState();
   // A project opened View only is never written: ask to allow editing first
@@ -299,9 +376,14 @@ export async function saveProjectAsSlp(
           }
         }
         if (!savedInPlace) {
+          if (await refuseFullWrite(labels, sourcePath)) return;
           // Full rewrite (streaming or in-memory) — distinct text from the
           // in-place path, with the file size when we have an estimate.
           store.setLoading(true, `Rewriting file${sizeSuffix(estimatedOutputBytes)}...`);
+          // Until it is written and recorded again, the file is not one the
+          // in-place save may patch. The list written is the list now.
+          clearFileBinding(labels);
+          const written = [...labels.videos];
           if (useStreaming && sourcePath) {
             console.log(
               `[save] Saving via streaming embedded-pkg writer (Tauri, in-place, ~${estimatedOutputBytes} bytes): ${existingPath}`
@@ -317,6 +399,9 @@ export async function saveProjectAsSlp(
               await platform.writeFile(existingPath, bytes);
             }
           }
+          // The fast in-place save may patch this file next: it is the one
+          // just written, with the videos written, in this order.
+          await recordRewrite(labels, existingPath, written, sourcePath);
         }
         displayName = existingPath;
       } else {
@@ -328,7 +413,10 @@ export async function saveProjectAsSlp(
 
         // Save-As is always a full write to a new path; show it (with size when
         // known) so it reads consistently with the in-place vs rewrite text.
+        if (await refuseFullWrite(labels, sourcePath)) return;
         store.setLoading(true, `Writing file${sizeSuffix(estimatedOutputBytes)}...`);
+        clearFileBinding(labels);
+        const written = [...labels.videos];
         if (useStreaming && sourcePath) {
           console.log(
             `[save] Saving via streaming embedded-pkg writer (Tauri, Save As, ~${estimatedOutputBytes} bytes): ${savePath}`
@@ -344,12 +432,15 @@ export async function saveProjectAsSlp(
             await platform.writeFile(savePath, bytes);
           }
         }
-        store.set("projectPath", savePath);
+        // The project may have been replaced meanwhile (it can't be, while a
+        // save runs, but never point another project at this file).
+        if (isCurrent(labels)) store.set("projectPath", savePath);
+        await recordRewrite(labels, savePath, written, sourcePath);
         // Track the newly-saved name (basename) so the window title updates and,
         // for the .vNNN versioning, the NEXT Save As increments from the name we
         // just wrote instead of the stale opened name. The browser Save-As path
         // already does this via handle.name.
-        store.set("filename", savePath.split(/[/\\]/).pop() ?? savePath);
+        if (isCurrent(labels)) store.set("filename", savePath.split(/[/\\]/).pop() ?? savePath);
         displayName = savePath;
       }
 
@@ -357,7 +448,7 @@ export async function saveProjectAsSlp(
       // redundant — drop it + its manifest entry so it can't trigger a spurious
       // "recover unsaved work?" prompt on the next launch. (A cancelled Save-As
       // returned above, before reaching here, so the draft is kept in that case.)
-      const tauriDraft = store.labelsDraftPath;
+      const tauriDraft = isCurrent(labels) ? store.labelsDraftPath : null;
       if (tauriDraft) {
         void removeTauriDraft(tauriDraft);
         store.set("labelsDraftPath", null);
@@ -506,8 +597,10 @@ export async function saveProjectAsSlp(
     // window title gate their entire display on it, so they'd stay stuck on
     // "No project loaded" until the file is reopened via loadProject (which
     // does set it) rather than actually reflecting the freshly-saved project.
-    store.set("filename", displayName.split(/[\\/]/).pop() ?? displayName);
-    store.clearChanges();
+    if (isCurrent(labels)) {
+      store.set("filename", displayName.split(/[\\/]/).pop() ?? displayName);
+      store.clearChanges();
+    }
     // Labels opened for editing from an SLP format 3.0 file now live in a 2.x
     // file: say so, so the in-place save patches it again next time. Their
     // records keep their marks, so later saves drop the same fields silently.

@@ -114,6 +114,12 @@ export async function sweepStaleJobCopies(now: number = Date.now()): Promise<num
  */
 async function writeLegacyCopy(labels: Labels, path: string, sourcePath: string | null): Promise<void> {
   const hasEmbeddedImages = labels.videos.some((v) => v.hasEmbeddedImages);
+  // Embedded images read under stale names could be another video's: end the
+  // job with the reason instead (see inPlaceBinding.ts).
+  if (hasEmbeddedImages) {
+    const { assertNoStaleVideoNames } = await import("@/lib/inPlaceBinding");
+    assertNoStaleVideoNames(labels);
+  }
   if (hasEmbeddedImages && sourcePath) {
     const [{ shouldStreamEmbeddedSave }, { fileSize }] = await Promise.all([
       import("@/lib/saveRouting"),
@@ -166,6 +172,10 @@ export function createJobLabelsCopy(
     path() {
       pending ??= (async () => {
         if (!labels) throw new Error("No project loaded");
+        const { isSaveInProgress } = await import("@/lib/saveInProgress");
+        if (isSaveInProgress()) {
+          throw new Error("A save of the project is running; start the job when it finishes.");
+        }
         await sweepStaleJobCopies();
         const [{ join }, { mkdir }] = await Promise.all([
           import("@tauri-apps/api/path"),
