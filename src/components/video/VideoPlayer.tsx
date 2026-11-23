@@ -9,7 +9,7 @@
  * Mirrors SLEAP's QtVideoPlayer.
  */
 
-import { useRef, useEffect, useCallback, useState, useMemo } from "react";
+import { useRef, useEffect, useCallback, useState, useMemo, lazy, Suspense } from "react";
 import { PredictedBoundingBox, PredictedInstance } from "@talmolab/sleap-io.js";
 import type { RGB } from "@/lib/colorPalettes";
 import { useAppStore } from "../../stores/appStore";
@@ -54,6 +54,10 @@ import { ModelPoseHoverLabel } from "./ModelPoseHoverLabel";
 import { ModelOverlayLegend } from "./ModelOverlayLegend";
 import { ModelPoseAcceptBar } from "./ModelPoseAcceptBar";
 import { ModelTracesStrip } from "./ModelTracesStrip";
+// Review-window prototypes for Compare Models: dev builds only (behind a switch),
+// never bundled into production (import.meta.env.DEV is false there).
+const CompareReviewPrototypes =
+  import.meta.env.DEV === true ? lazy(() => import("./compareReview/CompareReviewPrototypes")) : null;
 import { pickModelPose, acceptModelPose, modelClickRoute } from "@/lib/modelOverlay/canvasActions";
 import { useModelOverlayStore } from "@/stores/modelOverlayStore";
 import {
@@ -4398,6 +4402,12 @@ export function VideoPlayer() {
         <ModelOverlayLegend disagreementCount={modelOverlay.disagreements.length} />
         {/* Accept bar for a model pose picked on the canvas (self-guards). */}
         <ModelPoseAcceptBar />
+        {/* Dev only: Compare Models review-window prototypes (self-guard to their switch). */}
+        {CompareReviewPrototypes && (
+          <Suspense fallback={null}>
+            <CompareReviewPrototypes />
+          </Suspense>
+        )}
         {/* Visual skeleton builder control bar (self-guards to build mode). */}
         <SkeletonBuildBar />
         {/* Anchor-part picker prompt (self-guards to pick mode). */}
