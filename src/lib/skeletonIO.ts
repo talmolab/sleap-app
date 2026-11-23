@@ -17,6 +17,7 @@ import {
   encodeYamlSkeleton,
 } from "@talmolab/sleap-io.js";
 import { loadSlp } from "@/lib/slpRead";
+import { copyPoint } from "@/lib/slpFormatCompat";
 import type { Skeleton, Instance, Node } from "@talmolab/sleap-io.js";
 import { distinctSkeletonCount } from "./skeletonStructure";
 
@@ -126,7 +127,13 @@ export async function parseSkeletonFile(
     }
 
     case "slp": {
-      const labels = await loadSlp(toArrayBuffer(data), { openVideos: false });
+      // Only the skeleton is taken from the file, which is never written back:
+      // an SLP format 3.0 file opens View only without asking.
+      const labels = await loadSlp(toArrayBuffer(data), {
+        openVideos: false,
+        format3: "view",
+        fileName: filename,
+      });
       // A project file with several different skeletons: don't guess which one
       // is meant. Identical duplicates (old files) are one skeleton: use [0].
       const distinct = distinctSkeletonCount(labels);
@@ -194,13 +201,8 @@ export function remapInstancePoints(
       // 0.5.x, `instance.points[i]` is a columnar proxy whose xy/visible/
       // complete/score are prototype getters, so `{ ...src }` (own-enumerable
       // only) silently drops them all. Mirrors `clonePoints` in editCommands.
-      return {
-        xy: [src.xy[0], src.xy[1]] as [number, number],
-        visible: src.visible,
-        complete: src.complete,
-        score: src.score,
-        name: newNode.name,
-      };
+      // (copyPoint also keeps a node's `labeled` flag.)
+      return copyPoint(src, { score: src.score, name: newNode.name });
     }
 
     return {

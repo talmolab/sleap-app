@@ -30,7 +30,20 @@ import { distinctSkeletonCount } from "@/lib/skeletonStructure";
 import { makeQCConfig, type QcConfig } from "./config";
 import { topIssue, confidence, issueForFeature, DIRECTIONAL_FEATURES } from "./explain";
 import type { AttributionEntry } from "./baseline";
-import type { Pose } from "./util";
+import { withUnlabeledNodes, type Pose } from "./util";
+import { isUnlabeledPoint } from "@/lib/slpFormatCompat";
+
+/**
+ * An instance's pose for the QC engine: `[x, y]` per node, NaN where not
+ * visible, with nodes not labelled (SLP format 3.0) recorded so the
+ * visibility checks don't count them as missing.
+ */
+export function qcPose(inst: Instance): Pose {
+  return withUnlabeledNodes(
+    inst.numpy({ invisibleAsNaN: true }),
+    inst.points.map((p) => isUnlabeledPoint(p)),
+  );
+}
 
 /** One scored instance, keyed by (videoIdx, frameIdx, instIdx). */
 export interface AnomalyInstance {
@@ -159,7 +172,7 @@ function gather(
   const allPoses: Pose[] = [];
   labels.videos.forEach((video, videoIdx) => {
     for (const lf of labels.find({ video })) {
-      const poses = pick(lf).map((inst) => inst.numpy({ invisibleAsNaN: true }));
+      const poses = pick(lf).map(qcPose);
       frames.push({ videoIdx, frameIdx: lf.frameIdx, count: poses.length });
       allPoses.push(...poses);
     }

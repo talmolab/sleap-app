@@ -25,7 +25,8 @@ import { toast } from "@/lib/notify";
 import { getPlatform, isTauri } from "@/platform/index";
 import { videoBasename } from "@/lib/videoFilter";
 import { buildStandaloneVideo, getBasename, videoIssue } from "@/lib/resolveVideos";
-import { applyVideoReplacement } from "@/lib/replaceVideo";
+import { applyVideoReplacement, labeledFramesBeyond } from "@/lib/replaceVideo";
+import { refuseEditIfViewOnly } from "@/lib/slpAccess";
 import {
   decodeAllNative,
   frameCheckUnavailable,
@@ -250,6 +251,14 @@ export function VideoCheckDialog() {
 
   const switchToReencoded = (newVideo: Video) => {
     if (!labels) return;
+    // View only: no swap that could delete labeled frames, i.e. one past
+    // whose end labeled frames lie, or any swap when the original's length is
+    // unknown (a shorter re-encode would then trim frames).
+    const originalCount = video.shape?.[0];
+    const mayTrim =
+      !Number.isFinite(originalCount) ||
+      labeledFramesBeyond(labels, video, newVideo.shape?.[0] ?? Number.NaN).length > 0;
+    if (mayTrim && refuseEditIfViewOnly()) return;
     const app = useAppStore.getState();
     const wasCurrent = app.video === video;
     applyVideoReplacement(labels, video, newVideo);

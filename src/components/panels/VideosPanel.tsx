@@ -64,6 +64,7 @@ import {
   type VideoCheckEntry,
 } from "@/stores/videoCheckStore";
 import { frameCheckPassed } from "@/lib/videoCheck";
+import { refuseEditIfViewOnly } from "@/lib/slpAccess";
 
 /** Truncate a filename/path from the left, keeping the rightmost characters. */
 function truncateLeft(path: string, maxLen: number): string {
@@ -481,6 +482,8 @@ export function VideosPanel() {
   /** Add every staged video from the Import Videos dialog, with its chosen grayscale flag. */
   const handleConfirmImport = async () => {
     if (!labels || !pendingImport) return;
+    // View only: no videos added (relinking a missing video is still allowed).
+    if (refuseEditIfViewOnly()) return;
     setImporting(true);
     try {
       const added: Video[] = [];
@@ -548,6 +551,10 @@ export function VideosPanel() {
 
     const newCount = newVideo.shape?.[0] ?? Infinity;
     const orphans = labeledFramesBeyond(labels, currentVideo, newCount);
+    // A shorter video would delete labeled frames: not in View only.
+    // (Pointing the project at a video file without losing frames is allowed,
+    // so a missing or unreadable video can still be relinked to view it.)
+    if (orphans.length > 0 && refuseEditIfViewOnly()) return;
     if (orphans.length > 0) {
       setPendingReplace({
         oldVideo: currentVideo,
@@ -568,6 +575,7 @@ export function VideosPanel() {
    */
   const commitRemove = (video: Video) => {
     if (!labels) return;
+    if (refuseEditIfViewOnly()) return;
     const wasCurrent = video === currentVideo;
     const next = nextSelectedVideo(labels.videos, video);
     labels.removeVideo(video);

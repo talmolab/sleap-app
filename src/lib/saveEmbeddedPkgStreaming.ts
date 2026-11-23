@@ -61,6 +61,7 @@ import {
   removeFile,
 } from "./nativeWrite";
 import { fileSize, readRange } from "./nativeRange";
+import { withLegacyLayout } from "@/lib/slpFormatCompat";
 
 // Same derivation as loadProject.ts / writeBridgeSpike.ts: h5wasm must be served
 // same-origin so the streaming Worker can load it under cross-origin isolation
@@ -339,7 +340,7 @@ async function saveEmbeddedPkgStreamingNow(
       // 1+2. Main-thread structure write: labels graph + videos_json ONLY, no
       // embedded image data. Small (KB-MB), so writing it whole to a byte
       // buffer first (rather than streaming) is fine.
-      const structureBytes = await saveSlpStructureToBytes(labels, { embed: embedMode });
+      const structureBytes = await saveSlpStructureToBytes(labels, withLegacyLayout({ embed: embedMode }));
       await writeOpen(stagePath);
       stageCreated = true;
       await writeAt(0, structureBytes);

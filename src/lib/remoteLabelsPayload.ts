@@ -16,6 +16,7 @@
 import { saveSlpToBytes, type Labels } from "@talmolab/sleap-io.js";
 import { detectPrefixDiff, translatePath } from "@/lib/pathMappings";
 import type { VideoVisibility } from "@/lib/remoteVisibility";
+import { withLegacyLayout } from "@/lib/slpFormatCompat";
 
 // Warn/block thresholds for inline-embedded `labels_content` (labeled
 // frames' pixel data, sent when the worker can't see one or more original
@@ -114,7 +115,7 @@ export async function buildRemoteLabelsPayload(
   // is for the caller to warn about).
   const embed: boolean | string =
     hiddenCount === 0 ? false : opts.embedFramesToPredict ? "all+suggestions" : "all";
-  const bytes = await saveSlpToBytes(copy, { embed });
+  const bytes = await saveSlpToBytes(copy, withLegacyLayout({ embed }));
 
   return {
     labelsContent: bytesToBase64(bytes),

@@ -37,6 +37,7 @@ import {
 import { downloadFile } from "../../lib/exportUtils";
 import { getPlatform } from "../../platform/index";
 import { toast } from "@/lib/notify";
+import { toastLoadError } from "@/lib/slpAccess";
 import type { Skeleton } from "@talmolab/sleap-io.js";
 import { ReplaceSkeletonDialog } from "./ReplaceSkeletonDialog";
 import { SkeletonPicker } from "./SkeletonPicker";
@@ -472,9 +473,8 @@ export function SkeletonPanel() {
       }
       newSkeleton = await parseSkeletonFile(filename, data);
     } catch (err) {
-      toast.error("Failed to load skeleton", {
-        description: err instanceof Error ? err.message : String(err),
-      });
+      // A refused .slp was already explained in its own dialog.
+      toastLoadError("Failed to load skeleton", err);
       return;
     }
 

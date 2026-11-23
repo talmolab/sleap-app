@@ -37,6 +37,7 @@ import {
   mergeDraftEntry,
   sortEntriesNewestFirst,
 } from "@/lib/tauriDraftManifest";
+import { sourceFormatRecord } from "@/lib/slpFormatCompat";
 
 /** Sub-directory (under the app's local data dir) holding all draft `.slp`s + the
  *  manifest. Enumerable/cleanable, mirrors the browser `sleap-draft-` prefix. */
@@ -140,6 +141,7 @@ export async function recordTauriDraftSave(
     embedded: labels.videos.some((v) => v.hasEmbeddedImages),
     sourceSize: opts.sourceSize,
     sourceLastModified: opts.sourceLastModified,
+    sourceFormat: sourceFormatRecord(labels),
   };
   await updateManifestWithFs(fs, dir, mpath, (entries) => {
     const prior = entries.find((e) => e.draftPath === opts.draftPath);

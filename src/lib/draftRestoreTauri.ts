@@ -35,6 +35,8 @@ import {
 import { loadSlp, readSlpStreaming } from "@/lib/slpRead";
 import { useAppStore } from "@/stores/appStore";
 import { toast } from "@/lib/notify";
+import { toastLoadError } from "@/lib/slpAccess";
+import { restoreSourceFormat } from "@/lib/slpFormatCompat";
 import {
   reportParseProgress,
   installTauriImageReader,
@@ -66,7 +68,9 @@ const H5WASM_URL =
 async function readLabelsFromPath(
   path: string,
   readFile: (p: string) => Promise<Uint8Array>,
-  opts?: { lazyVideoMetadata?: boolean },
+  // Used to re-open an original only for its video backends (never edited or
+  // written back), so an SLP format 3.0 file opens View only by default.
+  opts?: { lazyVideoMetadata?: boolean; format3?: "view" | "edit" },
 ): Promise<Labels> {
   const lazyMeta = opts?.lazyVideoMetadata ?? LAZY_VIDEO_METADATA;
   let bytes = 0;
@@ -84,6 +88,8 @@ async function readLabelsFromPath(
         filenameHint: path,
         h5wasmUrl: H5WASM_URL,
         onProgress: reportParseProgress,
+        format3: opts?.format3 ?? "view",
+        fileName: path,
       },
     );
   }
@@ -92,6 +98,8 @@ async function readLabelsFromPath(
     openVideos: true,
     h5: { filenameHint: path, h5wasmUrl: H5WASM_URL },
     onProgress: reportParseProgress,
+    format3: opts?.format3 ?? "view",
+    fileName: path,
   });
 }
 
@@ -202,6 +210,9 @@ export async function restoreTauriDraft(
     // an intact journal, which together reconstruct the current state on replay.
     const loadBase = (bytes: Uint8Array): Promise<Labels> =>
       loadSlp(bytes, {
+        // The app writes drafts itself, in the 2.x layout, so no format 3.0
+        // question applies; "edit" keeps a restored draft editable regardless.
+        format3: "edit",
         // Embedded pkg: skip opening (imageless) — we graft the original's backends.
         openVideos: !entry.embedded,
         h5: {
@@ -299,6 +310,10 @@ export async function restoreTauriDraft(
     const filename =
       (entry.projectPath ?? entry.displayName).split(/[\\/]/).pop() ??
       entry.displayName;
+    // The original may still be in SLP format 3.0 on disk (opened for
+    // editing, never saved): say so again, so the in-place save and local
+    // jobs don't patch or read it as it is.
+    restoreSourceFormat(draftLabels, entry.sourceFormat, projectPath ?? entry.displayName);
     store.setLabels(draftLabels, filename, projectPath ?? undefined);
 
     // The desktop draft is only a net — the recovered project is still DIRTY vs
@@ -311,8 +326,7 @@ export async function restoreTauriDraft(
     });
     return true;
   } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
-    toast.error("Couldn't recover unsaved work", { description: msg });
+    toastLoadError("Couldn't recover unsaved work", err);
     console.error("[draftRestoreTauri] restore failed:", err);
     return false;
   } finally {

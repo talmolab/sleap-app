@@ -8,6 +8,13 @@
 import { Instance, PredictedInstance } from "@talmolab/sleap-io.js";
 import type { Labels, Skeleton, Video, LabeledFrame, InstancePlacementMethod } from "../types";
 import { toSourceCoords } from "@/lib/cropTransform";
+import {
+  copyPointLabeled,
+  copySourceMark,
+  isUnlabeledPoint,
+  markPointLabeled,
+  type PointLike,
+} from "@/lib/slpFormatCompat";
 
 /** A captured drawn node layout in IMAGE space, index-aligned to skeleton.nodes. */
 export type TemplateLayout = ({ x: number; y: number } | null)[];
@@ -384,7 +391,10 @@ function placePriorFrame(
         instance.points[i].xy = [source.points[i].xy[0], source.points[i].xy[1]];
         instance.points[i].visible = source.points[i].visible;
         instance.points[i].complete = source.points[i].complete;
+        // A node not labelled on the prior frame stays not labelled.
+        copyPointLabeled(source.points[i], instance.points[i]);
       }
+      copySourceMark(source, instance);
       if (source.track) instance.track = source.track;
       return instance;
     }
@@ -435,7 +445,9 @@ function placePrediction(
       instance.points[i].xy = [source.points[i].xy[0], source.points[i].xy[1]];
       instance.points[i].visible = source.points[i].visible;
       instance.points[i].complete = source.points[i].complete;
+      copyPointLabeled(source.points[i], instance.points[i]);
     }
+    copySourceMark(source, instance);
     // Copy track from the prediction
     if (source.track) {
       instance.track = source.track;
@@ -486,6 +498,8 @@ export function fillMissingPredictedNodes(instance: Instance): void {
   const missing: number[] = [];
   const detected: [number, number][] = [];
   instance.points.forEach((p, i) => {
+    // A node not labelled is not a missing one: leave it as it is.
+    if (isUnlabeledPoint(p)) return;
     if (isNaN(p.xy[0]) || isNaN(p.xy[1])) missing.push(i);
     else detected.push(p.xy);
   });
@@ -558,8 +572,12 @@ export function placeInstance(
 /** Max reference instances {@link fillMissingUserNodes} aligns per call. */
 const MAX_TEMPLATE_REFERENCES = 50;
 
-const isPlaced = (p: { xy: [number, number] }) =>
-  Number.isFinite(p.xy[0]) && Number.isFinite(p.xy[1]);
+/**
+ * A node with a position. A node not labelled (SLP format 3.0) counts as
+ * missing whatever its stored coordinates: it was never annotated.
+ */
+const isPlaced = (p: PointLike) =>
+  Number.isFinite(p.xy[0]) && Number.isFinite(p.xy[1]) && !isUnlabeledPoint(p);
 
 /**
  * Give a user instance's missing (NaN) nodes a position, as non-visible and
@@ -597,6 +615,8 @@ export function fillMissingUserNodes(
     pts[idx].xy = xy;
     pts[idx].visible = false;
     pts[idx].complete = false;
+    // Adding the node labels it (as hidden), so it shows and can be dragged.
+    markPointLabeled(pts[idx]);
   };
 
   if (labeled.length === 0) {

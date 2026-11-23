@@ -57,6 +57,7 @@ import { useQcView } from "@/hooks/useQcView";
 import { videoBasename } from "@/lib/videoFilter";
 import { QcIssueFilter } from "@/components/qc/QcIssueFilter";
 import { QcDetectorSettings } from "@/components/qc/QcDetectorSettings";
+import { refuseEditIfViewOnly } from "@/lib/slpAccess";
 
 export interface LabelQcDialogProps {
   open: boolean;
@@ -146,6 +147,8 @@ export function LabelQcDialog({ open, onOpenChange }: LabelQcDialogProps) {
 
   const addAllToSuggestions = () => {
     if (!labels || findings.length === 0) return;
+    // Suggestions are saved with the project: not changed in View only.
+    if (refuseEditIfViewOnly()) return;
     const seen = new Set<string>();
     const incoming: SuggestionFrame[] = [];
     for (const f of findings) {

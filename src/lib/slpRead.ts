@@ -14,15 +14,59 @@
  * the warnings logged while a read runs are collected here and shown once it
  * finishes. Import `loadSlp` / `readSlpStreaming` from this module, not from
  * `@talmolab/sleap-io.js`, wherever the app reads a project or labels file.
+ *
+ * They also handle files sleap-io.js refuses (`SlpFormatError`: a newer
+ * format, unknown required features) with a dialog instead of a bare error,
+ * and SLP format 3.0 files, which a reader opens only with an explicit
+ * choice: View only (nothing is written back) or Edit (saving writes the 2.x
+ * layout and drops what it cannot store). Every caller says how with
+ * `format3` (see {@link SlpReadOptions}); the default asks the user.
  */
 import {
   loadSlp as ioLoadSlp,
   readSlpStreaming as ioReadSlpStreaming,
 } from "@talmolab/sleap-io.js";
 import { toast } from "./notify";
+import { readWithFormatChoice, type Format3Policy } from "./slpAccess";
+import { withFormat3 } from "./slpFormatCompat";
 
 type LoadArgs = Parameters<typeof ioLoadSlp>;
 type StreamArgs = Parameters<typeof ioReadSlpStreaming>;
+/** sleap-io.js's reader options without its `format3` (the app sets that). */
+type IoLoadOptions = Omit<NonNullable<LoadArgs[1]>, "format3">;
+type IoStreamOptions = Omit<NonNullable<StreamArgs[1]>, "format3">;
+
+/**
+ * The app's options on top of sleap-io.js's reader options. Its `format3`
+ * replaces sleap-io.js's (which takes only "view" or "edit").
+ */
+export interface SlpReadOptions {
+  /**
+   * How to open a file in SLP format 3.0:
+   * - `"ask"` (default): ask the user, View only or Edit, with the list of
+   *   what an edit drops (for opening a project).
+   * - `"merge"`: ask whether to merge it, with the same list.
+   * - `"view"` / `"edit"`: open it so without asking, where asking makes no
+   *   sense (the caller says why).
+   */
+  format3?: Format3Policy;
+  /** The file's name for the dialogs (defaults to the reader's own). */
+  fileName?: string;
+  /**
+   * `"dialog"` (default): show a refused file's dialog. `"throw"`: only
+   * throw, for callers that report failures their own way.
+   */
+  refusal?: "dialog" | "throw";
+}
+
+/** Strip the app's own keys before handing options to sleap-io.js. */
+function splitOptions<T extends object>(
+  options: (T & SlpReadOptions) | undefined,
+): { io: T | undefined; app: SlpReadOptions } {
+  if (!options) return { io: undefined, app: {} };
+  const { format3, fileName, refusal, ...io } = options;
+  return { io: io as unknown as T, app: { format3, fileName, refusal } };
+}
 
 /** A sleap-io.js point-span warning, with its "[sleap-io] " prefix removed; else null. */
 export function pointSpanWarning(args: readonly unknown[]): string | null {
@@ -77,15 +121,49 @@ export async function withPointSpanWarnings<T>(read: () => Promise<T>): Promise<
   return result;
 }
 
-/** sleap-io.js `loadSlp`, repairing point spans (see the module comment). */
-export function loadSlp(source: LoadArgs[0], options?: LoadArgs[1]): ReturnType<typeof ioLoadSlp> {
-  return withPointSpanWarnings(() => ioLoadSlp(source, { ...options, repairPointSpans: true }));
+/**
+ * sleap-io.js `loadSlp`, repairing point spans and handling refused and format
+ * 3.0 files (see the module comment).
+ */
+export function loadSlp(
+  source: LoadArgs[0],
+  options?: IoLoadOptions & SlpReadOptions,
+): ReturnType<typeof ioLoadSlp> {
+  const { io, app } = splitOptions<IoLoadOptions>(options);
+  return readWithFormatChoice(
+    (access) =>
+      withPointSpanWarnings(() =>
+        ioLoadSlp(source, withFormat3({ ...io, repairPointSpans: true }, access)),
+      ),
+    app.format3 ?? "ask",
+    app.fileName ?? sourceName(source) ?? io?.h5?.filenameHint,
+    app.refusal,
+  );
 }
 
-/** sleap-io.js `readSlpStreaming`, repairing point spans (see the module comment). */
+/**
+ * sleap-io.js `readSlpStreaming`, repairing point spans and handling refused
+ * and format 3.0 files (see the module comment).
+ */
 export function readSlpStreaming(
   source: StreamArgs[0],
-  options?: StreamArgs[1],
+  options?: IoStreamOptions & SlpReadOptions,
 ): ReturnType<typeof ioReadSlpStreaming> {
-  return withPointSpanWarnings(() => ioReadSlpStreaming(source, { ...options, repairPointSpans: true }));
+  const { io, app } = splitOptions<IoStreamOptions>(options);
+  return readWithFormatChoice(
+    (access) =>
+      withPointSpanWarnings(() =>
+        ioReadSlpStreaming(source, withFormat3({ ...io, repairPointSpans: true }, access)),
+      ),
+    app.format3 ?? "ask",
+    app.fileName ?? sourceName(source) ?? io?.filenameHint,
+    app.refusal,
+  );
+}
+
+/** A name for `source` in dialogs: a File's name, a path or URL's last part. */
+function sourceName(source: unknown): string | undefined {
+  if (typeof source === "string") return source;
+  if (typeof File !== "undefined" && source instanceof File) return source.name;
+  return undefined;
 }

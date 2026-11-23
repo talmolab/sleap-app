@@ -9,8 +9,9 @@
  *
  * Fidelity: a delta captures ONE frame's imageless annotation state at exactly
  * the fidelity the app's own undo system preserves (mirrors CommandContext's
- * `cloneInstances`: skeleton, points {xy, visible, complete, name, score},
- * track, predicted + score, isNegative), plus the frame's bounding boxes. A recovered edited frame therefore
+ * `cloneInstances`: skeleton, points {xy, visible, complete, name, score,
+ * labeled}, track, predicted + score, isNegative, and the instance, frame and
+ * box metadata of SLP format 3.0), plus the frame's bounding boxes. A recovered edited frame therefore
  * matches what an undo would have produced. Instances reference the base's
  * videos/tracks/skeletons BY INDEX — valid because any structural change (new/
  * removed/renamed track, skeleton edit, new video, merge) rewrites the base and
@@ -33,6 +34,14 @@ import {
   type Track,
   type Skeleton,
 } from "@talmolab/sleap-io.js";
+import {
+  copyPoint,
+  copySourceMark,
+  isPointLabeled,
+  metadataOf,
+  setMetadata,
+  type RecordMetadata,
+} from "@/lib/slpFormatCompat";
 
 /** One keypoint's state (short keys keep the journal compact). */
 export interface PointDelta {
@@ -46,6 +55,11 @@ export interface PointDelta {
   c: boolean;
   /** Point score; null if unscored. */
   s: number | null;
+  /**
+   * `false` for a node not labelled (SLP format 3.0); absent otherwise, so
+   * older journals read as labelled.
+   */
+  l?: false;
 }
 
 /** One instance's state, referencing base track/skeleton by index. */
@@ -59,6 +73,8 @@ export interface InstanceDelta {
   /** Instance-level score (predicted only); null otherwise. */
   s: number | null;
   pts: PointDelta[];
+  /** Instance metadata (SLP format 3.0); absent when none. */
+  md?: RecordMetadata;
 }
 
 /** One bounding box's state. */
@@ -83,6 +99,8 @@ export interface BboxDelta {
   c: string;
   n: string;
   src: string;
+  /** Box metadata (SLP format 3.0); absent when none. */
+  md?: RecordMetadata;
 }
 
 /** One frame's full imageless state. */
@@ -99,6 +117,8 @@ export interface FrameDelta {
    * replay then leaves the base frame's boxes as they are.
    */
   bb?: BboxDelta[];
+  /** Frame metadata (SLP format 3.0); absent when none. */
+  md?: RecordMetadata;
 }
 
 /** Reverse lookups from base entities to their array indices (built per tick). */
@@ -121,18 +141,23 @@ export function buildBaseIndex(labels: Labels): BaseIndex {
 
 /** Encode one labeled frame to a delta, referencing base entities by index. */
 export function encodeFrameDelta(frame: LabeledFrame, index: BaseIndex): FrameDelta {
-  return {
+  const delta: FrameDelta = {
     v: index.videos.get(frame.video) ?? -1,
     f: frame.frameIdx,
     neg: frame.isNegative,
     ins: frame.instances.map((inst) => encodeInstance(inst, index)),
     bb: (frame.bboxes ?? []).map((box) => encodeBbox(box, frame, index)),
   };
+  const md = metadataOf(frame);
+  if (md) delta.md = { ...md };
+  return delta;
 }
 
 function encodeBbox(box: BoundingBox, frame: LabeledFrame, index: BaseIndex): BboxDelta {
   const predicted = box instanceof PredictedBoundingBox;
+  const md = metadataOf(box);
   return {
+    ...(md ? { md: { ...md } } : {}),
     x1: box.x1,
     y1: box.y1,
     x2: box.x2,
@@ -151,6 +176,7 @@ function encodeBbox(box: BoundingBox, frame: LabeledFrame, index: BaseIndex): Bb
 
 function encodeInstance(inst: Instance, index: BaseIndex): InstanceDelta {
   const predicted = inst instanceof PredictedInstance;
+  const md = metadataOf(inst);
   return {
     t: inst.track ? index.tracks.get(inst.track) ?? -1 : -1,
     k: index.skeletons.get(inst.skeleton) ?? -1,
@@ -163,7 +189,9 @@ function encodeInstance(inst: Instance, index: BaseIndex): InstanceDelta {
       v: pt.visible,
       c: pt.complete,
       s: pt.score ?? null,
+      ...(isPointLabeled(pt) ? {} : { l: false as const }),
     })),
+    ...(md ? { md: { ...md } } : {}),
   };
 }
 
@@ -257,7 +285,12 @@ export function applyDeltas(base: Labels, deltas: FrameDelta[]): void {
     const slots = delta.ins.map((ins) => rebuildInstance(ins, base));
     lf.instances = slots.filter((inst): inst is Instance => inst !== null);
     lf.isNegative = delta.neg;
+    setMetadata(lf, delta.md);
     if (delta.bb) lf.bboxes = delta.bb.map((b) => rebuildBbox(b, base, slots));
+    // Rebuilt records belong to the frame they replay into: they take its
+    // open-time format 3.0 choice, if the base was read from such a file.
+    for (const inst of lf.instances) copySourceMark(lf, inst);
+    for (const box of lf.bboxes) copySourceMark(lf, box);
   }
 
   // We mutated `labeledFrames`/`instances` directly, so io's count-guarded
@@ -283,40 +316,44 @@ function rebuildBbox(
     name: b.n,
     source: b.src,
   };
-  return b.p
+  const box = b.p
     ? new PredictedBoundingBox({ ...opts, score: b.s ?? 0 })
     : new UserBoundingBox(opts);
+  setMetadata(box, b.md);
+  return box;
 }
 
 function rebuildInstance(ins: InstanceDelta, base: Labels): Instance | null {
   const skeleton = base.skeletons[ins.k];
   if (!skeleton) return null; // can't rebuild without a skeleton
   const track = ins.t >= 0 ? base.tracks[ins.t] ?? null : null;
-  if (ins.p) {
-    return new PredictedInstance({
-      skeleton,
-      points: ins.pts.map((p) => ({
-        xy: [p.x, p.y] as [number, number],
-        visible: p.v,
-        complete: p.c,
-        name: p.n ?? undefined,
-        score: p.s ?? 0,
-      })),
-      track,
-      score: ins.s ?? 0,
-    });
-  }
-  return new Instance({
-    skeleton,
-    points: ins.pts.map((p) => ({
-      xy: [p.x, p.y] as [number, number],
+  // JSON stores NaN as null: read a missing coordinate back as NaN.
+  const point = (p: PointDelta, score: number | undefined) =>
+    copyPoint({
+      xy: [p.x ?? Number.NaN, p.y ?? Number.NaN],
       visible: p.v,
       complete: p.c,
       name: p.n ?? undefined,
-      score: p.s ?? undefined,
-    })),
-    track,
-  });
+      score,
+      ...(p.l === false ? { labeled: false } : {}),
+    });
+  let inst: Instance;
+  if (ins.p) {
+    inst = new PredictedInstance({
+      skeleton,
+      points: ins.pts.map((p) => ({ ...point(p, undefined), score: p.s ?? 0 })),
+      track,
+      score: ins.s ?? 0,
+    });
+  } else {
+    inst = new Instance({
+      skeleton,
+      points: ins.pts.map((p) => point(p, p.s ?? undefined)),
+      track,
+    });
+  }
+  setMetadata(inst, ins.md);
+  return inst;
 }
 
 // --- CRC32 (standard IEEE polynomial 0xEDB88320) -----------------------------

@@ -19,6 +19,7 @@ import {
   requestOpfsPersistence,
 } from "@/lib/labelsDraft";
 import { videoSignature } from "@/lib/videoGraft";
+import { sourceFormatRecord, type Format3Summary } from "@/lib/slpFormatCompat";
 
 const DB_NAME = "sleap-app";
 const DB_VERSION = 1;
@@ -56,6 +57,11 @@ export interface DraftManifestEntry {
   /** Source file's `File.lastModified` (ms epoch) when the draft was saved —
    *  the other half of the identity snapshot. Optional (see `sourceSize`). */
   sourceLastModified?: number;
+  /** While the project's file is still in SLP format 3.0 on disk (it was
+   *  opened for editing and not yet saved): its format and what saving drops.
+   *  Restored onto the recovered labels so the in-place save and local jobs
+   *  never patch or read that file as it is. Absent otherwise. */
+  sourceFormat?: { formatId: number; summary: Format3Summary };
 }
 
 function openDb(): Promise<IDBDatabase> {
@@ -142,6 +148,7 @@ export async function recordDraftSave(
     embedded: labels.videos.some((v) => v.hasEmbeddedImages),
     sourceSize: opts.sourceSize,
     sourceLastModified: opts.sourceLastModified,
+    sourceFormat: sourceFormatRecord(labels),
   });
   void requestOpfsPersistence();
 }

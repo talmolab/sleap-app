@@ -28,6 +28,7 @@ import type { TrailStyle } from "@/canvas/TrailRenderer";
 import { SLEAP_IO_DEFAULT_PALETTE, SLEAP_IO_PALETTES, sleapIoPaletteKey } from "@/lib/sleapIoPalettes";
 import { getInstanceColor, getPaletteColor, resolveColorTarget, type RGB } from "@/lib/colorPalettes";
 import { toImageCoords } from "@/lib/cropTransform";
+import { isUnlabeledPoint } from "@/lib/slpFormatCompat";
 import type { ColorTarget, Instance, Labels, Track, Video } from "@/types";
 
 /** The codec used for clip export. `avc` is H.264 (universally playable mp4). */
@@ -825,7 +826,10 @@ export function buildExportRenderedInstances(
         : undefined;
 
     const nodes: RenderedNode[] = inst.points.map((point, nIdx) => {
-      const [nx, ny] = toImageCoords(opts.video, point.xy[0], point.xy[1]);
+      // Nodes not labelled are never drawn (see canvas/instanceGeometry.ts).
+      const [nx, ny] = isUnlabeledPoint(point)
+        ? [Number.NaN, Number.NaN]
+        : toImageCoords(opts.video, point.xy[0], point.xy[1]);
       return {
         x: nx,
         y: ny,
