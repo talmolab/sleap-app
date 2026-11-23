@@ -99,6 +99,11 @@ function skeletonPairs(skel: SkeletonLike): [number, number][] {
   return pairs.length > 0 ? pairs : inferSymmetryPairsByName(skel.nodeNames ?? []);
 }
 
+/** Whether a labeled frame is marked negative (background, no animals). */
+function isNegativeFrame(lf: object): boolean {
+  return Boolean((lf as { isNegative?: boolean }).isNegative);
+}
+
 export function runLabelQc(labels: Labels, opts: QcOptions = {}): QcFinding[] {
   const minVisible = opts.minVisibleNodes ?? 2;
   const chiralityThreshold = opts.chiralityThreshold ?? 0.5;
@@ -160,7 +165,11 @@ export function runLabelQc(labels: Labels, opts: QcOptions = {}): QcFinding[] {
     const frames = [...labels.find({ video })];
 
     // Per-video expected instance count = median over labeled frames (user only).
-    const expected = medianCount(frames.map((f) => f.userInstances.length));
+    // Negative (background) frames are meant to be empty, so they'd only drag
+    // the median down; leave them out (#489).
+    const expected = medianCount(
+      frames.filter((f) => !isNegativeFrame(f)).map((f) => f.userInstances.length),
+    );
 
     // Frame bounds for out-of-range (video.shape = [frames, height, width, channels]).
     const shape = (video as unknown as { shape: number[] | null }).shape;
@@ -170,8 +179,10 @@ export function runLabelQc(labels: Labels, opts: QcOptions = {}): QcFinding[] {
     for (const lf of frames) {
       const insts = lf.userInstances;
       const count = insts.length;
-      const isNegative = Boolean((lf as unknown as { isNegative?: boolean }).isNegative);
+      const isNegative = isNegativeFrame(lf);
 
+      // A negative frame is never "incomplete": having no animals is the point.
+      // It only gets a finding when it contradicts itself by having instances.
       if (isNegativeFrameWithInstances(isNegative, count)) {
         findings.push({
           kind: "negative_frame",
@@ -180,7 +191,7 @@ export function runLabelQc(labels: Labels, opts: QcOptions = {}): QcFinding[] {
           videoIdx: v,
           frameIdx: lf.frameIdx,
         });
-      } else if (Number.isFinite(expected) && isIncompleteFrame(count, expected)) {
+      } else if (!isNegative && Number.isFinite(expected) && isIncompleteFrame(count, expected)) {
         findings.push({
           kind: "incomplete_frame",
           message: `${count} instance(s); expected ~${expected} for this video`,

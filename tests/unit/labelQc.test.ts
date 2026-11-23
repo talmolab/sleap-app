@@ -48,6 +48,58 @@ describe("runLabelQc", () => {
     expect(fs.find((f) => f.kind === "negative_frame")).toMatchObject({ frameIdx: 5 });
   });
 
+  // #489: an empty negative frame is correct by design, so it must not be flagged as incomplete.
+  it("does not flag an empty negative frame as incomplete", () => {
+    const fs = runLabelQc(
+      mockLabels(null, [
+        frame(0, [clean(0, 0), clean(50, 50)]),
+        frame(1, [clean(0, 0), clean(50, 50)]),
+        frame(2, [], true),
+      ]),
+    );
+    expect(fs).toEqual([]);
+  });
+
+  // #489: a negative frame that still has instances keeps its own finding, and only that one.
+  it("reports a negative frame with instances as negative_frame, not incomplete", () => {
+    const fs = runLabelQc(
+      mockLabels(null, [
+        frame(0, [clean(0, 0), clean(50, 50)]),
+        frame(1, [clean(0, 0), clean(50, 50)]),
+        frame(2, [clean(0, 0)], true),
+      ]),
+    );
+    expect(kinds(fs)).toEqual(["negative_frame"]);
+    expect(fs[0]).toMatchObject({
+      frameIdx: 2,
+      message: "Negative (background) frame still has 1 instance(s)",
+    });
+  });
+
+  // #489: negative frames must not drag the per-video expected count down and hide real gaps.
+  it("leaves negative frames out of the per-video median", () => {
+    const fs = runLabelQc(
+      mockLabels(null, [
+        frame(0, [clean(0, 0), clean(50, 50)]),
+        frame(1, [clean(0, 0), clean(50, 50)]),
+        frame(2, [clean(0, 0)]),
+        frame(3, [], true),
+        frame(4, [], true),
+        frame(5, [], true),
+      ]),
+    );
+    const inc = fs.filter((f) => f.kind === "incomplete_frame");
+    expect(inc).toHaveLength(1);
+    expect(inc[0]).toMatchObject({ frameIdx: 2, message: "1 instance(s); expected ~2 for this video" });
+    expect(fs.filter((f) => f.kind !== "incomplete_frame")).toEqual([]);
+  });
+
+  // #489: a video whose labeled frames are all negative has no expected count, so nothing is flagged.
+  it("flags nothing in a video with only empty negative frames", () => {
+    const fs = runLabelQc(mockLabels(null, [frame(0, [], true), frame(1, [], true)]));
+    expect(fs).toEqual([]);
+  });
+
   it("flags an incomplete frame (fewer instances than the per-video median)", () => {
     const fs = runLabelQc(
       mockLabels(null, [
