@@ -29,6 +29,7 @@ import { slotToHeadType } from "@/lib/trainingProfiles";
 import { detectVideoChannels, resolveInputChannels } from "@/lib/modelStats";
 import { buildInferenceArgs } from "@/platform/inferenceArgs";
 import { formatRunTimestamp } from "@/lib/timestamp";
+import { projectHeadContext } from "@/lib/trainingConfigProject";
 
 /** Where the scripts put trained models, relative to the folder they run in (PyQt: `models`). */
 export const JOB_MODELS_DIR = "models";
@@ -135,12 +136,15 @@ export function buildJobConfigYaml(
     cf.checkpointPath,
     resolvedMaxStride,
     resolvedInChannels,
+    // The job trains on the open project (or a packaged copy of it), so its
+    // skeleton and tracks are the training data's. The validation file is the
+    // picked one or none, never a path left in a reused config.
+    { project: projectHeadContext(opts.labels), valLabelsPath: opts.validationLabelsPath ?? null },
   );
   const doc = (yaml.load(text) ?? {}) as Record<string, Record<string, unknown>>;
   doc.data_config ??= {};
   doc.trainer_config ??= {};
   doc.data_config.train_labels_path = [opts.labelsPath];
-  if (opts.validationLabelsPath) doc.data_config.val_labels_path = [opts.validationLabelsPath];
   doc.trainer_config.run_name = opts.runName;
   doc.trainer_config.ckpt_dir = JOB_MODELS_DIR;
   const zmq = doc.trainer_config.zmq as Record<string, unknown> | undefined;

@@ -167,10 +167,14 @@ export function buildInferenceArgs(
   }
   args.push("--peak_threshold", String(config.peakThreshold));
 
-  // Bottom-up advanced
+  // Peak refinement. sleap-nn refines by default ("integral"), so turning it off
+  // has to be said: only the value "none" disables it (every version; 0.2.x only
+  // refines when the value is "integral").
   if (config.integralRefinement) {
     args.push("--integral_refinement", "integral");
     args.push("--integral_patch_size", String(config.integralPatchSize));
+  } else {
+    args.push("--integral_refinement", "none");
   }
   if (config.pipeline === "bottom-up" || config.pipeline === "bottom-up-id") {
     args.push("--n_points", String(config.nPoints));
@@ -206,10 +210,22 @@ export function buildInferenceArgs(
         args.push("--kf_node_indices", config.kfNodeIndices.join(","));
       }
     }
+    // Similarity. Each scoring method needs the feature it compares:
+    //  - "iou" compares boxes, so it must come with `--features bboxes`. Without
+    //    it sleap-nn passes keypoint arrays to `compute_iou`, which reads them
+    //    as [xmin, ymin, xmax, ymax].
+    //  - "oks" (the default) is left unset. sleap-nn's `predict` then chooses
+    //    per model: centroid tracking for 1-node skeletons, cosine similarity
+    //    for embeddings. Sending it explicitly turned those choices off. The
+    //    legacy `track` command defaults to oks, so leaving it out is the same
+    //    there.
     if (config.similarityMethod === "centroids") {
       args.push("--features", "centroids");
       args.push("--scoring_method", "euclidean_dist");
-    } else {
+    } else if (config.similarityMethod === "iou") {
+      args.push("--features", "bboxes");
+      args.push("--scoring_method", "iou");
+    } else if (config.similarityMethod !== "oks") {
       args.push("--scoring_method", config.similarityMethod);
     }
     args.push("--track_matching_method", config.matchingMethod);
