@@ -13,7 +13,7 @@ import {
   DEFAULT_SHORTCUTS,
   EXTRA_SHORTCUTS,
   shortcutBindings,
-  withExtraShortcuts,
+  bindActions,
 } from "@/lib/shortcuts";
 import type { Video } from "@/types";
 
@@ -78,9 +78,10 @@ describe("shortcut map", () => {
   });
 
   // Extras must reuse the main key's handler, not need their own.
-  it("withExtraShortcuts gives each extra key its action's handler", () => {
+  it("bindActions gives each extra key its action's handler", () => {
     const show = () => {};
-    const out = withExtraShortcuts({ [DEFAULT_SHORTCUTS["show labels"]]: show });
+    const out = bindActions({ "show labels": show });
+    expect(out[DEFAULT_SHORTCUTS["show labels"]]).toBe(show);
     expect(out["Control+Tab"]).toBe(show);
     expect(out[EXTRA_SHORTCUTS["frame next large step"][0]]).toBeUndefined();
   });
