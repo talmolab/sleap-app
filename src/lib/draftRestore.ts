@@ -14,6 +14,7 @@ import { loadSlp } from "@/lib/slpRead";
 import { useAppStore } from "@/stores/appStore";
 import { reportParseProgress } from "@/lib/loadProject";
 import { resolveExternalVideos } from "@/lib/resolveVideos";
+import { expectEditListCheck, runEditListCheck } from "@/lib/editListCheck";
 import { removeLabelsDraft, makeOpfsJournalStore } from "@/lib/labelsDraft";
 import { replayJournal, baseBakPath } from "@/lib/incrementalAutosave";
 import { deleteDraftEntry, type DraftManifestEntry } from "@/lib/draftManifest";
@@ -247,6 +248,7 @@ export async function restoreDraft(entry: DraftManifestEntry): Promise<boolean> 
         });
       }
       await resolveExternalVideos(draftLabels);
+      expectEditListCheck(draftLabels); // #274: ask before stamping the frame-index marker
       store.setLabels(
         draftLabels,
         entry.displayName,
@@ -254,6 +256,7 @@ export async function restoreDraft(entry: DraftManifestEntry): Promise<boolean> 
         originalFile,
         sourceHandle,
       );
+      void runEditListCheck(draftLabels);
     } else {
       // Regular/small project: the draft already holds the full labels + external
       // video references. Load it and resolve those videos by path (may prompt).
@@ -273,6 +276,7 @@ export async function restoreDraft(entry: DraftManifestEntry): Promise<boolean> 
       // but only when the on-disk file hasn't diverged from this draft (else force
       // Save-As so we never silently overwrite newer on-disk edits).
       const writeHandle = await safeRestoreWriteHandle(entry);
+      expectEditListCheck(draftLabels); // #274: ask before stamping the frame-index marker
       store.setLabels(
         draftLabels,
         entry.displayName,
@@ -280,6 +284,7 @@ export async function restoreDraft(entry: DraftManifestEntry): Promise<boolean> 
         undefined,
         writeHandle,
       );
+      void runEditListCheck(draftLabels);
     }
 
     store.set("labelsDraftPath", entry.draftPath);

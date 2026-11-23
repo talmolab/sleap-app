@@ -38,6 +38,7 @@ import { consumeLastBrowserFileHandle } from "../platform/index";
 import { toast } from "@/lib/notify";
 import { confirmDiscardUnsavedWork } from "./unsavedGuard";
 import { resolveExternalVideos } from "./resolveVideos";
+import { expectEditListCheck, runEditListCheck } from "./editListCheck";
 import { installTauriFsResolver } from "./fsResolver";
 import { fileSize, readRange } from "./nativeRange";
 import { sleapCmd } from "./sleapPlugin";
@@ -190,8 +191,11 @@ export async function loadProjectFromFile(file: File): Promise<boolean> {
     // stale after a dialog / elapsed time / on a network volume. Name-match
     // guards against a stale handle from a prior pick (a later drag-drop sets none).
     const handle = picked && picked.name === file.name ? picked : null;
+    expectEditListCheck(labels); // #274: ask before stamping the frame-index marker
     store.setLabels(labels, file.name, undefined, file, handle);
     await openFirstLabeledFrame(labels);
+    // Labels made before frames were numbered like ffmpeg? Ask (never silent).
+    void runEditListCheck(labels);
     toast.success(`Loaded ${file.name}`, {
       description: `${labels.videos.length} video(s), ${labels.labeledFrames.length} labeled frames`,
     });
@@ -241,8 +245,11 @@ export async function loadProjectFromUrl(url: string): Promise<boolean> {
     store.setLoading(true, "Locating videos...");
     await resolveExternalVideos(labels);
     // No projectPath/handle → plain Save is disabled; user must Save As.
+    expectEditListCheck(labels); // #274: ask before stamping the frame-index marker
     store.setLabels(labels, name);
     await openFirstLabeledFrame(labels);
+    // Labels made before frames were numbered like ffmpeg? Ask (never silent).
+    void runEditListCheck(labels);
     toast.success(`Loaded ${name}`, {
       description: `${labels.videos.length} video(s), ${labels.labeledFrames.length} labeled frames`,
     });
@@ -358,8 +365,11 @@ export async function loadProjectFromPath(
       await resolveExternalVideos(labels);
     }
 
+    expectEditListCheck(labels); // #274: ask before stamping the frame-index marker
     store.setLabels(labels, filename, path);
     await openFirstLabeledFrame(labels);
+    // Labels made before frames were numbered like ffmpeg? Ask (never silent).
+    void runEditListCheck(labels);
 
     toast.success(`Loaded ${filename}`, {
       description: `${labels.videos.length} video(s), ${labels.labeledFrames.length} labeled frames`,

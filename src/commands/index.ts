@@ -142,3 +142,10 @@ export {
   OpenSkeletonCommand,
   installSkeletonUndoInterceptor,
 } from "./skeletonCommands";
+
+// Edit-list frame shift (sleap-io.js #274)
+export {
+  ShiftVideoLabelsCommand,
+  SHIFT_VIDEO_LABELS_COMMAND_NAME,
+  shiftUndoLabel,
+} from "./editListCommands";
