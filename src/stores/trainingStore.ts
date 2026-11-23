@@ -18,6 +18,8 @@ import type { Labels } from "@/types";
 import type { JobResult, TrainJobSpec } from "@/lib/sleapConnect";
 import { buildRemoteTrackSpecs } from "@/lib/remoteTrackSpec";
 import { resolvePostTrainingTarget } from "@/lib/postTrainingTarget";
+import { mergeModeForRun, type ExistingPredictionsMode } from "@/lib/predictionMergeMode";
+import { videoTargetOf, type PredictionVideoTarget } from "@/lib/predictionVideoMatch";
 import {
   LABELS_EMBED_WARN_BYTES,
   LABELS_EMBED_HARD_CAP_BYTES,
@@ -2532,6 +2534,7 @@ export const useTrainingStore = create<TrainingState>()((set, get) => ({
                     results: inferResults,
                     mode: inferenceConfig.existingPredictions,
                     trackOnly: false,
+                    videoTargets: trackSpecs.map((t) => videoTargetOf(t.video_index)),
                   },
                   merged: false,
                 },
@@ -2950,7 +2953,11 @@ export const useTrainingStore = create<TrainingState>()((set, get) => ({
               }
             };
 
-            const mergeOutputSlp = async (outputPath: string) => {
+            const mergeOutputSlp = async (
+              outputPath: string,
+              mode: ExistingPredictionsMode = localOpts?.existingPredictions ?? "replace",
+              videoTarget?: PredictionVideoTarget,
+            ) => {
               const platform = await getPlatform();
               const bytes = await platform.readFile(outputPath);
               console.log("[training] Read predictions file: %d bytes", bytes.byteLength);
@@ -2963,10 +2970,7 @@ export const useTrainingStore = create<TrainingState>()((set, get) => ({
                 predictions.labeledFrames?.length ?? 0,
                 predictions.tracks?.length ?? 0,
               );
-              await commandContext.execute(MergePredictions, {
-                predictions,
-                mode: localOpts?.existingPredictions ?? "replace",
-              });
+              await commandContext.execute(MergePredictions, { predictions, mode, videoTarget });
             };
 
             // Run inference; if it targeted the exported model and failed, retry
@@ -2994,12 +2998,32 @@ export const useTrainingStore = create<TrainingState>()((set, get) => ({
                   await mergeOutputSlp(result.outputPath);
                 }
               }
+            } else if (inferenceConfig.frameRange === "all_videos") {
+              // One "Entire video" run per video: a run on the project .slp alone
+              // would predict only its already-labeled frames.
+              const videos = currentLabels?.videos ?? [];
+              let runIndex = 0;
+              for (let vi = 0; vi < videos.length; vi++) {
+                set((s) => ({ log: appendLog(s.log, `— Inference: video ${vi + 1}/${videos.length}...`) }));
+                const result = await runInferenceWithFallback({ ...inferenceConfig, videoIndex: vi, frameRange: "video" });
+                if (cancelled()) break;
+                if (result.nothingToPredict) {
+                  set((s) => ({ log: appendLog(s.log, `— Video ${vi + 1}: every frame is user-labeled; skipped.`) }));
+                } else if (result.success && result.outputPath) {
+                  const mode = mergeModeForRun(inferenceConfig.existingPredictions, runIndex++);
+                  await mergeOutputSlp(result.outputPath, mode, vi);
+                } else if (!result.success) {
+                  set((s) => ({ log: appendLog(s.log, `— Inference on video ${vi + 1} failed (non-zero exit).`) }));
+                }
+              }
             } else {
               const result = await runInferenceWithFallback(inferenceConfig);
               if (cancelled()) {
                 // Cancel killed the inference run: nothing to merge, not a failure.
+              } else if (result.nothingToPredict) {
+                set((s) => ({ log: appendLog(s.log, "— Every target frame is user-labeled; nothing to predict.") }));
               } else if (result.success && result.outputPath) {
-                await mergeOutputSlp(result.outputPath);
+                await mergeOutputSlp(result.outputPath, undefined, videoTargetOf(inferenceConfig.videoIndex));
               } else if (!result.success) {
                 set((s) => ({ log: appendLog(s.log, "— Post-training inference failed (non-zero exit).") }));
               }

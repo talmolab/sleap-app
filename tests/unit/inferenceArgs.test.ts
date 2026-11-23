@@ -3,6 +3,8 @@ import type { InferenceConfig } from "@/stores/inferenceStore";
 import {
   buildInferenceArgs,
   compareVersions,
+  formatFramesArg,
+  framesExcludingUserLabeled,
   isPredictSupported,
   pickInferenceSubcommand,
   MIN_SLEAP_NN_PREDICT_VERSION,
@@ -230,6 +232,53 @@ describe("buildInferenceArgs — frame ranges", () => {
       suppressVideoIndex: true,
     });
     expect(args).not.toContain("--video_index");
+  });
+});
+
+describe("Exclude user-labeled frames on a raw-video --data_path", () => {
+  it("formats one contiguous run as a range, anything else as a comma list (sleap-nn takes one range only)", () => {
+    expect(formatFramesArg([3, 4, 5, 6])).toBe("3-6");
+    expect(formatFramesArg([1, 2, 3, 5, 6])).toBe("1,2,3,5,6");
+    expect(formatFramesArg([7])).toBe("7");
+    expect(formatFramesArg([9, 8])).toBe("8,9");
+  });
+
+  it("lists the target's frames minus the video's user-labeled ones", () => {
+    const userLabeledFrames = new Set([0, 3, 64]);
+    expect(framesExcludingUserLabeled({ frameRange: "video" }, { nFrames: 6, userLabeledFrames })).toEqual([1, 2, 4, 5]);
+    expect(
+      framesExcludingUserLabeled({ frameRange: { start: 2, end: 99 } }, { nFrames: 6, userLabeledFrames }),
+    ).toEqual([2, 4, 5]);
+    expect(
+      framesExcludingUserLabeled({ frameRange: "frame" }, { nFrames: 6, userLabeledFrames, currentFrameIdx: 3 }),
+    ).toEqual([]);
+    expect(
+      framesExcludingUserLabeled(
+        { frameRange: "random_video" },
+        { nFrames: 100, userLabeledFrames, sampledFrames: [3, 10, 64, 70] },
+      ),
+    ).toEqual([10, 70]);
+  });
+
+  it("passes the frames as --frames and drops --exclude_user_labeled, which sleap-nn ignores for a video", () => {
+    const args = buildInferenceArgs(baseConfig({ frameRange: "video", videoIndex: 1, excludeUserLabeled: true }), {
+      ...io(),
+      suppressVideoIndex: true,
+      frames: [1, 2, 4, 5],
+    });
+    expect(valAfter(args, "--frames")).toBe("1,2,4,5");
+    expect(args).not.toContain("--exclude_user_labeled");
+    expect(args).not.toContain("--video_index");
+  });
+
+  it("keeps --exclude_user_labeled for a .slp --data_path (no caller-resolved frames)", () => {
+    const args = buildInferenceArgs(baseConfig({ frameRange: "suggestions", excludeUserLabeled: true }), io());
+    expect(args).toContain("--exclude_user_labeled");
+    expect(args).not.toContain("--frames");
+  });
+
+  it("refuses an empty frame list rather than predicting the whole video", () => {
+    expect(() => buildInferenceArgs(baseConfig({ excludeUserLabeled: true }), { ...io(), frames: [] })).toThrow();
   });
 });
 
