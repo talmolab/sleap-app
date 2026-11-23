@@ -1,28 +1,32 @@
 /**
- * After a full save, point the open project's embedded videos at the file just
- * written.
+ * After a full save, point the open project's embedded videos at the file
+ * just written.
  *
  * A project file over the eager-load limit is opened with backends that read
  * each embedded video's images from the file on disk, by dataset name, through
  * one range reader (sleap-io.js `StreamingHdf5VideoBackend`, built per video
- * from `videos_json` by `readSlpStreaming`). A full save replaces that file
- * and writes each embedded video under a name of its new index
- * (`video{i}/video`), so after removing a video the old names belong to other
- * videos, and the reader's view of the file is the old one. Left alone, the
- * views would show another video's images and the next full save would copy
- * them.
+ * from `videos_json` by `readSlpStreaming`). That reader keeps the HDF5
+ * structure it read at open, while every read fetches the bytes now at the
+ * path (see diskBackedVideos.ts). A full save replaces the file: the reader
+ * then reads the new file's bytes at the old file's offsets, whatever the
+ * names, and a save that removed a video also gives the old names to other
+ * videos (`video{i}/video` by the new index). Left alone, the views would show
+ * wrong images and the next full save would copy them.
  *
- * So after every full save (over the project file, and Save As), each written
- * embedded video that reads the file on disk gets a new backend: on its name in
- * the written file's `videos_json`, through one new range reader on that file,
- * built as the loader builds them (deferred: per-video metadata is read on
- * first use). It replaces the old backend inside any grayscale or crop
- * wrapper, at the same video, and the old backends and their reader are
- * closed. Before anything is swapped, the new backends are checked: names must
- * be unique among the embedded videos, and a video whose stored frames were
- * known must find the same frame numbers under its new name. Any failure
- * leaves the old backends in place (the caller then refuses further full
- * saves until the project is reopened).
+ * So after every full save (over the project file, and Save As), each
+ * written embedded video that reads the file on disk gets a new backend: on its name in the written
+ * file's `videos_json`, through one new range reader on that file, built as
+ * the loader builds them (deferred: per-video metadata is read on first use).
+ * It replaces the old backend inside any grayscale or crop wrapper, at the
+ * same video, and the old backends and their reader are closed. Before
+ * anything is swapped, the new backends are checked: names must be unique
+ * among the embedded videos, and a video whose stored frames were known must
+ * find the same frame numbers under its new name.
+ *
+ * {@link rebindOrMark}: a rebind clears the stale-name mark; any failure
+ * leaves the old backends in place and, when the write replaced the file
+ * those backends read, marks the labels (`markStaleVideoNames`): full saves,
+ * exports and copies then wait until the project is reopened.
  *
  * Eager loads keep the whole file in memory: their backends (the same
  * class, over a reader of the file's bytes) keep reading the file as it was
@@ -40,6 +44,8 @@ import {
 import { fileSize, readRange } from "./nativeRange";
 import { embeddedSource } from "./embeddedVideoSources";
 import { diskBackendOf, markDiskReader, readerOf } from "./diskBackedVideos";
+import { clearStaleVideoNames, markStaleVideoNames, warnStaleVideoNames } from "./inPlaceBinding";
+import { useAppStore } from "@/stores/appStore";
 
 /** A wrapper backend (grayscale, crop) around another one. */
 interface Wrapper {
@@ -201,3 +207,37 @@ export async function rebindEmbeddedVideos(
     if (reader) await reader.close().catch(() => {});
   }
 }
+
+/**
+ * After a full save of `written` to `path` whose embedded datasets are
+ * `datasets` (null if the file couldn't be read back): rebind the project's disk-read videos to it, or
+ * mark the labels. `replacedReadersFile` says the write replaced the file the
+ * project's disk readers read (a save over the project file; not a Save As
+ * to another path): then any failure marks the labels and asks to reopen,
+ * whatever the names. A rebind clears the mark.
+ */
+export async function rebindOrMark(
+  labels: Labels,
+  path: string,
+  written: readonly Video[],
+  datasets: ReadonlyArray<string | null> | null,
+  replacedReadersFile: boolean
+): Promise<void> {
+  const rebind = await rebindEmbeddedVideos(labels, path, written, datasets);
+  if (rebind.ok) {
+    clearStaleVideoNames(labels);
+    if (rebind.rebound > 0) {
+      console.log(`[rebind] Rebound ${rebind.rebound} embedded video(s) to ${path}`);
+      // Re-read the frame on screen, and the frame counts, from the new backends.
+      const store = useAppStore.getState();
+      store.markVideoUpdated();
+      store.bumpBackendSwapNonce();
+    }
+    return;
+  }
+  console.warn(`[rebind] Could not rebind the embedded videos to ${path}: ${rebind.reason}`);
+  if (!replacedReadersFile) return; // Save As: the readers' file is untouched
+  markStaleVideoNames(labels);
+  warnStaleVideoNames();
+}
+

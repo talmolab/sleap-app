@@ -88,14 +88,13 @@ import {
   bindingRefusal,
   boundDatasets,
   clearFileBinding,
-  loadedVideoDataset,
   refreshFileIdentity,
-  readsProjectFile,
   sameFileIdentity,
   sameVideoList,
   statFileIdentity,
   type FileIdentity,
 } from "./inPlaceBinding";
+import { hasDiskBackedVideos } from "./diskBackedVideos";
 
 // Same derivation as loadProject.ts / saveEmbeddedPkgStreaming.ts: h5wasm must be
 // served same-origin so the streaming Worker can load it under cross-origin
@@ -789,58 +788,36 @@ export async function saveLabelsInPlace(
  * write), or the file can't be read back, the record is cleared instead, and
  * the next save rewrites the file in full.
  *
- * Returns the written file's embedded datasets by index (null for an external
- * video; `datasets` null when the file couldn't be read back), which the
- * caller rebinds the open project's embedded videos to
- * (`rebindEmbeddedVideos.ts`), and whether an embedded video's backend reads
- * the file on disk under a name the file has given to another video
- * (`staleVideoNames`): if that rebind fails, the caller then marks the labels
- * (see `markStaleVideoNames`) and asks the user to reopen.
+ * Returns:
+ * - `datasets`: the written file's embedded datasets by index (null for an
+ *   external video; `datasets` null when the file couldn't be read back), which
+ *   the caller rebinds the open project's disk-read videos to
+ *   (`rebindEmbeddedVideos.ts`);
+ * - `staleVideoNames`: whether the save replaced the file that the project's
+ *   disk readers read (`sourcePath`, the project file; see
+ *   diskBackedVideos.ts). Such a reader keeps the old file's structure and
+ *   reads the new file's bytes at the old offsets, whatever the dataset
+ *   names, so unless the rebind succeeds the caller marks the labels (see
+ *   `markStaleVideoNames`) and asks the user to reopen. A save to another
+ *   path (Save As) leaves that file, and the readers, as they were.
  */
 export async function recordWrittenFile(
   labels: Labels,
   path: string,
-  written: readonly Video[]
+  written: readonly Video[],
+  sourcePath: string | null = path
 ): Promise<{ staleVideoNames: boolean; datasets: Array<string | null> | null }> {
   clearFileBinding(labels);
-  // Fail closed: if the written file can't be read back, any embedded video
-  // that reads the project file may now read another video's images.
-  const unproven = {
-    staleVideoNames: written.some((v) => v.hasEmbeddedImages && readsProjectFile(v)),
-    datasets: null,
-  };
+  const staleVideoNames = sourcePath === path && hasDiskBackedVideos(labels);
+  const unread = { staleVideoNames, datasets: null };
   // No embedded video: the in-place save never runs, and nothing reads the
   // file by name, so there is nothing to record or rebind.
-  if (!written.some((v) => v.hasEmbeddedImages)) return { staleVideoNames: false, datasets: null };
-  if (!hasCrossOriginIsolation()) return unproven;
+  if (!written.some((v) => v.hasEmbeddedImages)) return unread;
   const identity = await statFileIdentity(path);
-  let videosJson: string[] | null;
-  try {
-    // Without the file's identity there is no record to take, but its
-    // datasets are still read back for the rebind.
-    const size = identity?.size ?? (await fileSize(path));
-    const reader = new StreamingH5File();
-    await reader.openRange(
-      { size, readRange: (o, l) => readRange(path, o, l) },
-      { h5wasmUrl: H5WASM_URL }
-    );
-    try {
-      videosJson = await readJsonStringDataset(reader, "videos_json");
-    } finally {
-      await reader.close().catch(() => {});
-    }
-  } catch (err) {
-    console.log("[saveLabelsInPlace] could not read back the written file's videos:", err);
-    return unproven;
-  }
-  const datasets = writtenDatasets(videosJson);
-  if (!datasets) return unproven;
-  const staleVideoNames = written.some(
-    (video, index) =>
-      video.hasEmbeddedImages &&
-      readsProjectFile(video) &&
-      loadedVideoDataset(video) !== (datasets[index] ?? null)
-  );
+  // Without the file's identity there is no record to take, but its datasets
+  // are still read back for the rebind.
+  const datasets = await readWrittenDatasets(path, identity?.size);
+  if (!datasets) return unread;
   const result = { staleVideoNames, datasets };
   if (!identity || datasets.length !== written.length) return result;
   // Only now, after every await: the list must still be the one written.
@@ -850,6 +827,33 @@ export async function recordWrittenFile(
   if (!again || !sameFileIdentity(again, identity)) return result;
   bindLabelsToFile(labels, path, identity, datasets);
   return result;
+}
+
+/**
+ * The embedded dataset of each `videos_json` entry of the file at `path`, as
+ * written (null for an external video), or null when it can't be read back.
+ */
+export async function readWrittenDatasets(
+  path: string,
+  knownSize?: number
+): Promise<Array<string | null> | null> {
+  if (!hasCrossOriginIsolation()) return null;
+  try {
+    const size = knownSize ?? (await fileSize(path));
+    const reader = new StreamingH5File();
+    await reader.openRange(
+      { size, readRange: (o, l) => readRange(path, o, l) },
+      { h5wasmUrl: H5WASM_URL }
+    );
+    try {
+      return writtenDatasets(await readJsonStringDataset(reader, "videos_json"));
+    } finally {
+      await reader.close().catch(() => {});
+    }
+  } catch (err) {
+    console.log("[saveLabelsInPlace] could not read back the written file's videos:", err);
+    return null;
+  }
 }
 
 /** Each entry's embedded dataset in `videos_json` (null if external); null if unparseable. */

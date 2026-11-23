@@ -2,7 +2,6 @@ import { isTauri } from "./platform";
 import { useAppStore } from "../stores/appStore";
 import { hasUnsavedWork } from "./unsavedGuard";
 import { isSaveInProgress } from "./saveInProgress";
-import { toast } from "./notify";
 import { markCleanShutdown } from "./diagnostics/sessionLog";
 
 let pendingQuitResolve: ((confirmed: boolean) => void) | null = null;
@@ -26,6 +25,25 @@ async function confirmUnsaved(): Promise<boolean> {
   store.set("quitConfirmOpen", true);
   return new Promise<boolean>((resolve) => {
     pendingQuitResolve = resolve;
+  });
+}
+
+/**
+ * While a save runs, ask before closing: closing can cut off a write of the
+ * project file (an in-place patch has no temp file). "Wait" keeps the window;
+ * a save that hangs can still be closed with "Close anyway". True to close.
+ */
+async function confirmCloseDuringSave(): Promise<boolean> {
+  if (!isSaveInProgress()) return true;
+  const { confirmDialog } = await import("@/stores/confirmStore");
+  return confirmDialog({
+    title: "A save is running",
+    message:
+      "Closing now can leave the project file half written. Wait for the save to " +
+      "finish, or close anyway.",
+    confirmLabel: "Close anyway",
+    cancelLabel: "Wait",
+    destructive: true,
   });
 }
 
@@ -163,18 +181,19 @@ async function setupQuitPeerListener(): Promise<void> {
   await me.listen<QuitAsk>(QUIT_ASK, async ({ payload }) => {
     if (!payload || payload.to !== me.label) return;
     const reply = (r: QuitReply) => emitTo(payload.from, QUIT_REPLY, r);
-    const dirty = hasUnsavedWork(useAppStore.getState());
+    const dirty = hasUnsavedWork(useAppStore.getState()) || isSaveInProgress();
     await reply({ id: payload.id, phase: "ack", dirty });
     if (!dirty) return;
     const { focusWindow } = await import("./windowRouting");
     await focusWindow(me.label);
-    const proceed = await confirmUnsaved();
+    const proceed = (await confirmCloseDuringSave()) && (await confirmUnsaved());
     await reply({ id: payload.id, phase: "decision", proceed });
   });
 }
 
 /** Quit the WHOLE app, prompting in every window that has unsaved changes. */
 export async function quitApp(): Promise<void> {
+  if (!(await confirmCloseDuringSave())) return;
   if (!(await confirmUnsaved())) return;
   if (isTauri && !(await confirmOtherWindows(await tauriQuitPeers()))) return;
   await forceQuit();
@@ -202,9 +221,9 @@ export async function setupCloseHandler(): Promise<void> {
     // off safely): keep the window open until it finishes.
     if (isSaveInProgress()) {
       event.preventDefault();
-      toast.info("A save is running", {
-        description: "Close the window when it finishes.",
-      });
+      if ((await confirmCloseDuringSave()) && (await confirmUnsaved())) {
+        await closeThisWindow();
+      }
       return;
     }
     // No unsaved work: let the default close proceed (Tauri closes just this

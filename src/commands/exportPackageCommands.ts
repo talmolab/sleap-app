@@ -83,7 +83,8 @@ import { toastExported } from "@/lib/exportToast";
 import { getPlatform } from "../platform/index";
 import { useAppStore } from "@/stores/appStore";
 import { withImageFormat, withLegacyLayout } from "@/lib/slpFormatCompat";
-import { clearFileBinding, refuseStaleVideoNames } from "@/lib/inPlaceBinding";
+import { projectFileReplaced, refuseStaleVideoNames } from "@/lib/inPlaceBinding";
+import { refuseWhileSaving } from "@/lib/saveInProgress";
 import { normalizePackageImage, type PackageImageOptions } from "@/lib/packageImageFormat";
 import { ensureWritable } from "@/lib/slpAccess";
 
@@ -272,13 +273,14 @@ export function packageImageParam(
 }
 
 /**
- * A package exported over the open project's own file replaces it: the fast
- * in-place save must not patch it as the project's file (its next save then
- * rewrites the file in full). Its size and time would usually differ anyway.
+ * A package exported over the open project's own file replaces it, as a full
+ * save does: the fast in-place save must not patch it as the project's file,
+ * and a project that reads its embedded images from that file (a large
+ * file's open) is marked until it is reopened (see projectFileReplaced).
  */
 function forgetProjectFileIfOverwritten(path: string): void {
   const { projectPath, labels } = useAppStore.getState();
-  if (labels && projectPath && path === projectPath) clearFileBinding(labels);
+  if (labels && projectPath && path === projectPath) projectFileReplaced(labels);
 }
 
 /** Is the streaming desktop write (worker + native file writes) available? */
@@ -368,6 +370,9 @@ export async function exportLabelsPackage(
   } = {}
 ): Promise<string | null> {
   if (!labels) return null;
+  // Not while a save runs: it may be replacing the file these images are
+  // read from (see saveInProgress.ts).
+  if (refuseWhileSaving()) return null;
   // A project opened View only is never written, packages included, unless
   // the user allows editing (the prompt lists what the 2.x layout drops).
   if (!(await ensureWritable(labels, "export"))) return null;

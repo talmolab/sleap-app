@@ -26,7 +26,7 @@
  * the full re-save is always correct, and records a binding.
  */
 import type { Labels, Video } from "@talmolab/sleap-io.js";
-import { diskBackendOf } from "@/lib/diskBackedVideos";
+import { diskBackendOf, hasDiskBackedVideos } from "@/lib/diskBackedVideos";
 import { toast } from "@/lib/notify";
 
 /** A file as the app last read or wrote it. */
@@ -201,14 +201,14 @@ const staleNames = new WeakSet<Labels>();
 
 /**
  * Mark labels whose embedded videos read their images from the project file
- * by a dataset name that may no longer be theirs (a large file's open: its
- * backends read the file on disk): a full rewrite gave the name to another
- * video, or the written file couldn't be read back to tell, and rebinding
- * them to the written file failed (`rebindEmbeddedVideos.ts`); or the file
- * changed on disk. Their images, and any writer that copies them
- * (full saves, package exports, training copies), could be another video's:
- * those are refused until the project is reopened (the in-place save, which
- * keeps the images, still runs).
+ * on disk (a large file's open) after that file was replaced: by a full save
+ * or an export over it, or by another program. Such a reader keeps the old
+ * file's layout and reads the new file's bytes at the old offsets, whatever
+ * the dataset names (see diskBackedVideos.ts). Their images, and any writer
+ * that copies them (full saves, package exports, clips, training copies),
+ * could be wrong: those are refused until the project is reopened (the
+ * in-place save, which keeps the images, still runs). A rebind of the
+ * backends onto the new file clears the mark (see rebindEmbeddedVideos.ts).
  */
 export function markStaleVideoNames(labels: Labels): void {
   staleNames.add(labels);
@@ -237,9 +237,26 @@ export function readsProjectFile(video: Video): boolean {
 
 /** What the app says when it won't copy images read under stale names. */
 export const STALE_VIDEO_NAMES_MESSAGE =
-  "The open project reads its embedded images from the project file under names that may " +
-  "no longer match it (an earlier save renumbered them, or the file changed on disk), so " +
-  "they could be stored wrongly. Reopen the project first. Nothing was written.";
+  "This project reads its embedded images from its file on disk, and that file was " +
+  "replaced since it was opened (by a save or an export over it, or by another program), " +
+  "so the images it reads are no longer the right ones. Reopen the project first. " +
+  "Nothing was written.";
+
+/**
+ * Tell the user, once marked, that the project must be reopened: the images
+ * shown may be wrong, and writers that copy them wait until then.
+ */
+export function warnStaleVideoNames(): void {
+  toast.warning("Reopen this project before you continue", {
+    id: "stale-video-names",
+    description:
+      "Its file was replaced, and the open project still reads its embedded images through " +
+      "the old file's layout: the images shown may be wrong until you reopen. Saves that " +
+      "keep the video list still work; full saves, exports and training copies wait until " +
+      "then.",
+    duration: Infinity,
+  });
+}
 
 /**
  * Refuse, with an error note, a writer that would copy the embedded images
@@ -249,6 +266,18 @@ export function refuseStaleVideoNames(labels: Labels | null | undefined, title: 
   if (!labels || !hasStaleVideoNames(labels)) return false;
   toast.error(title, { description: STALE_VIDEO_NAMES_MESSAGE });
   return true;
+}
+
+/**
+ * The project's own file was replaced by something other than a save (an
+ * export written over it): the in-place save must not patch it, and if the
+ * project reads its images from that file, they are no longer the right ones.
+ */
+export function projectFileReplaced(labels: Labels): void {
+  clearFileBinding(labels);
+  if (!hasDiskBackedVideos(labels)) return;
+  markStaleVideoNames(labels);
+  warnStaleVideoNames();
 }
 
 /** Throw for a job that would copy embedded images under stale names. */

@@ -18,16 +18,15 @@ import {
 import { recordWrittenFile, saveLabelsInPlace } from "@/lib/saveLabelsInPlace";
 import {
   clearFileBinding,
-  clearStaleVideoNames,
   markStaleVideoNames,
-  readsProjectFile,
   recordedFileChanged,
   refuseStaleVideoNames,
   statFileIdentity,
 } from "@/lib/inPlaceBinding";
 import { recordEmbeddedSources } from "@/lib/embeddedVideoSources";
-import { rebindEmbeddedVideos, unreadableEmbeddedVideo } from "@/lib/rebindEmbeddedVideos";
+import { rebindOrMark, unreadableEmbeddedVideo } from "@/lib/rebindEmbeddedVideos";
 import { isSaveInProgress, whileSaving } from "@/lib/saveInProgress";
+import { hasDiskBackedVideos } from "@/lib/diskBackedVideos";
 import {
   shouldStreamEmbeddedSave,
   decideBrowserSaveAction,
@@ -223,39 +222,20 @@ async function ensureReadWritePermission(
  * save (only if the video list is still `written`), record where each written
  * embedded video's images now are, and rebind the videos that read their
  * images from the file on disk to the file just written (a large file's
- * open), which clears any stale-name mark. If that rebind fails and their
- * names changed (or can't be read back), mark them stale: say so, and refuse
- * further full writes, exports and training copies until the project is
- * reopened.
+ * open), which clears any stale-name mark. If the rebind fails and the write
+ * replaced the file those videos read (a save over the project file, whatever
+ * the names), mark them stale: say so, and refuse further full writes, exports
+ * and training copies until the project is reopened.
  */
-async function recordRewrite(labels: Labels, path: string, written: Video[]): Promise<void> {
-  const { staleVideoNames, datasets } = await recordWrittenFile(labels, path, written);
+async function recordRewrite(
+  labels: Labels,
+  path: string,
+  written: Video[],
+  sourcePath: string | null
+): Promise<void> {
+  const { staleVideoNames, datasets } = await recordWrittenFile(labels, path, written, sourcePath);
   recordEmbeddedSources(path, written, datasets);
-  const rebind = await rebindEmbeddedVideos(labels, path, written, datasets);
-  if (rebind.ok) {
-    // Every video that reads the file on disk now reads it by the names the
-    // file gives it: nothing is read under a stale name.
-    clearStaleVideoNames(labels);
-    if (rebind.rebound > 0) {
-      console.log(`[save] Rebound ${rebind.rebound} embedded video(s) to ${path}`);
-      // Re-read the frame on screen, and the frame counts, from the new backends.
-      const store = useAppStore.getState();
-      store.markVideoUpdated();
-      store.bumpBackendSwapNonce();
-    }
-    return;
-  }
-  console.warn(`[save] Could not rebind the embedded videos to ${path}: ${rebind.reason}`);
-  if (!staleVideoNames && datasets) return; // same names: the old backends still read them
-  markStaleVideoNames(labels);
-  toast.warning("Reopen this project before you continue", {
-    description:
-      "This save renumbered its embedded videos (or its file couldn't be read back), and " +
-      "the open project may still read their images under the old names: the images " +
-      "shown for some videos may be wrong until you reopen. Saves that keep the video " +
-      "list still work; full saves, exports and training copies wait until then.",
-    duration: Infinity,
-  });
+  await rebindOrMark(labels, path, written, datasets, staleVideoNames);
 }
 
 /** Whether `labels` are still the open project (the store's, if any). */
@@ -274,9 +254,7 @@ function isCurrent(labels: Labels): boolean {
 async function refuseFullWrite(labels: Labels, sourcePath: string | null): Promise<boolean> {
   if (refuseStaleVideoNames(labels, "Reopen this project before saving it in full")) return true;
   if (refuseUnreadableVideos(labels, sourcePath)) return true;
-  if (!sourcePath || !labels.videos.some((v) => v.hasEmbeddedImages && readsProjectFile(v))) {
-    return false;
-  }
+  if (!sourcePath || !hasDiskBackedVideos(labels)) return false;
   if (!recordedFileChanged(labels, sourcePath, await statFileIdentity(sourcePath))) return false;
   markStaleVideoNames(labels);
   toast.error("The project file changed on disk", {
@@ -441,7 +419,7 @@ async function saveProjectAsSlpNow(
           }
           // The fast in-place save may patch this file next: it is the one
           // just written, with the videos written, in this order.
-          await recordRewrite(labels, existingPath, written);
+          await recordRewrite(labels, existingPath, written, sourcePath);
         }
         displayName = existingPath;
       } else {
@@ -475,7 +453,7 @@ async function saveProjectAsSlpNow(
         // The project may have been replaced meanwhile (it can't be, while a
         // save runs, but never point another project at this file).
         if (isCurrent(labels)) store.set("projectPath", savePath);
-        await recordRewrite(labels, savePath, written);
+        await recordRewrite(labels, savePath, written, sourcePath);
         // Track the newly-saved name (basename) so the window title updates and,
         // for the .vNNN versioning, the NEXT Save As increments from the name we
         // just wrote instead of the stale opened name. The browser Save-As path

@@ -79,7 +79,7 @@ vi.mock("@/lib/notify", () => ({
 
 const cleared: unknown[] = [];
 vi.mock("@/lib/inPlaceBinding", () => ({
-  clearFileBinding: (labels: unknown) => void cleared.push(labels),
+  projectFileReplaced: (labels: unknown) => void cleared.push(labels),
   refuseStaleVideoNames: () => false,
 }));
 
