@@ -1,0 +1,122 @@
+/**
+ * Inference store on a mice + pellet project (#99): one sleap-nn run per
+ * skeleton, each fed a copy of the project with only its skeleton, each
+ * merged under its own skeleton. sleap-nn and file reads are mocked; the
+ * merge is real.
+ */
+
+import { describe, it, expect, beforeEach, vi } from "../bun-test";
+import { LabeledFrame, Labels, PredictedInstance, Skeleton, Video } from "@talmolab/sleap-io.js";
+
+type RunOpts = { inputLabels?: Labels; outputTag?: string };
+const runCalls: Array<{ modelPaths: string[]; opts: RunOpts }> = [];
+const outputs = new Map<string, Labels>();
+
+const runInferenceMock = vi.fn(
+  async (config: { modelPaths: string[] }, _projectPath: unknown, _onEvent: unknown, opts: RunOpts = {}) => {
+    runCalls.push({ modelPaths: config.modelPaths, opts });
+    return { success: true, outputPath: `/out/${opts.outputTag}.predictions.slp`, command: "sleap-nn predict" };
+  },
+);
+vi.mock("@/platform/backend", () => ({
+  runInference: runInferenceMock,
+  cancelCommand: async () => {},
+}));
+vi.mock("@/platform", () => ({
+  getPlatform: async () => ({ readFile: async (path: string) => new TextEncoder().encode(path) }),
+}));
+vi.mock("@/lib/slpRead", () => ({
+  loadSlp: async (bytes: Uint8Array) => outputs.get(new TextDecoder().decode(bytes))!,
+  readSlpStreaming: async () => {
+    throw new Error("not used");
+  },
+}));
+
+import { useInferenceStore, type InferenceConfig } from "@/stores/inferenceStore";
+import { useAppStore } from "@/stores/appStore";
+import { makeTwoSkeletonProject } from "./multiSkeletonFixture";
+
+function predictionsFile(nodes: string[], frameIdx: number, xy: [number, number]): Labels {
+  const skeleton = new Skeleton({ nodes, name: "model" });
+  const video = new Video({ filename: "/data/arena.mp4", backendMetadata: { shape: [100, 480, 640, 3] }, openBackend: false });
+  const inst = new PredictedInstance({
+    skeleton,
+    score: 0.8,
+    points: nodes.map((name, i) => ({ xy: [xy[0] + i, xy[1] + i] as [number, number], visible: true, complete: true, score: 0.8, name })),
+  });
+  return new Labels({ videos: [video], skeletons: [skeleton], labeledFrames: [new LabeledFrame({ video, frameIdx, instances: [inst] })] });
+}
+
+const baseConfig = {
+  pipeline: "top-down",
+  trackOnly: false,
+  modelPaths: [],
+  videoIndex: "all",
+  frameRange: "suggestions",
+  existingPredictions: "replace",
+  kfNodeIndices: [],
+} as unknown as InferenceConfig;
+
+describe("running inference on a mice + pellet project", () => {
+  beforeEach(() => {
+    useAppStore.setState(useAppStore.getInitialState());
+    useInferenceStore.setState(useInferenceStore.getInitialState());
+    runCalls.length = 0;
+    outputs.clear();
+    runInferenceMock.mockClear();
+  });
+
+  // The headline case: mouse top-down + pellet centroid, two runs, two merges.
+  it("runs each skeleton's models on its own copy and merges under that skeleton", async () => {
+    const { labels, mouse, pellet } = makeTwoSkeletonProject();
+    useAppStore.getState().setLabels(labels);
+    outputs.set("/out/mouse.predictions.slp", predictionsFile(["head", "body", "tail"], 40, [10, 10]));
+    outputs.set("/out/pellet.predictions.slp", predictionsFile(["centroid"], 40, [99, 99]));
+
+    await useInferenceStore.getState().startInference({
+      ...baseConfig,
+      skeletonRuns: [
+        { skeletonName: "mouse", skeletonIndex: 0, modelPaths: ["/m/centroid", "/m/ci"], pipeline: "top-down" },
+        { skeletonName: "pellet", skeletonIndex: 1, modelPaths: ["/m/pellet"], pipeline: "centroid-only" },
+      ],
+    });
+
+    expect(useInferenceStore.getState().error).toBeNull();
+    expect(useInferenceStore.getState().status).toBe("completed");
+    expect(runCalls.map((c) => c.modelPaths)).toEqual([["/m/centroid", "/m/ci"], ["/m/pellet"]]);
+    expect(runCalls.map((c) => c.opts.outputTag)).toEqual(["mouse", "pellet"]);
+    expect(runCalls[0].opts.inputLabels?.skeletons).toEqual([mouse]);
+    expect(runCalls[1].opts.inputLabels?.skeletons).toEqual([pellet]);
+
+    const frame = labels.labeledFrames.find((lf) => lf.frameIdx === 40)!;
+    const predicted = frame.instances.filter((i) => i instanceof PredictedInstance);
+    expect(predicted.map((i) => i.skeleton)).toEqual([mouse, pellet]);
+    expect(labels.skeletons).toHaveLength(2);
+  });
+
+  // Without matched runs (e.g. a stale config), nothing starts.
+  it("refuses to start without per-skeleton runs", async () => {
+    const { labels } = makeTwoSkeletonProject();
+    useAppStore.getState().setLabels(labels);
+    await useInferenceStore.getState().startInference({ ...baseConfig, modelPaths: ["/m/x"] });
+    expect(runInferenceMock).not.toHaveBeenCalled();
+    expect(useInferenceStore.getState().status).toBe("idle");
+  });
+
+  // A failed run stops the job with an error naming the skeleton.
+  it("stops at a failed run and names its skeleton", async () => {
+    const { labels } = makeTwoSkeletonProject();
+    useAppStore.getState().setLabels(labels);
+    runInferenceMock.mockImplementationOnce(async () => ({ success: false, outputPath: null, command: "x" }));
+    await useInferenceStore.getState().startInference({
+      ...baseConfig,
+      skeletonRuns: [
+        { skeletonName: "mouse", skeletonIndex: 0, modelPaths: ["/m/b"], pipeline: "bottom-up" },
+        { skeletonName: "pellet", skeletonIndex: 1, modelPaths: ["/m/pellet"], pipeline: "centroid-only" },
+      ],
+    });
+    expect(runInferenceMock).toHaveBeenCalledTimes(1);
+    expect(useInferenceStore.getState().status).toBe("error");
+    expect(useInferenceStore.getState().error).toContain("mouse");
+  });
+});
