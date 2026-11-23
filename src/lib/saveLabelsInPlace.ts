@@ -15,6 +15,12 @@
  * avoid rewriting the file. That is safe ONLY for an edit that is confined to
  * the label tables (+ metadata), which is exactly what the io
  * `checkInPlaceWritable` gate proves before we touch a byte:
+ *   - First, the file must be the one the app last read or wrote, unchanged
+ *     since (size and modification time), and the loaded videos must be the
+ *     objects recorded for its entries, in order (`inPlaceBinding.ts`: set at
+ *     open, after every full rewrite, and after each verified in-place save).
+ *     Anything else — a file replaced on disk, a video removed, restored by
+ *     undo after a rewrite, replaced or reordered — refuses.
  *   - We PROBE the on-disk file (via the read-only range reader) to learn its
  *     label-table layouts and its sidecars (tracks/suggestions/videos/metadata).
  *   - We ask the gate whether the current `labels` differ from the file ONLY in
@@ -32,14 +38,17 @@
  *     changing flags) go in place there; SLEAP 1.x tables are chunked.
  *   - The gate's "video set unchanged" check compares signatures the app
  *     builds the same way for the file and for the loaded labels (an embedded
- *     video by its dataset path, see embeddedSignature), since the JSON shape
- *     of an embedded video differs between writers and load states.
+ *     video by its dataset path, from the binding; see embeddedSignature), an
+ *     extra check after the binding's. The JSON shape of an embedded video
+ *     differs between writers and load states, so it is not compared.
  *   - Only on an OK gate do we open the file for writing and patch it.
  * A gate refusal or a PROBE failure returns `{ok:false}` (nothing was written —
  * safe to fall through). A failure DURING/AFTER the write begins THROWS: an
  * in-place write cannot be rolled back, so the contract is loud detection — the
  * post-write verify reopens the file and asserts the tables read back correctly,
- * and any inconsistency surfaces as an error ("save may be inconsistent — reopen
+ * that `videos_json` and the video datasets' `frames` / `format` /
+ * `channel_order` attributes are unchanged, and any inconsistency or failed
+ * read surfaces as an error ("save may be inconsistent — reopen
  * to check") rather than a silent corruption.
  *
  * Requires cross-origin isolation (SharedArrayBuffer) like the streaming writer:
@@ -74,6 +83,12 @@ import {
 } from "./nativeWrite";
 import { fileSize, readRange } from "./nativeRange";
 import { sourceFormatOf, withLegacyLayout } from "./slpFormatCompat";
+import {
+  bindingRefusal,
+  boundDatasets,
+  refreshFileIdentity,
+  statFileIdentity,
+} from "./inPlaceBinding";
 
 // Same derivation as loadProject.ts / saveEmbeddedPkgStreaming.ts: h5wasm must be
 // served same-origin so the streaming Worker can load it under cross-origin
@@ -161,18 +176,20 @@ interface VideoJsonEntry {
  * The signature of an EMBEDDED video for the gate's "video set unchanged"
  * check: the package itself (`destPath`) and the dataset its images are
  * stored in. Built the same way from the file ({@link onDiskVideoSignatures})
- * and from the loaded labels ({@link liveVideoSignatures}), so both sides agree
- * whoever wrote the file, and without reading the embedded datasets.
+ * and from the loaded labels ({@link liveVideoSignatures}).
  *
- * The shape is left out on purpose. Writers record different things in the
- * JSON shape (the app and sleap-io.js the source frame count, Python
- * sleap-io the number of embedded images, SLEAP 1.x no shape at all), and the
- * loaded video's shape depends on how it was loaded (eager reader: `frames`
- * attribute or JSON count; a large file's deferred video: the JSON shape until
- * it is first shown, then the `frames` attribute and frame numbers; a video
- * with no embedded frames may have none). None of it can change while the
- * file is open: replacing a video changes its filename, and adding, removing
- * or reordering videos changes the list or the dataset at an index.
+ * This is an extra check. What proves that the loaded videos are the file's
+ * is the binding (`inPlaceBinding.ts`): the file is the one the app last read
+ * or wrote, unchanged since, and each loaded video is the object recorded at
+ * that index then. The dataset at each index must then agree too.
+ *
+ * The shape is left out. Writers record different frame counts in the JSON
+ * shape (sleap-io.js and Python sleap-io the number of embedded images, with
+ * the source count in the dataset's `frames` attribute; SLEAP 1.x no shape at
+ * all), and the loaded video's shape depends on how it was loaded (eager
+ * reader: the source count; a large file's deferred video: the JSON shape until
+ * it is first shown, then the source count; a video with no embedded frames
+ * may have none).
  */
 function embeddedSignature(destPath: string, dataset: string): string {
   return JSON.stringify({ filename: destPath, embedded: true, dataset });
@@ -233,30 +250,22 @@ function onDiskVideoSignatures(
   return out;
 }
 
-/** The dataset path an embedded video's backend reads, if it says. */
-function backendDataset(backend: unknown): string | undefined {
-  const b = backend as { dataset?: unknown; inner?: { dataset?: unknown } } | null | undefined;
-  const ds = b?.dataset ?? b?.inner?.dataset;
-  return typeof ds === "string" && ds ? ds : undefined;
-}
-
 /**
  * Signatures of the loaded videos, built as {@link onDiskVideoSignatures}
- * builds them from the file: an embedded video by its dataset (its backend's,
- * else the one its `videos_json` entry named, else `video{i}/video`).
+ * builds them from the file: an embedded video by the dataset the binding
+ * recorded for it (where it was read from, or `video{i}/video` after the app
+ * wrote the file in full).
  */
 function liveVideoSignatures(labels: Labels, destPath: string): string[] {
+  const datasets = boundDatasets(labels);
   return labels.videos.map((video, index) => {
     if (!video.hasEmbeddedImages) return buildVideoSignatures([video])[0];
-    const fromMetadata = (video.backendMetadata as { dataset?: unknown } | undefined)?.dataset;
-    const dataset =
-      backendDataset(video.backend) ??
-      (typeof fromMetadata === "string" && fromMetadata ? fromMetadata : `video${index}/video`);
+    const dataset = datasets[index];
     // A video embedded in ANOTHER package (merged in) keeps that file's path,
-    // so its signature never matches an entry of this file.
-    return typeof video.filename === "string" && video.filename === destPath
+    // and one with no recorded dataset is unknown: neither ever matches.
+    return dataset && typeof video.filename === "string" && video.filename === destPath
       ? embeddedSignature(destPath, dataset)
-      : JSON.stringify({ filename: video.filename, embedded: true, dataset });
+      : JSON.stringify({ filename: video.filename, embedded: true, dataset, unmatched: true });
   });
 }
 
@@ -383,6 +392,50 @@ function firstTwoNumbers(value: unknown, xField: string, yField: string): [numbe
   return null;
 }
 
+/** The attributes of each embedded video group compared before and after. */
+const VIDEO_ATTRS = ["frames", "format", "channel_order"] as const;
+
+/**
+ * The cheap attributes of each embedded video dataset in `videosJson`
+ * (`frames`, `format`, `channel_order`; metadata only, no image bytes), as
+ * one string per entry, to compare before and after a write. THROWS when a
+ * read fails.
+ */
+async function readVideoAttrs(
+  reader: StreamingH5File,
+  videosJson: string[] | null
+): Promise<string[]> {
+  const out: string[] = [];
+  for (const [index, entry] of (videosJson ?? []).entries()) {
+    let parsed: VideoJsonEntry;
+    try {
+      parsed = JSON.parse(entry);
+    } catch {
+      out.push("unparseable");
+      continue;
+    }
+    const backend = parsed.backend ?? {};
+    if (backend.filename !== ".") {
+      out.push("external");
+      continue;
+    }
+    const dataset =
+      typeof backend.dataset === "string" && backend.dataset ? backend.dataset : `video${index}/video`;
+    if (!reader.keys().includes(dataset.split("/")[0])) {
+      out.push(`${dataset}: absent`);
+      continue;
+    }
+    const attrs = await reader.getAttrs(dataset);
+    const picked = VIDEO_ATTRS.map((k) => {
+      const v = attrs[k];
+      const raw = v && typeof v === "object" && "value" in v ? (v as { value: unknown }).value : v;
+      return `${k}=${typeof raw === "bigint" ? raw.toString() : String(decodeH5String(raw) ?? raw)}`;
+    });
+    out.push(`${dataset}: ${picked.join(",")}`);
+  }
+  return out;
+}
+
 /**
  * POST-WRITE VERIFY: reopen the just-written file via the READ-ONLY range reader
  * (a path fully independent of the writer) and assert it is internally
@@ -400,7 +453,28 @@ async function verifyInPlace(
   path: string,
   update: LabelTableUpdate,
   preWrite: OnDiskSidecars,
-  preWriteVideosJson: string[] | null
+  preWriteVideosJson: string[] | null,
+  preWriteVideoAttrs: string[]
+): Promise<void> {
+  try {
+    await verifyInPlaceNow(path, update, preWrite, preWriteVideosJson, preWriteVideoAttrs);
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    if (/save may be inconsistent/.test(message)) throw err;
+    // A read that failed (rather than a comparison) still means the write
+    // can't be confirmed: say so with the same guidance.
+    throw new Error(
+      `in-place verify: could not read the file back to check it (${message}) — save may be inconsistent, reopen to check`
+    );
+  }
+}
+
+async function verifyInPlaceNow(
+  path: string,
+  update: LabelTableUpdate,
+  preWrite: OnDiskSidecars,
+  preWriteVideosJson: string[] | null,
+  preWriteVideoAttrs: string[]
 ): Promise<void> {
   const size = await fileSize(path);
   const source: RangeSource = { size, readRange: (o, l) => readRange(path, o, l) };
@@ -468,6 +542,11 @@ async function verifyInPlace(
     ) {
       throw new Error(
         "in-place verify: videos_json changed after write — save may be inconsistent, reopen to check"
+      );
+    }
+    if (!sameArray(await readVideoAttrs(reader, postVideosJson), preWriteVideoAttrs)) {
+      throw new Error(
+        "in-place verify: an embedded video's attributes changed after write — save may be inconsistent, reopen to check"
       );
     }
 
@@ -550,6 +629,14 @@ export async function saveLabelsInPlace(
     };
   }
 
+  // 0. The file must be the one the app last read or wrote, unchanged, and the
+  // loaded videos the ones recorded for it, in order (see inPlaceBinding.ts).
+  const refusal = bindingRefusal(labels, destPath, await statFileIdentity(destPath));
+  if (refusal) {
+    console.log(`[saveLabelsInPlace] not in-place-writable: ${refusal}`);
+    return { ok: false, reason: refusal };
+  }
+
   // 1. PROBE the on-disk file (read-only). A probe failure means we can't prove
   // the edit is confined, so refuse (nothing written — safe to fall through).
   let probe: OnDiskProbe;
@@ -571,6 +658,7 @@ export async function saveLabelsInPlace(
   // the gate's metadata check passes either way).
   let update: LabelTableUpdate;
   let metadataChanged: boolean;
+  let videoAttrs: string[];
   try {
     const newMetadataJson = buildMetadataJson(labels);
     metadataChanged = probe.sidecars.metadataJson !== newMetadataJson;
@@ -595,6 +683,18 @@ export async function saveLabelsInPlace(
     if (!gate.ok) {
       console.log(`[saveLabelsInPlace] not in-place-writable: ${gate.reason}`);
       return gate;
+    }
+    // The embedded video groups' attributes, to check after writing that
+    // nothing touched them (metadata only).
+    const reader = new StreamingH5File();
+    await reader.openRange(
+      { size: probe.size, readRange: (o, l) => readRange(destPath, o, l) },
+      { h5wasmUrl: H5WASM_URL }
+    );
+    try {
+      videoAttrs = await readVideoAttrs(reader, probe.videosJson);
+    } finally {
+      await reader.close().catch(() => {});
     }
   } catch (err) {
     return {
@@ -638,7 +738,9 @@ export async function saveLabelsInPlace(
   );
 
   // 5. POST-WRITE VERIFY (required backstop; throws loud on any inconsistency).
-  await verifyInPlace(destPath, update, probe.sidecars, probe.videosJson);
+  await verifyInPlace(destPath, update, probe.sidecars, probe.videosJson, videoAttrs);
   console.log(`[saveLabelsInPlace] verify OK -> ${destPath}`);
+  // The file as the app now wrote it: the next in-place save compares with this.
+  refreshFileIdentity(labels, await statFileIdentity(destPath));
   return { ok: true };
 }

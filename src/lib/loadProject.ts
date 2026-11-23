@@ -39,6 +39,7 @@ import { confirmDiscardUnsavedWork } from "./unsavedGuard";
 import { resolveExternalVideos } from "./resolveVideos";
 import { installTauriFsResolver } from "./fsResolver";
 import { fileSize, readRange } from "./nativeRange";
+import { bindLabelsToFile, statFileIdentity } from "./inPlaceBinding";
 import { sleapCmd } from "./sleapPlugin";
 import { basenameFromUrl } from "./urlOpen";
 import { isReportedSlpError, toastLoadError, type Format3Policy } from "./slpAccess";
@@ -308,6 +309,9 @@ export async function loadProjectFromPath(
     } catch {
       fileBytes = 0;
     }
+    // The file as it is read now, for the fast in-place save (taken before
+    // reading, so a change during the load also refuses it).
+    const fileIdentity = await statFileIdentity(path);
 
     let labels: Labels;
     if (fileBytes > RANGE_READER_THRESHOLD) {
@@ -353,6 +357,7 @@ export async function loadProjectFromPath(
     }
 
     store.setLabels(labels, filename, path);
+    bindLabelsToFile(labels, path, fileIdentity, "loaded");
     await openFirstLabeledFrame(labels);
 
     toast.success(`Loaded ${filename}`, {

@@ -16,6 +16,7 @@ import {
   tempPathFor,
 } from "@/lib/saveEmbeddedPkgStreaming";
 import { saveLabelsInPlace } from "@/lib/saveLabelsInPlace";
+import { bindLabelsToFile, clearFileBinding, statFileIdentity } from "@/lib/inPlaceBinding";
 import {
   shouldStreamEmbeddedSave,
   decideBrowserSaveAction,
@@ -302,6 +303,9 @@ export async function saveProjectAsSlp(
           // Full rewrite (streaming or in-memory) — distinct text from the
           // in-place path, with the file size when we have an estimate.
           store.setLoading(true, `Rewriting file${sizeSuffix(estimatedOutputBytes)}...`);
+          // Until it is written and recorded again, the file is not one the
+          // in-place save may patch.
+          clearFileBinding(labels);
           if (useStreaming && sourcePath) {
             console.log(
               `[save] Saving via streaming embedded-pkg writer (Tauri, in-place, ~${estimatedOutputBytes} bytes): ${existingPath}`
@@ -317,6 +321,9 @@ export async function saveProjectAsSlp(
               await platform.writeFile(existingPath, bytes);
             }
           }
+          // The fast in-place save may patch this file next: it is the one
+          // just written, its videos those of `labels`, in this order.
+          bindLabelsToFile(labels, existingPath, await statFileIdentity(existingPath), "written");
         }
         displayName = existingPath;
       } else {
@@ -329,6 +336,7 @@ export async function saveProjectAsSlp(
         // Save-As is always a full write to a new path; show it (with size when
         // known) so it reads consistently with the in-place vs rewrite text.
         store.setLoading(true, `Writing file${sizeSuffix(estimatedOutputBytes)}...`);
+        clearFileBinding(labels);
         if (useStreaming && sourcePath) {
           console.log(
             `[save] Saving via streaming embedded-pkg writer (Tauri, Save As, ~${estimatedOutputBytes} bytes): ${savePath}`
@@ -345,6 +353,7 @@ export async function saveProjectAsSlp(
           }
         }
         store.set("projectPath", savePath);
+        bindLabelsToFile(labels, savePath, await statFileIdentity(savePath), "written");
         // Track the newly-saved name (basename) so the window title updates and,
         // for the .vNNN versioning, the NEXT Save As increments from the name we
         // just wrote instead of the stale opened name. The browser Save-As path

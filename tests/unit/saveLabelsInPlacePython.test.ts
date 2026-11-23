@@ -31,7 +31,8 @@
  * - An older one (the pinned 0.5.16) refuses at the gate, as before; the save
  *   falls back to a full rewrite and the file is not touched. That rewrite
  *   stores the flags as uint8 (the next save is not run here).
- * - The video check reads no embedded dataset, in any case.
+ * - The video check reads no embedded image or frame number; the attributes
+ *   of the video datasets are read before and after an in-place write only.
  * - A package the app wrote saves in place on either, in every load state.
  * - Swapping two embedded videos of the same size is refused.
  */
@@ -112,6 +113,13 @@ vi.mock("@talmolab/sleap-io.js", () => ({
   StreamingH5File: H5Reader,
   StreamingH5Writer: H5Writer,
 }));
+// The file's size and modification time (the in-place save's baseline).
+vi.mock("@tauri-apps/plugin-fs", () => ({
+  stat: async (p: string) => {
+    const st = statSync(p);
+    return { size: st.size, mtime: st.mtime };
+  },
+}));
 vi.mock("@/lib/nativeRange", () => ({
   fileSize: async (p: string) => statSync(p).size,
   readRange: async () => new Uint8Array(0),
@@ -127,6 +135,7 @@ vi.mock("@/lib/nativeWrite", () => ({
 
 const { saveLabelsInPlace } = await import("@/lib/saveLabelsInPlace");
 const { withLegacyLayout } = await import("@/lib/slpFormatCompat");
+const { bindLabelsToFile, statFileIdentity } = await import("@/lib/inPlaceBinding");
 
 const FIXTURES = join(import.meta.dir, "../fixtures");
 const PYTHON = {
@@ -297,6 +306,8 @@ async function open(source: string, state: LoadState) {
           : labels.videos.map((_, i) => i);
     await loadLazily(labels, shown);
   }
+  // As the app's open records it (loadProjectFromPath).
+  bindLabelsToFile(labels, current, await statFileIdentity(current), "loaded");
   fileOps.length = 0;
   readerCalls.length = 0;
   return { labels, before: readFileSync(current) };
@@ -353,8 +364,9 @@ describe("in-place save of packages written in Python (HDF5 boolean flags)", () 
             return;
           }
           await expectSavedInPlace(labels);
-          // The probe and the check after writing read no embedded dataset.
-          expect(readerCalls.filter((c) => /:video\d/.test(c))).toEqual([]);
+          // No embedded image or frame number is read: only the video
+          // datasets' attributes, before and after writing.
+          expect(readerCalls.filter((c) => /^value:video\d/.test(c))).toEqual([]);
           const types = await pointMemberTypes(current);
           expect([types.visible, types.complete]).toEqual([8, 8]);
           expect(embeddedDatasetShapes(current)).toEqual(frames);
@@ -399,7 +411,7 @@ describe("in-place save of a package the app wrote", () => {
     expect(a.shape?.slice(1)).toEqual(b.shape?.slice(1));
     labels.videos[0] = b;
     labels.videos[1] = a;
-    await expectRefused(labels, before, /video set changed/);
+    await expectRefused(labels, before, /video list changed/);
   });
 
   it("refuses an embedded video repointed at a file", async () => {
