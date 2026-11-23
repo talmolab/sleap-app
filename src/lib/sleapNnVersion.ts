@@ -26,7 +26,7 @@ export function sleapNnInstallSpec(extras: readonly string[]): string {
   return `sleap-nn${extrasPart}${SLEAP_NN_VERSION_SPECIFIER}`;
 }
 
-/** `[major, minor]` of a version such as `0.4.0`, `0.4.0rc1` or `v0.3.5`. */
+/** `[major, minor]` of a version such as `0.4.0`, `0.4.0a0` or `v0.3.5`. */
 function majorMinor(version: string): [number, number] {
   const [major = "0", minor = "0"] = version.trim().replace(/^v/i, "").split(".");
   return [parseInt(major, 10) || 0, parseInt(minor, 10) || 0];
@@ -34,7 +34,7 @@ function majorMinor(version: string): [number, number] {
 
 /**
  * Whether `version` is below the cap, so the app would install it. A
- * pre-release of the capped version (`0.4.0rc1`) is at the cap, as it is for
+ * pre-release of the capped version (`0.4.0a0`) is at the cap, as it is for
  * the `<0.4` specifier.
  */
 export function isSleapNnVersionBelowCap(version: string): boolean {

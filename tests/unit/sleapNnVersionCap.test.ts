@@ -150,7 +150,7 @@ describe("isSleapNnVersionBelowCap", () => {
   });
 
   it("rejects 0.4 and newer, pre-releases included", () => {
-    for (const v of ["0.4", "0.4.0", "0.4.0rc1", "0.4.1", "0.10.0", "1.0.0"]) {
+    for (const v of ["0.4", "0.4.0", "0.4.0a0", "0.4.0rc1", "0.4.1", "0.10.0", "1.0.0"]) {
       expect(isSleapNnVersionBelowCap(v)).toBe(false);
     }
   });
