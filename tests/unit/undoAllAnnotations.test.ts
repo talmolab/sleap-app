@@ -490,13 +490,144 @@ describe("undo restores annotations exactly (#487)", () => {
     expect(lf?.centroids).toHaveLength(1);
   });
 
-  // The snapshot finds a frame's annotation lists generically; this fails if
-  // sleap-io.js gives LabeledFrame a field that is neither a key nor a list.
-  it("LabeledFrame's fields are all keys, the negative flag, or lists", () => {
-    const { frame0: lf } = setup();
-    for (const [key, value] of Object.entries(lf)) {
-      if (["video", "frameIdx", "isNegative"].includes(key)) continue;
-      expect(Array.isArray(value), key).toBe(true);
-    }
+  // A frame field that isn't a list (e.g. per-frame metadata a newer
+  // sleap-io.js adds) must survive an all-frames undo/redo too.
+  it("keeps a frame's non-list fields through an all-frames undo and redo", async () => {
+    const { labels } = setup();
+    (frame0(labels) as unknown as Record<string, unknown>).metadata = { reviewer: "ann" };
+    await ctx.execute(DeleteAllPredictions);
+    ctx.undo();
+    expect((frame0(labels) as unknown as Record<string, unknown>).metadata).toEqual({ reviewer: "ann" });
+    ctx.redo();
+    expect((frame0(labels) as unknown as Record<string, unknown>).metadata).toEqual({ reviewer: "ann" });
+  });
+});
+
+/** Two videos, each with frames on tracks t1/t2, for the track-command tests. */
+function twoVideoSetup() {
+  const skeleton = new Skeleton({ nodes: ["a", "b"], name: "mouse" });
+  const videos = ["a.mp4", "b.mp4"].map(
+    (filename) =>
+      new Video({ filename, backendMetadata: { shape: [10, 64, 64, 1] }, openBackend: false }),
+  );
+  const [t1, t2, t3] = [new Track("t1"), new Track("t2"), new Track("t3")];
+  const inst = (track: Track) => {
+    const p = PredictedInstance.fromArray([[1, 2], [3, 4]], skeleton);
+    p.track = track;
+    return p;
+  };
+  const labeledFrames = videos.flatMap((video) => [
+    new LabeledFrame({ video, frameIdx: 0, instances: [inst(t1), inst(t2)] }),
+    new LabeledFrame({
+      video,
+      frameIdx: 4,
+      instances: [inst(t2)],
+      bboxes: [new UserBoundingBox({ x1: 0, y1: 0, x2: 4, y2: 4, track: t1 })],
+    }),
+    new LabeledFrame({ video, frameIdx: 8, instances: [inst(t2)] }),
+  ]);
+  const labels = new Labels({ videos, skeletons: [skeleton], tracks: [t1, t2, t3], labeledFrames });
+  const arena = new UserROI({
+    geometry: { type: "Polygon", coordinates: [[[0, 0], [9, 0], [9, 9], [0, 0]]] },
+    track: t3,
+  });
+  labels.addStaticRoi(arena);
+  useAppStore.getState().setLabels(labels, "test.slp");
+  useAppStore.setState({ video: videos[0], frameIdx: 0, labeledFrame: labeledFrames[0], instance: null });
+  return { labels, videos, arena };
+}
+
+/** Each frame's tracks, by video and frame, plus the static ROI's. */
+function trackPicture(labels: Labels): unknown {
+  return {
+    frames: labels.labeledFrames.map((lf) => [
+      lf.video.filename,
+      lf.frameIdx,
+      lf.instances.map((i) => i.track?.name ?? null),
+      lf.bboxes.map((b) => b.track?.name ?? null),
+    ]),
+    staticRois: labels.staticRois.map((r) => r.track?.name ?? null),
+    tracks: labels.tracks.map((t) => t.name),
+  };
+}
+
+describe("track commands' undo stays cheap and complete (#487 review)", () => {
+  let ctx: CommandContext;
+  beforeEach(() => {
+    useAppStore.setState(useAppStore.getInitialState());
+    ctx = new CommandContext();
+  });
+  /** The newest undo step (a private field, read only to check its size). */
+  const topUndo = () => {
+    const stack = (ctx as unknown as { undoStack: Record<string, unknown>[] }).undoStack;
+    return stack[stack.length - 1];
+  };
+
+  // Delete Track used to copy the whole project per step (seconds and
+  // hundreds of MB on a large tracked file); it only needs the track refs.
+  it("Delete Track keeps only track references, for frames holding the track", async () => {
+    const { labels } = twoVideoSetup();
+    await ctx.execute(DeleteTrack, { trackIdx: 0 }); // t1: frame 0 of each video, plus a box on frame 4
+    const step = topUndo() as { allFrames: unknown; scopedFrames: unknown; frame: unknown; trackRefs: { frames: { frameIdx: number }[] } };
+    expect(step.allFrames).toBeNull();
+    expect(step.scopedFrames).toBeNull();
+    expect(step.frame).toBeNull();
+    expect(step.trackRefs.frames.map((f) => f.frameIdx)).toEqual([0, 4, 0, 4]);
+    expect(labels.tracks.map((t) => t.name)).toEqual(["t2", "t3"]);
+  });
+
+  // The track can be on several videos; undo and redo must fix all of them.
+  for (const [label, command, params] of [
+    ["Delete Track", DeleteTrack, { trackIdx: 1 }],
+    ["Delete All Tracks", DeleteAllTracks, undefined],
+  ] as const) {
+    it(`${label}: undo and redo cover every video and the static ROI`, async () => {
+      const { labels } = twoVideoSetup();
+      const before = trackPicture(labels);
+      await ctx.execute(command, params);
+      const after = trackPicture(labels);
+      expect(after).not.toEqual(before);
+      ctx.undo();
+      expect(trackPicture(labels)).toEqual(before);
+      ctx.redo();
+      expect(trackPicture(labels)).toEqual(after);
+      ctx.undo();
+      expect(trackPicture(labels)).toEqual(before);
+    });
+  }
+
+  // The track-only snapshot restores by position; later commands' undos
+  // replace frames with copies, which must not break that.
+  it("Delete Track undo still works after undoing a later bulk command", async () => {
+    const { labels } = twoVideoSetup();
+    const before = trackPicture(labels);
+    await ctx.execute(DeleteTrack, { trackIdx: 1 });
+    await ctx.execute(DeleteAllPredictions);
+    ctx.undo();
+    ctx.undo();
+    expect(trackPicture(labels)).toEqual(before);
+    ctx.redo();
+    ctx.redo();
+    ctx.undo();
+    ctx.undo();
+    expect(trackPicture(labels)).toEqual(before);
+  });
+
+  // A static ROI (e.g. an arena outline) can carry a track too.
+  it("Delete Track clears a static ROI's track, and undo restores it", async () => {
+    const { labels, arena } = twoVideoSetup();
+    await ctx.execute(DeleteTrack, { trackIdx: 2 }); // t3, used only by the static ROI
+    expect(arena.track).toBeNull();
+    expect(labels.tracks.map((t) => t.name)).toEqual(["t1", "t2"]);
+    ctx.undo();
+    expect(arena.track?.name).toBe("t3");
+    expect(labels.tracks.map((t) => t.name)).toEqual(["t1", "t2", "t3"]);
+  });
+
+  // Deleting a track a static ROI still uses would leave the ROI on a lost track.
+  it("Delete Unused Tracks keeps a track only a static ROI uses", async () => {
+    const { labels } = twoVideoSetup();
+    await ctx.execute(DeleteUnusedTracks);
+    expect(labels.tracks.map((t) => t.name)).toEqual(["t1", "t2", "t3"]);
   });
 });

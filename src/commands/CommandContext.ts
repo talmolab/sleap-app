@@ -14,6 +14,7 @@ import type { Command } from "./types";
 import { toast } from "@/lib/notify";
 import { humanizeCommandName } from "@/lib/humanizeCommand";
 import { dirtyFrameTracker } from "@/lib/autosaveDirty";
+import { frameTrackHolders, staticRoiHolders, type TrackHolder } from "@/lib/trackHolders";
 
 /** Record of an executed command for change tracking. */
 export interface ChangeRecord {
@@ -37,10 +38,19 @@ export interface SingleFrameData {
    * `fromPredicted`, ...) point at the clones in this snapshot.
    */
   annotations: FrameAnnotations;
+  /**
+   * The frame's other own fields that aren't lists (none in sleap-io.js
+   * 0.5.17; e.g. per-frame metadata a newer version adds). Plain objects are
+   * copied one level deep.
+   */
+  extras: Record<string, unknown>;
 }
 
 /** A frame's annotation lists other than `instances`, by field name. */
 type FrameAnnotations = Record<string, object[]>;
+
+const isPlainObject = (v: unknown): v is Record<string, unknown> =>
+  typeof v === "object" && v !== null && Object.getPrototypeOf(v) === Object.prototype;
 
 /** `LabeledFrame` fields that aren't annotation lists. */
 const FRAME_KEY_FIELDS = new Set(["video", "frameIdx", "instances", "isNegative"]);
@@ -52,6 +62,34 @@ function annotationLists(lf: LabeledFrame): FrameAnnotations {
     if (!FRAME_KEY_FIELDS.has(key) && Array.isArray(value)) out[key] = value;
   }
   return out;
+}
+
+/** The frame's own non-list fields other than its key and negative flag. */
+function frameExtras(lf: LabeledFrame): Record<string, unknown> {
+  const out: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(lf)) {
+    if (FRAME_KEY_FIELDS.has(key) || Array.isArray(value)) continue;
+    out[key] = isPlainObject(value) ? { ...value } : value;
+  }
+  return out;
+}
+
+/** One frame's tracks, by position over {@link frameTrackHolders}. */
+interface FrameTrackRefs {
+  videoRef: Video;
+  frameIdx: number;
+  tracks: (Track | null)[];
+}
+
+/**
+ * A track-assignment-only snapshot: which track each instance/annotation held,
+ * by position, on the frames a track command touched, plus the project's
+ * static ROIs. Holds one reference per object instead of a copy of the frame,
+ * so Delete Track on a large tracked project stays cheap.
+ */
+interface TrackRefsData {
+  frames: FrameTrackRefs[];
+  staticRois: (Track | null)[];
 }
 
 /** Snapshot of frame state for undo/redo. */
@@ -77,6 +115,13 @@ interface UndoSnapshot {
    * frame in the project. Mutually exclusive with `allFrames`/`frame`.
    */
   scopedFrames: SingleFrameData[] | null;
+  /**
+   * Track assignments only, for a command that changes nothing but `.track`
+   * (Delete Track / Delete All Tracks): restored in place, by position. Safe
+   * because undo is last-in-first-out, so the frames have exactly the objects
+   * they had right after the command. Mutually exclusive with the above.
+   */
+  trackRefs?: TrackRefsData | null;
   /** Tracks array snapshot (by reference, order matters). */
   tracks: Track[];
   /** Track names captured by value, so a rename (SetTrackName) is undoable. */
@@ -96,9 +141,6 @@ interface UndoSnapshot {
   /** The frame index that was active. */
   activeFrameIdx: number;
 }
-
-const isPlainObject = (v: unknown): v is Record<string, unknown> =>
-  typeof v === "object" && v !== null && Object.getPrototypeOf(v) === Object.prototype;
 
 /**
  * Copy one object (instance, box, centroid, mask, label image, ROI, ...)
@@ -193,6 +235,7 @@ function captureFrames(frames: LabeledFrame[]): SingleFrameData[] {
     videoRef: lf.video,
     frameIdx: lf.frameIdx,
     isNegative: lf.isNegative,
+    extras: frameExtras(lf),
     ...cloned[i],
   }));
 }
@@ -212,6 +255,9 @@ function applyFrames(targets: [LabeledFrame, SingleFrameData][]): void {
       frame[key] = cloned[i].annotations[key] ?? [];
     }
     for (const [key, list] of Object.entries(cloned[i].annotations)) frame[key] = list;
+    for (const [key, value] of Object.entries(data.extras ?? {})) {
+      frame[key] = isPlainObject(value) ? { ...value } : value;
+    }
   });
 }
 
@@ -284,6 +330,7 @@ export class CommandContext {
       frame,
       allFrames: null,
       scopedFrames: null,
+      trackRefs: null,
       tracks: labels ? [...labels.tracks] : [],
       trackNames: labels ? labels.tracks.map((t) => t.name) : [],
       videos: labels ? [...labels.videos] : [],
@@ -316,6 +363,7 @@ export class CommandContext {
       frame: null,
       allFrames,
       scopedFrames: null,
+      trackRefs: null,
       tracks: labels ? [...labels.tracks] : [],
       trackNames: labels ? labels.tracks.map((t) => t.name) : [],
       videos: labels ? [...labels.videos] : [],
@@ -375,6 +423,7 @@ export class CommandContext {
       frame: null,
       allFrames: null,
       scopedFrames,
+      trackRefs: null,
       tracks: labels ? [...labels.tracks] : [],
       trackNames: labels ? labels.tracks.map((t) => t.name) : [],
       videos: labels ? [...labels.videos] : [],
@@ -386,6 +435,57 @@ export class CommandContext {
     };
 
     return { snapshot, frames };
+  }
+
+  /**
+   * Take a track-assignments-only snapshot of `frames` (plus the project's
+   * static ROIs), for a command that changes nothing but `.track` fields and
+   * the track list — never creating, deleting or reordering anything. Stores
+   * one reference per instance/annotation instead of copying frames (#487
+   * review: an all-frames copy made Delete Track take seconds and hundreds of
+   * MB per undo step on a large tracked project).
+   */
+  takeTrackSnapshot(commandName: string, frames: LabeledFrame[]): UndoSnapshot {
+    const { labels, video, frameIdx, instance } = this.state;
+    let selectedIdx = -1;
+    if (labels && video && instance) {
+      const current = labels.find({ video, frameIdx })[0];
+      if (current) selectedIdx = current.instances.indexOf(instance);
+    }
+    return {
+      commandName,
+      frame: null,
+      allFrames: null,
+      scopedFrames: null,
+      trackRefs: {
+        frames: frames.map((lf) => ({
+          videoRef: lf.video,
+          frameIdx: lf.frameIdx,
+          tracks: frameTrackHolders(lf).map((h) => h.track ?? null),
+        })),
+        staticRois: labels ? staticRoiHolders(labels).map((r) => r.track ?? null) : [],
+      },
+      tracks: labels ? [...labels.tracks] : [],
+      trackNames: labels ? labels.tracks.map((t) => t.name) : [],
+      videos: labels ? [...labels.videos] : [],
+      skeletons: labels ? [...labels.skeletons] : [],
+      suggestions: labels ? [...labels.suggestions] : [],
+      selectedIdx,
+      activeVideo: video,
+      activeFrameIdx: frameIdx,
+    };
+  }
+
+  /** The live frames a track snapshot covers (frames that no longer exist are skipped). */
+  private framesFor(keys: { videoRef: Video; frameIdx: number }[]): (LabeledFrame | null)[] {
+    const { labels } = this.state;
+    const byVideo = new Map<Video, Map<number, LabeledFrame>>();
+    for (const lf of labels?.labeledFrames ?? []) {
+      let m = byVideo.get(lf.video);
+      if (!m) byVideo.set(lf.video, (m = new Map()));
+      m.set(lf.frameIdx, lf);
+    }
+    return keys.map((k) => byVideo.get(k.videoRef)?.get(k.frameIdx) ?? null);
   }
 
   /** Push a custom snapshot onto the undo stack. */
@@ -421,7 +521,7 @@ export class CommandContext {
     // snapshot below captures that frame rather than the one being viewed
     // (#487). Plain store navigation — no undo step, redo untouched. Multi-frame
     // snapshots (e.g. Delete Predictions) leave the view where it is.
-    if (!snapshot.allFrames && !snapshot.scopedFrames) {
+    if (!snapshot.allFrames && !snapshot.scopedFrames && !snapshot.trackRefs) {
       this.goToSnapshotFrame(snapshot);
     }
 
@@ -430,7 +530,13 @@ export class CommandContext {
     // when possible, so undo/redo of a scoped op (e.g. PropagateTrackLabels)
     // never pays for a full-project clone/scan.
     let before: UndoSnapshot;
-    if (snapshot.allFrames) {
+    const trackFrames = snapshot.trackRefs ? this.framesFor(snapshot.trackRefs.frames) : [];
+    if (snapshot.trackRefs) {
+      before = this.takeTrackSnapshot(
+        snapshot.commandName,
+        trackFrames.filter((lf): lf is LabeledFrame => lf !== null),
+      );
+    } else if (snapshot.allFrames) {
       before = this.takeAllFramesSnapshot(snapshot.commandName);
     } else if (snapshot.scopedFrames) {
       const scopedVideo = snapshot.scopedFrames[0]?.videoRef ?? null;
@@ -529,6 +635,19 @@ export class CommandContext {
           this.state.setInstance(null);
         }
       }
+    } else if (snapshot.trackRefs) {
+      // Track-only restore: put each holder's track back, by position, in
+      // place. Nothing else on any frame changes, so the view and the
+      // selected instance stay as they are.
+      const restoreTracks = (holders: TrackHolder[], tracks: (Track | null)[]) => {
+        const n = Math.min(holders.length, tracks.length);
+        for (let i = 0; i < n; i++) holders[i].track = tracks[i];
+      };
+      snapshot.trackRefs.frames.forEach((data, i) => {
+        const lf = trackFrames[i];
+        if (lf) restoreTracks(frameTrackHolders(lf), data.tracks);
+      });
+      restoreTracks(staticRoiHolders(labels), snapshot.trackRefs.staticRois);
     } else if (snapshot.frame) {
       const video = snapshot.frame.videoRef;
 

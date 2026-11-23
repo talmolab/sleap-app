@@ -11,6 +11,7 @@ import type { Command } from "./types";
 import type { CommandContext } from "./CommandContext";
 import { useAppStore } from "../stores/appStore";
 import { frameHasContent } from "@/lib/frameLabeling";
+import { frameTrackHolders, staticRoiHolders, type TrackHolder } from "@/lib/trackHolders";
 
 /**
  * Swap `oldTrack`<->`newTrack` across `frames` (assumed already sorted by
@@ -341,47 +342,29 @@ export const DeleteInstanceAndTrack: Command = {
 };
 
 /**
- * Everything on a frame that can carry a track: its instances, its boxes,
- * centroids, masks and ROIs, and each object of its label images.
- */
-export function* trackHolders(lf: LabeledFrame): Generator<{ track?: Track | null }> {
-  yield* lf.instances;
-  for (const [key, list] of Object.entries(lf)) {
-    if (key === "instances" || !Array.isArray(list)) continue;
-    for (const ann of list as unknown[]) {
-      if (typeof ann !== "object" || ann === null) continue;
-      const objects = (ann as { objects?: unknown }).objects;
-      if (objects instanceof Map) {
-        for (const obj of objects.values()) yield obj as { track?: Track | null };
-      } else if ("track" in ann) {
-        yield ann as { track?: Track | null };
-      }
-    }
-  }
-}
-
-/**
  * Unassign the given tracks (all when `tracks` is null) from everything in the
- * project. These touch every frame, so they take an all-frames undo snapshot:
- * the default one only covers the current frame, and undo left every other
- * frame's instances untracked (#487 audit). Returns whether anything changed.
+ * project: instances, frame annotations, label-image objects and static ROIs.
+ * These touch many frames, so the default current-frame snapshot isn't enough
+ * (undo used to leave every other frame untracked, #487 audit). They only
+ * change `.track`, so a track-only snapshot of the frames holding those tracks
+ * is enough — not a copy of the whole project. Returns whether anything changed.
  */
 function unassignTracks(ctx: CommandContext, commandName: string, tracks: Set<Track> | null): boolean {
   const { labels } = ctx.state;
   if (!labels) return false;
-  const snapshot = ctx.takeAllFramesSnapshot(commandName);
-  let changed = false;
-  for (const lf of labels.labeledFrames) {
-    for (const holder of trackHolders(lf)) {
-      if (holder.track && (!tracks || tracks.has(holder.track))) {
-        holder.track = null;
-        changed = true;
-      }
-    }
-  }
+  const hit = (holder: TrackHolder) => !!holder.track && (!tracks || tracks.has(holder.track));
+  const frames = labels.labeledFrames.filter((lf) => frameTrackHolders(lf).some(hit));
+  const rois = staticRoiHolders(labels).filter(hit);
   const before = labels.tracks.length;
-  labels.tracks = tracks ? labels.tracks.filter((t) => !tracks.has(t)) : [];
-  if (!changed && labels.tracks.length === before) return false;
+  const remaining = tracks ? labels.tracks.filter((t) => !tracks.has(t)) : [];
+  if (frames.length === 0 && rois.length === 0 && remaining.length === before) return false;
+
+  const snapshot = ctx.takeTrackSnapshot(commandName, frames);
+  for (const lf of frames) {
+    for (const holder of frameTrackHolders(lf)) if (hit(holder)) holder.track = null;
+  }
+  for (const roi of rois) roi.track = null;
+  labels.tracks = remaining;
   ctx.pushUndoSnapshot(snapshot);
   ctx.state.markChanged();
   return true;
@@ -420,8 +403,8 @@ export const DeleteTrack: Command = {
 };
 
 /**
- * Find and remove tracks not assigned to anything (an instance or an
- * annotation) across all labeled frames.
+ * Find and remove tracks not assigned to anything (an instance, an
+ * annotation or a static ROI) in the project.
  */
 export const DeleteUnusedTracks: Command = {
   name: "DeleteUnusedTracks",
@@ -434,9 +417,12 @@ export const DeleteUnusedTracks: Command = {
     // keeps it, or deleting it would leave that annotation on a lost track.
     const usedTracks = new Set<Track>();
     for (const lf of labels.labeledFrames) {
-      for (const holder of trackHolders(lf)) {
+      for (const holder of frameTrackHolders(lf)) {
         if (holder.track) usedTracks.add(holder.track);
       }
+    }
+    for (const roi of staticRoiHolders(labels)) {
+      if (roi.track) usedTracks.add(roi.track);
     }
 
     // Remove unused tracks
