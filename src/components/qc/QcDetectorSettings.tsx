@@ -98,7 +98,9 @@ export const QC_DETECTOR_ROWS: DetectorRow[] = [
   {
     id: "sparse_instance",
     name: "Sparse instance",
-    help: "Flags an instance with fewer visible nodes than this.",
+    help:
+      "Flags an instance with fewer visible nodes than this. Nodes that were never " +
+      "labeled count neither way.",
     thresholds: [{ key: "minVisibleNodes", label: "nodes <" }],
   },
   {
