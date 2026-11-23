@@ -13,8 +13,10 @@
 
 import {
   readSkeletonJson,
+  writeSkeletonJson,
   decodeYamlSkeleton,
   encodeYamlSkeleton,
+  StreamingH5File,
 } from "@talmolab/sleap-io.js";
 import { loadSlp } from "@/lib/slpRead";
 import type { Skeleton, Instance, Node } from "@talmolab/sleap-io.js";
@@ -80,6 +82,52 @@ function toText(data: string | ArrayBuffer | Uint8Array): string {
   return new TextDecoder().decode(data);
 }
 
+/**
+ * Skeletons from a legacy SLEAP HDF5 skeleton file: `Skeleton.save_hdf5`
+ * (SLEAP 1.x `sleap/skeleton.py`) writes each skeleton as a JSON-string
+ * attribute, named after the skeleton, on a `/skeleton` group. The first one
+ * is used, as PyQt's `OpenSkeleton.load_skeleton` takes `skel[0]` of a list.
+ */
+export function skeletonFromHdf5Attrs(
+  attrs: Record<string, unknown> | null,
+  filename: string,
+): Skeleton {
+  for (const value of Object.values(attrs ?? {})) {
+    const text =
+      typeof value === "string"
+        ? value
+        : value instanceof Uint8Array
+          ? new TextDecoder().decode(value)
+          : null;
+    if (!text) continue;
+    const parsed = JSON.parse(text) as unknown;
+    const one = Array.isArray(parsed) ? parsed[0] : parsed;
+    if (one) return readSkeletonJson(one as Record<string, unknown>);
+  }
+  throw new Error(`No skeleton found in "${filename}".`);
+}
+
+/** Same-origin h5wasm (see hdf5VideoSource.ts for why). */
+const H5WASM_URL =
+  typeof location !== "undefined"
+    ? `${location.origin}/h5wasm/h5wasm.js`
+    : undefined;
+
+/** Read the `/skeleton` group's attributes from HDF5 bytes (null if absent). */
+async function readHdf5SkeletonAttrs(
+  bytes: Uint8Array,
+  filename: string,
+): Promise<Record<string, unknown> | null> {
+  const h5 = new StreamingH5File();
+  await h5.openBuffer(bytes, { h5wasmUrl: H5WASM_URL, filenameHint: filename });
+  try {
+    if (!h5.keys().includes("skeleton")) return null;
+    return await h5.getAttrs("skeleton");
+  } finally {
+    await h5.close().catch(() => {});
+  }
+}
+
 /** Lower-cased file extension (without the dot), or "" if none. */
 function extOf(filename: string): string {
   const idx = filename.lastIndexOf(".");
@@ -94,6 +142,8 @@ function extOf(filename: string): string {
  *   - `.yaml` / `.yml` → `decodeYamlSkeleton(text)`, taking `[0]` if an array.
  *   - `.slp` → `await loadSlp(buf, { openVideos: false })`, taking
  *     `.skeletons[0]`.
+ *   - `.h5` / `.hdf5` → a legacy SLEAP HDF5 skeleton file
+ *     ({@link skeletonFromHdf5Attrs}); PyQt's "HDF5 skeleton (*.h5 *.hdf5)".
  *
  * Async because of the `.slp` (HDF5) path. Throws a friendly `Error` on an
  * unknown extension or when no skeleton can be produced — the caller surfaces
@@ -102,13 +152,22 @@ function extOf(filename: string): string {
 export async function parseSkeletonFile(
   filename: string,
   data: string | ArrayBuffer | Uint8Array,
+  readHdf5Attrs: (
+    bytes: Uint8Array,
+    filename: string,
+  ) => Promise<Record<string, unknown> | null> = readHdf5SkeletonAttrs,
 ): Promise<Skeleton> {
   const ext = extOf(filename);
 
   switch (ext) {
     case "json": {
-      const json = JSON.parse(toText(data)) as Record<string, unknown>;
-      const skeleton = readSkeletonJson(json);
+      const parsed = JSON.parse(toText(data)) as unknown;
+      // PyQt saves a one-skeleton LIST (`save_skeleton([skel], ...)`) and
+      // reads `skel[0]` back; accept both shapes.
+      const json = (Array.isArray(parsed) ? parsed[0] : parsed) as
+        | Record<string, unknown>
+        | undefined;
+      const skeleton = json ? readSkeletonJson(json) : null;
       if (!skeleton) {
         throw new Error(`No skeleton found in "${filename}".`);
       }
@@ -148,10 +207,19 @@ export async function parseSkeletonFile(
       return skeleton;
     }
 
+    case "h5":
+    case "hdf5": {
+      const attrs = await readHdf5Attrs(
+        new Uint8Array(toArrayBuffer(data)),
+        filename,
+      );
+      return skeletonFromHdf5Attrs(attrs, filename);
+    }
+
     default:
       throw new Error(
         `Unsupported skeleton file type ".${ext}". ` +
-          `Use a .json, .yaml, .yml, or .slp file.`,
+          `Use a .json, .yaml, .yml, .slp, .h5 or .hdf5 file.`,
       );
   }
 }
@@ -224,4 +292,12 @@ export function remapInstancePoints(
  */
 export function serializeSkeletonYaml(skeleton: Skeleton): string {
   return encodeYamlSkeleton(skeleton);
+}
+
+/**
+ * Serialize the skeleton to SLEAP's JSON skeleton format, as PyQt's Save As
+ * writes it: `save_skeleton([skeleton], filename)` — a one-element list.
+ */
+export function serializeSkeletonJson(skeleton: Skeleton): string {
+  return writeSkeletonJson([skeleton]);
 }
