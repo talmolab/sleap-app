@@ -24,6 +24,9 @@ vi.mock("@/lib/resolveVideos", () => ({
 }));
 
 class RemoteIOError extends Error {}
+// Only the class matters here (an instanceof check); the real constructor takes
+// an options object.
+class SlpFormatError extends Error {}
 const readSlpStreamingMock = vi.fn(async (_source: unknown, _options: unknown) => ({
   videos: [],
   skeletons: [],
@@ -34,6 +37,7 @@ vi.mock("@talmolab/sleap-io.js", () => ({
   readSlpStreaming: readSlpStreamingMock,
   setImageBytesReader: vi.fn(),
   RemoteIOError,
+  SlpFormatError,
   redactUrl: (u: string) => u,
   redactedCauseSummary: (e: unknown) => String(e),
 }));
@@ -106,5 +110,22 @@ describe("loadProjectFromUrl", () => {
     expect(String((call?.[1] as { description?: string })?.description)).toContain(
       "corrupt or non-SLP file"
     );
+  });
+
+  it("shows an SlpFormatError's own message, with no class-name prefix", async () => {
+    const message =
+      "The SLEAP labels file 'set.slp' is in SLP format 3.0, which this version of " +
+      "sleap-io.js cannot read (it reads formats below 3.0).";
+    readSlpStreamingMock.mockImplementation(async () => {
+      throw new SlpFormatError(message);
+    });
+    const ok = await loadProjectFromUrl("https://share.sleap.ai/set.slp?token=abc");
+    expect(ok).toBe(false);
+    expect(useAppStore.getState().labels).toBeFalsy();
+    expect(useAppStore.getState().isLoading).toBe(false);
+    const call = (toast.error as unknown as { mock: { calls: unknown[][] } }).mock
+      .calls[0];
+    expect(call?.[0]).toBe("Failed to open dataset");
+    expect((call?.[1] as { description?: string })?.description).toBe(message);
   });
 });

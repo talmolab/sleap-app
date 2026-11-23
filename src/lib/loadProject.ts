@@ -16,6 +16,7 @@ import {
   readCoco,
   isCocoData,
   RemoteIOError,
+  SlpFormatError,
   redactUrl,
   redactedCauseSummary,
   type CocoJson,
@@ -161,6 +162,12 @@ export async function installTauriImageReader(): Promise<void> {
 export async function loadProjectFromFile(file: File): Promise<boolean> {
   const store = useAppStore.getState();
 
+  // Take the picker's handle (if this open came from the file picker) first,
+  // so an open that stops early (the discard prompt cancelled) or a read that
+  // fails (a refused or broken file) can't leave it in the slot for a later
+  // drag-drop of a file with the same name to adopt as its Save target.
+  const picked = consumeLastBrowserFileHandle();
+
   // Confirm discarding unsaved work (in-memory edits OR a not-yet-exported OPFS
   // working copy) before replacing the current project.
   if (!(await confirmDiscardUnsavedWork("Opening a new project"))) return false;
@@ -182,7 +189,6 @@ export async function loadProjectFromFile(file: File): Promise<boolean> {
     // saveEmbeddedPkgOpfs). The handle is preferred because a File snapshot goes
     // stale after a dialog / elapsed time / on a network volume. Name-match
     // guards against a stale handle from a prior pick (a later drag-drop sets none).
-    const picked = consumeLastBrowserFileHandle();
     const handle = picked && picked.name === file.name ? picked : null;
     store.setLabels(labels, file.name, undefined, file, handle);
     await openFirstLabeledFrame(labels);
@@ -243,13 +249,19 @@ export async function loadProjectFromUrl(url: string): Promise<boolean> {
     return true;
   } catch (err) {
     // A RemoteIOError's message is already human-readable AND URL/token-redacted
-    // (expired/invalid token, 404, network/CORS). For any other failure (e.g. a
-    // corrupt/non-SLP file, an h5wasm parse error) fall back to io's
-    // redactedCauseSummary — an accurate, credential-scrubbed one-liner — rather
-    // than mislabelling everything "network/CORS". Never log the raw URL or raw
-    // error: both can carry the access token, so redact on the way out.
+    // (expired/invalid token, 404, network/CORS). So is an SlpFormatError's (a
+    // file in an SLP format this sleap-io.js can't read): it names the file by
+    // the bare filenameHint and says which tool reads it. Show those as they
+    // are; redactedCauseSummary would prefix the class name, which the
+    // production build minifies. For any other failure (e.g. a corrupt/non-SLP
+    // file, an h5wasm parse error) fall back to io's redactedCauseSummary — an
+    // accurate, credential-scrubbed one-liner — rather than mislabelling
+    // everything "network/CORS". Never log the raw URL or raw error: both can
+    // carry the access token, so redact on the way out.
     const msg =
-      err instanceof RemoteIOError ? err.message : redactedCauseSummary(err);
+      err instanceof RemoteIOError || err instanceof SlpFormatError
+        ? err.message
+        : redactedCauseSummary(err);
     toast.error("Failed to open dataset", { description: msg });
     console.error(
       "Failed to open dataset from URL:",
