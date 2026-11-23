@@ -36,13 +36,15 @@ export function ChoiceDialog() {
               {request.message}
             </p>
             <div className="flex flex-wrap justify-end gap-2">
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={() => respond(null)}
-              >
-                {request.cancelLabel ?? "Cancel"}
-              </Button>
+              {!request.hideCancel && (
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => respond(null)}
+                >
+                  {request.cancelLabel ?? "Cancel"}
+                </Button>
+              )}
               {request.options.map((o) => (
                 <Button
                   key={o.key}

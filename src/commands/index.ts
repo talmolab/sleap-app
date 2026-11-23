@@ -144,4 +144,8 @@ export {
 } from "./skeletonCommands";
 
 // Edit-list frame shift (sleap-io.js #274)
-export { ShiftVideoLabelsCommand, SHIFT_VIDEO_LABELS_COMMAND_NAME } from "./editListCommands";
+export {
+  ShiftVideoLabelsCommand,
+  SHIFT_VIDEO_LABELS_COMMAND_NAME,
+  shiftUndoLabel,
+} from "./editListCommands";

@@ -30,10 +30,15 @@ export interface ChoiceRequest {
   title?: string;
   /** Body — `\n` renders as line breaks. */
   message: string;
-  /** Action buttons (in order). A Cancel button is always shown alongside. */
+  /** Action buttons (in order). A Cancel button is shown alongside unless `hideCancel`. */
   options: ChoiceOption[];
   /** Cancel button label (default "Cancel"). */
   cancelLabel?: string;
+  /**
+   * Hide the Cancel button, for a prompt where every answer is an option.
+   * Esc / click-outside / ✕ still resolve `null`; the caller decides what that means.
+   */
+  hideCancel?: boolean;
 }
 
 interface ChoiceStore {

@@ -1,86 +1,176 @@
 /**
  * Labels made on a video whose MP4/MOV edit list hides leading frames
- * (sleap-io.js #274) — detection and the −N frame shift.
+ * (sleap-io.js #274) — detection, per-video answers, and the −N frame shift.
  *
  * A clip cut with stream copy (`ffmpeg -ss 1 -i in.mp4 -c copy out.mp4`) keeps a
  * few frames before the cut (decode references) that ffmpeg and SLEAP (Python)
  * never show or count. sleap-io.js ≤ 0.5.17 counted them, so labels made in
- * earlier versions of this app sit `N` frames too late now that frames are
- * numbered like ffmpeg (`N` = the backend's `hiddenLeadingFrames`).
+ * earlier versions of this app sit `N` frames too late once frames are
+ * numbered like ffmpeg (`N` = the backend's `hiddenLeadingFrames`, sleap-io.js
+ * ≥ {@link FFMPEG_FRAME_INDEX_IO_VERSION}).
  *
- * The shift moves everything the USER made on that video back by `N`: user
- * instances, user boxes/centroids/masks/label images/ROIs, negative-frame
- * marks, and suggestions. Predictions stay put: they come from SLEAP / sleap-nn
- * in Python, which always numbered frames like ffmpeg.
+ * Which numbering made what, and so what the shift moves:
+ * - **User instances** (drawn here, or a prediction accepted here — accepting
+ *   replaces the prediction, and the orphaned link is dropped on save) and
+ *   user boxes/centroids/masks/label images/ROIs, negative-frame marks and
+ *   suggestions were numbered by the old app → move `N` earlier.
+ * - **Predictions** come from SLEAP / sleap-nn in Python → already right, stay.
+ * - **A user instance linked to a prediction on the same frame** can't have
+ *   come from the old app (see above), so it was made in SLEAP (Python) → it
+ *   stays with its prediction, and the link never crosses frames.
+ * - Annotations linked to an instance follow that instance.
  *
- * Projects saved by this version carry {@link FRAME_INDEX_MARKER} in their
- * provenance, so the question is asked only for files saved before the fix.
+ * Each video's answer is recorded in `labels.provenance` (which round-trips
+ * through the `.slp`, Python sleap-io included), so an answered video is
+ * never offered again — not even when another video is still unanswered.
  */
 
 import { LabeledFrame, PredictedInstance, SuggestionFrame } from "@talmolab/sleap-io.js";
-import type { Labels, Video } from "../types";
+import type { VideoBackend } from "@talmolab/sleap-io.js";
+import type { Instance, Labels, Video } from "../types";
+
+/** sleap-io.js release that numbers frames like ffmpeg (talmolab/sleap-io.js#290). */
+export const FFMPEG_FRAME_INDEX_IO_VERSION = "0.5.18";
+
+/** Provenance key holding the per-video records: `{ [video filename]: VideoFrameIndexState }`. */
+export const FRAME_INDEX_PROVENANCE_KEY = "sleap_app_frame_index";
 
 /**
- * Provenance key + value meaning "this file's frame numbers follow ffmpeg" (i.e.
- * it was saved by a version of the app that skips edit-list-hidden frames).
- * Written into `labels.provenance`, which round-trips through the `.slp`.
+ * A video's recorded state:
+ * - `"ffmpeg"`: everything on it was numbered like ffmpeg (no old labels when
+ *   checked, or added with an io that numbers like ffmpeg);
+ * - `"shifted"`: old labels were shifted;
+ * - `"kept"`: the user chose to keep its labels as they were.
+ * Any record means "never ask again about this video".
  */
-export const FRAME_INDEX_MARKER = { key: "sleap_app_frame_index", value: "ffmpeg" } as const;
-
-/** sleap-io.js release that numbers frames like ffmpeg (sleap-io.js #290). */
-export const FFMPEG_FRAME_INDEX_IO_VERSION = "0.5.18";
+export type VideoFrameIndexState = "ffmpeg" | "shifted" | "kept";
 
 /** Containers that can carry an edit list. */
 const EDIT_LIST_EXTENSIONS = new Set(["mp4", "mov", "m4v"]);
 
+function videoPath(video: Video): string {
+  return Array.isArray(video.filename) ? (video.filename[0] ?? "") : video.filename;
+}
+
+function basename(path: string): string {
+  return path.split(/[\\/]/).pop() ?? path;
+}
+
+/** The video's file name (for messages). */
+export function videoName(video: Video): string {
+  return basename(videoPath(video)) || "this video";
+}
+
 /** True if the video file is an MP4/MOV-family container (can have an edit list). */
 export function canHaveEditList(video: Video): boolean {
-  const name = Array.isArray(video.filename) ? "" : video.filename;
-  const ext = name.split(/[?#]/)[0].split(".").pop()?.toLowerCase() ?? "";
+  const ext = videoPath(video).split(/[?#]/)[0].split(".").pop()?.toLowerCase() ?? "";
   return EDIT_LIST_EXTENSIONS.has(ext);
 }
 
 /**
- * Frames the video's edit list hides (0 if none or unknown). Read through a
- * local optional type so this builds against sleap-io.js releases before the
- * field existed (they report nothing, so nothing is offered).
+ * True if this backend reports hidden frames at all, i.e. it comes from
+ * sleap-io.js ≥ {@link FFMPEG_FRAME_INDEX_IO_VERSION}. Older io numbers frames
+ * the old way and can't tell, so nothing may be recorded or offered for it.
  */
-export function hiddenLeadingFramesOf(video: Video): number {
-  const backend = video.backend as { hiddenLeadingFrames?: number } | null;
-  const n = backend?.hiddenLeadingFrames ?? 0;
+export function supportsHiddenFrameDetection(backend: VideoBackend | null | undefined): boolean {
+  return backend != null && "hiddenLeadingFrames" in backend;
+}
+
+/** Frames the backend says its edit list hides (0 if none or unknown). */
+export function hiddenLeadingFramesOfBackend(backend: VideoBackend | null | undefined): number {
+  const n = (backend as { hiddenLeadingFrames?: number } | null | undefined)?.hiddenLeadingFrames ?? 0;
   return Number.isInteger(n) && n > 0 ? n : 0;
 }
 
-/** True if the project file says its frame numbers already follow ffmpeg. */
-export function hasFrameIndexMarker(labels: Labels): boolean {
-  return labels.provenance?.[FRAME_INDEX_MARKER.key] === FRAME_INDEX_MARKER.value;
+/** Frames the video's open backend says its edit list hides (0 if none or unknown). */
+export function hiddenLeadingFramesOf(video: Video): number {
+  return hiddenLeadingFramesOfBackend(video.backend);
 }
 
-/** Record that this project's frame numbers follow ffmpeg (saved with the project). */
-export function stampFrameIndexMarker(labels: Labels): void {
+// ---------------------------------------------------------------------------
+// Per-video records (labels.provenance)
+// ---------------------------------------------------------------------------
+
+function recordMap(labels: Labels): Record<string, VideoFrameIndexState> | null {
+  const raw = labels.provenance?.[FRAME_INDEX_PROVENANCE_KEY];
+  return raw && typeof raw === "object" && !Array.isArray(raw)
+    ? (raw as Record<string, VideoFrameIndexState>)
+    : null;
+}
+
+/**
+ * The recorded state for `video`, or null. Matched by its file name, then by
+ * the name it had in the file before being located elsewhere, then by base
+ * name when that is unambiguous (the file was moved and re-saved).
+ */
+export function getVideoRecord(labels: Labels, video: Video): VideoFrameIndexState | null {
+  const map = recordMap(labels);
+  if (!map) return null;
+  const meta = video.backendMetadata as Record<string, unknown> | undefined;
+  for (const key of [videoPath(video), meta?.sourceFilename]) {
+    if (typeof key === "string" && key in map) return map[key];
+  }
+  const base = videoName(video);
+  const sameBaseVideos = labels.videos.filter((v) => videoName(v) === base);
+  const sameBaseKeys = Object.keys(map).filter((k) => basename(k) === base);
+  return sameBaseVideos.length === 1 && sameBaseKeys.length === 1 ? map[sameBaseKeys[0]] : null;
+}
+
+/** Record `video`'s state (saved with the project). */
+export function setVideoRecord(labels: Labels, video: Video, state: VideoFrameIndexState): void {
   if (!labels.provenance) labels.provenance = {};
-  labels.provenance[FRAME_INDEX_MARKER.key] = FRAME_INDEX_MARKER.value;
+  const map = { ...(recordMap(labels) ?? {}) };
+  map[videoPath(video)] = state;
+  labels.provenance[FRAME_INDEX_PROVENANCE_KEY] = map;
 }
 
-type Annotated = { isPredicted?: boolean };
+// ---------------------------------------------------------------------------
+// The shift
+// ---------------------------------------------------------------------------
+
 type FrameContents = Pick<
   LabeledFrame,
   "instances" | "centroids" | "bboxes" | "masks" | "labelImages" | "rois"
 >;
 
-/** Split one frame's contents into what the shift moves (user-made) and what stays (predicted). */
-function splitFrame(lf: LabeledFrame): { move: FrameContents; stay: FrameContents } {
-  const pick = <T,>(items: T[] | undefined, predicted: boolean): T[] =>
-    (items ?? []).filter((a) => Boolean((a as Annotated).isPredicted) === predicted);
-  const part = (predicted: boolean): FrameContents => ({
-    instances: lf.instances.filter((inst) => inst instanceof PredictedInstance === predicted),
-    centroids: pick(lf.centroids, predicted),
-    bboxes: pick(lf.bboxes, predicted),
-    masks: pick(lf.masks, predicted),
-    labelImages: pick(lf.labelImages, predicted),
-    rois: pick(lf.rois, predicted),
-  });
-  return { move: part(false), stay: part(true) };
+/** A user instance linked to a prediction on the same frame (made in SLEAP/Python). */
+function isLinkedToFramePrediction(inst: Instance, lf: LabeledFrame): boolean {
+  if (inst instanceof PredictedInstance) return false;
+  const from = inst.fromPredicted;
+  return from != null && lf.instances.includes(from);
+}
+
+/** Split one frame into what the shift moves and what stays (see the module doc). */
+function splitFrame(lf: LabeledFrame): {
+  move: FrameContents;
+  stay: FrameContents;
+  linkedKept: number;
+} {
+  const stays = (inst: Instance) =>
+    inst instanceof PredictedInstance || isLinkedToFramePrediction(inst, lf);
+  const stayInstances = new Set(lf.instances.filter(stays));
+  // An annotation linked to an instance follows it; otherwise predicted ones stay.
+  const annotationStays = (a: object) => {
+    const linked = (a as { instance?: Instance | null }).instance;
+    if (linked && lf.instances.includes(linked)) return stayInstances.has(linked);
+    return Boolean((a as { isPredicted?: boolean }).isPredicted);
+  };
+  const part = (stay: boolean): FrameContents => {
+    const pick = <T extends object>(items: T[] | undefined) =>
+      (items ?? []).filter((a) => annotationStays(a) === stay);
+    return {
+      instances: lf.instances.filter((inst) => stayInstances.has(inst) === stay),
+      centroids: pick(lf.centroids),
+      bboxes: pick(lf.bboxes),
+      masks: pick(lf.masks),
+      labelImages: pick(lf.labelImages),
+      rois: pick(lf.rois),
+    };
+  };
+  const linkedKept = lf.instances.filter(
+    (inst) => !(inst instanceof PredictedInstance) && stayInstances.has(inst)
+  ).length;
+  return { move: part(false), stay: part(true), linkedKept };
 }
 
 function isEmpty(c: FrameContents): boolean {
@@ -106,6 +196,8 @@ export interface LabelShiftPlan {
   droppedSuggestions: number;
   /** Labeled frames whose predictions stay where they are. */
   framesWithPredictionsKept: number;
+  /** User instances that stay with the prediction they're linked to. */
+  linkedInstancesKept: number;
 }
 
 /** Count what {@link applyLabelShift} would move, without changing anything. */
@@ -116,12 +208,14 @@ export function planLabelShift(labels: Labels, video: Video, by: number): LabelS
     movedSuggestions: 0,
     droppedSuggestions: 0,
     framesWithPredictionsKept: 0,
+    linkedInstancesKept: 0,
   };
   if (by <= 0) return plan;
   for (const lf of labels.labeledFrames) {
     if (lf.video !== video) continue;
-    const { move, stay } = splitFrame(lf);
-    if (!isEmpty(stay)) plan.framesWithPredictionsKept += 1;
+    const { move, stay, linkedKept } = splitFrame(lf);
+    if (stay.instances.some((i) => i instanceof PredictedInstance)) plan.framesWithPredictionsKept += 1;
+    plan.linkedInstancesKept += linkedKept;
     if (isEmpty(move) && !lf.isNegative) continue;
     if (lf.frameIdx - by >= 0) plan.movedFrames += 1;
     else plan.droppedFrames += 1;
@@ -134,9 +228,16 @@ export function planLabelShift(labels: Labels, video: Video, by: number): LabelS
   return plan;
 }
 
+/** True if a plan has anything to move or remove. */
+export function planHasChanges(plan: LabelShiftPlan): boolean {
+  return (
+    plan.movedFrames + plan.droppedFrames + plan.movedSuggestions + plan.droppedSuggestions > 0
+  );
+}
+
 /**
  * True if `video` has anything a shift would move or remove: user-made frame
- * content, a negative mark, or a suggestion (predictions never move).
+ * content, a negative mark, or a suggestion.
  */
 export function hasShiftableContent(labels: Labels, video: Video): boolean {
   for (const lf of labels.labeledFrames) {
@@ -146,20 +247,12 @@ export function hasShiftableContent(labels: Labels, video: Video): boolean {
   return labels.suggestions.some((s) => s.video === video);
 }
 
-/** True if a plan has anything to move or remove. */
-export function planHasChanges(plan: LabelShiftPlan): boolean {
-  return (
-    plan.movedFrames + plan.droppedFrames + plan.movedSuggestions + plan.droppedSuggestions > 0
-  );
-}
-
 /**
- * Move `video`'s user-made labels, negative marks and suggestions `by` frames
- * earlier; predictions stay. Content that would land before frame 0 (it was
- * made on a frame ffmpeg never shows) is removed. Frames left empty are
- * dropped; moved content joins any predictions already on its new frame. Only
- * this video changes. Mutates `labels` and returns what happened. The caller
- * owns undo (see `ShiftVideoLabelsCommand`).
+ * Move `video`'s old-numbered labels (see the module doc) `by` frames earlier.
+ * Content that would land before frame 0 (it was made on a frame ffmpeg never
+ * shows) is removed. Frames left empty are dropped; moved content joins
+ * whatever already stays on its new frame. Only this video changes. Mutates
+ * `labels` and returns what happened; the caller owns undo and the record.
  */
 export function applyLabelShift(labels: Labels, video: Video, by: number): LabelShiftPlan {
   const plan = planLabelShift(labels, video, by);
@@ -224,37 +317,4 @@ export function applyLabelShift(labels: Labels, video: Video, by: number): Label
 
   labels.reindex();
   return plan;
-}
-
-/** A video the open-time check offers to shift. */
-export interface EditListCandidate {
-  video: Video;
-  hidden: number;
-  plan: LabelShiftPlan;
-}
-
-/**
- * Videos in `labels` whose backend reports hidden leading frames AND that have
- * user-made labels or suggestions to move. Only videos with an open backend can
- * be checked; `uncheckedVideos` counts MP4/MOV videos with something to move
- * that couldn't be (no backend, e.g. the file is missing).
- */
-export function findEditListCandidates(labels: Labels): {
-  candidates: EditListCandidate[];
-  uncheckedVideos: number;
-} {
-  const candidates: EditListCandidate[] = [];
-  let uncheckedVideos = 0;
-  for (const video of labels.videos) {
-    if (!canHaveEditList(video)) continue;
-    if (!video.backend) {
-      if (hasShiftableContent(labels, video)) uncheckedVideos += 1;
-      continue;
-    }
-    const hidden = hiddenLeadingFramesOf(video);
-    if (hidden === 0) continue;
-    const plan = planLabelShift(labels, video, hidden);
-    if (planHasChanges(plan)) candidates.push({ video, hidden, plan });
-  }
-  return { candidates, uncheckedVideos };
 }
