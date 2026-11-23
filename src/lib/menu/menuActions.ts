@@ -3,7 +3,6 @@
  * fresh store state when it runs.
  */
 
-import { refuseWhileSaving } from "@/lib/saveInProgress";
 import { useAppStore } from "@/stores/appStore";
 import { isTauri } from "@/lib/platform";
 import { sleapCmd } from "@/lib/sleapPlugin";
@@ -31,7 +30,6 @@ export function resetUiScale() {
 }
 
 export async function replaceVideo(videoIdx: number) {
-  if (refuseWhileSaving()) return;
   const { labels } = useAppStore.getState();
   const v = labels?.videos[videoIdx];
   if (!v) return;

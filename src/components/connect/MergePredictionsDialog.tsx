@@ -10,7 +10,6 @@
  * open there's nothing to merge into, so the predictions open straight away
  * as a new, unsaved project (Connect is reachable from the welcome screen).
  */
-import { refuseWhileSaving } from "@/lib/saveInProgress";
 import { useEffect, useState } from "react";
 import { Loader2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -75,8 +74,6 @@ export function MergePredictionsDialog({ workerId, jobId, mine, onClose }: Merge
 
   /** Re-points worker video paths to local ones, loads the predictions as a new unsaved project, and closes the Connect window so it's visible. */
   const openAsNewProject = async (predictions: Labels) => {
-    // Never replace the project while a save of it runs.
-    if (refuseWhileSaving()) return;
     const rules = pathRulesFor(workerId);
     for (const video of predictions.videos) {
       if (typeof video.filename !== "string") continue;

@@ -44,8 +44,6 @@ import { toastExported } from "@/lib/exportToast";
 import { useAppStore } from "@/stores/appStore";
 import { withLegacyLayout } from "@/lib/slpFormatCompat";
 import { ensureWritable } from "@/lib/slpAccess";
-import { refuseWhileSaving } from "@/lib/saveInProgress";
-import { refuseStaleVideoNames } from "@/lib/inPlaceBinding";
 import type { PackageImageOptions } from "@/lib/packageImageFormat";
 
 /** Options from the Extract Clip dialog. */
@@ -232,12 +230,6 @@ export const ExtractClipAndLabelsCommand: Command = {
     const target = await rangeToExtract(ctx);
     if (!target) return;
     const { labels, video, range } = target;
-    // Not while a save runs, nor while the project's images may be read
-    // wrongly (see inPlaceBinding.ts): the clip is decoded from them.
-    if (refuseWhileSaving()) return;
-    if (refuseStaleVideoNames(ctx.state.labels, "Reopen this project before extracting a clip")) {
-      return;
-    }
     // Writes an SLP of the range: not for a project opened View only unless
     // the user allows editing.
     if (!(await ensureWritable(labels, "export"))) return;

@@ -241,14 +241,11 @@ export function MergeProjectDialog() {
         conflict: c,
         choice: choices[c.id] ?? defaultChoice,
       }));
-      const merged = await commandContext.execute(MergeConflictsCommand, {
+      await commandContext.execute(MergeConflictsCommand, {
         other: donor,
         resolutions,
       });
       setBusy(null);
-      // Refused (a save is running, or the project is View only): stay on
-      // this file, nothing was merged.
-      if (!merged) return;
       await advance();
     } catch (e) {
       setError(errMsg(e));

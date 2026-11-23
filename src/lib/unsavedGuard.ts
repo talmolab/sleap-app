@@ -9,7 +9,6 @@
  * AppShell beforeunload guard. (Browser close/refresh is covered by beforeunload;
  * these helpers cover in-app New/Open/Import.)
  */
-import { refuseWhileSaving } from "@/lib/saveInProgress";
 import { useAppStore, type AppState } from "@/stores/appStore";
 import { isTauri } from "@/lib/platform";
 import { removeLabelsDraft } from "@/lib/labelsDraft";
@@ -97,8 +96,6 @@ export async function confirmSaveBeforeRun(
 export async function confirmDiscardUnsavedWork(
   verb: string,
 ): Promise<boolean> {
-  // Never replace the project while a save of it runs.
-  if (refuseWhileSaving()) return false;
   const store = useAppStore.getState();
   if (!hasUnsavedWork(store)) return true;
   const proceed = await confirmDialog({

@@ -29,7 +29,6 @@ let fileSizeResult = 1000; // bytes; small by default → in-memory path
 let savePath: string | null = "/picked.pkg.slp";
 
 // --- mocks (declared before importing the module under test) -----------------
-const bindingCalls: string[] = [];
 const saveLabelsInPlaceMock = vi.fn(async () => {
   if (inPlaceThrows) throw new Error("simulated mid-write in-place failure");
   return inPlaceResult;
@@ -48,10 +47,6 @@ vi.mock("@talmolab/sleap-io.js", () => ({
 }));
 vi.mock("@/lib/saveLabelsInPlace", () => ({
   saveLabelsInPlace: saveLabelsInPlaceMock,
-  recordWrittenFile: async (_l: unknown, path: string, written: unknown[]) => {
-    bindingCalls.push(`record ${path} ${written.length}`);
-    return { staleVideoNames: false };
-  },
 }));
 vi.mock("@/lib/saveEmbeddedPkgStreaming", () => ({
   saveEmbeddedPkgStreaming: saveEmbeddedPkgStreamingMock,
@@ -84,21 +79,6 @@ vi.mock("sonner", () => ({
   toast: { success: vi.fn(), error: vi.fn(), info: vi.fn(), warning: vi.fn() },
 }));
 
-// The in-place save's record of the file (inPlaceBinding.ts): cleared before
-// every full rewrite and set again to the file just written.
-vi.mock("@/lib/inPlaceBinding", () => ({
-  clearFileBinding: () => void bindingCalls.push("clear"),
-  markStaleVideoNames: () => {},
-  readsProjectFile: () => false,
-  recordedFileChanged: () => false,
-  refuseStaleVideoNames: () => false,
-  statFileIdentity: async () => null,
-}));
-saveSlpToBytesMock.mockImplementation(async () => {
-  bindingCalls.push("write");
-  return new Uint8Array([1, 2, 3]);
-});
-
 import { saveProjectAsSlp } from "@/lib/saveProject";
 import { useAppStore } from "@/stores/appStore";
 
@@ -126,7 +106,6 @@ function resetAll() {
   inPlaceThrows = false;
   fileSizeResult = 1000;
   savePath = "/picked.pkg.slp";
-  bindingCalls.length = 0;
   for (const m of [
     saveLabelsInPlaceMock,
     saveEmbeddedPkgStreamingMock,
@@ -144,27 +123,6 @@ function resetAll() {
 
 describe("saveProjectAsSlp — in-place routing", () => {
   beforeEach(resetAll);
-
-  it("records the file after a full rewrite, and forgets it while writing", async () => {
-    useAppStore.setState({ projectPath: "/proj.pkg.slp" });
-    inPlaceResult = { ok: false, reason: "tracks changed" };
-    await saveProjectAsSlp(fakeLabels(true), "proj.pkg.slp");
-    expect(bindingCalls).toEqual(["clear", "write", "record /proj.pkg.slp 1"]);
-  });
-
-  it("leaves the record to the in-place save when it succeeds", async () => {
-    useAppStore.setState({ projectPath: "/proj.pkg.slp" });
-    inPlaceResult = { ok: true };
-    await saveProjectAsSlp(fakeLabels(true), "proj.pkg.slp");
-    expect(bindingCalls).toEqual([]);
-  });
-
-  it("records the new file after a Save As", async () => {
-    useAppStore.setState({ projectPath: "/proj.pkg.slp" });
-    savePath = "/newname.pkg.slp";
-    await saveProjectAsSlp(fakeLabels(true), "proj.pkg.slp", true);
-    expect(bindingCalls).toEqual(["clear", "write", "record /newname.pkg.slp 1"]);
-  });
 
   it("in-place embedded save tries saveLabelsInPlace FIRST and stops on {ok:true}", async () => {
     useAppStore.setState({ projectPath: "/proj.pkg.slp" });

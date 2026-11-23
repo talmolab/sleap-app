@@ -62,15 +62,6 @@ vi.mock("@/lib/nativeWrite", () => ({
   writeClose: vi.fn(),
 }));
 
-// The labels are taken as bound to the file (see inPlaceBinding.ts); what
-// is tested here comes after that check.
-vi.mock("@/lib/inPlaceBinding", () => ({
-  statFileIdentity: async () => ({ size: 1, mtimeMs: 1 }),
-  bindingRefusal: () => null,
-  boundDatasets: () => [],
-  refreshFileIdentity: () => {},
-}));
-
 import { saveLabelsInPlace } from "@/lib/saveLabelsInPlace";
 
 describe("saveLabelsInPlace on a file whose tables are not datasets", () => {

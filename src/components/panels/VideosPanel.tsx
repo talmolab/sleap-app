@@ -6,7 +6,6 @@
  * Missing videos (no backend) show a warning icon and a Locate button.
  */
 
-import { refuseWhileSaving } from "@/lib/saveInProgress";
 import { useAppStore } from "../../stores/appStore";
 import { toast } from "@/lib/notify";
 import { cn } from "@/lib/utils";
@@ -535,7 +534,6 @@ export function VideosPanel() {
    */
   const handleReplaceVideo = async () => {
     if (!labels || !currentVideo) return;
-    if (refuseWhileSaving()) return;
     let files;
     try {
       // Relinking, not importing: offer the HDF5 containers (`.pkg.slp`/`.h5`)

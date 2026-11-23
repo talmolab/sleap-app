@@ -242,15 +242,11 @@ export async function exportTrainingJobPackage(
 ): Promise<string | null> {
   const { labels, filename } = useAppStore.getState();
   if (!labels) return null;
-  const { refuseWhileSaving } = await import("@/lib/saveInProgress");
-  if (refuseWhileSaving()) return null;
   // The package holds a 2.x copy of the project: a View only project asks to
   // allow editing first, and nodes not labeled are announced as hidden.
   const { ensureWritable, confirmUnlabeledAsHidden } = await import("@/lib/slpAccess");
   if (!(await ensureWritable(labels, "export"))) return null;
   if (!(await confirmUnlabeledAsHidden(labels, "training"))) return null;
-  const { refuseStaleVideoNames } = await import("@/lib/inPlaceBinding");
-  if (refuseStaleVideoNames(labels, "Reopen this project before exporting")) return null;
   // PyQt: embed the suggested frames too only when inference targets them.
   const level: ExportPackageLevel = req.inferenceTarget === "suggestions" ? "training" : "user";
   const pkgName = baseName(derivePackageFilename(filename));

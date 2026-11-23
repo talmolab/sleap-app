@@ -23,7 +23,6 @@ import {
   type RecordMetadata,
 } from "@/lib/slpFormatCompat";
 import { refuseEditIfViewOnly } from "@/lib/slpAccess";
-import { refuseWhileSaving } from "@/lib/saveInProgress";
 
 /** Record of an executed command for change tracking. */
 export interface ChangeRecord {
@@ -617,16 +616,12 @@ export class CommandContext {
     return command.topics.some((t) => !NAVIGATION_TOPICS.has(t));
   }
 
-  /**
-   * Execute a command, track the change, and signal updates. Resolves false
-   * when the command was refused and did not run (View only, or a save in
-   * progress), true otherwise.
-   */
+  /** Execute a command, track the change, and signal updates. */
   async execute(
     command: Command,
     params?: Record<string, unknown>,
     options?: { undoLabel?: string }
-  ): Promise<boolean> {
+  ): Promise<void> {
     // A project opened View only can't be edited: refuse any data change
     // (the toast offers to allow editing). Opening or starting another
     // project is not an edit of this one.
@@ -635,11 +630,7 @@ export class CommandContext {
       !PROJECT_REPLACING_COMMANDS.has(command.name) &&
       refuseEditIfViewOnly()
     ) {
-      return false;
-    }
-    // No data change while a save runs: it would change what is being written.
-    if ((this.isMutating(command) || command.editsWithoutTopics) && refuseWhileSaving()) {
-      return false;
+      return;
     }
 
     // Snapshot before mutating commands for undo
@@ -674,12 +665,10 @@ export class CommandContext {
     if (command.topics.length > 0) {
       this.signalUpdate(command.topics);
     }
-    return true;
   }
 
   /** Undo the last mutating command. Returns true if an undo was performed. */
   undo(): boolean {
-    if (refuseWhileSaving()) return false;
     const snapshot = this.undoStack.pop();
     if (!snapshot) return false;
 
@@ -710,7 +699,6 @@ export class CommandContext {
 
   /** Redo the last undone command. Returns true if a redo was performed. */
   redo(): boolean {
-    if (refuseWhileSaving()) return false;
     const snapshot = this.redoStack.pop();
     if (!snapshot) return false;
 

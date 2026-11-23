@@ -83,8 +83,6 @@ import { toastExported } from "@/lib/exportToast";
 import { getPlatform } from "../platform/index";
 import { useAppStore } from "@/stores/appStore";
 import { withImageFormat, withLegacyLayout } from "@/lib/slpFormatCompat";
-import { projectFileReplaced, refuseStaleVideoNames } from "@/lib/inPlaceBinding";
-import { refuseWhileSaving } from "@/lib/saveInProgress";
 import { normalizePackageImage, type PackageImageOptions } from "@/lib/packageImageFormat";
 import { ensureWritable } from "@/lib/slpAccess";
 
@@ -272,17 +270,6 @@ export function packageImageParam(
   return normalizePackageImage(image.format, image.quality);
 }
 
-/**
- * A package exported over the open project's own file replaces it, as a full
- * save does: the fast in-place save must not patch it as the project's file,
- * and a project that reads its embedded images from that file (a large
- * file's open) is marked until it is reopened (see projectFileReplaced).
- */
-function forgetProjectFileIfOverwritten(path: string): void {
-  const { projectPath, labels } = useAppStore.getState();
-  if (labels && projectPath && path === projectPath) projectFileReplaced(labels);
-}
-
 /** Is the streaming desktop write (worker + native file writes) available? */
 export async function canStreamPackage(): Promise<boolean> {
   return (
@@ -370,9 +357,6 @@ export async function exportLabelsPackage(
   } = {}
 ): Promise<string | null> {
   if (!labels) return null;
-  // Not while a save runs: it may be replacing the file these images are
-  // read from (see saveInProgress.ts).
-  if (refuseWhileSaving()) return null;
   // A project opened View only is never written, packages included, unless
   // the user allows editing (the prompt lists what the 2.x layout drops).
   if (!(await ensureWritable(labels, "export"))) return null;
@@ -463,11 +447,6 @@ async function exportLabelsPackageNow(
   level: ExportPackageLevel,
   options: { suggestedName?: string; image?: PackageImageOptions }
 ): Promise<string | null> {
-  // The open project's embedded images may be read under stale names (see
-  // inPlaceBinding.ts): copying them could store another video's images.
-  if (refuseStaleVideoNames(useAppStore.getState().labels, "Reopen this project before exporting")) {
-    return null;
-  }
 
   const mode = embedModeForLevel(level);
   const image = options.image;
@@ -508,7 +487,6 @@ async function exportLabelsPackageNow(
         // A video with no open decoder can't be embedded and stays a link.
         return embedVideos.some((v) => !v.backend);
       });
-      forgetProjectFileIfOverwritten(destPath);
       toastExported("Labels package exported", destPath, true);
       if (unembedded) warnUnembedded();
       return destPath;
@@ -551,7 +529,6 @@ async function exportLabelsPackageNow(
     });
     const saved = await saveBytesFile(bytes, suggestedName, filter);
     if (!saved) return null; // user cancelled the dialog/picker
-    forgetProjectFileIfOverwritten(saved);
 
     toastExported("Labels package exported", saved, false);
 

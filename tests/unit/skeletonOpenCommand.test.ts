@@ -205,7 +205,7 @@ describe("OpenSkeletonCommand", () => {
     // No project loaded → no skeleton/labels in the store.
     await expect(
       ctx.execute(OpenSkeletonCommand, { newSkeleton }),
-    ).resolves.toBe(true); // ran, and changed nothing
+    ).resolves.toBeUndefined();
   });
 
   describe("undo / redo", () => {
