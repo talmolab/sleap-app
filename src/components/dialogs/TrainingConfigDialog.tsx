@@ -43,6 +43,7 @@ import { cropSizeWarnings, isCropHead, negativeFramesWarning, usesNegativeFrames
 import { confirmDialog } from "@/stores/confirmStore";
 import { headTypeMatches } from "@/lib/bboxModels";
 import { BboxTrainingFields } from "@/components/panels/BboxTrainingFields";
+import { ReuseTrainedModelSection } from "@/components/dialogs/ReuseTrainedModelSection";
 
 /** Tailwind text color per visibility tier, matching the Training panel's log coloring. */
 const VISIBILITY_COLOR: Record<ReturnType<typeof visibilityTier>, string> = {
@@ -437,6 +438,7 @@ function HeadTabContent({
   remoteFrame,
   configActions,
   mode = "project",
+  skeletonNodes = [],
 }: {
   slot: string;
   modelType: ModelType;
@@ -448,6 +450,7 @@ function HeadTabContent({
   remoteFrame?: (videoIndex: number, frameIdx: number) => Promise<PreviewFrame>;
   configActions?: Pick<TrainingConfigActions, "addConfigFile" | "updateConfigCheckpointPath">;
   mode?: "project" | "worker-file";
+  skeletonNodes?: string[];
 }) {
   const headType = slotToHeadType(modelType, slot);
   const baselineProfiles = getBaselineProfilesForHead(headType);
@@ -494,8 +497,13 @@ function HeadTabContent({
     [showNegativeFrames, hp.useNegativeFrames, labels],
   );
   const trainingMode = hp.trainingMode ?? "reuse_config";
-  const modelLocked = trainingMode === "resume" || trainingMode === "finetune";
-  const allLocked = trainingMode === "resume";
+  // "Use a trained model": this stage isn't trained, so none of its training
+  // settings apply (PyQt disables every form in that mode).
+  const reused = !!configFile?.reuse;
+  // Lists/browses local model folders, so desktop project mode only.
+  const canReuse = isTauri && mode !== "worker-file";
+  const modelLocked = trainingMode === "resume" || trainingMode === "finetune" || reused;
+  const allLocked = trainingMode === "resume" || reused;
   const {
     parseYamlConfig,
     addConfigFile: storeAddConfigFile,
@@ -637,8 +645,19 @@ function HeadTabContent({
         })()}
       </div>
 
+      {/* ── Use a trained model (PyQt's per-tab "Reuse model") ── */}
+      {configFile && canReuse && (
+        <ReuseTrainedModelSection
+          slot={slot}
+          modelType={modelType}
+          configFile={configFile}
+          skeletonNodes={skeletonNodes}
+          onUpdate={onUpdate}
+        />
+      )}
+
       {/* ── Training mode ── */}
-      {configFile && (
+      {configFile && !reused && (
         <div className="mb-5 pb-4 border-b">
           <div className="flex items-center gap-5">
             {([
@@ -2157,6 +2176,7 @@ export function TrainingConfigDialog({
                   remoteFrame={remoteFrame}
                   configActions={configActions}
                   mode={mode}
+                  skeletonNodes={skeletonNodes}
                 />
               </TabsContent>
             ))}

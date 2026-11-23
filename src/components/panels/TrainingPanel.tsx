@@ -10,6 +10,7 @@
 import { useState, useRef, useEffect, useMemo } from "react";
 import { createPortal } from "react-dom";
 import { useTrainingStore, getConfigSlots, getSlotLabel, countUserLabeledFrames, isBboxModelType, BBOX_REMOTE_UNSUPPORTED } from "@/stores/trainingStore";
+import { reuseStartProblem } from "@/lib/reuseTrainedModel";
 import { useExportStore } from "@/stores/exportStore";
 import type { ModelType, ConfigFile, ConfigHyperparams } from "@/stores/trainingStore";
 import { useConnectStore } from "@/stores/connectStore";
@@ -1159,12 +1160,22 @@ function TrainingPanelContent() {
   // model_config.pretrained_*_weights vs trainer_config.resume_ckpt_path in
   // sleap-nn's lightning_modules.py / trainer_config.py.
   const hasValidCheckpointSelection = config.configs.every((cf) => {
+    // A stage reusing a trained model isn't trained: no checkpoint needed.
+    if (cf.reuse) return true;
     const mode = cf.hyperparams.trainingMode;
     if (mode === "reuse_config") return true;
     if (!cf.checkpointPath?.trim()) return false;
     if (mode === "resume") return cf.checkpointPath.toLowerCase().endsWith(".ckpt");
     return true;
   });
+  // "Use a trained model" checked with no model picked (or, on a worker,
+  // every stage reused): see reuseStartProblem.
+  const reuseProblem = reuseStartProblem(
+    requiredSlots,
+    config.configs,
+    (slot) => getSlotLabel(slot).replace(" Config", ""),
+    { remote: remoteEnabled },
+  );
   const isModelTypeIncompatible = skeletonCompat.disabledTypes.has(config.modelType);
   // "window" + still-unknown visibility blocks Start: classifyVisibility(null
   // ?? []) would otherwise read as case "all" (same as "nothing hidden"),
@@ -1189,6 +1200,7 @@ function TrainingPanelContent() {
     hasLabeledFrames &&
     hasValidLossWeights &&
     hasValidCheckpointSelection &&
+    !reuseProblem &&
     !isModelTypeIncompatible &&
     !remoteUnsupported &&
     !visibilityPending &&
@@ -1395,6 +1407,13 @@ function TrainingPanelContent() {
                   onRemove={removeConfigFile}
                   disabled={isRunning}
                 />
+                {configFile?.reuse && (
+                  <p className="text-[10px] text-sky-400 break-all" data-testid={`training-reuse-${slot}`}>
+                    {configFile.reuse.model
+                      ? `Not retrained — uses ${configFile.reuse.model.runName || configFile.reuse.model.path}`
+                      : "Not retrained — pick a trained model in Full Configuration"}
+                  </p>
+                )}
               </div>
             );
           })}
@@ -1777,6 +1796,8 @@ function TrainingPanelContent() {
                       ? "Label at least one frame before training"
                       : !hasValidCheckpointSelection
                         ? "Select a checkpoint file for Resume/Fine-tune"
+                        : reuseProblem
+                        ? reuseProblem
                         : remoteEnabled && !selectedWorkerId
                           ? "Select a worker"
                           : visibilityPending

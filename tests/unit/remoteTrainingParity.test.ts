@@ -729,3 +729,91 @@ describe("startTraining (remote) — labelsSource window vs worker-file", () => 
     expect(handler).not.toHaveBeenCalled();
   });
 });
+
+// ── "Use a trained model" for one stage (PyQt's per-tab Reuse model) ──
+
+describe("startTraining (remote) — reusing a trained model for one stage", () => {
+  const REUSED = `${MOUNT}/models/old.centroid`;
+
+  /** Top-down with the centroid stage set to reuse `path`. */
+  function setUpReusedCentroid(path: string | null, inferenceTarget = "suggestions") {
+    const opts = setUpTopDown(inferenceTarget);
+    useTrainingStore.getState().setConfigReuse(
+      "centroid",
+      { model: path ? { path, runName: "old.centroid", headKey: "centroid", nodeNames: null } : null },
+    );
+    return opts;
+  }
+
+  beforeEach(() => {
+    submitCalls = [];
+    fakeLabels = new Labels({ videos: [], skeletons: [], labeledFrames: [] });
+    fakeWorkerLabelsOverride = undefined;
+    fakeWorkerStats = {};
+    // Only the centered-instance stage trains: one train job, no onModelComplete.
+    driveJob = async (call, n) => {
+      if (call.spec.type === "train") {
+        return { jobId: "j0", success: true, modelDir: "/w/models/centered_instance", labelsPath: "/w/jobs/j0/labels.slp" };
+      }
+      return { jobId: `track${n}`, success: true, resultBlobs: { predictions: PREDICTIONS } };
+    };
+  });
+  afterEach(() => {
+    useTrainingStore.getState().reset();
+  });
+
+  // A reused stage must not be sent to the worker to train.
+  it("trains only the stages that aren't reused", async () => {
+    fakeWorkerStats[REUSED] = { exists: true, type: "directory" };
+    await useTrainingStore.getState().startTraining(setUpReusedCentroid(REUSED));
+    const train = submitCalls[0].spec as unknown as Record<string, unknown>;
+    expect(train.model_types).toEqual(["centered_instance"]);
+    expect((train.config_contents as string[]).length).toBe(1);
+    expect(useTrainingStore.getState().models.map((m) => m.label)).toEqual(["Centered Instance"]);
+  });
+
+  // The reused model goes into the post-training track job at its pipeline position.
+  it("puts the reused model first in the track job's model_paths (pipeline order)", async () => {
+    fakeWorkerStats[REUSED] = { exists: true, type: "directory" };
+    await useTrainingStore.getState().startTraining(setUpReusedCentroid(REUSED));
+    expect(submitCalls).toHaveLength(2);
+    const track = submitCalls[1].spec;
+    if (track.type !== "track") throw new Error("expected a track job");
+    expect(track.model_paths).toEqual([REUSED, "/w/models/centered_instance"]);
+    expect(useTrainingStore.getState().status).toBe("completed");
+  });
+
+  // A model the worker can't read would only fail after training: refuse before submitting anything.
+  it("refuses up front when the worker can't see the reused model", async () => {
+    await useTrainingStore.getState().startTraining(setUpReusedCentroid(REUSED));
+    expect(submitCalls).toHaveLength(0);
+    const s = useTrainingStore.getState();
+    expect(s.status).toBe("error");
+    expect(s.error).toContain("can't see the trained model");
+  });
+
+  // With no inference afterwards the reused model is never read, so its location doesn't matter.
+  it("doesn't check the reused model's location when inference is off", async () => {
+    await useTrainingStore.getState().startTraining(setUpReusedCentroid(REUSED, "nothing"));
+    expect(submitCalls).toHaveLength(1);
+    expect(useTrainingStore.getState().status).toBe("completed");
+  });
+
+  // A checked box with no model picked can't run.
+  it("refuses when a stage is set to reuse but no model is picked", async () => {
+    await useTrainingStore.getState().startTraining(setUpReusedCentroid(null));
+    expect(submitCalls).toHaveLength(0);
+    expect(useTrainingStore.getState().error).toContain("Pick a trained model for Centroid");
+  });
+
+  // Every stage reused leaves nothing for the worker to train (and no labels file for inference).
+  it("refuses when every stage is reused", async () => {
+    const opts = setUpReusedCentroid(REUSED);
+    useTrainingStore.getState().setConfigReuse("centered_instance", {
+      model: { path: `${MOUNT}/models/old.ci`, runName: null, headKey: "centered_instance", nodeNames: null },
+    });
+    await useTrainingStore.getState().startTraining(opts);
+    expect(submitCalls).toHaveLength(0);
+    expect(useTrainingStore.getState().error).toContain("nothing to train on the worker");
+  });
+});
