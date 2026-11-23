@@ -40,6 +40,7 @@ import {
   installTauriImageReader,
 } from "@/lib/loadProject";
 import { resolveExternalVideos } from "@/lib/resolveVideos";
+import { expectEditListCheck, runEditListCheck } from "@/lib/editListCheck";
 import { installTauriFsResolver } from "@/lib/fsResolver";
 import { fileSize, readRange } from "@/lib/nativeRange";
 import { videoSignature, buildBackendGraftPlan } from "@/lib/videoGraft";
@@ -299,7 +300,9 @@ export async function restoreTauriDraft(
     const filename =
       (entry.projectPath ?? entry.displayName).split(/[\\/]/).pop() ??
       entry.displayName;
+    expectEditListCheck(draftLabels); // #274: ask before stamping the frame-index marker
     store.setLabels(draftLabels, filename, projectPath ?? undefined);
+    void runEditListCheck(draftLabels);
 
     // The desktop draft is only a net — the recovered project is still DIRTY vs
     // disk until the user ⌘S-es. Mark it changed and keep editing on the SAME
