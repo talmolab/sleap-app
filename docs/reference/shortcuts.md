@@ -24,10 +24,17 @@ menus (including the macOS menu bar), and in **Help ▸ Search Menus**.
   one, for example to use the same keys on another computer. The file uses
   the same format as SLEAP's own `shortcuts.yaml`, so you can import your
   shortcuts from the legacy SLEAP GUI too (there, `Ctrl` means ++cmd++ on
-  macOS).
-- Undo/Redo, the text-size keys, ++cmd+1++–++cmd+9++ (set track) and
-  ++backspace++/++delete++ (delete selected nodes) can't be reassigned. On
-  the macOS desktop app, ++cmd+q++ always quits.
+  macOS). Entries you never changed in SLEAP keep this app's keys (for
+  example ++t++ for node names and ++shift+m++ for Merge Instance).
+- Some keys can't be assigned: Undo/Redo, the text-size keys,
+  ++cmd+1++–++cmd+9++ (set track), ++backspace++/++delete++ (delete selected
+  nodes) and ++space++ (hold to pan; only the suggestion keys may use it).
+  Nor can keys the system or browser keep: ++cmd+tab++ and ++cmd+space++ on
+  macOS; ++cmd+q++, ++cmd+h++, ++cmd+m++ and ++cmd+w++ in the macOS desktop
+  app; and in a browser, its tab and window keys such as ++cmd+w++,
+  ++cmd+t++ and ++cmd+n++.
+- Shortcuts without ++cmd++/++ctrl++ (a letter, an arrow) do nothing while
+  you're typing in a text field.
 
 ## File
 

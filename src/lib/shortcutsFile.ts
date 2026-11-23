@@ -13,7 +13,7 @@
 
 import yaml from "js-yaml";
 import { isMac } from "./platform";
-import { shortcutBindings, type ShortcutOverrides } from "./shortcuts";
+import { EXTRA_SHORTCUTS, shortcutBindings, type ShortcutOverrides } from "./shortcuts";
 import {
   EDITABLE_ACTIONS,
   actionLabel,
@@ -21,10 +21,64 @@ import {
   findConflict,
   isEditableAction,
   sameKey,
+  withoutDuplicates,
+  type KeyContext,
 } from "./shortcutEditing";
 
 /** Default file name, as in PyQt. */
 export const SHORTCUTS_FILE_NAME = "shortcuts.yaml";
+
+/** First line of an exported file: how Import tells its own files from PyQt's. */
+const FILE_MARKER = "# sleap-app keyboard shortcuts";
+
+/**
+ * PyQt SLEAP's default shortcuts.yaml (sleap/config/shortcuts.yaml on
+ * develop). A legacy file's entry that still has its PyQt default wasn't
+ * customized there, so it keeps sleap-app's default instead (which can
+ * differ: P is pan mode here, Show Node Names is T, …).
+ */
+const PYQT_DEFAULTS: Record<string, string> = {
+  "add instance": "Ctrl+I",
+  "clear selection": "Esc",
+  close: "Ctrl+Q",
+  "delete area": "Ctrl+K",
+  "delete instance": "Ctrl+Backspace",
+  "delete track": "Ctrl+Shift+Backspace",
+  fit: "Ctrl+=",
+  "goto frame": "Ctrl+J",
+  "goto marked": "Ctrl+Shift+M",
+  "goto last interacted": "Ctrl+A",
+  "goto next suggestion": "Space",
+  "goto next track spawn": "Ctrl+E",
+  "goto next user": "Ctrl+U",
+  "goto prev user": "Ctrl+Shift+U",
+  "goto next labeled": "Alt+Right",
+  "goto prev suggestion": "Shift+Space",
+  "goto prev labeled": "Alt+Left",
+  learning: "Ctrl+L",
+  "mark negative": "N",
+  new: "Ctrl+N",
+  "next video": "Alt+Shift+Right",
+  open: "Ctrl+O",
+  "prev video": "Alt+Shift+Left",
+  "save as": "Ctrl+Shift+S",
+  save: "Ctrl+S",
+  "select next": "`",
+  "select to frame": "Ctrl+Shift+J",
+  "show instances": "H",
+  "show non-visible nodes": "Shift+V",
+  "show edges": "Ctrl+Shift+Tab",
+  "show labels": "Ctrl+Tab",
+  transpose: "Ctrl+T",
+  "propagate track labels": "P",
+  "frame next": "Right",
+  "frame prev": "Left",
+  "frame next medium step": "Ctrl+Right",
+  "frame prev medium step": "Ctrl+Left",
+  "frame next large step": "Ctrl+Alt+Right",
+  "frame prev large step": "Ctrl+Alt+Left",
+  export_analysis_current: "Ctrl+Alt+E",
+};
 
 /** PyQt names for actions sleap-app names differently. */
 const PYQT_ALIASES: Record<string, string> = {
@@ -68,7 +122,8 @@ export function toQtKey(binding: string): string {
     .map((t) => {
       if (t === "$mod") return "Ctrl";
       if (t === "Control") return "Meta";
-      if (t === "Meta") return "Meta";
+      // The Windows key (tinykeys Meta off macOS; on macOS ⌘ is $mod).
+      if (t === "Meta") return "Win";
       const letter = t.match(/^Key([A-Z])$/)?.[1];
       if (letter) return letter;
       const digit = t.match(/^Digit(\d)$/)?.[1];
@@ -85,6 +140,8 @@ const QT_MODIFIERS: Record<string, string> = {
   mod: "$mod",
   $mod: "$mod",
   meta: "Control",
+  win: "Meta",
+  super: "Meta",
   control: "Control",
   alt: "Alt",
   option: "Alt",
@@ -148,7 +205,7 @@ export function exportShortcutsYaml(overrides: ShortcutOverrides): string {
     data[action] = keys.length === 0 ? "" : keys.length === 1 ? keys[0] : keys;
   }
   const header =
-    "# SLEAP keyboard shortcuts (Help > Keyboard Shortcuts > Import...).\n" +
+    `${FILE_MARKER} (Help > Keyboard Shortcuts > Import...).\n` +
     "# Same format as SLEAP's shortcuts.yaml: Ctrl is Cmd on macOS, Meta is the Control key on macOS.\n";
   return header + yaml.dump(data, { flowLevel: 1, lineWidth: -1 });
 }
@@ -171,16 +228,20 @@ export interface ImportResult {
  * in turn, the same as assigning it in the dialog: a key another action
  * already has moves to the entry's action. Throws only if the file isn't a
  * YAML mapping at all.
+ *
+ * A file this app exported lists every action, so it's taken as is (`''` =
+ * no key). A legacy PyQt SLEAP shortcuts.yaml only says what the user had
+ * there: an empty entry, or one still on PyQt's default, keeps sleap-app's
+ * default; a changed one replaces the main key but keeps sleap-app's extra
+ * keys (e.g. Ctrl+Shift+arrows for ±100 frames).
  */
-export function parseShortcutsYaml(
-  text: string,
-  opts: { mac?: boolean; nativeMenu?: boolean } = {},
-): ImportResult {
+export function parseShortcutsYaml(text: string, opts: KeyContext = {}): ImportResult {
   const mac = opts.mac ?? isMac;
   const data = yaml.load(text);
   if (!data || typeof data !== "object" || Array.isArray(data)) {
     throw new Error("This isn't a shortcuts file: expected one 'action: key' line per shortcut.");
   }
+  const legacy = !text.trimStart().startsWith(FILE_MARKER);
   let overrides: ShortcutOverrides = {};
   const result: ImportResult = { overrides, count: 0, unknown: [], invalid: [], moved: [] };
   for (const [rawName, value] of Object.entries(data as Record<string, unknown>)) {
@@ -199,12 +260,21 @@ export function parseShortcutsYaml(
       result.invalid.push(`${rawName}: ${texts.join(", ")}`);
       continue;
     }
-    const bindings = [...new Set(keys as string[])];
+    let bindings = [...new Set(keys as string[])];
+    if (legacy) {
+      // Not set in PyQt, or still PyQt's default: keep sleap-app's default.
+      if (bindings.length === 0) continue;
+      const pyqtDefault = PYQT_DEFAULTS[name] !== undefined ? fromQtKey(PYQT_DEFAULTS[name]) : null;
+      if (pyqtDefault && bindings.length === 1 && sameKey(bindings[0], pyqtDefault, mac)) continue;
+      for (const extra of EXTRA_SHORTCUTS[action] ?? []) {
+        if (!bindings.some((k) => sameKey(k, extra, mac))) bindings = [...bindings, extra];
+      }
+    }
     const reserved = bindings
-      .map((k) => findConflict({}, action, k, { mac, nativeMenu: opts.nativeMenu }))
+      .map((k) => findConflict({}, action, k, opts))
       .find((c) => c?.kind === "reserved");
-    if (reserved) {
-      result.invalid.push(`${rawName}: ${texts.join(", ")}`);
+    if (reserved && reserved.kind === "reserved") {
+      result.invalid.push(`${rawName}: ${texts.join(", ")} (reserved for ${reserved.label})`);
       continue;
     }
     // Take each key from whoever has it now, then set the entry's keys.
@@ -234,7 +304,7 @@ export function parseShortcutsYaml(
     const defaults = shortcutBindings(action);
     if (keys.length !== defaults.length || keys.some((k, i) => k !== defaults[i])) clean[action] = keys;
   }
-  result.overrides = clean;
+  result.overrides = withoutDuplicates(clean, mac);
   return result;
 }
 

@@ -9,10 +9,10 @@
 import { useEffect } from "react";
 import { tinykeys } from "tinykeys";
 import { STEP_SIZES, bindActions, type ShortcutOverrides } from "../lib/shortcuts";
-import { EDITABLE_ACTIONS, isEditableAction } from "../lib/shortcutEditing";
+import { EDITABLE_ACTIONS, isEditableAction, sanitizeOverrides } from "../lib/shortcutEditing";
 import { currentAppMenu } from "../lib/menu/useAppMenu";
 import { menuItemForAction } from "../lib/menu/menuShortcuts";
-import { useAppStore } from "../stores/appStore";
+import { useAppStore, PREFERENCES_STORAGE_KEY } from "../stores/appStore";
 import { Track } from "@talmolab/sleap-io.js";
 import { confirmDeleteInstanceAndTrack } from "@/lib/trackDeleteConfirms";
 import { quitApp } from "../lib/quit";
@@ -73,6 +73,25 @@ function leaveNativeMenuShortcuts(bindings: Bindings): Bindings {
   );
 }
 
+/** Inputs you don't type text into: keys there still go to the app. */
+const NON_TEXT_INPUTS = new Set(["range", "checkbox", "radio", "button", "submit", "reset", "color", "file", "image"]);
+
+/**
+ * Whether a key press is typing in a text field. A shortcut without ⌘/Ctrl
+ * (a letter, an arrow, Space) leaves those alone, whatever the user bound.
+ */
+function isTypingTarget(e: KeyboardEvent): boolean {
+  const el = e.target as HTMLElement | null;
+  if (!el) return false;
+  if (el.isContentEditable === true || el.tagName === "TEXTAREA" || el.tagName === "SELECT") return true;
+  return el.tagName === "INPUT" && !NON_TEXT_INPUTS.has((el as HTMLInputElement).type);
+}
+
+/** A binding with ⌘/Ctrl (or the Control key) is a command even while typing. */
+function hasCommandModifier(binding: string): boolean {
+  return binding.split("+").some((t) => t === "$mod" || t === "Control" || t === "Meta");
+}
+
 function isTextInput(e: KeyboardEvent): boolean {
   const tag = (e.target as HTMLElement)?.tagName;
   return tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT" || (e.target as HTMLElement)?.isContentEditable === true;
@@ -113,6 +132,16 @@ export function buildKeyBindings(handlers: Bindings, overrides: ShortcutOverride
     else fixed[name] = handler;
   }
   const out = bindActions({ ...menuFallbacks(new Set(Object.keys(actions))), ...actions }, overrides);
+  // The user can bind plain keys to actions that only ever had ⌘ keys (Fit,
+  // Close, …): never run those while typing in a text field.
+  for (const [key, handler] of Object.entries(out)) {
+    if (!hasCommandModifier(key)) {
+      out[key] = (e) => {
+        if (isTypingTarget(e)) return;
+        handler(e);
+      };
+    }
+  }
   for (const [key, handler] of Object.entries(fixed)) {
     const action = out[key];
     out[key] = action
@@ -195,10 +224,14 @@ export function useKeyboardShortcuts() {
       "goto next suggestion": (e) => {
         if (isTextInput(e)) return;
         e.preventDefault();
+        // A key other than Space acts at once (a ⌘ combo never gets its
+        // keyup on macOS while ⌘ is held).
+        if (e.code !== "Space") commandContext.execute(GoNextSuggestion);
       },
       "goto prev suggestion": (e) => {
         if (isTextInput(e)) return;
         e.preventDefault();
+        if (e.code !== "Space") commandContext.execute(GoPrevSuggestion);
       },
 
       // Go to last interacted frame
@@ -616,12 +649,13 @@ export function useKeyboardShortcuts() {
       },
     }, overrides)));
 
-    // Suggestion navigation fires on Space/Shift+Space *release*, not press,
-    // and only if no pan-drag happened while Space was held (see
-    // spacePanTracking.ts) -- see the preventDefault-only stubs above.
+    // Suggestion navigation on Space/Shift+Space fires on *release*, not
+    // press, and only if no pan-drag happened while Space was held (see
+    // spacePanTracking.ts) -- see the stubs above. Only the Space keys are
+    // bound here; any other key the user gives these actions acts on press.
     const unsubscribeSuggestionNav = tinykeys(
       window,
-      bindActions<(e: KeyboardEvent) => void>({
+      onlySpaceKeys(bindActions<(e: KeyboardEvent) => void>({
         "goto next suggestion": (e) => {
           if (isTextInput(e)) return;
           if (spacePanState.draggedWhileHeld) return;
@@ -632,7 +666,7 @@ export function useKeyboardShortcuts() {
           if (spacePanState.draggedWhileHeld) return;
           commandContext.execute(GoPrevSuggestion);
         },
-      }, overrides),
+      }, overrides)),
       { event: "keyup" }
     );
 
@@ -641,4 +675,36 @@ export function useKeyboardShortcuts() {
       unsubscribeSuggestionNav();
     };
   }, [overrides]);
+
+  // Another window saved new shortcuts: take them, so this window neither
+  // keeps the old keys nor writes them back over the new ones.
+  useEffect(() => syncShortcutsAcrossWindows(), []);
+}
+
+/** The bindings whose key is Space (with any modifiers). */
+function onlySpaceKeys(bindings: Bindings): Bindings {
+  return Object.fromEntries(Object.entries(bindings).filter(([key]) => key.split("+").includes("Space")));
+}
+
+/**
+ * Follow shortcut changes saved by another window (desktop windows and
+ * browser tabs share the preferences in localStorage). Returns unsubscribe.
+ */
+export function syncShortcutsAcrossWindows(): () => void {
+  if (typeof window === "undefined") return () => {};
+  const onStorage = (e: StorageEvent) => {
+    if (e.key !== PREFERENCES_STORAGE_KEY || !e.newValue) return;
+    let saved: unknown;
+    try {
+      saved = (JSON.parse(e.newValue) as { state?: { shortcutOverrides?: unknown } }).state?.shortcutOverrides;
+    } catch {
+      return;
+    }
+    const next = sanitizeOverrides(saved);
+    if (JSON.stringify(next) !== JSON.stringify(useAppStore.getState().shortcutOverrides)) {
+      useAppStore.getState().set("shortcutOverrides", next);
+    }
+  };
+  window.addEventListener("storage", onStorage);
+  return () => window.removeEventListener("storage", onStorage);
 }

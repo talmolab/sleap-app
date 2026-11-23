@@ -8,9 +8,12 @@
 
 import { describe, it, expect, beforeEach, afterEach, beforeAll } from "../bun-test";
 import { render, renderHook, screen, fireEvent, cleanup, act, waitFor } from "@testing-library/react";
-import { useAppStore, PERSISTED_KEYS, type AppState } from "@/stores/appStore";
+import { useAppStore, PERSISTED_KEYS, PREFERENCES_STORAGE_KEY, type AppState } from "@/stores/appStore";
 import { useConfirmStore } from "@/stores/confirmStore";
-import { useKeyboardShortcuts } from "@/hooks/useKeyboardShortcuts";
+import { useKeyboardShortcuts, syncShortcutsAcrossWindows } from "@/hooks/useKeyboardShortcuts";
+import { ownedShortcuts } from "@/lib/menu/useNativeMenu";
+import { shortcutText } from "@/lib/shortcutPrefs";
+import { commandContext } from "@/commands";
 import { DEFAULT_SHORTCUTS, shortcutBindings } from "@/lib/shortcuts";
 import {
   EDITABLE_ACTIONS,
@@ -22,6 +25,7 @@ import {
   findConflict,
   keyFromEvent,
   resetShortcut,
+  reservedKeyLabel,
   sanitizeOverrides,
 } from "@/lib/shortcutEditing";
 import { exportShortcutsYaml, fromQtKey, parseShortcutsYaml, toQtKey } from "@/lib/shortcutsFile";
@@ -32,6 +36,55 @@ import { toNativeSpec, type NativeNode } from "@/lib/menu/nativeMenu";
 import { searchableCommands } from "@/lib/menu/searchable";
 import { resetPreferencesToDefaults } from "@/lib/preferences";
 import { ShortcutsDialog } from "@/components/dialogs/ShortcutsDialog";
+
+/** PyQt SLEAP's sleap/config/shortcuts.yaml (develop), verbatim. */
+const PYQT_DEFAULT_YAML = `add instance: Ctrl+I
+add videos: 
+clear selection: Esc
+close: Ctrl+Q
+color predicted: 
+delete area: Ctrl+K
+delete clip:
+delete instance: Ctrl+Backspace
+delete track: Ctrl+Shift+Backspace
+export clip:
+fit: Ctrl+=
+goto frame: Ctrl+J
+goto marked: Ctrl+Shift+M
+goto last interacted: Ctrl+A
+goto next suggestion: Space
+goto next track spawn: Ctrl+E
+goto next user: Ctrl+U
+goto prev user: Ctrl+Shift+U
+goto next labeled: Alt+Right
+goto prev suggestion: Shift+Space
+goto prev labeled: Alt+Left
+learning: Ctrl+L
+mark negative: 'N'
+merge instance:
+new: Ctrl+N
+next video: Alt+Shift+Right
+open: Ctrl+O
+prev video: Alt+Shift+Left
+save as: Ctrl+Shift+S
+save: Ctrl+S
+select next: '\`'
+select to frame: Ctrl+Shift+J
+show instances: H
+show non-visible nodes: Shift+V
+show edges: Ctrl+Shift+Tab
+show labels: Ctrl+Tab
+show trails: 
+transpose: Ctrl+T
+propagate track labels: P
+frame next: Right
+frame prev: Left
+frame next medium step: Ctrl+Right
+frame prev medium step: Ctrl+Left
+frame next large step: Ctrl+Alt+Right
+frame prev large step: Ctrl+Alt+Left
+export_analysis_current: Ctrl+Alt+E
+`;
 
 // tinykeys reads $mod as ⌘ on Apple platforms, Ctrl elsewhere; press the same.
 const MAC = /Mac|iPod|iPhone|iPad/.test(navigator.platform);
@@ -198,16 +251,16 @@ describe("conflicts", () => {
 
   // On Windows/Linux Ctrl+Tab and $mod+Tab are the same keys; on macOS they aren't.
   it("compares keys as the platform sees them", () => {
-    expect(findConflict({}, "add track", "$mod+Tab", { mac: false })).toEqual({ kind: "action", action: "show labels" });
-    expect(findConflict({}, "add track", "$mod+Tab", { mac: true })).toBeNull();
+    expect(findConflict({}, "add track", "$mod+Tab", { mac: false, web: false })).toEqual({ kind: "action", action: "show labels" });
+    expect(findConflict({}, "add track", "$mod+Shift+KeyY", { mac: true, web: false })).toBeNull();
   });
 
   // Undo, the track digits and (on the macOS desktop) ⌘Q can't be taken.
   it("refuses keys that can't be reassigned", () => {
     expect(findConflict({}, "add track", "$mod+KeyZ", { mac: true })).toEqual({ kind: "reserved", label: "Undo" });
     expect(findConflict({}, "add track", "$mod+Digit3", { mac: true })?.kind).toBe("reserved");
-    expect(findConflict({}, "add track", "$mod+KeyQ", { mac: true, nativeMenu: true })).toEqual({ kind: "reserved", label: "Quit SLEAP" });
-    expect(findConflict({}, "close", "$mod+KeyQ", { mac: true, nativeMenu: true })).toBeNull();
+    expect(findConflict({}, "add track", "$mod+KeyQ", { mac: true, nativeMenu: true, web: false })).toEqual({ kind: "reserved", label: "Quit SLEAP" });
+    expect(findConflict({}, "close", "$mod+KeyQ", { mac: true, nativeMenu: true, web: false })).toBeNull();
   });
 
   // Resetting one action can need a key another has since taken: say so, then move it back.
@@ -393,37 +446,171 @@ describe("shortcuts.yaml", () => {
     expect(back.unknown).toEqual([]);
   });
 
-  // A PyQt SLEAP shortcuts.yaml imports: its names, its keys, and where it
-  // differs from sleap-app (P = Propagate) the key moves, as in the dialog.
-  it("imports a PyQt shortcuts.yaml", () => {
-    const pyqt = [
-      "add instance: Ctrl+I",
-      "add videos: ",
-      "delete area: Ctrl+K",
-      "goto marked: Ctrl+Shift+M",
-      "mark negative: 'N'",
-      "merge instance:",
-      "select next: '`'",
-      "show labels: Ctrl+Tab",
-      "propagate track labels: P",
-      "frame next large step: Ctrl+Alt+Right",
-      "clear selection: Esc",
-    ].join("\n");
-    const r = parseShortcutsYaml(pyqt, { mac: true });
-    expect(r.unknown).toEqual(["add videos"]);
-    expect(r.invalid).toEqual([]);
+  // Importing PyQt SLEAP's own default shortcuts.yaml must change nothing:
+  // its entries are either empty or PyQt's defaults, which sleap-app has
+  // replaced with its own (T for node names, Shift+M merge, Ctrl+Shift+arrows).
+  it("keeps sleap-app's keys when importing PyQt's default shortcuts.yaml", () => {
+    const r = parseShortcutsYaml(PYQT_DEFAULT_YAML, { mac: true, web: false });
+    expect(r.overrides).toEqual({});
+    expect(r.moved).toEqual([]);
+    expect(r.unknown).toEqual(["add videos", "show trails"]);
+    expect(shortcutBindings("show labels", r.overrides)).toEqual(["KeyT", "Control+Tab"]);
+    expect(shortcutBindings("merge instance", r.overrides)).toEqual(["Shift+KeyM"]);
+    expect(shortcutBindings("frame next large step", r.overrides)).toEqual(["$mod+Shift+ArrowRight", "$mod+Alt+ArrowRight"]);
+  });
+
+  // A key the user changed in PyQt comes across (with PyQt names), keeps
+  // sleap-app's extra key, and moves a key another action had.
+  it("imports the keys a PyQt user changed", () => {
+    const r = parseShortcutsYaml(
+      ["delete area: Ctrl+G", "frame next large step: Alt+PgDown", "goto next labeled: P", "merge instance:"].join("\n"),
+      { mac: true, web: false },
+    );
     expect(r.overrides).toEqual({
-      "merge instance": [],
-      "show labels": ["$mod+Tab"],
-      "propagate track labels": ["KeyP"],
+      "delete area predictions": ["$mod+KeyG"],
+      "frame next large step": ["Alt+PageDown", "$mod+Alt+ArrowRight"],
+      "goto next labeled": ["KeyP"],
       "toggle pan mode": [],
-      "frame next large step": ["$mod+Alt+ArrowRight"],
     });
-    expect(r.moved).toEqual([{ key: "KeyP", from: "toggle pan mode", to: "propagate track labels" }]);
+    expect(r.moved).toEqual([{ key: "KeyP", from: "toggle pan mode", to: "goto next labeled" }]);
+  });
+
+  // A legacy key this platform keeps for itself (⌘Tab is the macOS app switcher) is refused, not imported dead.
+  it("refuses reserved keys from a legacy file", () => {
+    const r = parseShortcutsYaml("fit: Ctrl+Tab", { mac: true, web: false });
+    expect(r.overrides).toEqual({});
+    expect(r.invalid[0]).toContain("the macOS app switcher");
+  });
+
+  // The Windows key survives a round trip instead of turning into Ctrl.
+  it("writes the Windows key as Win", () => {
+    expect(toQtKey("Meta+KeyX")).toBe("Win+X");
+    expect(fromQtKey("Win+X")).toBe("Meta+KeyX");
   });
 
   // A file that isn't a shortcuts file says so instead of resetting everything.
   it("rejects a file that isn't a mapping", () => {
     expect(() => parseShortcutsYaml("- a\n- b")).toThrow();
+  });
+});
+
+describe("review fixes", () => {
+  // Fit used to be ⌘= only; bound to a plain D it must not fire while typing
+  // (here in a text field), but still work on the canvas.
+  it("doesn't run plain-key actions while typing in a text field", () => {
+    useAppStore.setState({ shortcutOverrides: { fit: ["KeyD"] } });
+    renderHook(() => useKeyboardShortcuts());
+    const input = document.createElement("input");
+    document.body.appendChild(input);
+    input.focus();
+    const before = useAppStore.getState().fit;
+    const ev = new KeyboardEvent("keydown", { code: "KeyD", key: "d", bubbles: true, cancelable: true });
+    act(() => void input.dispatchEvent(ev));
+    expect(useAppStore.getState().fit).toBe(before);
+    expect(ev.defaultPrevented).toBe(false);
+    press("KeyD");
+    expect(useAppStore.getState().fit).toBe(!before);
+    input.remove();
+  });
+
+  // ⌘ shortcuts are commands, so they still work from a text field.
+  it("still runs ⌘ shortcuts from a text field", () => {
+    useAppStore.setState({ shortcutOverrides: { "goto frame": ["$mod+KeyG"] } });
+    renderHook(() => useKeyboardShortcuts());
+    const input = document.createElement("input");
+    document.body.appendChild(input);
+    input.focus();
+    act(() =>
+      void input.dispatchEvent(
+        new KeyboardEvent("keydown", { code: "KeyG", key: "g", metaKey: MAC, ctrlKey: !MAC, bubbles: true, cancelable: true }),
+      ),
+    );
+    expect(useAppStore.getState().goToFrameDialogOpen).toBe(true);
+    input.remove();
+  });
+
+  // A saved key that's also another action's default (from another window,
+  // an older build or a hand edit) must not leave both bound: the saved one
+  // wins and the default action loses it, so R doesn't silently do two things.
+  it("resolves a key on two actions when loading", () => {
+    const merge = useAppStore.persist.getOptions().merge!;
+    const state = merge({ shortcutOverrides: { "show instances": ["KeyR"] } }, useAppStore.getInitialState()) as AppState;
+    expect(state.shortcutOverrides).toEqual({ "show instances": ["KeyR"], "reset view": [] });
+    expect(duplicateKeys(state.shortcutOverrides)).toEqual([]);
+  });
+
+  // On the macOS desktop app Quit lives only in the SLEAP menu (⌘Q): a key
+  // the user moves Close to must stay with the app's handler, not be skipped
+  // as menu-owned.
+  it("doesn't treat Close's own key as native-menu owned", () => {
+    useAppStore.setState({ shortcutOverrides: { close: ["$mod+KeyG"] } });
+    const owned = ownedShortcuts(currentAppMenu());
+    expect(owned).toContain("$mod+KeyQ");
+    expect(owned).not.toContain("$mod+KeyG");
+    expect(owned).toContain("$mod+KeyS");
+  });
+
+  // Keys the browser or macOS keep never reach the app: refuse them up front.
+  it("refuses keys the browser or macOS keep", () => {
+    expect(reservedKeyLabel("$mod+KeyW", "add track", { mac: false, web: true })).toBe("closing the browser tab");
+    expect(reservedKeyLabel("$mod+KeyT", "add track", { mac: true, web: true })).toBe("opening a browser tab");
+    const desktop = { mac: true, web: false, nativeMenu: true };
+    expect(reservedKeyLabel("$mod+KeyH", "add track", desktop)).toBe("Hide SLEAP");
+    expect(reservedKeyLabel("$mod+Alt+KeyH", "add track", desktop)).toBe("Hide Others");
+    expect(reservedKeyLabel("$mod+KeyM", "add track", desktop)).toBe("Minimize (Window menu)");
+    expect(reservedKeyLabel("$mod+KeyW", "add track", desktop)).toBe("Close Window (Window menu)");
+    expect(reservedKeyLabel("$mod+Tab", "add track", desktop)).toBe("the macOS app switcher");
+    expect(reservedKeyLabel("Alt+F4", "add track", { mac: false, web: false })).toBe("closing the window");
+    // An action can keep its own default (Mark Frame is ⌘M; Transpose ⌘T).
+    expect(reservedKeyLabel("$mod+KeyM", "mark frame", desktop)).toBeNull();
+    expect(reservedKeyLabel("$mod+KeyT", "transpose", { mac: true, web: true })).toBeNull();
+    // On the desktop app the browser's keys are free.
+    expect(reservedKeyLabel("$mod+KeyT", "add track", { mac: false, web: false })).toBeNull();
+  });
+
+  // Holding Space pans the view, so only the suggestion keys may use it.
+  it("keeps Space for panning and the suggestion keys", () => {
+    expect(reservedKeyLabel("Space", "show instances", { mac: true })).toBe("panning (hold Space and drag)");
+    expect(reservedKeyLabel("Space", "goto prev suggestion", { mac: true })).toBeNull();
+  });
+
+  // A ⌘ key for Next Suggestion acts on press (macOS sends no keyup while ⌘ is held).
+  it("runs a non-Space suggestion key on press", () => {
+    useAppStore.setState({ shortcutOverrides: { "goto next suggestion": ["$mod+KeyG"] } });
+    renderHook(() => useKeyboardShortcuts());
+    const ran: string[] = [];
+    const original = commandContext.execute.bind(commandContext);
+    commandContext.execute = ((cmd: { name?: string; label?: string }) => {
+      ran.push(String(cmd.label ?? cmd.name));
+    }) as never;
+    try {
+      press("KeyG", { mod: true });
+    } finally {
+      commandContext.execute = original;
+    }
+    expect(ran).toHaveLength(1);
+  });
+
+  // Shortcuts saved in another window reach this one, so this window
+  // neither keeps the old keys nor writes them back over the new ones.
+  it("takes shortcuts saved by another window", () => {
+    const stop = syncShortcutsAcrossWindows();
+    act(() => {
+      window.dispatchEvent(
+        new StorageEvent("storage", {
+          key: PREFERENCES_STORAGE_KEY,
+          newValue: JSON.stringify({ state: { shortcutOverrides: { save: ["$mod+KeyG"] } }, version: 0 }),
+        }),
+      );
+    });
+    stop();
+    expect(useAppStore.getState().shortcutOverrides).toEqual({ save: ["$mod+KeyG"] });
+  });
+
+  // Hints (Labeling Tips, labeling hints, Label QC Review) name the user's key.
+  it("names the user's key in hints", () => {
+    useAppStore.setState({ shortcutOverrides: { "merge instance": ["KeyG"], "add instance": [] } });
+    expect(shortcutText("merge instance")).toBe("G");
+    expect(shortcutText("add instance")).toBe("no key");
   });
 });

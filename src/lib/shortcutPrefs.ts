@@ -6,6 +6,7 @@
 
 import { useAppStore } from "@/stores/appStore";
 import { mainShortcut, shortcutBindings } from "./shortcuts";
+import { formatShortcut } from "./formatShortcut";
 import { keyFromEvent, sameKey } from "./shortcutEditing";
 
 /** Every key bound to an action now. */
@@ -27,4 +28,9 @@ export function useShortcut(action: string): string {
 export function eventMatchesAction(e: KeyboardEvent, action: string): boolean {
   const pressed = keyFromEvent(e);
   return pressed !== null && currentShortcuts(action).some((binding) => sameKey(binding, pressed));
+}
+
+/** An action's key as shown in hints ("⌘I"), or "no key" if the user removed it. */
+export function shortcutText(action: string): string {
+  return formatShortcut(currentShortcut(action)) || "no key";
 }

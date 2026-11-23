@@ -10,7 +10,8 @@
  * it loads, and tests can pass the platform in.
  */
 
-import { isMac } from "./platform";
+import { isMac, isTauri } from "./platform";
+import { NATIVE_MENU_BAR } from "./menu/nativeMenuBar";
 import {
   defaultShortcutBindings,
   shortcutBindings,
@@ -174,21 +175,92 @@ const RESERVED: Record<string, string> = {
   ),
 };
 
-/**
- * What a reserved key does, or null if it's free to assign. On the macOS
- * desktop app ⌘Q always quits (SLEAP ▸ Quit SLEAP in the app menu), so only
- * Close can have it there.
- */
-export function reservedKeyLabel(
-  key: string,
-  action: string,
-  opts: { mac?: boolean; nativeMenu?: boolean } = {},
-): string | null {
-  const mac = opts.mac ?? isMac;
-  for (const [reserved, label] of Object.entries(RESERVED)) {
+/** Where the app is running, for the keys the system or browser keeps. */
+export interface KeyContext {
+  /** macOS (⌘ is $mod). Default: this computer. */
+  mac?: boolean;
+  /** The macOS desktop app, whose native app and Window menus own some keys. */
+  nativeMenu?: boolean;
+  /** A web browser (not the desktop app), which keeps its tab/window keys. */
+  web?: boolean;
+}
+
+/** Keys macOS itself takes before any app sees them. */
+const MAC_SYSTEM: Record<string, string> = {
+  "$mod+Tab": "the macOS app switcher",
+  "$mod+Shift+Tab": "the macOS app switcher",
+  "$mod+Space": "Spotlight",
+  "$mod+Backquote": "switching windows",
+};
+
+/** The macOS desktop app's own menu items (SLEAP and Window menus, app_menu.rs). */
+const MAC_APP_MENU: Record<string, string> = {
+  "$mod+KeyQ": "Quit SLEAP",
+  "$mod+KeyH": "Hide SLEAP",
+  "$mod+Alt+KeyH": "Hide Others",
+  "$mod+KeyM": "Minimize (Window menu)",
+  "$mod+KeyW": "Close Window (Window menu)",
+};
+
+/** Keys browsers keep for themselves: the page never gets them. */
+const BROWSER: Record<string, string> = {
+  "$mod+KeyW": "closing the browser tab",
+  "$mod+Shift+KeyW": "closing the browser window",
+  "$mod+KeyT": "opening a browser tab",
+  "$mod+Shift+KeyT": "reopening a browser tab",
+  "$mod+KeyN": "opening a browser window",
+  "$mod+Shift+KeyN": "opening a private browser window",
+  "Control+Tab": "switching browser tabs",
+  "Control+Shift+Tab": "switching browser tabs",
+};
+
+/** More browser keys on macOS (⌥⌘←/→ switch tabs, ⌘Q quits the browser). */
+const MAC_BROWSER: Record<string, string> = {
+  "$mod+Alt+ArrowLeft": "switching browser tabs",
+  "$mod+Alt+ArrowRight": "switching browser tabs",
+  "$mod+KeyQ": "quitting the browser",
+};
+
+/** Windows/Linux window keys. */
+const OTHER_SYSTEM: Record<string, string> = {
+  "Alt+F4": "closing the window",
+};
+
+/** The actions that may have Space (it also pans the view while held). */
+const SPACE_ACTIONS = new Set(["goto next suggestion", "goto prev suggestion"]);
+
+function lookup(table: Record<string, string>, key: string, mac: boolean): string | null {
+  for (const [reserved, label] of Object.entries(table)) {
     if (sameKey(reserved, key, mac)) return label;
   }
-  if (opts.nativeMenu && action !== "close" && sameKey("$mod+KeyQ", key, mac)) return "Quit SLEAP";
+  return null;
+}
+
+/**
+ * What a key is reserved for, or null if it's free to assign: keys the app
+ * always uses (Undo, …), Space (hold-to-pan) for anything but the suggestion
+ * keys, and keys the system, the browser or the macOS desktop app's own menus
+ * keep. An action may always keep its own default keys, even where the
+ * platform takes one (e.g. ⌘N in a browser): that's no worse than today.
+ */
+export function reservedKeyLabel(key: string, action: string, opts: KeyContext = {}): string | null {
+  const mac = opts.mac ?? isMac;
+  const nativeMenu = opts.nativeMenu ?? NATIVE_MENU_BAR;
+  const web = opts.web ?? !isTauri;
+  const fixed = lookup(RESERVED, key, mac);
+  if (fixed) return fixed;
+  if (key.split("+").includes("Space") && !SPACE_ACTIONS.has(action)) return "panning (hold Space and drag)";
+  if (defaultShortcutBindings(action).some((k) => sameKey(k, key, mac))) return null;
+  const tables = [
+    ...(mac ? [MAC_SYSTEM] : [OTHER_SYSTEM]),
+    ...(mac && nativeMenu ? [MAC_APP_MENU] : []),
+    ...(web ? [BROWSER] : []),
+    ...(web && mac ? [MAC_BROWSER] : []),
+  ];
+  for (const table of tables) {
+    const label = lookup(table, key, mac);
+    if (label) return label;
+  }
   return null;
 }
 
@@ -204,7 +276,7 @@ export function findConflict(
   overrides: ShortcutOverrides,
   action: string,
   key: string,
-  opts: { mac?: boolean; nativeMenu?: boolean } = {},
+  opts: KeyContext = {},
 ): ShortcutConflict | null {
   const mac = opts.mac ?? isMac;
   const reserved = reservedKeyLabel(key, action, opts);
@@ -327,13 +399,34 @@ const BINDING = /^(\$mod\+|Control\+|Meta\+|Alt\+|Shift\+)*[A-Za-z][A-Za-z0-9]*$
  * editable actions, each a list of well-formed bindings. Anything else is
  * dropped (the action keeps its default), never an error.
  */
-export function sanitizeOverrides(value: unknown): ShortcutOverrides {
+export function sanitizeOverrides(value: unknown, mac: boolean = isMac): ShortcutOverrides {
   if (!value || typeof value !== "object" || Array.isArray(value)) return {};
   let out: ShortcutOverrides = {};
   for (const [action, keys] of Object.entries(value as Record<string, unknown>)) {
     if (!EDITABLE.has(action) || !Array.isArray(keys)) continue;
     if (!keys.every((k) => typeof k === "string" && k.length <= 64 && BINDING.test(k))) continue;
     out = setKeys(out, action, [...new Set((keys as string[]).map(canonicalKey))]);
+  }
+  return withoutDuplicates(out, mac);
+}
+
+/**
+ * Make sure no key is on two actions (saved settings from another window, an
+ * older build or a hand edit can put one there; tinykeys would then run only
+ * the last handler). The user's own keys win, in the order they were saved;
+ * an action still on its defaults loses the shared key.
+ */
+export function withoutDuplicates(overrides: ShortcutOverrides, mac: boolean = isMac): ShortcutOverrides {
+  const taken = new Set<string>();
+  let out = { ...overrides };
+  const keep = (action: string, keys: string[]) => {
+    const kept = keys.filter((k) => !taken.has(resolveKey(k, mac)));
+    for (const k of kept) taken.add(resolveKey(k, mac));
+    if (kept.length !== keys.length) out = setKeys(out, action, kept);
+  };
+  for (const action of Object.keys(overrides)) keep(action, overrides[action]);
+  for (const action of EDITABLE_ACTIONS) {
+    if (!Object.hasOwn(overrides, action)) keep(action, defaultShortcutBindings(action));
   }
   return out;
 }

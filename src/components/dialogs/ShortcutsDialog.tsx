@@ -35,7 +35,6 @@ import {
 import { formatShortcut } from "@/lib/formatShortcut";
 import { CANVAS_GESTURES } from "@/lib/canvasGestures";
 import { QC_REVIEW_KEYS } from "@/lib/qcReview";
-import { NATIVE_MENU_BAR } from "@/lib/menu/nativeMenuBar";
 import { downloadFile } from "@/lib/exportUtils";
 import { toast } from "@/lib/notify";
 import { getPlatform } from "@/platform/index";
@@ -133,10 +132,10 @@ export function ShortcutsDialog({ open, onOpenChange }: ShortcutsDialogProps) {
   }, [open]);
 
   const tryAssign = useCallback(async (action: string, key: string) => {
-    const conflict = findConflict(draft, action, key, { nativeMenu: NATIVE_MENU_BAR });
+    const conflict = findConflict(draft, action, key);
     const shown = formatShortcut(key);
     if (conflict?.kind === "reserved") {
-      setMessage({ text: `${shown} is ${conflict.label}, which can't be changed. Pick another key.`, error: true });
+      setMessage({ text: `${shown} is reserved for ${conflict.label} and can't be used here. Pick another key.`, error: true });
       return;
     }
     if (conflict?.kind === "action") {
@@ -224,7 +223,7 @@ export function ShortcutsDialog({ open, onOpenChange }: ShortcutsDialogProps) {
     try {
       const text = await readShortcutsFile();
       if (text == null) return;
-      const result = parseShortcutsYaml(text, { nativeMenu: NATIVE_MENU_BAR });
+      const result = parseShortcutsYaml(text);
       setDraft(result.overrides);
       const lines = [
         `Imported ${result.count} shortcut${result.count === 1 ? "" : "s"}; the rest are the defaults. Save to keep them.`,

@@ -813,6 +813,9 @@ export interface AppState {
 /** View ▸ zoom modes that keep applying as you move around (see `setZoomMode`). */
 export type ZoomMode = "fit" | "followSelection" | "actualSize";
 
+/** The localStorage key the preferences are saved under. */
+export const PREFERENCES_STORAGE_KEY = "sleap-app-preferences";
+
 /** Keys persisted to localStorage for user preferences. */
 export const PERSISTED_KEYS: (keyof AppState)[] = [
   "palette",
@@ -2094,7 +2097,7 @@ export const useAppStore = create<AppState>()(
         }),
     })),
     {
-      name: "sleap-app-preferences",
+      name: PREFERENCES_STORAGE_KEY,
       partialize: (state) =>
         Object.fromEntries(
           PERSISTED_KEYS.map((key) => [key, state[key]])
