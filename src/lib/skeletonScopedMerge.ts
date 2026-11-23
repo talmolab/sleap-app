@@ -5,8 +5,10 @@
  * mode only touches that skeleton's predictions: re-running the mouse model
  * with "replace" must not wipe the pellet predictions on the same frames.
  *
- * Used by `MergePredictions` (editCommands.ts) when the project really has
- * several skeletons. Single-skeleton projects keep the plain io merge.
+ * Used by `MergePredictions` (editCommands.ts) whenever the project holds
+ * several structurally different skeleton objects — even one nothing uses
+ * yet: a plain io merge there could wipe another skeleton's predictions.
+ * Projects with one skeleton (or identical duplicates) keep the plain merge.
  */
 
 import {
@@ -19,9 +21,8 @@ import {
   type Video,
 } from "@talmolab/sleap-io.js";
 import { frameHasContent } from "@/lib/frameLabeling";
-import { hasMultipleSkeletons } from "@/lib/multiSkeleton";
-import { distinctProjectSkeletons, sameNodeNames } from "@/lib/multiSkeletonInference";
-import { sameSkeletonStructure } from "@/lib/skeletonStructure";
+import { matchModelSkeleton, sameNodeNames, skeletonsInUse } from "@/lib/multiSkeletonInference";
+import { sameSkeletonStructure, structuralGroups } from "@/lib/skeletonStructure";
 
 type ExistingMode = "clear_all" | "replace" | "keep";
 
@@ -50,6 +51,33 @@ class NodeNameSkeletonMatcher extends SkeletonMatcher {
   }
 }
 
+/**
+ * Rename `predictions`' tracks whose names another skeleton's instances use
+ * in `project`, so merging by track name never puts a mouse and a pellet on
+ * one track. See {@link mergePredictionsForSkeleton}.
+ */
+function separateTracks(project: Labels, predictions: Labels, target: Skeleton): void {
+  const otherNames = new Set<string>();
+  for (const lf of project.labeledFrames) {
+    for (const inst of lf.instances) {
+      if (inst.track && !sameSkeletonStructure(inst.skeleton, target)) otherNames.add(inst.track.name);
+    }
+  }
+  if (otherNames.size === 0) return;
+  const prefix = (target.name?.trim() || "skeleton").replace(/\s+/g, "_");
+  const renamed = new Set<object>();
+  for (const lf of predictions.labeledFrames) {
+    for (const inst of lf.instances) {
+      const track = inst.track;
+      if (!track || renamed.has(track) || !otherNames.has(track.name)) continue;
+      let name = `${prefix}_${track.name}`;
+      for (let n = 2; otherNames.has(name); n++) name = `${prefix}_${track.name}_${n}`;
+      renamed.add(track);
+      track.name = name;
+    }
+  }
+}
+
 /** Skeletons the predictions' instances actually use. */
 function usedSkeletons(predictions: Labels): Skeleton[] {
   const used = new Set<Skeleton>();
@@ -58,22 +86,35 @@ function usedSkeletons(predictions: Labels): Skeleton[] {
 }
 
 /**
- * The project skeleton `predictions` belong to, when the project has several
- * skeletons and every skeleton the predictions use has the node names of
- * exactly one project skeleton. Null otherwise (single-skeleton project, or
- * nothing to decide — the caller keeps the plain merge).
+ * True when `project` holds several structurally different skeleton objects
+ * (used or not) — then predictions are only ever merged under ONE skeleton
+ * ({@link mergePredictionsForSkeleton}), never with the plain io merge.
  */
-export function resolvePredictionsSkeleton(project: Labels, predictions: Labels): Skeleton | null {
-  if (!hasMultipleSkeletons(project)) return null;
+export function needsSkeletonScopedMerge(project: Pick<Labels, "skeletons">): boolean {
+  return project.skeletons.length > 1 && structuralGroups(project.skeletons).length > 1;
+}
+
+/**
+ * The project skeleton `predictions` belong to: the one whose node names
+ * every skeleton the predictions use shares (ties go to the skeleton in use —
+ * see `matchModelSkeleton`). Null when the project needs no scoped merge, the
+ * predictions hold no instances, or no single skeleton matches.
+ */
+export function resolvePredictionsSkeleton(
+  project: Labels,
+  predictions: Labels,
+  active?: Skeleton | null,
+): Skeleton | null {
+  if (!needsSkeletonScopedMerge(project)) return null;
   const used = usedSkeletons(predictions);
   if (used.length === 0) return null;
-  const candidates = distinctProjectSkeletons(project.skeletons);
+  const inUse = skeletonsInUse(project, active);
   let target: Skeleton | null = null;
   for (const sk of used) {
-    const matches = candidates.filter((c) => sameNodeNames(c.nodeNames, sk.nodeNames));
-    if (matches.length !== 1) return null;
-    if (target && target !== matches[0]) return null;
-    target = matches[0];
+    const match = matchModelSkeleton(sk.nodeNames, project.skeletons, inUse);
+    if (!match.ok) return null;
+    if (target && target !== match.skeleton) return null;
+    target = match.skeleton;
   }
   return target;
 }
@@ -96,6 +137,11 @@ export function predictionsSkeletonProblem(predictions: Labels, target: Skeleton
  *    Other skeletons' predictions and every user instance stay.
  *  - predicted boxes/centroids/masks are replaced only where the run produced
  *    that kind of annotation.
+ *  - tracks stay per skeleton: sleap-nn names tracks `track_0…` in every run,
+ *    so a new track whose name a DIFFERENT skeleton's instance already uses is
+ *    renamed `<skeleton>_<name>` (e.g. `pellet_track_0`) before merging by
+ *    name. Names only this skeleton uses (or nobody) still match by name, so
+ *    re-runs and ID models' class tracks keep their tracks.
  * Throws (before changing anything) when a predictions skeleton's node
  * names differ from `target`'s — see {@link predictionsSkeletonProblem}.
  */
@@ -140,6 +186,8 @@ export async function mergePredictionsForSkeleton(
     }
     project.labeledFrames = project.labeledFrames.filter(frameHasContent);
   }
+
+  separateTracks(project, predictions, target);
 
   return project.merge(predictions, {
     skeleton: new NodeNameSkeletonMatcher(target),

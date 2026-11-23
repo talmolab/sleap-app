@@ -51,10 +51,14 @@ import { InferenceConfigDialog } from "@/components/dialogs/InferenceConfigDialo
 import { LogTerminalDialog } from "@/components/monitors/LogTerminalDialog";
 import { hasMultipleSkeletons } from "@/lib/multiSkeleton";
 import {
+  forgetFailedModelReads,
+  localRunScope,
   planMultiSkeletonInference,
   readModelInfo,
+  remoteMixedFramesProblem,
   remoteMultiSkeletonTargetProblem,
   runSpecsFromPlan,
+  skeletonsInUse,
   SKELETON_PIPELINE_LABELS,
   type ModelInfo,
 } from "@/lib/multiSkeletonInference";
@@ -616,7 +620,11 @@ function InferencePanelContent() {
         const { pickModelsForSkeletons } = await import("@/lib/multiSkeletonInference");
         const infos = await Promise.all(models.map((m) => readModelInfo(m.path, readLocalText)));
         if (cancelled) return;
-        picked = pickModelsForSkeletons(infos, projectLabels.skeletons);
+        picked = pickModelsForSkeletons(
+          infos,
+          projectLabels.skeletons,
+          skeletonsInUse(projectLabels, useAppStore.getState().skeleton),
+        );
       } else {
         picked = pickModelsForPipeline(models, pipeline);
       }
@@ -648,6 +656,16 @@ function InferencePanelContent() {
   // worker's copy over Connect), to match it to a project skeleton.
   const [modelInfos, setModelInfos] = useState<Record<string, ModelInfo>>({});
   const activePaths = remoteEnabled ? remoteModelPaths : modelPaths;
+  // Local and worker paths are different files: re-read on switching.
+  useEffect(() => {
+    setModelInfos({});
+  }, [remoteEnabled, selectedWorkerId]);
+  // A model whose config couldn't be read is retried when it's added again
+  // (or via its Retry link): forget failed reads once the path is removed.
+  useEffect(() => {
+    setModelInfos((prev) => forgetFailedModelReads(prev, activePaths));
+  }, [activePaths]);
+  const retryModelInfo = (path: string) => setModelInfos((prev) => forgetFailedModelReads(prev, [], [path]));
   useEffect(() => {
     if (!multiSkeleton) return;
     const unread = activePaths.filter((p) => !(p in modelInfos));
@@ -668,10 +686,11 @@ function InferencePanelContent() {
     const plan = planMultiSkeletonInference(
       activePaths.filter((p) => p in modelInfos).map((p) => modelInfos[p]),
       labels.skeletons,
+      skeletonsInUse(labels, skeleton),
     );
     return { plan, pending };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [multiSkeleton, labels, activePaths, modelInfos, skeletonObjects, editSeq]);
+  }, [multiSkeleton, labels, skeleton, activePaths, modelInfos, skeletonObjects, editSeq, overlayVersion]);
 
   const sleapNnAvailable = tools.some(
     (t) => t.name === "sleap-nn" || t.commands?.includes("sleap-nn")
@@ -701,8 +720,23 @@ function InferencePanelContent() {
     isNaN(Number(frameEnd))
   );
 
+  // A worker reads its own copy of the project, and sleap-nn (≤ 0.3.5) crashes
+  // on frames mixing skeletons: refuse targets that read such frames. Random
+  // samples are checked on submit (their frames are drawn then).
+  const remoteMixedTarget = multiSkeleton && remoteEnabled && ["frame", "video", "custom"].includes(frameRange);
+  const watchedFrameIdx = useAppStore((s) => (remoteMixedTarget && frameRange === "frame" ? s.frameIdx : -1));
+  const remoteMixedProblem = useMemo(() => {
+    if (!remoteMixedTarget || !labels || !video) return null;
+    const vi = labels.videos.indexOf(video);
+    if (vi < 0) return null;
+    const range = (frameRange === "custom"
+      ? { start: Number(frameStart), end: Number(frameEnd) }
+      : frameRange) as InferenceConfig["frameRange"];
+    return remoteMixedFramesProblem(labels, localRunScope({ frameRange: range, videoIndex: vi }, watchedFrameIdx));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [remoteMixedTarget, labels, video, frameRange, frameStart, frameEnd, watchedFrameIdx, editSeq, overlayVersion]);
   const multiTargetProblem =
-    multiSkeleton && remoteEnabled ? remoteMultiSkeletonTargetProblem(frameRange) : null;
+    multiSkeleton && remoteEnabled ? (remoteMultiSkeletonTargetProblem(frameRange) ?? remoteMixedProblem) : null;
   const modelsProblem = multiSkeleton
     ? trackOnly
       ? "Track only with several skeletons isn't supported yet."
@@ -904,7 +938,16 @@ function InferencePanelContent() {
                       </button>
                     </div>
                     {verdict?.reason && (
-                      <p className="text-[10px] text-red-400 pl-1" data-testid="model-skeleton-refused">{verdict.reason}</p>
+                      <p className="text-[10px] text-red-400 pl-1" data-testid="model-skeleton-refused">
+                        {verdict.reason}
+                        {modelInfos[p]?.nodeNames === null && (
+                          <>
+                            {" "}
+                            <button type="button" className="underline hover:text-red-300" data-testid="model-skeleton-retry"
+                              onClick={() => retryModelInfo(p)}>Retry</button>
+                          </>
+                        )}
+                      </p>
                     )}
                     </div>
                     );
@@ -1102,6 +1145,11 @@ function InferencePanelContent() {
                 <Check label="No limit" checked={noMaxInstances}
                   onChange={(v) => { setNoMaxInstances(v); if (!v && maxInstances === null) setMaxInstances(2); }}
                   disabled={isRunning} />
+                {multiSkeleton && (
+                  <p className="text-[10px] text-muted-foreground" data-testid="multi-skeleton-per-run-limit">
+                    Several skeletons: applies to each skeleton&apos;s run separately (a limit of 2 allows 2 mice and 2 pellets).
+                  </p>
+                )}
               </div>
 
             </Section>
@@ -1164,6 +1212,12 @@ function InferencePanelContent() {
                 <Check label="No limit" checked={noMaxTracks}
                   onChange={(v) => { setNoMaxTracks(v); if (!v && maxTracks === null) setMaxTracks(2); }}
                   disabled={isRunning} />
+                {multiSkeleton && (
+                  <p className="text-[10px] text-muted-foreground" data-testid="multi-skeleton-per-run-tracks">
+                    Several skeletons: each skeleton is tracked separately, with its own tracks. Max tracks and
+                    Target instance count apply to each skeleton&apos;s run.
+                  </p>
+                )}
               </div>
               <Section title="Advanced">
                 <NumField label="Robust (quantile)" value={robust} onChange={setRobust}

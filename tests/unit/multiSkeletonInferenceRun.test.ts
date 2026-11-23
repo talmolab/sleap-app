@@ -25,6 +25,17 @@ vi.mock("@/platform/backend", () => ({
 vi.mock("@/platform", () => ({
   getPlatform: async () => ({ readFile: async (path: string) => new TextEncoder().encode(path) }),
 }));
+// Fetch & Load reads a worker's result blob; here the blob's "sha256" names
+// the predictions file in `outputs`.
+vi.mock("@/stores/connectStore", () => ({
+  useConnectStore: {
+    getState: () => ({
+      activeTransport: "websocket",
+      _client: null,
+      fetchResultBlob: async (ref: { sha256: string }) => new TextEncoder().encode(ref.sha256),
+    }),
+  },
+}));
 vi.mock("@/lib/slpRead", () => ({
   loadSlp: async (bytes: Uint8Array) => outputs.get(new TextDecoder().decode(bytes))!,
   readSlpStreaming: async () => {
@@ -32,7 +43,8 @@ vi.mock("@/lib/slpRead", () => ({
   },
 }));
 
-import { useInferenceStore, type InferenceConfig } from "@/stores/inferenceStore";
+import { mergeRemoteResults, useInferenceStore, type InferenceConfig } from "@/stores/inferenceStore";
+import type { JobResult } from "@/lib/sleapConnect";
 import { useAppStore } from "@/stores/appStore";
 import { makeTwoSkeletonProject } from "./multiSkeletonFixture";
 
@@ -52,7 +64,7 @@ const baseConfig = {
   trackOnly: false,
   modelPaths: [],
   videoIndex: "all",
-  frameRange: "suggestions",
+  frameRange: "user_labeled",
   existingPredictions: "replace",
   kfNodeIndices: [],
 } as unknown as InferenceConfig;
@@ -118,5 +130,96 @@ describe("running inference on a mice + pellet project", () => {
     expect(runInferenceMock).toHaveBeenCalledTimes(1);
     expect(useInferenceStore.getState().status).toBe("error");
     expect(useInferenceStore.getState().error).toContain("mouse");
+  });
+
+  // Review finding 4: suggested frames are read as empty frames, so the run
+  // reads the project file itself — no per-skeleton copy is serialized.
+  it("doesn't build a per-skeleton copy for suggested frames", async () => {
+    const { labels } = makeTwoSkeletonProject();
+    useAppStore.getState().setLabels(labels);
+    outputs.set("/out/mouse.predictions.slp", predictionsFile(["head", "body", "tail"], 40, [10, 10]));
+    await useInferenceStore.getState().startInference({
+      ...baseConfig,
+      frameRange: "suggestions",
+      skeletonRuns: [{ skeletonName: "mouse", skeletonIndex: 0, modelPaths: ["/m/b"], pipeline: "bottom-up" }],
+    });
+    expect(runCalls).toHaveLength(1);
+    expect(runCalls[0].opts.inputLabels).toBeUndefined();
+  });
+
+  // Review finding 5: Cancel during run 1 stops there — run 2 never starts and
+  // the job ends "cancelled", not as a red "mouse: Inference failed".
+  it("stops between runs on Cancel", async () => {
+    const { labels } = makeTwoSkeletonProject();
+    useAppStore.getState().setLabels(labels);
+    runInferenceMock.mockImplementationOnce(async () => {
+      useInferenceStore.setState({ status: "cancelled" }); // what cancelInference does
+      return { success: false, outputPath: null, command: "x" };
+    });
+    await useInferenceStore.getState().startInference({
+      ...baseConfig,
+      skeletonRuns: [
+        { skeletonName: "mouse", skeletonIndex: 0, modelPaths: ["/m/b"], pipeline: "bottom-up" },
+        { skeletonName: "pellet", skeletonIndex: 1, modelPaths: ["/m/pellet"], pipeline: "centroid-only" },
+      ],
+    });
+    expect(runInferenceMock).toHaveBeenCalledTimes(1);
+    expect(useInferenceStore.getState().status).toBe("cancelled");
+    expect(useInferenceStore.getState().error).toBeNull();
+  });
+
+  // Review finding 5: Cancel right after a run succeeded skips its merge and the next run.
+  it("doesn't merge or continue after Cancel at the end of a run", async () => {
+    const { labels, mouse } = makeTwoSkeletonProject();
+    useAppStore.getState().setLabels(labels);
+    outputs.set("/out/mouse.predictions.slp", predictionsFile(["head", "body", "tail"], 40, [10, 10]));
+    runInferenceMock.mockImplementationOnce(async () => {
+      useInferenceStore.setState({ status: "cancelled" });
+      return { success: true, outputPath: "/out/mouse.predictions.slp", command: "x" };
+    });
+    await useInferenceStore.getState().startInference({
+      ...baseConfig,
+      skeletonRuns: [
+        { skeletonName: "mouse", skeletonIndex: 0, modelPaths: ["/m/b"], pipeline: "bottom-up" },
+        { skeletonName: "pellet", skeletonIndex: 1, modelPaths: ["/m/pellet"], pipeline: "centroid-only" },
+      ],
+    });
+    expect(runInferenceMock).toHaveBeenCalledTimes(1);
+    expect(useInferenceStore.getState().status).toBe("cancelled");
+    expect(labels.labeledFrames.some((lf) => lf.instances.some((i) => i instanceof PredictedInstance && i.skeleton === mouse))).toBe(false);
+  });
+
+  // Review finding 1: Fetch & Load merges each worker result under the
+  // skeleton it was run for — even a pellet skeleton with no instances yet —
+  // so the pellet result can't wipe the mouse predictions on shared frames.
+  it("Fetch & Load merges each result under its own skeleton", async () => {
+    const { labels, mouse, pellet } = makeTwoSkeletonProject();
+    for (const lf of labels.labeledFrames) lf.instances = lf.instances.filter((i) => i.skeleton !== pellet);
+    useAppStore.getState().setLabels(labels);
+    outputs.set("mouse-blob", predictionsFile(["head", "body", "tail"], 40, [10, 10]));
+    outputs.set("pellet-blob", predictionsFile(["centroid"], 40, [99, 99]));
+    const result = (sha256: string) =>
+      ({ jobId: sha256, success: true, resultBlobs: { predictions: { sha256, size: 1 } } }) as unknown as JobResult;
+
+    await mergeRemoteResults({
+      results: [result("mouse-blob"), result("pellet-blob")],
+      mode: "replace",
+      trackOnly: false,
+      skeletons: [{ name: "mouse", index: 0 }, { name: "pellet", index: 1 }],
+    });
+    const frame = labels.labeledFrames.find((lf) => lf.frameIdx === 40)!;
+    expect(frame.instances.map((i) => i.skeleton)).toEqual([mouse, pellet]);
+  });
+
+  // Review finding 1: if the skeletons changed before Fetch & Load, refuse
+  // rather than merge under a guessed skeleton.
+  it("Fetch & Load refuses when the job's skeleton is gone", async () => {
+    const { labels } = makeTwoSkeletonProject();
+    useAppStore.getState().setLabels(labels);
+    outputs.set("pellet-blob", predictionsFile(["centroid"], 40, [99, 99]));
+    const result = { jobId: "p", success: true, resultBlobs: { predictions: { sha256: "pellet-blob", size: 1 } } } as unknown as JobResult;
+    await expect(
+      mergeRemoteResults({ results: [result], mode: "replace", trackOnly: false, skeletons: [{ name: "pellets", index: 1 }] }),
+    ).rejects.toThrow("skeletons changed");
   });
 });

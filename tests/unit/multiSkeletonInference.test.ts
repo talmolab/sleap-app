@@ -13,10 +13,16 @@ import {
   PredictedInstance,
   Skeleton,
   SuggestionFrame,
+  Track,
   Video,
 } from "@talmolab/sleap-io.js";
 import {
   configForSkeletonRun,
+  forgetFailedModelReads,
+  remoteMixedFramesProblem,
+  remoteSpecScope,
+  runNeedsSkeletonCopy,
+  skeletonsInUse,
   labelsForSkeleton,
   matchModelSkeleton,
   multiSkeletonRunProblem,
@@ -28,7 +34,7 @@ import {
   runSpecsFromPlan,
   type ModelInfo,
 } from "@/lib/multiSkeletonInference";
-import { resolvePredictionsSkeleton } from "@/lib/skeletonScopedMerge";
+import { needsSkeletonScopedMerge, resolvePredictionsSkeleton } from "@/lib/skeletonScopedMerge";
 import { CommandContext } from "@/commands/CommandContext";
 import { MergePredictions } from "@/commands/editCommands";
 import { useAppStore } from "@/stores/appStore";
@@ -415,5 +421,216 @@ describe("merging one model's predictions under its own skeleton", () => {
     const frame = labels.labeledFrames.find((lf) => lf.frameIdx === 0);
     const userPellets = frame!.instances.filter((i) => i instanceof Instance && !(i instanceof PredictedInstance) && i.skeleton === pellet);
     expect(userPellets).toHaveLength(1);
+  });
+});
+
+// ── Fixes from the review of #531 ───────────────────────────────────────────
+
+/** Mice + an unused pellet skeleton: only mice are labeled/predicted so far. */
+function miceWithNewPelletSkeleton() {
+  const project = makeTwoSkeletonProject();
+  for (const lf of project.labels.labeledFrames) {
+    lf.instances = lf.instances.filter((i) => i.skeleton !== project.pellet);
+  }
+  return project;
+}
+
+function withTrack<T extends PredictedInstance>(inst: T, track: Track): T {
+  inst.track = track;
+  return inst;
+}
+
+describe("review fixes: Fetch & Load never falls back to a project-wide merge", () => {
+  let ctx: CommandContext;
+  beforeEach(() => {
+    useAppStore.setState(useAppStore.getInitialState());
+    ctx = new CommandContext();
+  });
+
+  // Finding 1a: a brand-new pellet skeleton has no instances yet — merging the
+  // pellet job's predictions must still be scoped and keep the mouse predictions.
+  it("scopes a merge into a new, still-unused skeleton", async () => {
+    const { labels, mouse, pellet, f0 } = miceWithNewPelletSkeleton();
+    useAppStore.getState().setLabels(labels);
+    const mousePred = predicted(mouse, [500, 50]);
+    f0.instances.push(mousePred);
+    expect(needsSkeletonScopedMerge(labels)).toBe(true);
+
+    const sk = new Skeleton({ nodes: ["centroid"] });
+    await ctx.execute(MergePredictions, {
+      predictions: predictionsFile(sk, [[0, [predicted(sk, [205, 305])]]]),
+      mode: "replace",
+    });
+    const frame = labels.labeledFrames.find((lf) => lf.frameIdx === 0);
+    expect(preds(frame, mouse)).toEqual([mousePred]);
+    expect(preds(frame, pellet)).toHaveLength(1);
+  });
+
+  // Finding 1b: an empty result with Clear all must not wipe every skeleton's predictions.
+  it("refuses an empty Clear all merge without a skeleton", async () => {
+    const { labels, mouse, pellet, f0 } = load2();
+    f0.instances.push(predicted(mouse, [500, 50]), predicted(pellet, [600, 60]));
+    await ctx.execute(MergePredictions, {
+      predictions: new Labels({ skeletons: [new Skeleton({ nodes: ["centroid"] })] }),
+      mode: "clear_all",
+    });
+    const frame = labels.labeledFrames.find((lf) => lf.frameIdx === 0);
+    expect(preds(frame, mouse)).toHaveLength(1);
+    expect(preds(frame, pellet)).toHaveLength(1);
+  });
+
+  // Finding 1b with the skeleton known (Fetch & Load now passes it): Clear all
+  // on an empty result clears only that skeleton's predictions.
+  it("clears only the given skeleton when the result is empty", async () => {
+    const { labels, mouse, pellet, f0 } = load2();
+    f0.instances.push(predicted(mouse, [500, 50]), predicted(pellet, [600, 60]));
+    await ctx.execute(MergePredictions, {
+      predictions: new Labels({ skeletons: [new Skeleton({ nodes: ["centroid"] })] }),
+      mode: "clear_all",
+      skeleton: pellet,
+    });
+    const frame = labels.labeledFrames.find((lf) => lf.frameIdx === 0);
+    expect(preds(frame, mouse)).toHaveLength(1);
+    expect(preds(frame, pellet)).toHaveLength(0);
+  });
+
+  function load2() {
+    const project = makeTwoSkeletonProject();
+    useAppStore.getState().setLabels(project.labels);
+    return project;
+  }
+});
+
+describe("review fixes: tracks stay per skeleton", () => {
+  beforeEach(() => {
+    useAppStore.setState(useAppStore.getInitialState());
+  });
+
+  // Finding 2: sleap-nn names tracks track_0… in every run; a mouse and a
+  // pellet must not end up on one track.
+  it("renames a new track whose name another skeleton uses", async () => {
+    const { labels, mouse, pellet } = makeTwoSkeletonProject();
+    useAppStore.getState().setLabels(labels);
+    const ctx = new CommandContext();
+    const mSk = new Skeleton({ nodes: MOUSE });
+    await ctx.execute(MergePredictions, {
+      predictions: predictionsFile(mSk, [[40, [withTrack(predicted(mSk, [1, 1]), new Track("track_0"))]]]),
+      mode: "replace",
+    });
+    const pSk = new Skeleton({ nodes: PELLET });
+    await ctx.execute(MergePredictions, {
+      predictions: predictionsFile(pSk, [[40, [withTrack(predicted(pSk, [9, 9]), new Track("track_0"))]]]),
+      mode: "replace",
+    });
+    const frame = labels.labeledFrames.find((lf) => lf.frameIdx === 40);
+    const mouseTrack = preds(frame, mouse)[0].track!;
+    const pelletTrack = preds(frame, pellet)[0].track!;
+    expect(mouseTrack.name).toBe("track_0");
+    expect(pelletTrack.name).toBe("pellet_track_0");
+    expect(mouseTrack).not.toBe(pelletTrack);
+  });
+
+  // Re-running one skeleton keeps matching its own tracks by name.
+  it("re-uses a skeleton's own track on a re-run", async () => {
+    const { labels, mouse } = makeTwoSkeletonProject();
+    useAppStore.getState().setLabels(labels);
+    const ctx = new CommandContext();
+    const run = async () => {
+      const sk = new Skeleton({ nodes: MOUSE });
+      await ctx.execute(MergePredictions, {
+        predictions: predictionsFile(sk, [[40, [withTrack(predicted(sk, [1, 1]), new Track("track_0"))]]]),
+        mode: "replace",
+      });
+      return preds(labels.labeledFrames.find((lf) => lf.frameIdx === 40), mouse)[0].track!;
+    };
+    const first = await run();
+    const second = await run();
+    expect(second).toBe(first);
+  });
+});
+
+describe("review fixes: a leftover unused skeleton doesn't make models ambiguous", () => {
+  /** Old file with two identical mouse skeletons; an edge edit leaves one unused and different. */
+  function editedDuplicateWithPellet() {
+    const { labels, a, b } = makeDuplicateSkeletonProject();
+    for (const lf of labels.labeledFrames) for (const inst of lf.instances) inst.skeleton = a;
+    a.addEdge(a.nodes[0], a.nodes[2]); // the edit: a and b now differ structurally
+    const pellet = new Skeleton({ nodes: ["centroid"], name: "pellet" });
+    labels.skeletons.push(pellet);
+    return { labels, a, b, pellet };
+  }
+
+  // Finding 3: matching prefers the skeleton in use when node names tie.
+  it("matches the mouse models to the mouse skeleton in use", () => {
+    const { labels, a, pellet } = editedDuplicateWithPellet();
+    const inUse = skeletonsInUse(labels, pellet);
+    expect(matchModelSkeleton(MOUSE, labels.skeletons, inUse)).toEqual({ ok: true, skeleton: a });
+    const plan = planMultiSkeletonInference([mouseCentroid, mouseCi, pelletCentroid], labels.skeletons, inUse);
+    expect(plan.problem).toBeNull();
+    expect(plan.runs.map((r) => r.skeleton)).toEqual([a, pellet]);
+  });
+
+  // Finding 3, merge side: predictions resolve to the skeleton in use too.
+  it("resolves predictions to the skeleton in use", () => {
+    const { labels, a, pellet } = editedDuplicateWithPellet();
+    const sk = new Skeleton({ nodes: MOUSE });
+    expect(resolvePredictionsSkeleton(labels, predictionsFile(sk, [[0, [predicted(sk, [1, 1])]]]), pellet)).toBe(a);
+  });
+});
+
+describe("review fixes: centroid-only is for 1-node skeletons", () => {
+  // Finding 7: a centroid model alone on the 3-node mouse would overwrite full
+  // poses with anchor-only ones, so the plan refuses it with the reason.
+  it("refuses a centroid model alone for a multi-node skeleton", () => {
+    const { labels } = makeTwoSkeletonProject();
+    const plan = planMultiSkeletonInference([mouseCentroid, pelletCentroid], labels.skeletons);
+    expect(plan.problem).toContain("Centered Instance");
+    expect(plan.runs.find((r) => r.skeletonName === "pellet")?.problem).toBeNull();
+  });
+
+  // Finding 7, auto-pick: never pre-fills a lone centroid model for the mice.
+  it("doesn't auto-pick a lone centroid model for the mice", () => {
+    const { labels } = makeTwoSkeletonProject();
+    expect(pickModelsForSkeletons([mouseCentroid, pelletCentroid], labels.skeletons)).toEqual(["/m/pellet_centroid"]);
+  });
+});
+
+describe("review fixes: per-skeleton copy only when needed", () => {
+  const cfg = (frameRange: InferenceConfig["frameRange"], videoIndex: number | "all" = 0) => ({ frameRange, videoIndex });
+
+  // Finding 4: the copy re-serializes the project (all embedded images of a
+  // .pkg.slp), so it's only made when sleap-nn would read mixed frames.
+  it("copies only for label-scoped targets or mixed frames", () => {
+    const { labels } = makeTwoSkeletonProject(); // frames 0 and 10 mix mouse + pellet
+    expect(runNeedsSkeletonCopy(labels, cfg("suggestions", "all"), 0)).toBe(false);
+    expect(runNeedsSkeletonCopy(labels, cfg("frame"), 5)).toBe(false);
+    expect(runNeedsSkeletonCopy(labels, cfg({ start: 20, end: 30 }), 0)).toBe(false);
+    expect(runNeedsSkeletonCopy(labels, cfg("frame"), 0)).toBe(true);
+    expect(runNeedsSkeletonCopy(labels, cfg({ start: 5, end: 12 }), 0)).toBe(true);
+    expect(runNeedsSkeletonCopy(labels, cfg("video"), 0)).toBe(true);
+    expect(runNeedsSkeletonCopy(labels, cfg("user_labeled", "all"), 0)).toBe(true);
+  });
+
+  // The same frames decide whether a worker job is refused (it reads its own copy).
+  it("refuses worker jobs that would read mixed frames", () => {
+    const { labels } = makeTwoSkeletonProject();
+    expect(remoteMixedFramesProblem(labels, remoteSpecScope({ frame_filter: "suggested" }))).toBeNull();
+    expect(remoteMixedFramesProblem(labels, remoteSpecScope({ video_index: 0, frames: "20-30" }))).toBeNull();
+    expect(remoteMixedFramesProblem(labels, remoteSpecScope({ video_index: 0, frames: "3,10" }))).toContain("several skeletons");
+    expect(remoteMixedFramesProblem(labels, remoteSpecScope({ video_index: 0 }))).toContain("several skeletons");
+  });
+});
+
+describe("review fixes: failed model reads are retried", () => {
+  const ok = model("/w/ok", "centroid", PELLET);
+  const failed = model("/w/bad", null, null);
+
+  // Finding 6: an unreadable config (worker briefly offline) mustn't stick forever.
+  it("forgets a failed read once the model is removed, or on Retry", () => {
+    const cache = { [ok.path]: ok, [failed.path]: failed };
+    expect(forgetFailedModelReads(cache, [ok.path, failed.path])).toBe(cache);
+    expect(Object.keys(forgetFailedModelReads(cache, [ok.path]))).toEqual([ok.path]);
+    expect(Object.keys(forgetFailedModelReads(cache, [ok.path, failed.path], [failed.path]))).toEqual([ok.path]);
+    expect(Object.keys(forgetFailedModelReads(cache, [], [ok.path]))).toEqual([ok.path]); // good reads stay
   });
 });

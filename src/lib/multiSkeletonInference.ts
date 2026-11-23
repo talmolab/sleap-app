@@ -70,6 +70,26 @@ export async function readModelInfo(
   }
 }
 
+/**
+ * Drop cached model reads that failed (config unreadable — e.g. the worker
+ * was briefly unreachable) for paths no longer in `keepPaths`, or named in
+ * `retry`, so the panel reads them again when they're re-added or retried.
+ * Returns `cache` itself when nothing changes.
+ */
+export function forgetFailedModelReads(
+  cache: Record<string, ModelInfo>,
+  keepPaths: readonly string[],
+  retry: readonly string[] = [],
+): Record<string, ModelInfo> {
+  const drop = Object.keys(cache).filter(
+    (p) => cache[p].nodeNames === null && (retry.includes(p) || !keepPaths.includes(p)),
+  );
+  if (drop.length === 0) return cache;
+  const next = { ...cache };
+  for (const p of drop) delete next[p];
+  return next;
+}
+
 // ── Matching a model to a project skeleton ─────────────────────────────────
 
 /** Same node names, ignoring order (points are remapped by name on merge). */
@@ -90,10 +110,30 @@ export function skeletonLabel(skeleton: Skeleton, skeletons: readonly Skeleton[]
 
 /**
  * One representative per structurally distinct skeleton, in project order —
- * identical duplicate skeleton objects (old files) count once.
+ * identical duplicate skeleton objects (old files) count once. With `inUse`,
+ * a group's representative is a skeleton in use when it has one.
  */
-export function distinctProjectSkeletons(skeletons: readonly Skeleton[]): Skeleton[] {
-  return structuralGroups(skeletons).map((g) => g[0]);
+export function distinctProjectSkeletons(
+  skeletons: readonly Skeleton[],
+  inUse?: readonly Skeleton[],
+): Skeleton[] {
+  return structuralGroups(skeletons).map((g) => g.find((s) => inUse?.includes(s)) ?? g[0]);
+}
+
+/**
+ * The skeletons a project is using: every skeleton an instance uses, plus the
+ * active one (just added, nothing labeled yet). Breaks ties when a model's
+ * node names match several project skeletons — e.g. a leftover duplicate that
+ * a skeleton edit left unused next to the edited one.
+ */
+export function skeletonsInUse(
+  labels: Pick<Labels, "labeledFrames" | "skeletons">,
+  active?: Skeleton | null,
+): Skeleton[] {
+  const out = new Set<Skeleton>();
+  if (active && labels.skeletons.includes(active)) out.add(active);
+  for (const lf of labels.labeledFrames) for (const inst of lf.instances) out.add(inst.skeleton);
+  return [...out];
 }
 
 function listNames(names: readonly string[], max = 4): string {
@@ -108,11 +148,13 @@ export type SkeletonMatch =
 /**
  * The project skeleton a model with `nodeNames` belongs to. Refuses (with a
  * reason) when the names are unknown, match no skeleton, or match several
- * different skeletons.
+ * different skeletons. With `inUse` (see {@link skeletonsInUse}), names that
+ * match several skeletons go to the one in use when exactly one is.
  */
 export function matchModelSkeleton(
   nodeNames: readonly string[] | null,
   skeletons: readonly Skeleton[],
+  inUse?: readonly Skeleton[],
 ): SkeletonMatch {
   if (!nodeNames || nodeNames.length === 0) {
     return {
@@ -120,8 +162,12 @@ export function matchModelSkeleton(
       reason: "Couldn't read the model's skeleton from its training_config.yaml.",
     };
   }
-  const candidates = distinctProjectSkeletons(skeletons);
-  const matches = candidates.filter((s) => sameNodeNames(s.nodeNames, nodeNames));
+  const candidates = distinctProjectSkeletons(skeletons, inUse);
+  let matches = candidates.filter((s) => sameNodeNames(s.nodeNames, nodeNames));
+  if (matches.length > 1 && inUse) {
+    const used = matches.filter((s) => inUse.includes(s));
+    if (used.length > 0) matches = used;
+  }
   if (matches.length === 1) return { ok: true, skeleton: matches[0] };
   if (matches.length > 1) {
     return {
@@ -212,19 +258,32 @@ export function pipelineForModels(
 /**
  * Auto-pick trained models for a multi-skeleton project: for every project
  * skeleton, the most recently trained complete pipeline among the models
- * whose node names match it (a centroid model alone only when nothing else is
- * complete). `models` must be sorted most recent first (findTrainedModels).
+ * whose node names match it. A centroid model alone only for a 1-node
+ * skeleton (a pellet) and only when nothing else is complete — on a
+ * multi-node skeleton it predicts just the anchor point (see
+ * {@link centroidOnlyProblem}). `models` must be sorted most recent first
+ * (findTrainedModels).
  */
 export function pickModelsForSkeletons(
   models: readonly ModelInfo[],
   skeletons: readonly Skeleton[],
+  inUse?: readonly Skeleton[],
 ): string[] {
+  const bySkeleton = new Map<Skeleton, ModelInfo[]>();
+  for (const m of models) {
+    if (!m.headKey) continue;
+    const match = matchModelSkeleton(m.nodeNames, skeletons, inUse);
+    if (!match.ok) continue;
+    const list = bySkeleton.get(match.skeleton) ?? [];
+    list.push(m);
+    bySkeleton.set(match.skeleton, list);
+  }
   const picked: string[] = [];
-  for (const skeleton of distinctProjectSkeletons(skeletons)) {
-    const mine = models.filter((m) => m.headKey && m.nodeNames && sameNodeNames(skeleton.nodeNames, m.nodeNames));
+  for (const skeleton of distinctProjectSkeletons(skeletons, inUse)) {
+    const mine = bySkeleton.get(skeleton) ?? [];
     let best: { paths: string[]; oldest: number } | null = null;
     for (const pipeline of PIPELINE_ORDER) {
-      if (pipeline === "centroid-only" && best) break;
+      if (pipeline === "centroid-only" && (best || skeleton.nodeNames.length > 1)) break;
       const idx: number[] = [];
       const ok = headsFor(pipeline).every((h) => {
         const i = mine.findIndex((m, j) => !idx.includes(j) && headTypeMatches(h, m));
@@ -239,6 +298,21 @@ export function pickModelsForSkeletons(
     if (best) picked.push(...best.paths);
   }
   return picked;
+}
+
+/**
+ * Why a centroid model alone can't run for `skeleton`, or null. sleap-nn
+ * (≤ 0.3.5) gives centroid-only instances the anchor point and NaN for every
+ * other node — fine for a 1-node skeleton (a pellet), but on a multi-node
+ * skeleton it would replace full poses with near-empty ones.
+ */
+export function centroidOnlyProblem(skeleton: Skeleton, name: string): string | null {
+  const n = skeleton.nodeNames.length;
+  if (n <= 1) return null;
+  return (
+    `${name}: a Centroid model alone predicts only one point per instance, but this skeleton has ${n} nodes. ` +
+    "Add a Centered Instance model (Centroid only is for 1-node skeletons, like a pellet)."
+  );
 }
 
 /** The pipeline value an {@link InferenceConfig} carries for a skeleton run. */
@@ -286,11 +360,13 @@ function headLabel(m: Pick<ModelInfo, "headKey">): string {
 export function planMultiSkeletonInference(
   models: readonly ModelInfo[],
   skeletons: readonly Skeleton[],
+  /** Skeletons in use ({@link skeletonsInUse}) — breaks node-name ties. */
+  inUse?: readonly Skeleton[],
 ): MultiSkeletonPlan {
   const verdicts: ModelVerdict[] = [];
   const bySkeleton = new Map<Skeleton, ModelInfo[]>();
   for (const m of models) {
-    const match = matchModelSkeleton(m.nodeNames, skeletons);
+    const match = matchModelSkeleton(m.nodeNames, skeletons, inUse);
     if (!match.ok) {
       verdicts.push({ path: m.path, skeletonName: null, reason: match.reason });
       continue;
@@ -315,10 +391,12 @@ export function planMultiSkeletonInference(
       skeletonIndex: skeletons.indexOf(skeleton),
       modelPaths: group.map((m) => m.path),
       pipeline,
-      problem: pipeline
-        ? null
-        : `${name}: these models don't form a pipeline (${group.map(headLabel).join(" + ")}). ` +
-          "Use e.g. Centroid + Centered Instance, a Bottom-Up model, a Single Instance model, or a Centroid model alone.",
+      problem: !pipeline
+        ? `${name}: these models don't form a pipeline (${group.map(headLabel).join(" + ")}). ` +
+          "Use e.g. Centroid + Centered Instance, a Bottom-Up model, a Single Instance model, or (for a 1-node skeleton) a Centroid model alone."
+        : pipeline === "centroid-only"
+          ? centroidOnlyProblem(skeleton, name)
+          : null,
     });
   }
   runs.sort((a, b) => a.skeletonIndex - b.skeletonIndex);
@@ -448,4 +526,107 @@ export function labelsForSkeleton(labels: Labels, skeleton: Skeleton): Labels {
 export function skeletonFileTag(name: string): string {
   const tag = name.trim().replace(/[^A-Za-z0-9_-]+/g, "_").replace(/^_+|_+$/g, "");
   return tag || "skeleton";
+}
+
+// ── Which frames sleap-nn reads WITH their instances ───────────────────────
+
+/**
+ * The labeled frames a run reads from a .slp together with their instances:
+ * one video (or every video) and a frame filter. sleap-nn (≤ 0.3.5) crashes
+ * on such a frame when it mixes skeletons ("could not broadcast input array"
+ * — it pads every instance to the FIRST instance's node count).
+ */
+export interface InstanceReadScope {
+  /** Index into `labels.videos`, or null for every video. */
+  videoIndex: number | null;
+  /** Which frame indices of that video, or null for all of them. */
+  frames: ((frameIdx: number) => boolean) | null;
+}
+
+/** Parse a sleap-nn `--frames` value ("10-20" or "1,5,9"). */
+export function parseFrameSelection(frames: string): (frameIdx: number) => boolean {
+  const range = /^\s*(\d+)\s*-\s*(\d+)\s*$/.exec(frames);
+  if (range) {
+    const [a, b] = [Number(range[1]), Number(range[2])];
+    return (i) => i >= a && i <= b;
+  }
+  const set = new Set(frames.split(",").map((f) => Number(f.trim())));
+  return (i) => set.has(i);
+}
+
+/**
+ * What a local run of `config` reads with instances when sleap-nn is given a
+ * .slp, or null when it reads none. Suggested frames come back as fresh empty
+ * frames (sleap-nn skips labeled ones), so they read none. A random sample's
+ * frames are drawn later, so it counts as its whole video.
+ */
+export function localRunScope(
+  config: Pick<InferenceConfig, "frameRange" | "videoIndex">,
+  currentFrameIdx: number,
+): InstanceReadScope | null {
+  const fr = config.frameRange;
+  if (fr === "suggestions") return null;
+  const videoIndex = config.videoIndex === "all" ? null : config.videoIndex;
+  if (typeof fr === "object") return { videoIndex, frames: (i) => i >= fr.start && i <= fr.end };
+  if (fr === "frame") return { videoIndex, frames: (i) => i === currentFrameIdx };
+  return { videoIndex, frames: null };
+}
+
+/** The same for a Connect track spec (see `buildRemoteTrackSpecs`). */
+export function remoteSpecScope(spec: {
+  video_index?: number;
+  frames?: string;
+  frame_filter?: string;
+}): InstanceReadScope | null {
+  if (spec.frame_filter === "suggested") return null;
+  return {
+    videoIndex: spec.video_index ?? null,
+    frames: spec.frames ? parseFrameSelection(spec.frames) : null,
+  };
+}
+
+/**
+ * True when a frame in `scope` holds instances of two structurally different
+ * skeletons — the frames sleap-nn ≤ 0.3.5 can't read from a .slp.
+ */
+export function scopeHasMixedFrames(labels: Labels, scope: InstanceReadScope | null): boolean {
+  if (!scope) return false;
+  const video = scope.videoIndex === null ? null : (labels.videos[scope.videoIndex] ?? null);
+  if (scope.videoIndex !== null && !video) return false;
+  for (const lf of labels.labeledFrames) {
+    if (video && lf.video !== video) continue;
+    if (scope.frames && !scope.frames(lf.frameIdx)) continue;
+    const first = lf.instances[0]?.skeleton;
+    if (first && lf.instances.some((inst) => !sameSkeletonStructure(inst.skeleton, first))) return true;
+  }
+  return false;
+}
+
+/** Targets whose meaning is "frames labeled with this skeleton" — always read a per-skeleton copy. */
+const LABEL_SCOPED_TARGETS = new Set(["user_labeled", "predicted", "all_videos"]);
+
+/**
+ * Whether a local run for one skeleton must read a per-skeleton copy of the
+ * project ({@link labelsForSkeleton}) instead of the project file: always for
+ * the label-scoped targets (user labeled / predicted / all videos), and
+ * otherwise only when the frames it reads with instances mix skeletons.
+ * Writing the copy re-serializes the project (embedded images included for a
+ * .pkg.slp), so it's skipped whenever the project file is safe to read.
+ */
+export function runNeedsSkeletonCopy(
+  labels: Labels,
+  config: Pick<InferenceConfig, "frameRange" | "videoIndex">,
+  currentFrameIdx: number,
+): boolean {
+  if (typeof config.frameRange === "string" && LABEL_SCOPED_TARGETS.has(config.frameRange)) return true;
+  return scopeHasMixedFrames(labels, localRunScope(config, currentFrameIdx));
+}
+
+/** Why a Connect job reading `scope` can't run on a multi-skeleton project, or null. */
+export function remoteMixedFramesProblem(labels: Labels, scope: InstanceReadScope | null): string | null {
+  if (!scopeHasMixedFrames(labels, scope)) return null;
+  return (
+    "This target includes frames that hold instances of several skeletons, which sleap-nn can't read on a worker yet. " +
+    "Pick suggested frames, or run on this computer."
+  );
 }

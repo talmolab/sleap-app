@@ -178,6 +178,18 @@ export interface PendingRemoteMerge {
   results: JobResult[];
   mode: ExistingPredictionsMode;
   trackOnly: boolean;
+  /**
+   * Several skeletons (#99): the project skeleton each result (same order as
+   * `results`) was run for, by name + index in `labels.skeletons`, so Fetch &
+   * Load merges it under that skeleton only. Absent for single-skeleton runs.
+   */
+  skeletons?: PendingMergeSkeleton[];
+}
+
+/** A skeleton a pending remote result belongs to (see `PendingRemoteMerge`). */
+export interface PendingMergeSkeleton {
+  name: string;
+  index: number;
 }
 
 const initialState = {
@@ -296,10 +308,29 @@ export async function fetchAndMergeRemoteResult(
   result: JobResult,
   mode: ExistingPredictionsMode,
   trackOnly: boolean,
+  /** Multi-skeleton run: the project skeleton these predictions belong to. */
+  skeleton?: Skeleton,
 ): Promise<void> {
   const predictions = await loadRemotePredictions(result);
   if (!predictions) return;
-  await mergePredictionsIntoProject(predictions, mode, trackOnly);
+  await mergePredictionsIntoProject(predictions, mode, trackOnly, skeleton);
+}
+
+/**
+ * The live project skeleton a pending result was run for. Throws when the
+ * project's skeletons changed since (renamed, removed or reordered) — merging
+ * under a guessed skeleton could wipe another skeleton's predictions.
+ */
+async function pendingMergeSkeleton(ref: PendingMergeSkeleton): Promise<Skeleton> {
+  const { skeletonLabel } = await import("@/lib/multiSkeletonInference");
+  const skeletons = useAppStore.getState().labels?.skeletons ?? [];
+  const skeleton = skeletons[ref.index];
+  if (!skeleton || skeletonLabel(skeleton, skeletons) !== ref.name) {
+    throw new Error(
+      `The project's skeletons changed since the "${ref.name}" job ran — its predictions weren't merged.`,
+    );
+  }
+  return skeleton;
 }
 
 /**
@@ -309,8 +340,10 @@ export async function fetchAndMergeRemoteResult(
  * failure; the caller keeps its pending state so the action stays retriable.
  */
 export async function mergeRemoteResults(pending: PendingRemoteMerge): Promise<void> {
-  for (const result of pending.results) {
-    await fetchAndMergeRemoteResult(result, pending.mode, pending.trackOnly);
+  for (let i = 0; i < pending.results.length; i++) {
+    const ref = pending.skeletons?.[i];
+    const skeleton = ref ? await pendingMergeSkeleton(ref) : undefined;
+    await fetchAndMergeRemoteResult(pending.results[i]!, pending.mode, pending.trackOnly, skeleton);
   }
 }
 
@@ -331,9 +364,19 @@ async function runLocalSkeletonRuns(
   labels: Labels,
   set: StoreSet,
 ): Promise<void> {
-  const { configForSkeletonRun, labelsForSkeleton, skeletonFileTag, skeletonLabel, SKELETON_PIPELINE_LABELS } =
-    await import("@/lib/multiSkeletonInference");
+  const {
+    configForSkeletonRun,
+    labelsForSkeleton,
+    runNeedsSkeletonCopy,
+    skeletonFileTag,
+    skeletonLabel,
+    SKELETON_PIPELINE_LABELS,
+  } = await import("@/lib/multiSkeletonInference");
   const runs = config.skeletonRuns ?? [];
+  // Cancel (cancelInference) kills the running sleap-nn and sets "cancelled";
+  // check it after every await so no later run starts and nothing reports
+  // "completed" or a run failure instead.
+  const cancelled = () => useInferenceStore.getState().status === "cancelled";
 
   // Progress + log only: a run's "finished" event must not end the whole job.
   const handler = (event: ProcessEvent) => {
@@ -362,7 +405,6 @@ async function runLocalSkeletonRuns(
         return;
       }
       const runConfig = configForSkeletonRun(config, run);
-      const inputLabels = labelsForSkeleton(labels, skeleton);
       const outputTag = skeletonFileTag(run.skeletonName);
       set((s) => ({
         progress: null,
@@ -383,8 +425,16 @@ async function runLocalSkeletonRuns(
             )
           : [runConfig];
       for (const cfg of perVideo) {
+        if (cancelled()) return;
+        // A per-skeleton copy only when sleap-nn would otherwise read frames
+        // mixing skeletons (or the target means "labeled with THIS skeleton");
+        // writing it re-serializes the project (see runNeedsSkeletonCopy).
+        const inputLabels = runNeedsSkeletonCopy(labels, cfg, useAppStore.getState().frameIdx)
+          ? labelsForSkeleton(labels, skeleton)
+          : undefined;
         const result = await runInference(cfg, projectPath, handler, { inputLabels, outputTag });
         if (result.command) set((s) => ({ log: [...s.log, `$ ${result.command}`] }));
+        if (cancelled()) return;
         if (!result.success) {
           set((s) => ({
             status: "error",
@@ -396,10 +446,12 @@ async function runLocalSkeletonRuns(
           set({ outputPath: result.outputPath });
           const platform = await getPlatform();
           const bytes = await platform.readFile(result.outputPath);
+          if (cancelled()) return;
           await loadAndMergePredictionBytes(bytes, result.outputPath, config.existingPredictions, false, skeleton);
         }
       }
     }
+    if (cancelled()) return;
     set({ status: "completed" });
     const finishedOutput = useInferenceStore.getState().outputPath;
     // Same settle-before-idle beat as loadAndMergeResults.
@@ -408,6 +460,7 @@ async function runLocalSkeletonRuns(
       if (st.status === "completed" && st.outputPath === finishedOutput) set({ status: "idle" });
     }, 1500);
   } catch (e) {
+    if (cancelled()) return;
     set({
       status: "error",
       error: `Failed to run inference: ${e instanceof Error ? e.message : String(e)}`,
@@ -577,21 +630,36 @@ export const useInferenceStore = create<InferenceState>()((set) => ({
       // skeletons: one set of specs per skeleton's models; each result is
       // merged under the skeleton its node names match (MergePredictions).
       const { frameIdx, video: activeVideo } = useAppStore.getState();
-      const runConfigs = multiSkeleton
-        ? await (async () => {
-            const { configForSkeletonRun } = await import("@/lib/multiSkeletonInference");
-            return config.skeletonRuns!.map((run) => configForSkeletonRun(config, run));
-          })()
-        : [config];
-      const specs = runConfigs.flatMap((runConfig) =>
+      const msi = multiSkeleton ? await import("@/lib/multiSkeletonInference") : null;
+      const runConfigs: { config: InferenceConfig; skeleton?: PendingMergeSkeleton }[] = msi
+        ? config.skeletonRuns!.map((run) => ({
+            config: msi.configForSkeletonRun(config, run),
+            skeleton: { name: run.skeletonName, index: run.skeletonIndex },
+          }))
+        : [{ config }];
+      const specRuns = runConfigs.flatMap(({ config: runConfig, skeleton }) =>
         buildRemoteTrackSpecs(runConfig, {
           dataPath: resolvedDataPath,
           pathMappings,
           videoFrameCounts: (labels?.videos ?? []).map((v) => v.shape?.[0] ?? 0),
           currentFrameIdx: frameIdx,
           activeVideoFrameCount: activeVideo?.shape?.[0] ?? 0,
-        }),
+        }).map((spec) => ({ spec, skeleton })),
       );
+      const specs = specRuns.map((r) => r.spec);
+      // Several skeletons: each result is merged under its own skeleton.
+      const specSkeletons = msi ? specRuns.map((r) => r.skeleton!) : undefined;
+      // The worker reads its own copy of the project file; sleap-nn (≤ 0.3.5)
+      // crashes on frames mixing skeletons, so refuse a job that would read one.
+      if (msi && labels) {
+        for (const { spec, skeleton } of specRuns) {
+          const problem = msi.remoteMixedFramesProblem(labels, msi.remoteSpecScope(spec));
+          if (problem) {
+            set({ status: "error", error: `${skeleton?.name ?? "Inference"}: ${problem}` });
+            return;
+          }
+        }
+      }
 
       if (config.frameRange === "random" || specs.length > 1) {
         // Random sample (all videos): one spec per video, submitted sequentially.
@@ -621,6 +689,7 @@ export const useInferenceStore = create<InferenceState>()((set) => ({
               results: collectedResults,
               mode: config.existingPredictions,
               trackOnly: config.trackOnly,
+              skeletons: specSkeletons,
             },
           });
         } catch (e) {
@@ -652,6 +721,7 @@ export const useInferenceStore = create<InferenceState>()((set) => ({
               results: [result],
               mode: config.existingPredictions,
               trackOnly: config.trackOnly,
+              skeletons: specSkeletons,
             },
           });
         } else {
