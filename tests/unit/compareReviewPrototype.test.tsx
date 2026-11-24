@@ -30,7 +30,7 @@ import { acceptModelPose } from "@/lib/modelOverlay/canvasActions";
 import { useConfirmStore } from "@/stores/confirmStore";
 import { PoseStore } from "@/lib/modelOverlay/poseStore";
 import { clearFrameDecodeCache, decodeFrame, DECODE_ATTEMPTS } from "@/components/video/compareReview/frameDecodeCache";
-import { ProjectInstancesKey, useProjectPoses } from "@/components/video/compareReview/reviewParts";
+import { parseReviewThreshold, ProjectInstancesKey, ReviewThresholdInput, useProjectPoses } from "@/components/video/compareReview/reviewParts";
 import { rawFrameToRGBA } from "@/lib/videoExport";
 
 function memStorage() {
@@ -448,5 +448,32 @@ describe("frame reads one at a time", () => {
     };
     await Promise.all([0, 1, 2, 3, 4].map((f) => decodeFrame(video, f, deps)));
     expect(maxRunning).toBe(1);
+  });
+});
+
+describe("review threshold box", () => {
+  beforeEach(() => useCompareReviewStore.getState().setThreshold(DEFAULT_REVIEW_THRESHOLD_PX));
+  afterEach(() => {
+    cleanup();
+    useCompareReviewStore.getState().setThreshold(DEFAULT_REVIEW_THRESHOLD_PX);
+  });
+
+  // Hand-test #525: the box snapped back when cleared, so 0 (or a new number) couldn't be typed.
+  it("can be cleared and retyped, including 0, and reverts on blur when empty", () => {
+    render(<ReviewThresholdInput />);
+    const box = screen.getByTestId("review-proto-threshold") as HTMLInputElement;
+    fireEvent.change(box, { target: { value: "" } });
+    expect(box.value).toBe("");
+    expect(useCompareReviewStore.getState().threshold).toBe(DEFAULT_REVIEW_THRESHOLD_PX);
+    fireEvent.change(box, { target: { value: "0" } });
+    expect(useCompareReviewStore.getState().threshold).toBe(0);
+    fireEvent.change(box, { target: { value: "" } });
+    fireEvent.change(box, { target: { value: "10" } });
+    expect(useCompareReviewStore.getState().threshold).toBe(10);
+    fireEvent.change(box, { target: { value: "" } });
+    fireEvent.blur(box);
+    expect(box.value).toBe("10");
+    expect(parseReviewThreshold("-3")).toBeNull();
+    expect(parseReviewThreshold("abc")).toBeNull();
   });
 });

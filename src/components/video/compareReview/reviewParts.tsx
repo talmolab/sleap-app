@@ -1,5 +1,5 @@
 /** Review prototypes (dev only): small parts every prototype shows. */
-import { useMemo } from "react";
+import { useMemo, useState } from "react";
 import { Eye, EyeOff } from "lucide-react";
 import { projectPosesOnFrame, reviewItemKey, type ProjectPose, type ReviewGroup } from "@/lib/modelOverlay/reviewPrototype";
 import { useAppStore } from "@/stores/appStore";
@@ -61,22 +61,48 @@ export function ReviewSummary({ items }: { items: readonly ReviewGroup[] }) {
   );
 }
 
-/** "Above [25] px": the review's own threshold (the corner panel's rings keep theirs). */
+/** The typed threshold in px, or null when it isn't a number ≥ 0 (empty, "-", "abc"). 0 is allowed: every disagreement. */
+export function parseReviewThreshold(text: string): number | null {
+  if (text.trim() === "") return null;
+  const v = Number(text);
+  return Number.isFinite(v) && v >= 0 ? v : null;
+}
+
+/**
+ * "Above [25] px": the review's own threshold (the corner panel's rings keep
+ * theirs). The box keeps what you type, so it can be cleared and retyped
+ * (e.g. to 0); only a valid number ≥ 0 reaches the review. Blur or Esc puts
+ * back the value in use; Enter commits it.
+ */
 export function ReviewThresholdInput() {
   const threshold = useCompareReviewStore((s) => s.threshold);
   const setThreshold = useCompareReviewStore((s) => s.setThreshold);
+  // The box's own text while editing; null = show the value in use.
+  const [text, setText] = useState<string | null>(null);
   return (
-    <label className="flex items-center gap-1 text-muted-foreground" title="Only disagreements bigger than this (RMS spread across the models) are listed">
+    <label className="flex items-center gap-1 text-muted-foreground" title="Only disagreements bigger than this (RMS spread across the models) are listed; 0 lists all">
       above
       <input
         type="number"
         min={0}
         step={5}
         className="w-12 rounded border border-border bg-background px-1 text-right tabular-nums text-foreground"
-        value={threshold}
+        value={text ?? String(threshold)}
         onChange={(e) => {
-          const v = Number(e.target.value);
-          if (e.target.value.trim() !== "" && Number.isFinite(v) && v >= 0) setThreshold(v);
+          setText(e.target.value);
+          const v = parseReviewThreshold(e.target.value);
+          if (v !== null) setThreshold(v);
+        }}
+        onBlur={() => setText(null)}
+        onKeyDown={(e) => {
+          if (e.key === "Enter") {
+            setText(null);
+            (e.target as HTMLInputElement).blur();
+          } else if (e.key === "Escape") {
+            // Esc here only reverts the box (the review window ignores keys typed in a field).
+            setText(null);
+            (e.target as HTMLInputElement).blur();
+          }
         }}
         aria-label="Review disagreements above, px"
         data-testid="review-proto-threshold"
