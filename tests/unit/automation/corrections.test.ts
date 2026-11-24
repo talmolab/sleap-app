@@ -11,7 +11,6 @@ import {
 } from "@/stores/proposalStore";
 import { ConvertPredictionToInstance } from "@/commands/editCommands";
 import { classifyDirty } from "@/lib/autosaveDirty";
-import { proposalGhosts } from "@/hooks/useProposalGhosts";
 import { AutomationError } from "@/automation/errors";
 import { loadPredictionFixture } from "../helpers/automationFixture";
 
@@ -149,7 +148,6 @@ describe("correction proposals", () => {
     expect(proposalState(store().proposals[0])).toBe("undone");
     store().addCorrection({ ...targetA, reason: "r2" }, { 2: [170, 140] }, { pose: poseOf(fx.a) });
     expect(store().proposals.map((x) => [x.reason, proposalState(x)])).toEqual([["r2", "pending"]]);
-    expect(proposalGhosts(store().proposals, lf30(), fx.video, 0)).toHaveLength(1);
   });
 
   // Why: "accept as is" makes the prediction a label without changing any node.

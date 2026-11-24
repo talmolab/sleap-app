@@ -26,6 +26,12 @@ import {
 import { poseFingerprint } from "@/stores/proposalStore";
 import { handledPredictions, poseXy } from "@/lib/handledPredictions";
 import { yieldToEvent } from "@/lib/analyze/qc/detector";
+import {
+  clearDisagreementIndexCache,
+  disagreementIndexFor,
+  fillIndex,
+  type DisagreementIndex,
+} from "@/lib/modelOverlay/disagreementIndex";
 import { AutomationError } from "./errors";
 import { requireLabels } from "./qcFlags";
 import type { Instance, LabeledFrame, Labels, PredictedInstance, Video } from "@/types";
@@ -159,55 +165,25 @@ function computeFrameGroups(models: OverlayModel[], video: Video, frameIdx: numb
 /** Whether any node of the animal is spread wider than `threshold` px. */
 const disagrees = (g: AnimalGroup, threshold: number) => g.spread.some((s) => Number.isFinite(s) && s > threshold);
 
-/** Frames where two or more of `models` have poses, in order. */
-function comparedFrames(models: OverlayModel[]): number[] {
-  const counts = new Map<number, number>();
-  for (const m of models) for (const f of m.frames.keys()) counts.set(f, (counts.get(f) ?? 0) + 1);
-  return [...counts.entries()]
-    .filter(([, n]) => n >= 2)
-    .map(([f]) => f)
-    .sort((a, b) => a - b);
-}
-
-/** How far the disagreement scan of one video has got. */
-interface VideoScan {
-  /** Frames to check (two or more compared models have poses there), in order. */
-  frames: number[];
-  /** frames[0, next) have been checked by the scan. */
-  next: number;
-  /** Checked frames: their multi-model animals, or null when there are none. */
-  checked: Map<number, FrameGroups | null>;
-}
-
 /**
- * Scan state per video, kept until the compared models change (adding,
- * removing or hiding one makes a new `models` array). Matching every frame
- * can take a while on a long video with several models, so the scan runs in
- * time-boxed slices (see {@link scanDisagreements}) and is never redone for a
- * new threshold.
- *
- * TODO: switch to #525's `disagreementIndex.ts` (same `get` / `keys` use)
- * once it is merged, so Compare Models and the connector share one index.
+ * Which frames disagree comes from Compare Models' own disagreement index
+ * (lib/modelOverlay/disagreementIndex.ts): one largest-spread number per
+ * frame, threshold-free, filled lazily and shared with ◀ ▶ and the Review
+ * disagreements window, so the connector never redoes that work. Here we
+ * only fill it in time-boxed slices, and work out the per-animal groups of
+ * the few frames that disagree (kept per index).
  */
-let scanCache: { models: OverlayModel[]; byVideo: Map<Video, VideoScan> } | null = null;
-/** Bumped whenever a scan checks more frames, so cached candidate lists know to refresh. */
+const groupsByIndex = new WeakMap<DisagreementIndex, Map<number, FrameGroups | null>>();
+/** Bumped whenever a scan fills more of an index, so cached candidate lists know to refresh. */
 let scanEpoch = 0;
 
-function videoScan(video: Video): VideoScan {
-  const models = useModelOverlayStore.getState().models;
-  if (!scanCache || scanCache.models !== models) scanCache = { models, byVideo: new Map() };
-  let scan = scanCache.byVideo.get(video);
-  if (!scan) {
-    const compared = comparedModels(video);
-    scan = { frames: compared.length >= 2 ? comparedFrames(compared) : [], next: 0, checked: new Map() };
-    scanCache.byVideo.set(video, scan);
-  }
-  return scan;
+function indexFor(video: Video): DisagreementIndex {
+  return disagreementIndexFor(useModelOverlayStore.getState().models, video);
 }
 
-/** Forget cached disagreements and candidate lists (tests). */
+/** Forget cached candidate lists and Compare Models' disagreement index (tests). */
 export function clearDisagreementCache(): void {
-  scanCache = null;
+  clearDisagreementIndexCache();
   candidateCache = null;
   scanEpoch++;
 }
@@ -225,53 +201,57 @@ export interface ScanProgress {
   complete: boolean;
 }
 
-const progressOf = (scan: VideoScan): ScanProgress => ({
-  checked: scan.next,
-  total: scan.frames.length,
-  complete: scan.next >= scan.frames.length,
+const progressOf = (index: DisagreementIndex): ScanProgress => ({
+  checked: index.computed,
+  total: index.frames.length,
+  complete: index.computed >= index.frames.length,
 });
 
 /**
- * Check more of `video`'s compared frames for disagreement, for about
- * `budgetMs` of work, yielding to the UI every few milliseconds so the app
- * never freezes. Picks up where the last call stopped.
+ * Fill more of `video`'s disagreement index, for about `budgetMs` of work,
+ * yielding to the UI every few milliseconds so the app never freezes. Picks
+ * up where the last call (or Compare Models' own warm-up) stopped.
  */
 export async function scanDisagreements(video: Video, budgetMs = DEFAULT_SCAN_BUDGET_MS): Promise<ScanProgress> {
-  const scan = videoScan(video);
-  const models = comparedModels(video);
-  const storeModels = useModelOverlayStore.getState().models;
+  const index = indexFor(video);
   const start = performance.now();
-  let slice = start;
-  const before = scan.next;
-  while (scan.next < scan.frames.length) {
-    const f = scan.frames[scan.next++];
-    if (!scan.checked.has(f)) scan.checked.set(f, computeFrameGroups(models, video, f));
-    const now = performance.now();
-    if (now - start >= budgetMs) break;
-    if (now - slice >= SCAN_SLICE_MS) {
-      await yieldToEvent();
-      // The models changed meanwhile: this scan is for the old ones.
-      if (useModelOverlayStore.getState().models !== storeModels) break;
-      slice = performance.now();
-    }
+  const before = index.computed;
+  while (!fillIndex(index, Math.min(SCAN_SLICE_MS, budgetMs))) {
+    if (performance.now() - start >= budgetMs) break;
+    await yieldToEvent();
+    // The shown models changed meanwhile: this index is for the old ones.
+    if (indexFor(video) !== index) break;
   }
-  if (scan.next !== before) scanEpoch++;
-  return progressOf(scan);
+  if (index.computed !== before) scanEpoch++;
+  return progressOf(index);
 }
 
 /** Scan progress for `video` without scanning. */
 export function disagreementScanProgress(video: Video): ScanProgress {
-  return progressOf(videoScan(video));
+  return progressOf(indexFor(video));
 }
 
-/** One frame's multi-model animals: from the scan if it got there, else worked out now (one frame is quick). */
+/** One frame's multi-model animals, worked out once per index (one frame is quick). */
 function frameGroupsAt(video: Video, frameIdx: number): FrameGroups | null {
-  const scan = videoScan(video);
-  if (scan.checked.has(frameIdx)) return scan.checked.get(frameIdx)!;
-  const models = comparedModels(video);
-  const g = models.length >= 2 ? computeFrameGroups(models, video, frameIdx) : null;
-  scan.checked.set(frameIdx, g);
-  return g;
+  const index = indexFor(video);
+  let memo = groupsByIndex.get(index);
+  if (!memo) groupsByIndex.set(index, (memo = new Map()));
+  if (!memo.has(frameIdx)) {
+    const models = comparedModels(video);
+    memo.set(frameIdx, models.length >= 2 ? computeFrameGroups(models, video, frameIdx) : null);
+  }
+  return memo.get(frameIdx)!;
+}
+
+/** Frames of `video` the index has checked so far whose largest spread is above `threshold`. */
+function disagreeingFrames(video: Video, threshold: number): number[] {
+  const index = indexFor(video);
+  const out: number[] = [];
+  for (let r = 0; r < index.frames.length; r++) {
+    const v = index.maxSpread[r];
+    if (!Number.isNaN(v) && v > threshold) out.push(index.frames[r]);
+  }
+  return out;
 }
 
 /**
@@ -444,7 +424,10 @@ export function listPredictionCandidates(opts: CandidateOptions = {}): Candidate
     labels.videos.forEach((v, i) => {
       if (opts.videoIdx !== undefined && opts.videoIdx !== i) return;
       const d = new Map<number, FrameGroups>();
-      for (const [f, fg] of videoScan(v).checked) if (fg && fg.groups.some((g) => disagrees(g, threshold))) d.set(f, fg);
+      for (const f of disagreeingFrames(v, threshold)) {
+        const fg = frameGroupsAt(v, f);
+        if (fg && fg.groups.some((g) => disagrees(g, threshold))) d.set(f, fg);
+      }
       if (d.size > 0) disagreeing.set(v, d);
     });
   }

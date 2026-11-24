@@ -144,15 +144,17 @@ describe("prediction candidates", () => {
   // Why: on a long video one call may only check part of it; the next call must carry on, not start over.
   it("scans in time-boxed steps that pick up where the last stopped", async () => {
     const pose = (dy: number) => ({ xy: new Float64Array([100, 100, 110, 110, 130, 120 + dy]), score: 1, trackName: null });
-    const frames = (dy: number) => new Map(Array.from({ length: 50 }, (_, f) => [f, [pose(dy)]] as [number, ReturnType<typeof pose>[]]));
+    const frames = (dy: number) => new Map(Array.from({ length: 200 }, (_, f) => [f, [pose(dy)]] as [number, ReturnType<typeof pose>[]]));
     useModelOverlayStore.getState().addModels(fx.labels, [
       { name: "m1", source: "m1.slp", video: fx.video, frames: frames(0) },
       { name: "m2", source: "m2.slp", video: fx.video, frames: frames(30) },
     ]);
     const first = await scanDisagreements(fx.video, 0);
-    expect(first).toEqual({ checked: 1, total: 50, complete: false });
+    expect(first.total).toBe(200);
+    expect(first.complete).toBe(false);
+    expect(first.checked).toBeGreaterThan(0);
     const second = await scanDisagreements(fx.video, 0);
-    expect(second.checked).toBe(2);
+    expect(second.checked).toBeGreaterThan(first.checked);
     expect((await scanDisagreements(fx.video)).complete).toBe(true);
   });
 
