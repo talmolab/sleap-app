@@ -173,7 +173,8 @@ export const ToggleNegativeFrame: Command = {
     }
 
     // Turning OFF an otherwise-empty frame prunes it (it only held the flag).
-    if (!lf.isNegative && lf.instances.length === 0) {
+    // Drop the frame only when nothing else (a box, centroid, ...) is on it.
+    if (!frameHasContent(lf)) {
       const idx = labels.labeledFrames.indexOf(lf);
       if (idx !== -1) labels.labeledFrames.splice(idx, 1);
       ctx.state.setLabeledFrame(null);
@@ -441,7 +442,7 @@ export const DeleteFramePredictions: Command = {
     if (instance instanceof PredictedInstance) {
       ctx.state.setInstance(null);
     }
-    ctx.state.setLabeledFrame(userInstances.length > 0 ? lf : null);
+    ctx.state.setLabeledFrame(frameHasContent(lf) ? lf : null);
     ctx.state.markChanged();
   },
 };
