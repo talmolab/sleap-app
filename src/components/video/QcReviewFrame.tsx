@@ -37,7 +37,7 @@ import { formatShortcut } from "@/lib/formatShortcut";
 import { shortcutText } from "@/lib/shortcutPrefs";
 import { useQcView } from "@/hooks/useQcView";
 import { videoBasename } from "@/lib/videoFilter";
-import { ClaudeSuggestionRow, ClaudeSuggestionsLink } from "./ClaudeSuggestion";
+import { ClaudeSuggestionRow } from "./ClaudeSuggestion";
 
 const RESCORED_TITLE = "Scored against the last run; Rerun to re-check against all labels.";
 
@@ -205,10 +205,8 @@ function ReviewHeader() {
           filtered
         </span>
       )}
-      <span className="ml-auto" />
-      <ClaudeSuggestionsLink />
       <div
-        className="flex items-center rounded-md border border-border p-0.5"
+        className="ml-auto flex items-center rounded-md border border-border p-0.5"
         role="tablist"
         aria-label="Order flagged frames by"
       >

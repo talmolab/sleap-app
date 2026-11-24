@@ -60,7 +60,8 @@ export function ClaudeConnectorSection() {
           Allow Claude to control SLEAP
           <span className="block text-[10px] text-muted-foreground">
             Claude Code on this computer can review Label QC flags and predictions and propose fixes. Nothing
-            changes until you accept it. Claude can&apos;t save.
+            changes until you accept a fix (in the QC Review window; corrected predictions in Review
+            disagreements). Claude can&apos;t save.
           </span>
         </span>
       </label>
@@ -145,13 +146,14 @@ export function ClaudeConnectorSection() {
   );
 }
 
-/** Opens where Claude's suggestions are reviewed (Review disagreements, or Label QC Review), while there are any. */
+/** Opens Compare Models' Review disagreements window on Claude's corrected predictions, while there are any. */
 function ReviewSuggestionsButton() {
   const proposals = useProposalStore((s) => s.proposals);
   // An edit can make a suggestion outdated (no longer to decide).
   useAppStore((s) => s.editSeq);
-  if (proposals.length === 0) return null;
-  const n = undecidedCount(proposals);
+  const corrections = proposals.filter((p) => p.kind === "correct");
+  if (corrections.length === 0) return null;
+  const n = undecidedCount(corrections);
   return (
     <Button
       size="sm"
@@ -160,7 +162,7 @@ function ReviewSuggestionsButton() {
       onClick={() => openClaudeSuggestions()}
       data-testid="claude-review-suggestions"
     >
-      Review Claude&apos;s suggestions{n > 0 ? ` (${n} to decide)` : ""}
+      Review Claude&apos;s corrections{n > 0 ? ` (${n} to decide)` : ""}
     </Button>
   );
 }

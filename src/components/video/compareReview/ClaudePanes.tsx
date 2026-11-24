@@ -18,10 +18,9 @@ import { cn } from "@/lib/utils";
 import type { RGB } from "@/lib/colorPalettes";
 import { rgbToCSS } from "@/lib/colorPalettes";
 import { useAppStore } from "@/stores/appStore";
-import { canAccept, proposalInstance, proposalState, useProposalStore, type Proposal } from "@/stores/proposalStore";
+import { canAccept, canRevert, proposalInstance, proposalState, useProposalStore, type Proposal } from "@/stores/proposalStore";
 import { isReviewed, useCompareReviewStore } from "@/stores/compareReviewStore";
-import { acceptProposal, rejectProposal } from "@/lib/proposalReview";
-import { DecidedActions, proposalSummary } from "@/components/video/ClaudeSuggestion";
+import { acceptProposal, rejectProposal, revertProposal, unrejectProposal } from "@/lib/proposalReview";
 import { commandContext, ConvertPredictionToInstance } from "@/commands";
 import type { NodeMark, ProjectPose, Rect } from "@/lib/modelOverlay/review";
 import type { Video } from "@/types";
@@ -53,6 +52,57 @@ function changedMarks(p: Proposal, nodeNames: readonly string[], xy: Float64Arra
       return { x: at[2 * k], y: at[2 * k + 1], label: `${nodeNames[k] ?? k}${hidden ? " (hidden)" : ""}` };
     })
     .filter((m) => Number.isFinite(m.x) && Number.isFinite(m.y));
+}
+
+/** What Claude's correction would do, in a few words. */
+export function proposalSummary(p: Proposal): string {
+  const vals = Object.values(p.after);
+  const moved = vals.filter((v) => v !== null).length;
+  const hidden = vals.length - moved;
+  const parts = [];
+  if (moved) parts.push(`move ${moved} node${moved === 1 ? "" : "s"}`);
+  if (hidden) parts.push(`hide ${hidden} node${hidden === 1 ? "" : "s"}`);
+  return parts.length === 0 ? "accept the prediction as is" : parts.join(", ");
+}
+
+/** Revert (accepted) / Undo reject (rejected): neither is something ⌘Z can reach. */
+function DecidedActions({ p, className }: { p: Proposal; className?: string }) {
+  const st = proposalState(p);
+  if (st === "accepted") {
+    const ok = canRevert(p);
+    return (
+      <Button
+        size="sm"
+        variant="outline"
+        className={cn("px-2 text-[11px]", className)}
+        disabled={!ok}
+        onClick={() => void revertProposal(p.id)}
+        title={
+          ok
+            ? "Turn it back into the prediction, as it was before you accepted (a new edit you can undo)"
+            : "You changed this instance after accepting, so Revert would lose your edits"
+        }
+        data-testid="claude-revert"
+      >
+        Revert
+      </Button>
+    );
+  }
+  if (st === "rejected") {
+    return (
+      <Button
+        size="sm"
+        variant="outline"
+        className={cn("px-2 text-[11px]", className)}
+        onClick={() => unrejectProposal(p.id)}
+        title="Take the reject back: the suggestion is pending again"
+        data-testid="claude-unreject"
+      >
+        Undo reject
+      </Button>
+    );
+  }
+  return null;
 }
 
 const OUTDATED_TEXT = "Outdated: the prediction changed, or that animal was labeled, since Claude looked";

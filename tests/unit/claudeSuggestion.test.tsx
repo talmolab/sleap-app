@@ -91,9 +91,7 @@ describe("Claude suggests row", () => {
       await new Promise((r) => setTimeout(r, 0));
     });
     expect(inst().points[0].xy).toEqual([5, 6]);
-    // "⌘Z to undo" only holds for the newest edit, so the row offers Revert instead.
-    expect(screen.getByTestId("claude-suggestion").textContent).toContain("Accepted");
-    expect(screen.getByTestId("claude-revert")).toBeTruthy();
+    expect(screen.getByTestId("claude-suggestion").textContent).toContain("Accepted (Ctrl+Z to undo)");
     expect(screen.queryByRole("button", { name: "Accept" })).toBeNull();
     expect(commandContext.undoCommandName).toBe("Claude: nose was on the ear");
     act(() => {

@@ -1,27 +1,18 @@
 /**
  * The QC Review window's "Claude suggests" row: the reason for Claude's
- * proposal on the instance on screen, and Accept / Reject (then Revert /
- * Undo reject). The proposed pose itself is drawn on the canvas as a dashed
- * ghost (useProposalGhosts). Claude's corrections of predictions are reviewed
- * in Compare Models' Review disagreements window instead; the header link
- * (ClaudeSuggestionsLink) opens it.
+ * proposal on the instance on screen, and Accept / Reject. The proposed pose
+ * itself is drawn on the canvas as a dashed ghost (useProposalGhosts).
  */
 import { Sparkles } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import { useAppStore } from "@/stores/appStore";
-import { canRevert, proposalState, useProposalStore, type Proposal } from "@/stores/proposalStore";
-import {
-  acceptProposal,
-  currentProposal,
-  openClaudeSuggestions,
-  rejectProposal,
-  revertProposal,
-  unrejectProposal,
-} from "@/lib/proposalReview";
+import { proposalState, useProposalStore, type Proposal } from "@/stores/proposalStore";
+import { acceptProposal, currentProposal, rejectProposal } from "@/lib/proposalReview";
+import { formatShortcut } from "@/lib/formatShortcut";
 
 /** What the proposal would do, in a few words. */
-export function proposalSummary(p: Proposal): string {
+function summary(p: Proposal): string {
   if (p.kind === "ignore") return "ignore this flag";
   const vals = Object.values(p.after);
   const moved = vals.filter((v) => v !== null).length;
@@ -29,48 +20,7 @@ export function proposalSummary(p: Proposal): string {
   const parts = [];
   if (moved) parts.push(`move ${moved} node${moved === 1 ? "" : "s"}`);
   if (hidden) parts.push(`hide ${hidden} node${hidden === 1 ? "" : "s"}`);
-  if (p.kind === "correct" && parts.length === 0) return "accept the prediction as is";
   return parts.join(", ");
-}
-
-/** Revert / Undo reject for a decided proposal (both new edits or plain state, never ⌘Z). */
-export function DecidedActions({ p, className }: { p: Proposal; className?: string }) {
-  const st = proposalState(p);
-  if (st === "accepted" && p.kind !== "ignore") {
-    const ok = canRevert(p);
-    return (
-      <Button
-        size="sm"
-        variant="outline"
-        className={cn("h-6 px-2 text-[11px]", className)}
-        disabled={!ok}
-        onClick={() => void revertProposal(p.id)}
-        title={
-          ok
-            ? "Put it back as it was before you accepted (a new edit you can undo)"
-            : "You changed this instance after accepting, so Revert would lose your edits"
-        }
-        data-testid="claude-revert"
-      >
-        Revert
-      </Button>
-    );
-  }
-  if (st === "rejected") {
-    return (
-      <Button
-        size="sm"
-        variant="outline"
-        className={cn("h-6 px-2 text-[11px]", className)}
-        onClick={() => unrejectProposal(p.id)}
-        title="Take the reject back: the suggestion is pending again"
-        data-testid="claude-unreject"
-      >
-        Undo reject
-      </Button>
-    );
-  }
-  return null;
 }
 
 export function ClaudeSuggestionRow() {
@@ -90,7 +40,7 @@ export function ClaudeSuggestionRow() {
     st === "accepted"
       ? p.kind === "ignore"
         ? "Ignored"
-        : "Accepted"
+        : `Accepted (${formatShortcut("$mod+KeyZ")} to undo)`
       : st === "rejected"
         ? "Rejected"
         : st === "outdated"
@@ -106,7 +56,7 @@ export function ClaudeSuggestionRow() {
     >
       <Sparkles className="h-3.5 w-3.5 shrink-0 text-orange-400" aria-hidden />
       <span className="shrink-0 font-medium text-orange-400">Claude suggests</span>
-      <span className="shrink-0 text-muted-foreground">{proposalSummary(p)}:</span>
+      <span className="shrink-0 text-muted-foreground">{summary(p)}:</span>
       <span className="min-w-0 truncate" title={p.reason}>
         {p.reason}
       </span>
@@ -121,7 +71,6 @@ export function ClaudeSuggestionRow() {
             {status}
           </span>
         )}
-        <DecidedActions p={p} />
         {actionable && (
           <>
             <Button
@@ -154,26 +103,5 @@ export function ClaudeSuggestionRow() {
         )}
       </span>
     </div>
-  );
-}
-
-/**
- * In the QC Review header, while Claude has corrected predictions: opens
- * Compare Models' Review disagreements window, where they are reviewed.
- */
-export function ClaudeSuggestionsLink() {
-  const n = useProposalStore((s) => s.proposals.filter((p) => p.kind === "correct").length);
-  if (n === 0) return null;
-  return (
-    <Button
-      size="sm"
-      variant="ghost"
-      className="h-6 px-2 text-[11px] text-orange-400 hover:text-orange-300"
-      onClick={() => openClaudeSuggestions()}
-      title="Claude's corrections of predictions are reviewed in Compare Models' Review disagreements window"
-      data-testid="claude-suggestions-link"
-    >
-      Claude&apos;s corrections ({n})
-    </Button>
   );
 }

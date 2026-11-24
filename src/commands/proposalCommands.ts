@@ -89,29 +89,3 @@ export const RevertCorrectedPrediction: Command = {
   },
 };
 
-/**
- * Put every point of an instance back as it was (revert an accepted Claude
- * fix): position, visibility and the "complete" mark. One undo step.
- *
- * Params:
- *   instance: Instance                                   on the frame on screen
- *   points: [x, y, visible, complete][]                  one per node
- */
-export const RestorePose: Command = {
-  name: "RestorePose",
-  topics: [UpdateTopic.Frame, UpdateTopic.Instance],
-  execute(ctx: CommandContext, params?: Record<string, unknown>) {
-    const inst = params?.instance;
-    const points = params?.points as [number, number, boolean, boolean][] | undefined;
-    if (!(inst instanceof Instance) || !points || !ctx.state.labeledFrame?.instances.includes(inst)) return;
-    points.forEach(([x, y, visible, complete], i) => {
-      const p = inst.points[i];
-      if (!p) return;
-      p.xy = [x, y];
-      p.visible = visible;
-      p.complete = complete;
-    });
-    ctx.state.markChanged();
-    ctx.state.bumpOverlayVersion();
-  },
-};

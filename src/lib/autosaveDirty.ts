@@ -80,11 +80,10 @@ const FRAME_LEVEL_COMMANDS: ReadonlySet<string> = new Set([
   "ToggleNodeVisibility",
   // Moves/hides nodes of the selected instance (an accepted Claude fix).
   "SetNodes",
-  // Turns one prediction into a user instance in place (an accepted Claude correction),
-  // and back (Revert); RestorePose puts one instance's points back (Revert of a fix).
+  // Turns one prediction into a user instance in place (an accepted Claude
+  // correction), and back (its Revert).
   "AcceptCorrectedPrediction",
   "RevertCorrectedPrediction",
-  "RestorePose",
   "AddInstancesFromAllPredictions",
   // Track REASSIGNMENT (not track-set changes): these only rewrite `.track` on
   // existing instances in one frame / one scoped range — captured in the frame

@@ -2,8 +2,8 @@
  * Claude's corrected predictions in Compare Models' "Review disagreements"
  * window: the "Claude's suggestion" pane (next to the models' panes, or next
  * to the project's prediction when no models disagree or none are loaded),
- * Use / Revert / Reject / Undo reject, outdated, the queue order, and the
- * entry points (toast, Label QC Review link).
+ * Use / Revert / Reject / Undo reject, outdated, the queue order, the toast,
+ * and that Claude's QC fixes stay in Label QC Review as before.
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from "../bun-test";
 import { render, screen, cleanup, fireEvent, act, waitFor } from "@testing-library/react";
@@ -23,10 +23,10 @@ const { useModelOverlayStore } = await import("@/stores/modelOverlayStore");
 const { clearDisagreementIndexCache } = await import("@/lib/modelOverlay/disagreementIndex");
 const { setQcReviewedBackend, memoryBackend } = await import("@/lib/qcReviewed");
 const { CompareReviewWindow } = await import("@/components/video/compareReview/CompareReviewWindow");
-const { ClaudeSuggestionsLink } = await import("@/components/video/ClaudeSuggestion");
+const { QcReviewFrame } = await import("@/components/video/QcReviewFrame");
 const { openClaudeSuggestions, handleProposalKey, currentProposal } = await import("@/lib/proposalReview");
 const { buildEntries } = await import("@/components/video/compareReview/claudeEntries");
-const { loadPredictionFixture } = await import("./helpers/automationFixture");
+const { anomalyAt, loadPredictionFixture } = await import("./helpers/automationFixture");
 
 let fx: ReturnType<typeof loadPredictionFixture>;
 const store = () => useProposalStore.getState();
@@ -215,24 +215,54 @@ describe("Claude's suggestions in Review disagreements", () => {
     await new Promise((r) => setTimeout(r, 1700));
     expect(toastInfo).toHaveBeenCalledTimes(1);
     const [msg, data] = toastInfo.mock.calls[0] as unknown as [string, { action: { label: string; onClick: () => void } }];
-    expect(msg).toBe("Claude suggested 2 changes");
+    expect(msg).toBe("Claude suggested 2 corrections");
     expect(data.action.label).toBe("Review");
     act(() => data.action.onClick());
     expect(review().open).toBe(true);
     expect(review().focusProposal).toBe(store().proposals.find((p) => p.frameIdx === 30)!.id);
   });
 
-  // Why: corrections live in this window, so Label QC Review no longer shows or accepts them.
-  it("Label QC Review leaves corrections alone, and its link opens this window", () => {
+  // Why: corrections live in this window, so Label QC Review doesn't show or accept them.
+  it("Label QC Review leaves corrections alone", () => {
     proposeA();
     useQcStore.setState({ reviewOpen: true });
     useAppStore.getState().setFrameIdx(30);
     useAppStore.getState().setInstance(fx.a);
     expect(currentProposal()).toBeNull();
     expect(handleProposalKey("accept")).toBe(false);
-    render(<ClaudeSuggestionsLink />);
-    fireEvent.click(screen.getByTestId("claude-suggestions-link"));
-    expect(review().open).toBe(true);
+  });
+
+  // Why: regression — Claude's QC fixes on the user's own labels must still show and accept in Label QC Review, unchanged.
+  it("a QC fix on a flagged user instance still shows and accepts in Label QC Review", async () => {
+    proposeA(); // a correction in the project doesn't get in the way
+    await Promise.resolve(); // loadDismissed
+    useQcStore.setState({
+      labels: fx.labels,
+      state: "done",
+      findings: [],
+      anomaly: { instances: [anomalyAt(20, 1, 0.9)], featureNames: [], gmmThreshold: 0.95 },
+      threshold: 0.7,
+      rescored: new Map(),
+      reviewOpen: true,
+    });
+    useAppStore.getState().setFrameIdx(20);
+    const user = lf(20).userInstances[1];
+    useAppStore.getState().setInstance(user);
+    store().addFix(
+      { flagId: "v0:f20:i1:anomaly", videoIdx: 0, frameIdx: 20, instIdx: 1, reason: "nose was on the ear" },
+      { 0: [5, 6] },
+    );
+    render(
+      <QcReviewFrame>
+        <div />
+      </QcReviewFrame>,
+    );
+    expect(screen.getByTestId("claude-suggestion").textContent).toContain("nose was on the ear");
+    expect(handleProposalKey("accept")).toBe(true);
+    await flush();
+    expect(user.points[0].xy).toEqual([5, 6]);
+    expect(screen.getByTestId("claude-suggestion").textContent).toContain("Accepted (Ctrl+Z to undo)");
+    expect(screen.queryByTestId("claude-suggestions-link")).toBeNull();
   });
 });
 

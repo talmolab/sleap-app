@@ -18,7 +18,7 @@ import { create } from "zustand";
 import { useAppStore } from "@/stores/appStore";
 import { useQcStore } from "@/stores/qcStore";
 import { SetNodes } from "@/commands/editCommands";
-import { AcceptCorrectedPrediction, RestorePose, RevertCorrectedPrediction } from "@/commands/proposalCommands";
+import { AcceptCorrectedPrediction, RevertCorrectedPrediction } from "@/commands/proposalCommands";
 import type { CommandContext } from "@/commands/CommandContext";
 import { AutomationError } from "@/automation/errors";
 import { qcMarkKey } from "@/lib/qcReviewed";
@@ -53,10 +53,8 @@ export interface Proposal {
   /** The instance's whole pose when proposed; a change makes the proposal outdated. */
   fingerprint: string;
   status: ProposalStatus;
-  /** After Accept: the pose Accept left (fingerprint), so Revert can tell whether the user edited it since. */
+  /** Correction, after Accept: the user instance's pose (fingerprint), so Revert can tell whether it was edited since. */
   resultFingerprint?: string;
-  /** Fix only: every point before Accept, `[x, y, visible, complete]`, for Revert. */
-  restore?: [number, number, boolean, boolean][];
 }
 
 export interface ProposalTarget {
@@ -85,10 +83,10 @@ interface ProposalState {
   /** Apply a pending proposal. `ctx` defaults to the app's command context. */
   accept: (id: string, ctx?: CommandContext) => Promise<void>;
   /**
-   * Take back an accepted fix or correction as a new, undoable edit: the fix's
-   * nodes go back where they were, a correction's user instance turns back
-   * into the prediction. Only while the instance is as Accept left it (⌘Z
-   * only reaches the newest edit, so it can't take back an older accept).
+   * Take back an accepted correction as a new, undoable edit: the user
+   * instance it made turns back into the prediction. Only while that
+   * instance is as Accept left it (⌘Z only reaches the newest edit, so it
+   * can't take back an older accept).
    */
   revert: (id: string, ctx?: CommandContext) => Promise<void>;
   reject: (id: string) => void;
@@ -187,20 +185,13 @@ export function proposalState(p: Proposal): ProposalStanding {
   return p.status;
 }
 
-/** The instance an accepted fix or correction left: the fixed user instance, or the user instance a correction made. */
-export function acceptedInstance(p: Proposal): Instance | null {
-  if (p.kind === "correct") return correctionResult(p);
-  if (p.kind === "fix") return proposalFrame(p)?.userInstances[p.instIdx] ?? null;
-  return null;
-}
-
 /**
- * Whether Revert can take an accepted fix or correction back: it is accepted
- * (not undone) and the instance is still exactly as Accept left it.
+ * Whether Revert can take an accepted correction back: it is accepted (not
+ * undone) and the user instance it made is still exactly as Accept left it.
  */
 export function canRevert(p: Proposal): boolean {
-  if (p.kind === "ignore" || !p.resultFingerprint || proposalState(p) !== "accepted") return false;
-  const inst = acceptedInstance(p);
+  if (p.kind !== "correct" || !p.resultFingerprint || proposalState(p) !== "accepted") return false;
+  const inst = correctionResult(p);
   return !!inst && poseFingerprint(inst) === p.resultFingerprint;
 }
 
@@ -354,11 +345,6 @@ export const useProposalStore = create<ProposalState>((set, get) => {
       }
       // Looked up again: an undo or redo replaces instances with copies.
       const inst = proposalInstance(now)!;
-      // Every point as it was, so Revert can put a fix back exactly.
-      const restore =
-        p.kind === "fix"
-          ? inst.points.map((q) => [q.xy[0], q.xy[1], q.visible, q.complete] as [number, number, boolean, boolean])
-          : undefined;
       goTo(p, inst);
       // The instance is passed explicitly, so the command edits it whatever is selected.
       const done = cc.execute(
@@ -368,15 +354,17 @@ export const useProposalStore = create<ProposalState>((set, get) => {
       );
       setStatus(id, "accepted");
       await done;
-      const accepted = get().proposals.find((x) => x.id === id);
-      const result = accepted ? acceptedInstance(accepted) : null;
-      patch(id, { restore, resultFingerprint: result ? poseFingerprint(result) : undefined });
+      if (p.kind === "correct") {
+        const accepted = get().proposals.find((x) => x.id === id);
+        const result = accepted ? correctionResult(accepted) : null;
+        patch(id, { resultFingerprint: result ? poseFingerprint(result) : undefined });
+      }
     },
 
     revert: async (id, ctx) => {
       const p = find(id);
-      if (proposalState(p) !== "accepted" || p.kind === "ignore") {
-        throw new AutomationError("NOT_PENDING", "Only an accepted fix or correction can be reverted.");
+      if (proposalState(p) !== "accepted" || p.kind !== "correct") {
+        throw new AutomationError("NOT_PENDING", "Only an accepted correction can be reverted.");
       }
       if (!canRevert(p)) {
         throw new AutomationError(
@@ -387,14 +375,10 @@ export const useProposalStore = create<ProposalState>((set, get) => {
       const cc = ctx ?? (await import("@/commands/CommandContext")).commandContext;
       const now = get().proposals.find((x) => x.id === id);
       if (!now || !canRevert(now)) throw new AutomationError("NOT_PENDING", `Proposal "${id}" can't be reverted any more.`);
-      const inst = acceptedInstance(now)!;
+      const inst = correctionResult(now)!;
       goTo(now, inst);
-      await cc.execute(
-        now.kind === "correct" ? RevertCorrectedPrediction : RestorePose,
-        { instance: inst, points: now.restore },
-        { undoLabel: `Revert ${undoLabel(now.reason)}` },
-      );
-      // The proposal now reads "undone": the pose (or prediction) is as it was.
+      await cc.execute(RevertCorrectedPrediction, { instance: inst }, { undoLabel: `Revert ${undoLabel(now.reason)}` });
+      // The proposal now reads "undone": the prediction is back as it was.
     },
 
     reject: (id) => {
