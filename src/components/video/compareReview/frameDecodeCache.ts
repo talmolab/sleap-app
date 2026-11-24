@@ -1,5 +1,5 @@
 /**
- * Review prototypes (dev only): decoded frames shared by the crop canvases, so
+ * Compare Models review window: decoded frames shared by the crop canvases, so
  * several panes of one frame decode it once.
  *
  * Only successful decodes are kept. A read can fail for a moment — e.g. while

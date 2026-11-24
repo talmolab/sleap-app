@@ -1,5 +1,5 @@
 /**
- * Review prototypes (dev only): one frame (or a crop of it) with model poses
+ * Compare Models review window: one frame (or a crop of it) with model poses
  * drawn on top in the models' colours, the consensus as small white crosses
  * and red rings on the nodes the models disagree on. The project's own
  * instances can be drawn underneath in silver (solid: yours, dashed:
@@ -19,7 +19,7 @@ import {
   type ModelOverlayLayer,
 } from "@/canvas/modelOverlayRenderer";
 import { renderInstances } from "@/canvas/SkeletonRenderer";
-import type { ProjectPose, Rect } from "@/lib/modelOverlay/reviewPrototype";
+import type { ProjectPose, Rect } from "@/lib/modelOverlay/review";
 import { decodeFrame } from "./frameDecodeCache";
 
 /** Colour of the project's own instances in the review crops (not a model colour). */

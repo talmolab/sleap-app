@@ -1,11 +1,9 @@
 /**
- * Compare model predictions — review-window PROTOTYPES (dev only; see
- * lib/modelOverlay/reviewPrototype.ts): which prototype is open, and what was
- * decided on each disagreement, shared by all three so they can be compared on
- * the same queue. Session only; nothing here is saved.
+ * Compare model predictions — the review window: whether it is open, its own
+ * threshold, and what was decided on each disagreement. Session only;
+ * nothing here is saved (the instances "Use this one" makes are, as edits).
  */
 import { create } from "zustand";
-import type { ReviewLayout } from "@/lib/modelOverlay/reviewPrototype";
 import { useModelOverlayStore, type OverlayModel } from "@/stores/modelOverlayStore";
 
 /**
@@ -14,25 +12,25 @@ import { useModelOverlayStore, type OverlayModel } from "@/stores/modelOverlaySt
  * turn the best option into an instance, so there is no per-model "wrong".
  */
 export interface ReviewDecision {
-  /** "Use this one": the model whose pose became a user instance. */
-  used: string | null;
+  /** Accepted with "Use this one": the model whose pose became a user instance. */
+  accepted: string | null;
   /** "Skip": either is acceptable, left as is. */
   skipped: boolean;
   /** "None are right": sent to the main view to label by hand. */
   byHand: boolean;
 }
 
-/** Default "show disagreements above" for the review prototypes, px (the corner panel keeps its own 10 px). */
+/** Default "show disagreements above" for the review, px (the corner panel keeps its own 10 px). */
 export const DEFAULT_REVIEW_THRESHOLD_PX = 25;
 
 interface CompareReviewState {
-  open: ReviewLayout | null;
-  setOpen: (layout: ReviewLayout | null) => void;
+  open: boolean;
+  setOpen: (open: boolean) => void;
   /** Only disagreements above this many px are reviewed (bigger than the corner panel's rings). */
   threshold: number;
   setThreshold: (px: number) => void;
   decisions: Record<string, ReviewDecision>;
-  use: (key: string, modelId: string) => void;
+  accept: (key: string, modelId: string) => void;
   skip: (key: string) => void;
   markByHand: (key: string) => void;
   /** Forget the decision on this item (the project edit itself is undone with ⌘Z). */
@@ -40,15 +38,15 @@ interface CompareReviewState {
   clearAll: () => void;
 }
 
-const empty: ReviewDecision = { used: null, skipped: false, byHand: false };
+const empty: ReviewDecision = { accepted: null, skipped: false, byHand: false };
 
 export const useCompareReviewStore = create<CompareReviewState>()((set) => ({
-  open: null,
-  setOpen: (layout) => set({ open: layout }),
+  open: false,
+  setOpen: (open) => set({ open }),
   threshold: DEFAULT_REVIEW_THRESHOLD_PX,
   setThreshold: (px) => set((s) => ({ threshold: Number.isFinite(px) && px >= 0 ? px : s.threshold })),
   decisions: {},
-  use: (key, modelId) => set((s) => ({ decisions: { ...s.decisions, [key]: { ...empty, used: modelId } } })),
+  accept: (key, modelId) => set((s) => ({ decisions: { ...s.decisions, [key]: { ...empty, accepted: modelId } } })),
   skip: (key) => set((s) => ({ decisions: { ...s.decisions, [key]: { ...empty, skipped: true } } })),
   markByHand: (key) => set((s) => ({ decisions: { ...s.decisions, [key]: { ...empty, byHand: true } } })),
   reset: (key) =>
@@ -60,9 +58,9 @@ export const useCompareReviewStore = create<CompareReviewState>()((set) => ({
   clearAll: () => set({ decisions: {} }),
 }));
 
-/** Whether an item has a decision (used, skipped, or sent to label by hand). */
+/** Whether an item has a decision (accepted, skipped, or sent to label by hand). */
 export function isReviewed(d: ReviewDecision | undefined): boolean {
-  return !!d && (d.used !== null || d.skipped || d.byHand);
+  return !!d && (d.accepted !== null || d.skipped || d.byHand);
 }
 
 /** Which models (and which poses) are loaded — not whether they're shown. */

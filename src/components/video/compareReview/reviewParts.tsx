@@ -1,7 +1,7 @@
-/** Review prototypes (dev only): small parts every prototype shows. */
+/** Compare Models review window: small shared parts (status, footer, threshold, project instances). */
 import { useMemo, useState } from "react";
 import { Eye, EyeOff } from "lucide-react";
-import { projectPosesOnFrame, reviewItemKey, type ProjectPose, type ReviewGroup } from "@/lib/modelOverlay/reviewPrototype";
+import { projectPosesOnFrame, reviewItemKey, type ProjectPose, type ReviewGroup } from "@/lib/modelOverlay/review";
 import { useAppStore } from "@/stores/appStore";
 import { toggleProjectInstances } from "@/lib/modelOverlay/canvasActions";
 import { rgbToCSS } from "@/lib/colorPalettes";
@@ -30,30 +30,32 @@ export function QueueStatus({
   else if (count === 0) text = `No disagreements above ${threshold} px. Lower "above … px" to see smaller ones.`;
   else text = `${count} disagreement${count === 1 ? "" : "s"} above ${threshold} px, worst first${truncated ? ` — only the worst frames: ${totalFrames} frames disagree in all` : ""}`;
   return (
-    <div className="px-2 py-1 text-muted-foreground" data-testid="review-proto-status">
+    <div className="px-2 py-1 text-muted-foreground" data-testid="review-status">
       {text}
     </div>
   );
 }
 
-/** Used / skipped / to label by hand / left, over the whole queue. */
+/** Accepted / skipped / to label by hand / left, over the whole queue. */
 export function ReviewSummary({ items }: { items: readonly ReviewGroup[] }) {
   const decisions = useCompareReviewStore((s) => s.decisions);
   if (items.length === 0) return null;
-  let used = 0;
+  let accepted = 0;
   let skipped = 0;
   let byHand = 0;
   let left = 0;
   for (const it of items) {
     const d = decisions[reviewItemKey(it)];
     if (!isReviewed(d)) left++;
-    else if (d!.used) used++;
+    else if (d!.accepted) accepted++;
     else if (d!.byHand) byHand++;
     else skipped++;
   }
   return (
-    <div className="flex gap-2 border-t border-border px-2 py-1 tabular-nums text-muted-foreground" data-testid="review-proto-summary">
-      <span className="text-green-600 dark:text-green-400">{used} used</span>
+    <div className="flex gap-2 border-t border-border px-2 py-1 tabular-nums text-muted-foreground" data-testid="review-summary">
+      <span className="text-green-600 dark:text-green-400" title='Poses you turned into instances with "Use this one"'>
+        {accepted} accepted
+      </span>
       <span>· {skipped} skipped</span>
       {byHand > 0 && <span>· {byHand} to label by hand</span>}
       <span>· {left} left</span>
@@ -105,7 +107,7 @@ export function ReviewThresholdInput() {
           }
         }}
         aria-label="Review disagreements above, px"
-        data-testid="review-proto-threshold"
+        data-testid="review-threshold"
       />
       px
     </label>
@@ -142,7 +144,7 @@ export function ProjectInstancesKey({ count }: { count: number | null }) {
         type="button"
         className="flex items-center gap-1 rounded bg-amber-500/25 px-1.5 py-0.5 font-medium text-amber-700 hover:bg-amber-500/40 dark:text-amber-300"
         onClick={toggleProjectInstances}
-        data-testid="review-proto-project-hidden"
+        data-testid="review-project-hidden"
         title="Your labels and the project's predictions are hidden (H). Click to show them in the crops and the main view."
       >
         <EyeOff className="h-3 w-3" /> Project instances hidden (H) · show
@@ -150,12 +152,99 @@ export function ProjectInstancesKey({ count }: { count: number | null }) {
     );
   }
   return (
-    <span className="flex items-center gap-1 text-muted-foreground" data-testid="review-proto-project-key">
+    <span className="flex items-center gap-1 text-muted-foreground" data-testid="review-project-key">
       <span className="inline-block h-0.5 w-4" style={{ backgroundColor: rgbToCSS(PROJECT_POSE_COLOR) }} />
       Project instances{count !== null ? ` (${count} here)` : ""}: solid = yours, dashed = predictions
       <button type="button" className="ml-1 rounded p-0.5 hover:bg-muted" onClick={toggleProjectInstances} title="Hide project instances (H)" aria-label="Hide project instances">
         <Eye className="h-3 w-3" />
       </button>
     </span>
+  );
+}
+
+/** A typed whole number in [min, max], or null (empty, not a number, out of range). */
+export function parseJumpNumber(text: string, min: number, max: number): number | null {
+  if (text.trim() === "") return null;
+  const v = Number(text);
+  return Number.isInteger(v) && v >= min && v <= max ? v : null;
+}
+
+/** The queue position of the item whose frame is nearest `frame` (ties: the earlier frame), or -1. */
+export function nearestItemToFrame(items: readonly { frame: number }[], frame: number): number {
+  let best = -1;
+  for (let i = 0; i < items.length; i++) {
+    if (best < 0) {
+      best = i;
+      continue;
+    }
+    const d = Math.abs(items[i].frame - frame);
+    const bd = Math.abs(items[best].frame - frame);
+    if (d < bd || (d === bd && items[i].frame < items[best].frame)) best = i;
+  }
+  return best;
+}
+
+/**
+ * A number in the header you can click to type a new one: "3" → an input.
+ * Keeps what you type (clear and retype freely); Enter or clicking away
+ * commits a whole number in [min, max] — anything else puts the old value
+ * back; Esc cancels.
+ */
+export function JumpNumber({
+  value,
+  min,
+  max,
+  onCommit,
+  label,
+  testId,
+  className,
+}: {
+  value: number;
+  min: number;
+  max: number;
+  onCommit: (n: number) => void;
+  label: string;
+  testId: string;
+  className?: string;
+}) {
+  const [text, setText] = useState<string | null>(null);
+  const commit = () => {
+    if (text !== null) {
+      const v = parseJumpNumber(text, min, max);
+      if (v !== null && v !== value) onCommit(v);
+    }
+    setText(null);
+  };
+  if (text === null) {
+    return (
+      <button
+        type="button"
+        className={`rounded px-0.5 tabular-nums underline decoration-dotted underline-offset-2 hover:bg-muted ${className ?? ""}`}
+        onClick={() => setText(String(value))}
+        title={`${label}: click to type a number`}
+        data-testid={testId}
+      >
+        {value}
+      </button>
+    );
+  }
+  return (
+    <input
+      autoFocus
+      type="number"
+      min={min}
+      max={max}
+      className="w-16 rounded border border-border bg-background px-1 text-right tabular-nums text-foreground"
+      value={text}
+      onChange={(e) => setText(e.target.value)}
+      onFocus={(e) => e.target.select()}
+      onBlur={commit}
+      onKeyDown={(e) => {
+        if (e.key === "Enter") commit();
+        else if (e.key === "Escape") setText(null);
+      }}
+      aria-label={label}
+      data-testid={`${testId}-input`}
+    />
   );
 }

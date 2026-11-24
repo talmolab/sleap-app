@@ -1,26 +1,49 @@
 /**
- * Review prototype B (dev only): side-by-side panes. A large window shows
+ * Compare Model Predictions — Review disagreements (opened with "Review" in
+ * the corner panel). Side by side: a large window shows
  * the current disagreement once per model — each pane has only that model's
  * pose on the frame (zoomed to the animal, or the whole frame), with the
  * models' average as white crosses and the disputed nodes ringed red — plus
  * an "all models" pane. Worst disagreements first. One decision per item:
  * "Use this one" under a model (its pose becomes a user instance, undoable),
  * "None are right" (go label it by hand in the main view), or "Skip" (either
- * is fine). ◀ ▶ or ← → step through.
+ * is fine). ◀ ▶ or ← → step through; click the item number (or the frame)
+ * in the header to jump. Only disagreements above the window's own
+ * threshold (default 25 px) are listed.
  */
 import { useEffect, useMemo, useState } from "react";
 import { Check, ChevronLeft, ChevronRight, PenLine, SkipForward, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { Checkbox } from "@/components/ui/checkbox";
 import { rgbToCSS } from "@/lib/colorPalettes";
 import { useAppStore } from "@/stores/appStore";
 import { isReviewed, useCompareReviewStore } from "@/stores/compareReviewStore";
-import { cropAround, itemRings, reviewItemKey } from "@/lib/modelOverlay/reviewPrototype";
+import { cropAround, itemRings, reviewItemKey } from "@/lib/modelOverlay/review";
 import { videoDims } from "@/lib/modelOverlay/core";
 import { acceptForItem, goToItem, keysBelongElsewhere, labelByHand, useReviewQueue } from "./useReviewQueue";
 import { ModelCropCanvas, type CropPose } from "./ModelCropCanvas";
-import { ProjectInstancesKey, QueueStatus, ReviewSummary, ReviewThresholdInput, useProjectPoses } from "./reviewParts";
+import {
+  JumpNumber,
+  nearestItemToFrame,
+  ProjectInstancesKey,
+  QueueStatus,
+  ReviewSummary,
+  ReviewThresholdInput,
+  useProjectPoses,
+} from "./reviewParts";
+import { useModelOverlayStore } from "@/stores/modelOverlayStore";
 
-export function ReviewPanesPrototype({ onClose }: { onClose: () => void }) {
+/** The window, when open and models are loaded (mounted once, by VideoPlayer). */
+export function CompareReviewWindow() {
+  const open = useCompareReviewStore((s) => s.open);
+  const setOpen = useCompareReviewStore((s) => s.setOpen);
+  const hasModels = useModelOverlayStore((s) => s.models.length > 0);
+  const video = useAppStore((s) => s.video);
+  if (!open || !hasModels || !video) return null;
+  return <ReviewWindow onClose={() => setOpen(false)} />;
+}
+
+export function ReviewWindow({ onClose }: { onClose: () => void }) {
   const { shown, progress, items, truncated, totalFrames, threshold } = useReviewQueue();
   const video = useAppStore((s) => s.video);
   const skeleton = useAppStore((s) => s.skeleton);
@@ -89,22 +112,44 @@ export function ReviewPanesPrototype({ onClose }: { onClose: () => void }) {
   const pane = 260;
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60" data-testid="review-proto-panes" onMouseDown={(e) => e.stopPropagation()}>
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60" data-testid="review-window" onMouseDown={(e) => e.stopPropagation()}>
       <div className="flex max-h-[92vh] max-w-[95vw] flex-col rounded-lg border border-border bg-background text-xs shadow-2xl">
         <div className="flex items-center gap-2 border-b border-border px-3 py-2">
           <span className="text-sm font-semibold">Review disagreements</span>
-          <span className="rounded bg-amber-500/20 px-1 text-[10px] text-amber-600 dark:text-amber-400">prototype B · side by side</span>
-          <span className="flex-1" />
           <ReviewThresholdInput />
-          <label className="flex items-center gap-1">
-            <input type="checkbox" checked={zoomed} onChange={(e) => setZoomed(e.target.checked)} />
+          <span className="flex-1" />
+          <label htmlFor="review-zoom" className="flex items-center gap-1.5">
+            <Checkbox id="review-zoom" checked={zoomed} onCheckedChange={(v) => setZoomed(v === true)} />
             Zoom to the animal
           </label>
           <Button size="sm" variant="outline" className="h-7 w-7 p-0" onClick={() => go(-1)} disabled={!item || at === 0} aria-label="Previous">
             <ChevronLeft className="h-4 w-4" />
           </Button>
-          <span className="min-w-[9rem] text-center tabular-nums">
-            {item ? `${at + 1} / ${items.length} · frame ${item.frame}${item.trackName ? ` · ${item.trackName}` : ""}` : "–"}
+          <span className="min-w-[9rem] text-center tabular-nums" data-testid="review-position">
+            {item ? (
+              <>
+                <JumpNumber
+                  value={at + 1}
+                  min={1}
+                  max={items.length}
+                  onCommit={(n) => setPos(n - 1)}
+                  label="Go to item number"
+                  testId="review-jump-item"
+                />{" "}
+                / {items.length} · frame{" "}
+                <JumpNumber
+                  value={item.frame}
+                  min={0}
+                  max={Number.MAX_SAFE_INTEGER}
+                  onCommit={(f) => setPos(nearestItemToFrame(items, f))}
+                  label="Go to the item nearest this frame"
+                  testId="review-jump-frame"
+                />
+                {item.trackName ? ` · ${item.trackName}` : ""}
+              </>
+            ) : (
+              "–"
+            )}
           </span>
           <Button size="sm" variant="outline" className="h-7 w-7 p-0" onClick={() => go(1)} disabled={!item || at >= items.length - 1} aria-label="Next">
             <ChevronRight className="h-4 w-4" />
@@ -135,7 +180,7 @@ export function ReviewPanesPrototype({ onClose }: { onClose: () => void }) {
                       className="h-7 flex-1 text-[11px]"
                       onClick={() => labelByHand(item)}
                       title="No model got it right: go to this frame in the main view (this window closes) to label it by hand"
-                      data-testid="review-proto-none-right"
+                      data-testid="review-none-right"
                     >
                       <PenLine className="mr-1 h-3 w-3" /> None are right
                     </Button>
@@ -148,7 +193,7 @@ export function ReviewPanesPrototype({ onClose }: { onClose: () => void }) {
                         next();
                       }}
                       title="Either is acceptable: leave it as is and go to the next one"
-                      data-testid="review-proto-skip"
+                      data-testid="review-skip"
                     >
                       <SkipForward className="mr-1 h-3 w-3" /> Skip
                     </Button>
@@ -157,12 +202,12 @@ export function ReviewPanesPrototype({ onClose }: { onClose: () => void }) {
                 {item.members.map((m) => {
                   const model = shown.find((x) => x.id === m.modelId);
                   if (!model) return null;
-                  const used = d?.used === m.modelId;
+                  const accepted = d?.accepted === m.modelId;
                   return (
                     <div
                       key={m.modelId}
-                      className={`flex flex-col rounded border p-1 ${used ? "border-green-500 bg-green-500/10" : "border-border"}`}
-                      data-testid="review-proto-pane"
+                      className={`flex flex-col rounded border p-1 ${accepted ? "border-green-500 bg-green-500/10" : "border-border"}`}
+                      data-testid="review-pane"
                     >
                       <ModelCropCanvas
                         video={video}
@@ -188,11 +233,11 @@ export function ReviewPanesPrototype({ onClose }: { onClose: () => void }) {
                       <div className="px-1 pt-1">
                         <Button
                           size="sm"
-                          variant={used ? "default" : "outline"}
+                          variant={accepted ? "default" : "outline"}
                           className="h-7 w-full text-[11px]"
                           onClick={() => void acceptForItem(item, m.modelId).then((ok) => ok && next())}
                           title="Make this model's pose a user instance (replaces the matching prediction; asks before replacing your own instance; ⌘Z undoes), then the next one"
-                          data-testid="review-proto-use"
+                          data-testid="review-use"
                         >
                           <Check className="mr-1 h-3 w-3" /> Use this one
                         </Button>

@@ -1,7 +1,7 @@
 /**
- * Compare Models review-window prototypes (dev only): the switch that turns
- * them on, what one disagreement looks like, the crop, the mock models used
- * to try them, the shared decisions, and that each window opens on a queue.
+ * Compare Models "Review disagreements" window: what one disagreement looks
+ * like, the crop, the test models, the decisions, opening it from the corner
+ * panel, jumping, and the fixes from review and hand-testing.
  */
 import { describe, it, expect, beforeEach, afterEach } from "../bun-test";
 import { render, renderHook, act, screen, fireEvent, cleanup, waitFor } from "@testing-library/react";
@@ -9,38 +9,33 @@ import { Labels, LabeledFrame, Skeleton } from "@talmolab/sleap-io.js";
 import {
   cropAround,
   itemRings,
-  makeMockModels,
   projectPosesOnFrame,
-  readReviewSwitch,
   reviewGroupsOnFrame,
   reviewItemKey,
-  REVIEW_SWITCH_KEY,
-} from "@/lib/modelOverlay/reviewPrototype";
+} from "@/lib/modelOverlay/review";
+import { makeMockModels } from "./compareReviewTestData";
 import { clearDisagreementIndexCache, disagreementIndexFor, fillIndex, disagreementFrames } from "@/lib/modelOverlay/disagreementIndex";
 import { DEFAULT_REVIEW_THRESHOLD_PX, isReviewed, useCompareReviewStore } from "@/stores/compareReviewStore";
 import { useAppStore } from "@/stores/appStore";
 import { useModelOverlayStore, type OverlayModel } from "@/stores/modelOverlayStore";
 import { MODEL_COLORS, type OverlayPose } from "@/lib/modelOverlay/core";
-import { ReviewStepperPrototype } from "@/components/video/compareReview/ReviewStepperPrototype";
-import { ReviewPanesPrototype } from "@/components/video/compareReview/ReviewPanesPrototype";
-import { ReviewGridPrototype } from "@/components/video/compareReview/ReviewGridPrototype";
+import { CompareReviewWindow, ReviewWindow } from "@/components/video/compareReview/CompareReviewWindow";
+import { ModelOverlayLegend } from "@/components/video/ModelOverlayLegend";
 import { makePred, makePredictionLabels, makeUser, makeVideo, NODES, poseAt } from "./modelOverlayTestData";
 import { acceptForItem, keysBelongElsewhere, worstFrames } from "@/components/video/compareReview/useReviewQueue";
-import { acceptModelPose } from "@/lib/modelOverlay/canvasActions";
 import { useConfirmStore } from "@/stores/confirmStore";
 import { PoseStore } from "@/lib/modelOverlay/poseStore";
 import { clearFrameDecodeCache, decodeFrame, DECODE_ATTEMPTS } from "@/components/video/compareReview/frameDecodeCache";
-import { parseReviewThreshold, ProjectInstancesKey, ReviewThresholdInput, useProjectPoses } from "@/components/video/compareReview/reviewParts";
+import {
+  JumpNumber,
+  nearestItemToFrame,
+  parseJumpNumber,
+  parseReviewThreshold,
+  ProjectInstancesKey,
+  ReviewThresholdInput,
+  useProjectPoses,
+} from "@/components/video/compareReview/reviewParts";
 import { rawFrameToRGBA } from "@/lib/videoExport";
-
-function memStorage() {
-  const m = new Map<string, string>();
-  return {
-    getItem: (k: string) => m.get(k) ?? null,
-    setItem: (k: string, v: string) => void m.set(k, v),
-    removeItem: (k: string) => void m.delete(k),
-  };
-}
 
 function pose(xy: [number, number][], trackName: string | null = null): OverlayPose {
   return { xy: Float64Array.from(xy.flat()), score: 0.9, trackName };
@@ -58,25 +53,6 @@ function model(id: string, frames: Record<number, OverlayPose[]>, video = makeVi
     trackNames: new Set(),
   };
 }
-
-describe("review prototype switch", () => {
-  // The URL turns it on and is remembered, so the desktop window (no address bar) keeps it after a reload.
-  it("turns on from the URL and remembers it", () => {
-    const st = memStorage();
-    expect(readReviewSwitch("?reviewUi=grid", st)).toEqual({ on: true, layout: "grid" });
-    expect(st.getItem(REVIEW_SWITCH_KEY)).toBe("grid");
-    expect(readReviewSwitch("", st)).toEqual({ on: true, layout: "grid" });
-  });
-
-  // Off by default, and ?reviewUi=off forgets it; an unknown value opens the stepper.
-  it("is off by default and can be turned off", () => {
-    const st = memStorage();
-    expect(readReviewSwitch("", st).on).toBe(false);
-    expect(readReviewSwitch("?reviewUi=1", st)).toEqual({ on: true, layout: "stepper" });
-    expect(readReviewSwitch("?reviewUi=off", st).on).toBe(false);
-    expect(readReviewSwitch("", st).on).toBe(false);
-  });
-});
 
 describe("reviewGroupsOnFrame", () => {
   // One item per animal the models disagree on, with the disputed nodes and each model's distance.
@@ -142,13 +118,13 @@ describe("makeMockModels", () => {
 describe("review decisions", () => {
   beforeEach(() => useCompareReviewStore.getState().clearAll());
 
-  // One decision per item — use a model, skip, or label by hand — the latest one wins.
-  it("records use, skip and label-by-hand", () => {
+  // One decision per item — accept a model ("Use this one"), skip, or label by hand — the latest one wins.
+  it("records accept, skip and label-by-hand", () => {
     const s = useCompareReviewStore.getState();
-    s.use("3:0", "a");
-    expect(useCompareReviewStore.getState().decisions["3:0"]).toEqual({ used: "a", skipped: false, byHand: false });
+    s.accept("3:0", "a");
+    expect(useCompareReviewStore.getState().decisions["3:0"]).toEqual({ accepted: "a", skipped: false, byHand: false });
     s.markByHand("3:0");
-    expect(useCompareReviewStore.getState().decisions["3:0"]).toEqual({ used: null, skipped: false, byHand: true });
+    expect(useCompareReviewStore.getState().decisions["3:0"]).toEqual({ accepted: null, skipped: false, byHand: true });
     s.skip("4:0");
     expect(isReviewed(useCompareReviewStore.getState().decisions["4:0"])).toBe(true);
     s.reset("4:0");
@@ -156,7 +132,7 @@ describe("review decisions", () => {
   });
 });
 
-describe("review prototype windows", () => {
+describe("review window", () => {
   function loadMocks() {
     const video = makeVideo("/data/v.mp4", [300, 480, 640, 1]);
     const skeleton = new Skeleton({ nodes: NODES, name: "s" });
@@ -176,54 +152,41 @@ describe("review prototype windows", () => {
     useModelOverlayStore.getState().clear();
   });
 
-  // Prototype A walks the queue: one row per model, Skip moves on and is counted.
-  it("A: stepper lists every model and records decisions", async () => {
-    render(<ReviewStepperPrototype onClose={() => {}} />);
-    await waitFor(() => expect(screen.getAllByTestId("review-proto-model-row").length).toBeGreaterThanOrEqual(2));
-    expect(screen.getByTestId("review-proto-status").textContent).toContain("disagreement");
-    fireEvent.click(screen.getByText("Skip"));
-    expect(screen.getByTestId("review-proto-summary").textContent).toContain("1 skipped");
-  });
-
-  // Prototype B shows one pane per model, each with a single "Use this one" and no per-model "wrong".
-  it("B: side by side has a pane per model with Use this one", async () => {
-    render(<ReviewPanesPrototype onClose={() => {}} />);
-    await waitFor(() => expect(screen.getAllByTestId("review-proto-pane").length).toBeGreaterThanOrEqual(2));
-    expect(screen.getAllByTestId("review-proto-use")).toHaveLength(screen.getAllByTestId("review-proto-pane").length);
+  // One pane per model, each with a single "Use this one" and no per-model "wrong".
+  it("has a pane per model with Use this one", async () => {
+    render(<ReviewWindow onClose={() => {}} />);
+    await waitFor(() => expect(screen.getAllByTestId("review-pane").length).toBeGreaterThanOrEqual(2));
+    expect(screen.getAllByTestId("review-use")).toHaveLength(screen.getAllByTestId("review-pane").length);
     expect(screen.queryByTitle("Mark this model wrong here")).toBeNull();
-    expect(screen.getByTestId("review-proto-summary").textContent).not.toContain("rejected");
+    expect(screen.getByTestId("review-summary").textContent).not.toContain("rejected");
+    // Hand-test: "used" was unclear; the footer says "accepted".
+    expect(screen.getByTestId("review-summary").textContent).toContain("0 accepted");
   });
 
   // User direction: the review starts with the worst disagreement and steps worst first.
-  it("B: goes worst first and Skip moves to the next worse one", async () => {
+  it("goes worst first and Skip moves to the next worse one", async () => {
     useCompareReviewStore.getState().setThreshold(10);
-    render(<ReviewPanesPrototype onClose={() => {}} />);
-    await waitFor(() => expect(screen.getAllByTestId("review-proto-pane").length).toBeGreaterThanOrEqual(2));
+    render(<ReviewWindow onClose={() => {}} />);
+    await waitFor(() => expect(screen.getAllByTestId("review-pane").length).toBeGreaterThanOrEqual(2));
     const spreadOf = () => Number(/(\d+) px\)/.exec(screen.getByText(/Disputed:/).textContent ?? "")?.[1]);
     const first = spreadOf();
-    fireEvent.click(screen.getByTestId("review-proto-skip"));
+    fireEvent.click(screen.getByTestId("review-skip"));
     expect(spreadOf()).toBeLessThanOrEqual(first);
     useCompareReviewStore.getState().setThreshold(DEFAULT_REVIEW_THRESHOLD_PX);
   });
 
   // User direction: "None are right" sends the frame to the main view to label by hand and closes the review.
-  it("B: None are right goes to the frame and closes the review", async () => {
-    useCompareReviewStore.getState().setOpen("panes");
-    render(<ReviewPanesPrototype onClose={() => {}} />);
-    await waitFor(() => expect(screen.getAllByTestId("review-proto-pane").length).toBeGreaterThanOrEqual(2));
+  it("None are right goes to the frame and closes the review", async () => {
+    useCompareReviewStore.getState().setOpen(true);
+    render(<ReviewWindow onClose={() => {}} />);
+    await waitFor(() => expect(screen.getAllByTestId("review-pane").length).toBeGreaterThanOrEqual(2));
     const frame = Number(/frame (\d+)/.exec(screen.getByText(/· frame /).textContent ?? "")?.[1]);
-    fireEvent.click(screen.getByTestId("review-proto-none-right"));
+    fireEvent.click(screen.getByTestId("review-none-right"));
     expect(useAppStore.getState().frameIdx).toBe(frame);
-    expect(useCompareReviewStore.getState().open).toBeNull();
+    expect(useCompareReviewStore.getState().open).toBe(false);
     expect(Object.values(useCompareReviewStore.getState().decisions).some((d) => d.byHand)).toBe(true);
   });
 
-  // Prototype C shows a page of crops (at most 12).
-  it("C: crop grid shows a page of crops", async () => {
-    render(<ReviewGridPrototype onClose={() => {}} />);
-    await waitFor(() => expect(screen.getAllByTestId("review-proto-cell").length).toBeGreaterThan(0));
-    expect(screen.getAllByTestId("review-proto-cell").length).toBeLessThanOrEqual(12);
-  });
 });
 
 describe("review fixes", () => {
@@ -278,18 +241,7 @@ describe("review fixes", () => {
     useConfirmStore.getState().respond(true);
     expect(await done).toBe(true);
     expect(lf.instances[0]).not.toBe(user);
-    expect(useCompareReviewStore.getState().decisions[reviewItemKey(item)]?.used).toBe(models[1].id);
-  });
-
-  // Review #2: a mock model (noisy copy of the user's labels) must never overwrite the project.
-  it("never writes a mock model's pose to the project", async () => {
-    const { models, item } = setup((n) => `mock://${n}`);
-    const before = [...lf.instances];
-    expect(await acceptModelPose(models[1].id, 0)).toBe(false);
-    expect(await acceptForItem(item, models[1].id)).toBe(true);
-    expect(lf.instances).toEqual(before);
-    expect(useConfirmStore.getState().request).toBeNull();
-    expect(useCompareReviewStore.getState().decisions[reviewItemKey(item)]?.used).toBe(models[1].id);
+    expect(useCompareReviewStore.getState().decisions[reviewItemKey(item)]?.accepted).toBe(models[1].id);
   });
 
   // Review #3: while "Replace your instance?" is open, the prototypes' Esc/←/→ must leave it alone.
@@ -305,7 +257,7 @@ describe("review fixes", () => {
     useConfirmStore.setState({ request: { title: "Replace your instance?", message: "" } as never });
     expect(keysBelongElsewhere(key())).toBe(true);
     let closed = false;
-    render(<ReviewPanesPrototype onClose={() => (closed = true)} />);
+    render(<ReviewWindow onClose={() => (closed = true)} />);
     fireEvent.keyDown(window, { key: "Escape" });
     expect(closed).toBe(false);
   });
@@ -420,9 +372,9 @@ describe("hand-test fixes (real grayscale video, project instances)", () => {
     act(() => useAppStore.setState({ showInstances: false }));
     expect(shown.result.current).toBeUndefined();
     render(<ProjectInstancesKey count={null} />);
-    fireEvent.click(screen.getByTestId("review-proto-project-hidden"));
+    fireEvent.click(screen.getByTestId("review-project-hidden"));
     expect(useAppStore.getState().showInstances).toBe(true);
-    expect(screen.getByTestId("review-proto-project-key")).toBeTruthy();
+    expect(screen.getByTestId("review-project-key")).toBeTruthy();
   });
 });
 
@@ -461,7 +413,7 @@ describe("review threshold box", () => {
   // Hand-test #525: the box snapped back when cleared, so 0 (or a new number) couldn't be typed.
   it("can be cleared and retyped, including 0, and reverts on blur when empty", () => {
     render(<ReviewThresholdInput />);
-    const box = screen.getByTestId("review-proto-threshold") as HTMLInputElement;
+    const box = screen.getByTestId("review-threshold") as HTMLInputElement;
     fireEvent.change(box, { target: { value: "" } });
     expect(box.value).toBe("");
     expect(useCompareReviewStore.getState().threshold).toBe(DEFAULT_REVIEW_THRESHOLD_PX);
@@ -475,5 +427,92 @@ describe("review threshold box", () => {
     expect(box.value).toBe("10");
     expect(parseReviewThreshold("-3")).toBeNull();
     expect(parseReviewThreshold("abc")).toBeNull();
+  });
+});
+
+describe("review window: opening and jumping", () => {
+  function loadMocks() {
+    const video = makeVideo("/data/v.mp4", [300, 480, 640, 1]);
+    const skeleton = new Skeleton({ nodes: NODES, name: "s" });
+    const labels = new Labels({ videos: [video], skeletons: [skeleton] });
+    useAppStore.setState({ ...useAppStore.getInitialState(), labels, video, skeleton, frameIdx: 0 });
+    useModelOverlayStore.getState().addModels(labels, makeMockModels(labels, video, skeleton));
+  }
+  beforeEach(() => {
+    useModelOverlayStore.getState().clear();
+    useCompareReviewStore.getState().clearAll();
+    useCompareReviewStore.getState().setOpen(false);
+    clearDisagreementIndexCache();
+    loadMocks();
+  });
+  afterEach(() => {
+    cleanup();
+    useCompareReviewStore.getState().setOpen(false);
+    useModelOverlayStore.getState().clear();
+  });
+
+  // The chosen layout ships: "Review" in the corner panel opens the window.
+  it("opens from the corner panel's Review button", async () => {
+    render(
+      <>
+        <ModelOverlayLegend disagreementCount={0} />
+        <CompareReviewWindow />
+      </>
+    );
+    expect(screen.queryByTestId("review-window")).toBeNull();
+    fireEvent.click(screen.getByTestId("model-overlay-review"));
+    expect(await screen.findByTestId("review-window")).toBeTruthy();
+  });
+
+  // Hand-test: the "i / N" counter jumps to a typed item; bad input puts the old number back.
+  it("jumps to a typed item number", async () => {
+    useCompareReviewStore.getState().setThreshold(10);
+    render(<ReviewWindow onClose={() => {}} />);
+    await waitFor(() => expect(screen.getAllByTestId("review-pane").length).toBeGreaterThanOrEqual(2));
+    const total = Number(/\/ (\d+)/.exec(screen.getByTestId("review-position").textContent ?? "")?.[1]);
+    expect(total).toBeGreaterThanOrEqual(3);
+    fireEvent.click(screen.getByTestId("review-jump-item"));
+    const box = screen.getByTestId("review-jump-item-input") as HTMLInputElement;
+    fireEvent.change(box, { target: { value: "" } });
+    expect(box.value).toBe("");
+    fireEvent.change(box, { target: { value: "3" } });
+    fireEvent.keyDown(box, { key: "Enter" });
+    expect(screen.getByTestId("review-jump-item").textContent).toBe("3");
+    // Out of range: back to 3. Esc: back to 3.
+    fireEvent.click(screen.getByTestId("review-jump-item"));
+    fireEvent.change(screen.getByTestId("review-jump-item-input"), { target: { value: String(total + 5) } });
+    fireEvent.blur(screen.getByTestId("review-jump-item-input"));
+    expect(screen.getByTestId("review-jump-item").textContent).toBe("3");
+    fireEvent.click(screen.getByTestId("review-jump-item"));
+    fireEvent.change(screen.getByTestId("review-jump-item-input"), { target: { value: "1" } });
+    fireEvent.keyDown(screen.getByTestId("review-jump-item-input"), { key: "Escape" });
+    expect(screen.getByTestId("review-jump-item").textContent).toBe("3");
+    useCompareReviewStore.getState().setThreshold(DEFAULT_REVIEW_THRESHOLD_PX);
+  });
+
+  // Typing a frame goes to the item nearest it.
+  it("finds the item nearest a frame and only accepts whole numbers in range", () => {
+    const items = [{ frame: 40 }, { frame: 10 }, { frame: 25 }];
+    expect(nearestItemToFrame(items, 12)).toBe(1);
+    expect(nearestItemToFrame(items, 33)).toBe(0);
+    expect(nearestItemToFrame(items, 30)).toBe(2);
+    expect(nearestItemToFrame([], 5)).toBe(-1);
+    expect(parseJumpNumber("2", 1, 3)).toBe(2);
+    expect(parseJumpNumber("", 1, 3)).toBeNull();
+    expect(parseJumpNumber("4", 1, 3)).toBeNull();
+    expect(parseJumpNumber("1.5", 1, 3)).toBeNull();
+  });
+
+  // The jump box keeps what is typed (never snaps mid-typing) and commits on Enter.
+  it("keeps the typed text until it is committed", () => {
+    let got = -1;
+    render(<JumpNumber value={4} min={1} max={9} onCommit={(n) => (got = n)} label="item" testId="j" />);
+    fireEvent.click(screen.getByTestId("j"));
+    const box = screen.getByTestId("j-input") as HTMLInputElement;
+    fireEvent.change(box, { target: { value: "" } });
+    fireEvent.change(box, { target: { value: "7" } });
+    expect(got).toBe(-1);
+    fireEvent.keyDown(box, { key: "Enter" });
+    expect(got).toBe(7);
   });
 });

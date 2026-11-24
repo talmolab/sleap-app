@@ -14,8 +14,6 @@ import { useAppStore } from "@/stores/appStore";
 import { useModelOverlayStore } from "@/stores/modelOverlayStore";
 import { confirmDialog } from "@/stores/confirmStore";
 import type { ModelOverlayLayer } from "@/canvas/modelOverlayRenderer";
-import { isMockSource } from "@/lib/modelOverlay/core";
-import { toast } from "@/lib/notify";
 
 export interface ClickMods {
   altKey: boolean;
@@ -58,18 +56,13 @@ export function pickModelPose(layers: readonly ModelOverlayLayer[], layer: numbe
  * but one of your user instances does, ask before replacing that instance
  * (never stack a second instance on a labeled animal); cancelling changes
  * nothing. Resolves true only when the project was changed (false on Cancel,
- * a frame or model that moved on, or a dev-only mock model, which never
- * writes to the project).
+ * or a frame or model that moved on).
  */
 export async function acceptModelPose(modelId: string, poseIdx: number): Promise<boolean> {
   const { models } = useModelOverlayStore.getState();
   const { video, frameIdx, labels, skeleton } = useAppStore.getState();
   const model = models.find((m) => m.id === modelId);
   if (!model || model.video !== video || !labels || !video || !skeleton) return false;
-  if (isMockSource(model.source)) {
-    toast.info("Mock model (dev prototype): nothing is written to the project");
-    return false;
-  }
   const poses = model.frames.get(frameIdx);
   if (!poses?.[poseIdx]) return false;
 

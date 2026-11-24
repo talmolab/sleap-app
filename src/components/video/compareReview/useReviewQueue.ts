@@ -1,6 +1,6 @@
 /**
- * Review prototypes (dev only): the queue of disagreements every prototype
- * steps through, and the shared Accept action.
+ * Compare Models review window: the queue of disagreements it steps
+ * through, and the Accept action.
  *
  * The queue is built from the disagreement index (filled in time slices, with
  * progress) at the review's own threshold (default 25 px, bigger than the
@@ -16,15 +16,13 @@ import {
   fillIndexAsync,
   shownOn,
 } from "@/lib/modelOverlay/disagreementIndex";
-import { reviewGroupsOnFrame, reviewItemKey, type ReviewGroup } from "@/lib/modelOverlay/reviewPrototype";
-import { isMockSource } from "@/lib/modelOverlay/core";
+import { reviewGroupsOnFrame, reviewItemKey, type ReviewGroup } from "@/lib/modelOverlay/review";
 import { useConfirmStore } from "@/stores/confirmStore";
 import { acceptModelPose } from "@/lib/modelOverlay/canvasActions";
 import { useCompareReviewStore } from "@/stores/compareReviewStore";
 
 /**
- * Most frames turned into review items (a prototype; enough to judge the
- * layout). When the video has more, the frames where the models disagree
+ * Most frames turned into review items. When the video has more, the frames where the models disagree
  * most are kept, wherever they are in the video.
  */
 export const MAX_REVIEW_FRAMES = 3000;
@@ -95,18 +93,16 @@ export function goToItem(item: ReviewGroup): void {
 /**
  * Accept one model's pose for an item: go to its frame, then the same Accept
  * as Alt+double-click (user instance, replaces the matching prediction, one
- * undo step). Recorded in the prototype's decisions only when the project
+ * undo step). Recorded in the review's decisions only when the project
  * really changed — not when "Replace your instance?" is cancelled or the
- * frame moved on. A mock model's pose is never written to the project; its
- * Accept only records the choice. Resolves whether it was accepted.
+ * frame moved on. Resolves whether it was accepted.
  */
 export async function acceptForItem(item: ReviewGroup, modelId: string): Promise<boolean> {
   const m = item.members.find((x) => x.modelId === modelId);
-  const model = useModelOverlayStore.getState().models.find((x) => x.id === modelId);
-  if (!m || !model) return false;
+  if (!m) return false;
   goToItem(item);
-  const ok = isMockSource(model.source) ? true : await acceptModelPose(modelId, m.poseIdx);
-  if (ok) useCompareReviewStore.getState().use(reviewItemKey(item), modelId);
+  const ok = await acceptModelPose(modelId, m.poseIdx);
+  if (ok) useCompareReviewStore.getState().accept(reviewItemKey(item), modelId);
   return ok;
 }
 
@@ -118,12 +114,12 @@ export function labelByHand(item: ReviewGroup): void {
   goToItem(item);
   const store = useCompareReviewStore.getState();
   store.markByHand(reviewItemKey(item));
-  store.setOpen(null);
+  store.setOpen(false);
 }
 
 /**
  * Whether another dialog (e.g. "Replace your instance?") or a text field has
- * the keyboard, so a prototype's own keys (Esc, ←, →) must leave it alone.
+ * the keyboard, so the review's own keys (Esc, ←, →) must leave it alone.
  */
 export function keysBelongElsewhere(e: KeyboardEvent): boolean {
   if (useConfirmStore.getState().request !== null) return true;
