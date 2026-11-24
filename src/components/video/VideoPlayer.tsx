@@ -55,6 +55,7 @@ import { ModelPoseHoverLabel } from "./ModelPoseHoverLabel";
 import { ModelOverlayLegend } from "./ModelOverlayLegend";
 import { ModelPoseAcceptBar } from "./ModelPoseAcceptBar";
 import { ModelTracesStrip } from "./ModelTracesStrip";
+import { CompareReviewWindow } from "./compareReview/CompareReviewWindow";
 import { pickModelPose, acceptModelPose, modelClickRoute } from "@/lib/modelOverlay/canvasActions";
 import { useModelOverlayStore } from "@/stores/modelOverlayStore";
 import {
@@ -4399,6 +4400,8 @@ export function VideoPlayer() {
         <ModelOverlayLegend disagreementCount={modelOverlay.disagreements.length} />
         {/* Accept bar for a model pose picked on the canvas (self-guards). */}
         <ModelPoseAcceptBar />
+        {/* Compare Models: Review disagreements window (self-guards to open). */}
+        <CompareReviewWindow />
         {/* Visual skeleton builder control bar (self-guards to build mode). */}
         <SkeletonBuildBar />
         {/* Anchor-part picker prompt (self-guards to pick mode). */}
