@@ -1,0 +1,252 @@
+/**
+ * Claude's corrected predictions in Compare Models' "Review disagreements"
+ * window: the "Claude's suggestion" pane (next to the models' panes, or next
+ * to the project's prediction when no models disagree or none are loaded),
+ * Use / Revert / Reject / Undo reject, outdated, the queue order, and the
+ * entry points (toast, Label QC Review link).
+ */
+import { describe, it, expect, beforeEach, afterEach, vi } from "../bun-test";
+import { render, screen, cleanup, fireEvent, act, waitFor } from "@testing-library/react";
+import { Instance } from "@talmolab/sleap-io.js";
+
+vi.mock("@/lib/platform", () => ({ isTauri: false, isMac: false, modKey: "Ctrl" }));
+const toastInfo = vi.fn();
+vi.mock("sonner", () => ({
+  toast: Object.assign(vi.fn(), { success: vi.fn(), error: vi.fn(), info: toastInfo, warning: vi.fn() }),
+}));
+
+const { useAppStore } = await import("@/stores/appStore");
+const { useQcStore } = await import("@/stores/qcStore");
+const { useProposalStore, poseOf, proposalState } = await import("@/stores/proposalStore");
+const { useCompareReviewStore } = await import("@/stores/compareReviewStore");
+const { useModelOverlayStore } = await import("@/stores/modelOverlayStore");
+const { clearDisagreementIndexCache } = await import("@/lib/modelOverlay/disagreementIndex");
+const { setQcReviewedBackend, memoryBackend } = await import("@/lib/qcReviewed");
+const { CompareReviewWindow } = await import("@/components/video/compareReview/CompareReviewWindow");
+const { ClaudeSuggestionsLink } = await import("@/components/video/ClaudeSuggestion");
+const { openClaudeSuggestions, handleProposalKey, currentProposal } = await import("@/lib/proposalReview");
+const { buildEntries } = await import("@/components/video/compareReview/claudeEntries");
+const { loadPredictionFixture } = await import("./helpers/automationFixture");
+
+let fx: ReturnType<typeof loadPredictionFixture>;
+const store = () => useProposalStore.getState();
+const review = () => useCompareReviewStore.getState();
+const lf = (f: number) => fx.labels.find({ video: fx.video, frameIdx: f })[0];
+
+/** A's tail moved 20.6 px (frame 30). */
+const proposeA = () =>
+  store().addCorrection(
+    { flagId: "v0:f30:p0:aaaaaa", videoIdx: 0, frameIdx: 30, instIdx: 0, reason: "tail was on the floor" },
+    { 2: [150, 125] },
+    { pose: poseOf(fx.a) },
+  );
+/** C's nose moved 7 px (frame 40). */
+const proposeC = () =>
+  store().addCorrection(
+    { flagId: "v0:f40:p0:cccccc", videoIdx: 0, frameIdx: 40, instIdx: 0, reason: "nose was on the wall" },
+    { 0: [205, 95] },
+    { pose: poseOf(fx.c) },
+  );
+/** B's tail moved 40 px (frame 30). */
+const proposeB = () =>
+  store().addCorrection(
+    { flagId: "v0:f30:p1:bbbbbb", videoIdx: 0, frameIdx: 30, instIdx: 1, reason: "tail was on the wall" },
+    { 2: [430, 160] },
+    { pose: poseOf(fx.b) },
+  );
+
+/** Two Compare Models models that put B's tail 54 px apart on frame 30 (spread 27 px > the window's 25; still one animal). */
+function loadModelsDisagreeingOnB() {
+  const pose = (tailDy: number) => ({
+    xy: new Float64Array([400, 100, 410, 110, 430, 120 + tailDy]),
+    score: 0.9,
+    trackName: null,
+  });
+  useModelOverlayStore.getState().addModels(fx.labels, [
+    { name: "m1", source: "m1.slp", video: fx.video, frames: new Map([[30, [pose(0)]]]) },
+    { name: "m2", source: "m2.slp", video: fx.video, frames: new Map([[30, [pose(54)]]]) },
+  ]);
+}
+
+const position = () => screen.getByTestId("review-position").textContent?.replace(/\s+/g, " ");
+const flush = () =>
+  act(async () => {
+    await new Promise((r) => setTimeout(r, 0));
+  });
+
+beforeEach(() => {
+  setQcReviewedBackend(memoryBackend());
+  fx = loadPredictionFixture();
+  store().clear();
+  useModelOverlayStore.getState().clear();
+  clearDisagreementIndexCache();
+  review().clearAll();
+  review().setOpen(false);
+  review().setFocusProposal(null);
+  useQcStore.setState({ reviewOpen: false });
+  toastInfo.mockClear();
+});
+afterEach(() => {
+  cleanup();
+  review().setOpen(false);
+});
+
+describe("Claude's suggestions in Review disagreements", () => {
+  // Why: with no models loaded, Claude's corrections still get one review place, next to the project's prediction.
+  it("opens with no models, on the first suggestion, next to the project's prediction", async () => {
+    proposeC();
+    proposeA();
+    expect(openClaudeSuggestions()).toBe(true);
+    expect(review().open).toBe(true);
+    render(<CompareReviewWindow />);
+    await flush();
+    expect(screen.getByText("Review Claude's suggestions")).toBeTruthy();
+    // Worst first: A's fix moves a node 20.6 px, C's 7 px.
+    expect(position()).toContain("1 / 2");
+    expect(position()).toContain("frame 30");
+    expect(screen.getByTestId("review-prediction-pane")).toBeTruthy();
+    expect(screen.getByTestId("review-claude-reason").textContent).toBe("tail was on the floor");
+    expect(useAppStore.getState().frameIdx).toBe(30);
+  });
+
+  // Why: "Use this one" on Claude's pane accepts it (one edit) and moves on; the item stays reachable to Revert.
+  it("Use this one accepts, then Revert brings the prediction back as a new edit", async () => {
+    proposeA();
+    proposeC();
+    openClaudeSuggestions();
+    render(<CompareReviewWindow />);
+    await flush();
+    await act(async () => {
+      fireEvent.click(screen.getByTestId("review-claude-use"));
+      await new Promise((r) => setTimeout(r, 0));
+    });
+    expect(lf(30).userInstances[0].points[2].xy).toEqual([150, 125]);
+    // Moved on to C.
+    expect(position()).toContain("2 / 2");
+    expect(screen.getByTestId("review-summary").textContent).toContain("1 accepted");
+    fireEvent.click(screen.getByLabelText("Previous"));
+    expect(screen.getByTestId("review-claude-status").textContent).toBe("Accepted");
+    await act(async () => {
+      fireEvent.click(screen.getByTestId("claude-revert"));
+      await new Promise((r) => setTimeout(r, 0));
+    });
+    expect(lf(30).userInstances).toHaveLength(0);
+    expect(lf(30).predictedInstances).toHaveLength(2);
+    expect(screen.getByTestId("review-claude-status").textContent).toBe("Undone");
+    expect((screen.getByTestId("review-claude-use") as HTMLButtonElement).disabled).toBe(false);
+  });
+
+  // Why: a reject changes no labels, so ⌘Z can't take it back; Undo reject must.
+  it("Reject, then Undo reject makes it pending again", async () => {
+    proposeA();
+    openClaudeSuggestions();
+    render(<CompareReviewWindow />);
+    await flush();
+    fireEvent.click(screen.getByTestId("review-claude-reject"));
+    expect(screen.getByTestId("review-claude-status").textContent).toBe("Rejected");
+    fireEvent.click(screen.getByTestId("claude-unreject"));
+    expect(proposalState(store().proposals[0])).toBe("pending");
+    expect(screen.getByTestId("review-claude-use")).toBeTruthy();
+  });
+
+  // Why: once the user labeled that animal, using Claude's suggestion would label it twice.
+  it("shows an outdated suggestion that can't be used once the animal is labeled", async () => {
+    proposeA();
+    openClaudeSuggestions();
+    render(<CompareReviewWindow />);
+    await flush();
+    act(() => {
+      lf(30).instances.push(
+        Instance.fromNumpy({
+          pointsData: [
+            [101, 100],
+            [111, 110],
+            [131, 121],
+          ],
+          skeleton: fx.skeleton,
+        }),
+      );
+      useAppStore.getState().markChanged();
+    });
+    expect(screen.getByTestId("review-claude-status").textContent).toContain("Outdated");
+    expect((screen.getByTestId("review-claude-use") as HTMLButtonElement).disabled).toBe(true);
+    expect((screen.getByTestId("review-prediction-use") as HTMLButtonElement).disabled).toBe(true);
+  });
+
+  // Why: the project's prediction is the other choice; using it labels the animal as the model had it.
+  it("Use this one on the project's prediction turns it into a user instance as is", async () => {
+    proposeA();
+    openClaudeSuggestions();
+    render(<CompareReviewWindow />);
+    await flush();
+    await act(async () => {
+      fireEvent.click(screen.getByTestId("review-prediction-use"));
+      await new Promise((r) => setTimeout(r, 0));
+    });
+    const user = lf(30).userInstances[0];
+    expect(user.fromPredicted).toBe(fx.a);
+    expect(user.points[2].xy).toEqual([130, 120]);
+    expect(proposalState(store().proposals[0])).toBe("outdated");
+  });
+
+  // Why: an animal the models disagree on and Claude corrected is one item, with Claude's pane beside the models'.
+  it("adds Claude's pane to the models' item for the same animal, drawn even with H off", async () => {
+    loadModelsDisagreeingOnB();
+    proposeB();
+    proposeA();
+    useAppStore.setState({ showInstances: false });
+    review().setOpen(true);
+    render(<CompareReviewWindow />);
+    await waitFor(() => expect(screen.getAllByTestId("review-pane")).toHaveLength(2));
+    // B's disagreement (spread 27 px) first, with Claude's pane; A (20.6 px) is Claude's alone.
+    expect(position()).toContain("1 / 2");
+    expect(screen.getByTestId("review-claude-reason").textContent).toBe("tail was on the wall");
+    expect(screen.queryByTestId("review-prediction-pane")).toBeNull();
+    expect(screen.getByTestId("review-project-hidden")).toBeTruthy();
+    fireEvent.click(screen.getByLabelText("Next"));
+    expect(screen.getByTestId("review-claude-reason").textContent).toBe("tail was on the floor");
+    expect(screen.getByTestId("review-prediction-pane")).toBeTruthy();
+  });
+
+  // Why: the toast's Review button must land on Claude's first suggestion in this window.
+  it("the toast's Review opens the window on the first suggestion", async () => {
+    proposeC();
+    proposeA();
+    await new Promise((r) => setTimeout(r, 1700));
+    expect(toastInfo).toHaveBeenCalledTimes(1);
+    const [msg, data] = toastInfo.mock.calls[0] as unknown as [string, { action: { label: string; onClick: () => void } }];
+    expect(msg).toBe("Claude suggested 2 changes");
+    expect(data.action.label).toBe("Review");
+    act(() => data.action.onClick());
+    expect(review().open).toBe(true);
+    expect(review().focusProposal).toBe(store().proposals.find((p) => p.frameIdx === 30)!.id);
+  });
+
+  // Why: corrections live in this window, so Label QC Review no longer shows or accepts them.
+  it("Label QC Review leaves corrections alone, and its link opens this window", () => {
+    proposeA();
+    useQcStore.setState({ reviewOpen: true });
+    useAppStore.getState().setFrameIdx(30);
+    useAppStore.getState().setInstance(fx.a);
+    expect(currentProposal()).toBeNull();
+    expect(handleProposalKey("accept")).toBe(false);
+    render(<ClaudeSuggestionsLink />);
+    fireEvent.click(screen.getByTestId("claude-suggestions-link"));
+    expect(review().open).toBe(true);
+  });
+});
+
+describe("buildEntries", () => {
+  // Why: only the newest correction per prediction is an item, so a re-proposal doesn't show twice.
+  it("keeps the newest correction per prediction", () => {
+    const first = proposeA();
+    store().reject(first.id);
+    const second = store().addCorrection(
+      { flagId: "v0:f30:p0:aaaaaa", videoIdx: 0, frameIdx: 30, instIdx: 0, reason: "second look" },
+      { 2: [140, 122] },
+      { pose: poseOf(fx.a) },
+    );
+    const entries = buildEntries([], store().proposals, ["nose", "head", "tail"]);
+    expect(entries.map((e) => e.claude?.id)).toEqual([second.id]);
+  });
+});

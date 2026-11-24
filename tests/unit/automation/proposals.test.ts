@@ -2,7 +2,7 @@
 import { describe, it, expect, beforeEach } from "../../bun-test";
 import { useAppStore } from "@/stores/appStore";
 import { useQcStore } from "@/stores/qcStore";
-import { useProposalStore, isOutdated } from "@/stores/proposalStore";
+import { useProposalStore, isOutdated, proposalState } from "@/stores/proposalStore";
 import { setQcReviewedBackend, memoryBackend } from "@/lib/qcReviewed";
 import { SetNodes } from "@/commands/editCommands";
 import type { CommandContext } from "@/commands/CommandContext";
@@ -96,6 +96,18 @@ describe("proposal store", () => {
     expect(isOutdated(useProposalStore.getState().proposals[0])).toBe(true);
     expect(await codeOf(() => useProposalStore.getState().accept(p.id, ctx))).toBe("OUTDATED");
     expect(inst().points[0].xy).toEqual([300, 100]);
+  });
+
+  // Why: Revert of an accepted fix must put every point back exactly (place, visibility, complete), as a new edit.
+  it("Revert puts a fixed instance back exactly", async () => {
+    inst().points[2].complete = false;
+    const start = inst().points.map((q) => [q.xy[0], q.xy[1], q.visible, q.complete]);
+    const p = useProposalStore.getState().addFix(target, { 0: [5, 6], 2: null });
+    await useProposalStore.getState().accept(p.id, ctx);
+    await useProposalStore.getState().revert(p.id, ctx);
+    expect(inst().points.map((q) => [q.xy[0], q.xy[1], q.visible, q.complete])).toEqual(start);
+    expect(proposalState(useProposalStore.getState().proposals[0])).toBe("undone");
+    expect(ctx.undoCommandName).toBe("Revert Claude: nose was on the ear");
   });
 
   // Why: rejecting must drop the proposal and change nothing.

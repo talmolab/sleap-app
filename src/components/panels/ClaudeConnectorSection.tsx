@@ -60,7 +60,7 @@ export function ClaudeConnectorSection() {
           Allow Claude to control SLEAP
           <span className="block text-[10px] text-muted-foreground">
             Claude Code on this computer can review Label QC flags and predictions and propose fixes. Nothing
-            changes until you accept a fix in the Review window. Claude can&apos;t save.
+            changes until you accept it. Claude can&apos;t save.
           </span>
         </span>
       </label>
@@ -145,7 +145,7 @@ export function ClaudeConnectorSection() {
   );
 }
 
-/** Opens the Review window on Claude's suggestions, while there are any. */
+/** Opens where Claude's suggestions are reviewed (Review disagreements, or Label QC Review), while there are any. */
 function ReviewSuggestionsButton() {
   const proposals = useProposalStore((s) => s.proposals);
   // An edit can make a suggestion outdated (no longer to decide).

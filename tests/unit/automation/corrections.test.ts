@@ -3,6 +3,7 @@ import { describe, it, expect, beforeEach } from "../../bun-test";
 import { Instance, PredictedInstance } from "@talmolab/sleap-io.js";
 import { useAppStore } from "@/stores/appStore";
 import {
+  canRevert,
   correctionResult,
   poseOf,
   proposalState,
@@ -148,6 +149,40 @@ describe("correction proposals", () => {
     expect(proposalState(store().proposals[0])).toBe("undone");
     store().addCorrection({ ...targetA, reason: "r2" }, { 2: [170, 140] }, { pose: poseOf(fx.a) });
     expect(store().proposals.map((x) => [x.reason, proposalState(x)])).toEqual([["r2", "pending"]]);
+  });
+
+  // Why: ⌘Z only reaches the newest edit; Revert takes back an older accept as its own undoable edit.
+  it("Revert turns the user instance back into the prediction, as one undo step", async () => {
+    const p = store().addCorrection(targetA, { 2: [150, 125] }, { pose: poseOf(fx.a) });
+    await store().accept(p.id, fx.ctx);
+    expect(canRevert(store().proposals[0])).toBe(true);
+    await store().revert(p.id, fx.ctx);
+    expect(lf30().userInstances).toHaveLength(0);
+    expect(lf30().predictedInstances.map((x) => poseOf(x))).toEqual([poseOf(fx.a), poseOf(fx.b)]);
+    expect(proposalState(store().proposals[0])).toBe("undone");
+    expect(fx.ctx.undoCommandName).toBe("Revert Claude: tail was on the floor");
+    fx.ctx.undo(); // undoing the revert brings the accepted label back
+    expect(lf30().userInstances[0].points[2].xy).toEqual([150, 125]);
+    expect(proposalState(store().proposals[0])).toBe("accepted");
+  });
+
+  // Why: Revert after the user edited the accepted instance would silently throw their edits away.
+  it("refuses Revert once the accepted instance was edited", async () => {
+    const p = store().addCorrection(targetA, { 2: [150, 125] }, { pose: poseOf(fx.a) });
+    await store().accept(p.id, fx.ctx);
+    lf30().userInstances[0].points[0].xy = [99, 99];
+    expect(canRevert(store().proposals[0])).toBe(false);
+    expect(await codeOf(() => store().revert(p.id, fx.ctx))).toBe("OUTDATED");
+    expect(lf30().userInstances).toHaveLength(1);
+  });
+
+  // Why: a reject changes no labels, so it can't be undone with ⌘Z; Undo reject must bring it back, alone.
+  it("Undo reject makes it pending again and drops a newer pending one for the same prediction", () => {
+    const p1 = store().addCorrection(targetA, { 2: [150, 125] }, { pose: poseOf(fx.a) });
+    store().reject(p1.id);
+    store().addCorrection({ ...targetA, reason: "r2" }, { 2: [160, 125] }, { pose: poseOf(fx.a) });
+    store().unreject(p1.id);
+    expect(store().proposals.map((x) => [x.id, proposalState(x)])).toEqual([[p1.id, "pending"]]);
   });
 
   // Why: "accept as is" makes the prediction a label without changing any node.

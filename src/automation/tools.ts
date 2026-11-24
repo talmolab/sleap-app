@@ -3,7 +3,8 @@
  * proposes fixes. Prediction review: Claude looks at predictions the model
  * was unsure of (or that Compare Models' models disagree on) and proposes
  * corrected poses. Claude can't edit or save anything itself — every change
- * waits for the user to accept it in the Review window.
+ * waits for the user to accept it (QC fixes in Label QC Review, corrections
+ * in Compare Models' Review disagreements window).
  */
 import { useAppStore } from "@/stores/appStore";
 import { useQcStore } from "@/stores/qcStore";
@@ -594,7 +595,7 @@ function predictionRender(renderId: string, predictionId: string): RenderRecord 
 export const proposeCorrectionTool: Tool = {
   name: "propose_correction",
   description:
-    "Propose a corrected pose for a prediction: if the user accepts, the prediction becomes a user instance with your changes (one undo step). Positions are pixels in the picture render_prediction returned for this prediction (pass its render_id); the app converts them to frame coordinates. Map node names to [x, y], or to null to mark a node not visible (occluded or out of view). Only list nodes you want to change; the rest keep the model's positions. An empty nodes object proposes accepting the prediction as it is (it is right). Nothing changes until the user accepts it in SLEAP's Review window — never tell the user a correction is applied. A new proposal for the same prediction replaces a pending one.",
+    "Propose a corrected pose for a prediction: if the user accepts, the prediction becomes a user instance with your changes (one undo step). Positions are pixels in the picture render_prediction returned for this prediction (pass its render_id); the app converts them to frame coordinates. Map node names to [x, y], or to null to mark a node not visible (occluded or out of view). Only list nodes you want to change; the rest keep the model's positions. An empty nodes object proposes accepting the prediction as it is (it is right). Nothing changes until the user accepts it in SLEAP's Review disagreements window — never tell the user a correction is applied. A new proposal for the same prediction replaces a pending one.",
   inputSchema: {
     type: "object",
     properties: {
@@ -669,8 +670,8 @@ export const proposeCorrectionTool: Tool = {
       status: "pending",
       message:
         Object.keys(edits).length === 0
-          ? "Proposed accepting the prediction as is. The user sees it in SLEAP's Review window; nothing changes until they accept it."
-          : "Proposed. The user sees it in SLEAP's Review window; it is not applied until they accept it.",
+          ? "Proposed accepting the prediction as is. The user sees it in SLEAP's Review disagreements window; nothing changes until they accept it."
+          : "Proposed. The user sees it in SLEAP's Review disagreements window; it is not applied until they accept it.",
     });
   },
 };
