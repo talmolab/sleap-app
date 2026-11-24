@@ -10,6 +10,11 @@
  * is fine). ◀ ▶ or ← → step through; click the item number (or the frame)
  * in the header to jump. Only disagreements above the window's own
  * threshold (default 25 px) are listed.
+ *
+ * Claude's corrections of predictions are reviewed here too (claudeEntries.ts):
+ * a "Claude's suggestion" pane joins the item for that animal, and a
+ * correction no models disagree on (or with no models loaded) is an item of
+ * its own, next to the project's prediction.
  */
 import { useEffect, useMemo, useState } from "react";
 import { Check, ChevronLeft, ChevronRight, PenLine, SkipForward, X } from "lucide-react";
@@ -18,9 +23,9 @@ import { Checkbox } from "@/components/ui/checkbox";
 import { rgbToCSS } from "@/lib/colorPalettes";
 import { useAppStore } from "@/stores/appStore";
 import { isReviewed, useCompareReviewStore } from "@/stores/compareReviewStore";
-import { cropAround, disputedNodeMarks, itemRings, reviewItemKey } from "@/lib/modelOverlay/review";
+import { cropAround, disputedNodeMarks, itemRings } from "@/lib/modelOverlay/review";
 import { videoDims } from "@/lib/modelOverlay/core";
-import { acceptForItem, goToItem, keysBelongElsewhere, labelByHand, useReviewQueue } from "./useReviewQueue";
+import { acceptForItem, keysBelongElsewhere, labelByHand, useReviewQueue } from "./useReviewQueue";
 import { ModelCropCanvas, type CropPose } from "./ModelCropCanvas";
 import {
   JumpNumber,
@@ -32,6 +37,9 @@ import {
   useProjectPoses,
 } from "./reviewParts";
 import { useModelOverlayStore } from "@/stores/modelOverlayStore";
+import { useProposalStore } from "@/stores/proposalStore";
+import { buildEntries, correctedPoseXy, proposalPoseXy, type ReviewEntry } from "./claudeEntries";
+import { ClaudePane, entryDone, PredictionPane } from "./ClaudePanes";
 
 /** The window, when open and models are loaded (mounted once, by VideoPlayer). */
 export function CompareReviewWindow() {
@@ -39,44 +47,76 @@ export function CompareReviewWindow() {
   const setOpen = useCompareReviewStore((s) => s.setOpen);
   const hasModels = useModelOverlayStore((s) => s.models.length > 0);
   const video = useAppStore((s) => s.video);
-  if (!open || !hasModels || !video) return null;
+  const hasClaude = useProposalStore((s) => s.proposals.some((p) => p.kind === "correct"));
+  if (!open || !(hasModels || hasClaude) || !video) return null;
   return <ReviewWindow onClose={() => setOpen(false)} />;
 }
 
 export function ReviewWindow({ onClose }: { onClose: () => void }) {
-  const { shown, progress, items, truncated, totalFrames, threshold } = useReviewQueue();
+  const { shown, progress, items: groups, truncated, totalFrames, threshold } = useReviewQueue();
   const video = useAppStore((s) => s.video);
+  const labels = useAppStore((s) => s.labels);
   const skeleton = useAppStore((s) => s.skeleton);
   const decisions = useCompareReviewStore((s) => s.decisions);
   const skip = useCompareReviewStore((s) => s.skip);
-  const [pos, setPos] = useState<number | null>(null);
+  const proposals = useProposalStore((s) => s.proposals);
+  // The item on view, by key: Claude's items are listed before the models' have been found, so a position would move.
+  const [posKey, setPosKey] = useState<string | null>(null);
   const [zoomed, setZoomed] = useState(true);
-
-  // Start at the worst item not decided yet, then stay put until the user moves
-  // (a decision on this item must not make the view jump to another one).
-  const firstOpen = Math.max(0, items.findIndex((it) => !isReviewed(decisions[reviewItemKey(it)])));
-  useEffect(() => {
-    if (pos === null && items.length > 0) setPos(firstOpen);
-  }, [pos, items.length, firstOpen]);
-  const at = pos ?? firstOpen;
-  const item = items[Math.min(at, items.length - 1)];
-  useEffect(() => {
-    if (item) goToItem(item);
-  }, [item]);
-  const go = (d: number) => setPos(Math.max(0, Math.min(items.length - 1, at + d)));
-  /** After a decision: the next item not decided yet (else just the next one). */
-  const next = () => {
-    for (let i = at + 1; i < items.length; i++) if (!isReviewed(decisions[reviewItemKey(items[i])])) return setPos(i);
-    go(1);
-  };
 
   const edges = useMemo(() => skeleton?.edgeIndices ?? [], [skeleton]);
   const nodeNames = useMemo(() => skeleton?.nodes.map((n) => n.name) ?? [], [skeleton]);
+  // The models' disagreements plus Claude's corrections on this video, worst first.
+  const items = useMemo<ReviewEntry[]>(() => {
+    const videoIdx = labels && video ? labels.videos.indexOf(video) : -1;
+    const corrections = proposals.filter((p) => p.kind === "correct" && p.videoIdx === videoIdx);
+    return buildEntries(groups, corrections, nodeNames);
+  }, [groups, proposals, labels, video, nodeNames]);
+  const done = (e: ReviewEntry) => entryDone(isReviewed(decisions[e.key]), e.claude);
+
+  // Start at the worst item not decided yet, then stay put until the user moves
+  // (a decision on this item must not make the view jump to another one).
+  const firstOpen = Math.max(0, items.findIndex((e) => !done(e)));
+  const keyed = posKey === null ? -1 : items.findIndex((e) => e.key === posKey);
+  const at = keyed >= 0 ? keyed : firstOpen;
+  const setPos = (i: number) => {
+    const e = items[Math.max(0, Math.min(items.length - 1, i))];
+    if (e) setPosKey(e.key);
+  };
+  useEffect(() => {
+    if (posKey === null && items.length > 0) setPosKey(items[firstOpen].key);
+  }, [posKey, items, firstOpen]);
+  // Opened on one of Claude's suggestions (the toast, the Environment panel): show it.
+  const focus = useCompareReviewStore((s) => s.focusProposal);
+  useEffect(() => {
+    if (!focus) return;
+    const e = items.find((x) => x.claude?.id === focus);
+    if (e) {
+      setPosKey(e.key);
+      useCompareReviewStore.getState().setFocusProposal(null);
+    }
+  }, [focus, items]);
+  const entry = items[Math.min(at, items.length - 1)];
+  const item = entry?.kind === "models" ? entry.group : undefined;
+  useEffect(() => {
+    if (!entry) return;
+    const app = useAppStore.getState();
+    if (app.frameIdx !== entry.frame) app.setFrameIdx(entry.frame);
+  }, [entry]);
+  const go = (d: number) => setPos(at + d);
+  /** After a decision: the next item not decided yet (else just the next one). */
+  const next = () => {
+    for (let i = at + 1; i < items.length; i++) if (!done(items[i])) return setPos(i);
+    go(1);
+  };
+
   const dims = video ? videoDims(video) : null;
-  const crop = useMemo(
-    () => (item && zoomed ? cropAround(item.members.map((m) => m.xy), dims?.width ?? null, dims?.height ?? null, 0.5) : null),
-    [item, zoomed, dims?.width, dims?.height]
-  );
+  const crop = useMemo(() => {
+    if (!entry || !zoomed) return null;
+    const poses = entry.kind === "models" ? entry.group.members.map((m) => m.xy) : [];
+    if (entry.claude) poses.push(proposalPoseXy(entry.claude, nodeNames), correctedPoseXy(entry.claude, nodeNames));
+    return cropAround(poses, dims?.width ?? null, dims?.height ?? null, 0.5);
+  }, [entry, zoomed, dims?.width, dims?.height, nodeNames]);
   const rings = useMemo(() => (item ? itemRings(item) : []), [item]);
   // Name tags on the disputed nodes: at the average in "All models", at each model's own points in its pane.
   const averageMarks = useMemo(() => (item ? disputedNodeMarks(item, nodeNames) : []), [item, nodeNames]);
@@ -84,7 +124,7 @@ export function ReviewWindow({ onClose }: { onClose: () => void }) {
     () => new Map(item ? item.members.map((m) => [m.modelId, disputedNodeMarks(item, nodeNames, m.xy)]) : []),
     [item, nodeNames]
   );
-  const projectPoses = useProjectPoses(item?.frame ?? null);
+  const projectPoses = useProjectPoses(entry?.frame ?? null);
   const allPoses = useMemo<CropPose[]>(
     () =>
       item
@@ -112,27 +152,28 @@ export function ReviewWindow({ onClose }: { onClose: () => void }) {
     return () => window.removeEventListener("keydown", onKey, true);
   });
 
-  const key = item ? reviewItemKey(item) : "";
+  const key = entry?.key ?? "";
   const d = decisions[key];
-  const cols = Math.min(3, allPoses.length + 1);
+  const cols = Math.min(entry?.kind === "claude" ? 2 : 4, allPoses.length + 1 + (entry?.claude ? 1 : 0));
   const pane = 260;
+  const onlyClaude = shown.length < 2;
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60" data-testid="review-window" onMouseDown={(e) => e.stopPropagation()}>
       <div className="flex max-h-[92vh] max-w-[95vw] flex-col rounded-lg border border-border bg-background text-xs shadow-2xl">
         <div className="flex items-center gap-2 border-b border-border px-3 py-2">
-          <span className="text-sm font-semibold">Review disagreements</span>
+          <span className="text-sm font-semibold">{onlyClaude ? "Review Claude's suggestions" : "Review disagreements"}</span>
           <ReviewThresholdInput />
           <span className="flex-1" />
           <label htmlFor="review-zoom" className="flex items-center gap-1.5">
             <Checkbox id="review-zoom" checked={zoomed} onCheckedChange={(v) => setZoomed(v === true)} />
             Zoom to the animal
           </label>
-          <Button size="sm" variant="outline" className="h-7 w-7 p-0" onClick={() => go(-1)} disabled={!item || at === 0} aria-label="Previous">
+          <Button size="sm" variant="outline" className="h-7 w-7 p-0" onClick={() => go(-1)} disabled={!entry || at === 0} aria-label="Previous">
             <ChevronLeft className="h-4 w-4" />
           </Button>
           <span className="min-w-[9rem] text-center tabular-nums" data-testid="review-position">
-            {item ? (
+            {entry ? (
               <>
                 <JumpNumber
                   value={at + 1}
@@ -144,27 +185,62 @@ export function ReviewWindow({ onClose }: { onClose: () => void }) {
                 />{" "}
                 / {items.length} · frame{" "}
                 <JumpNumber
-                  value={item.frame}
+                  value={entry.frame}
                   min={0}
                   max={Number.MAX_SAFE_INTEGER}
                   onCommit={(f) => setPos(nearestItemToFrame(items, f))}
                   label="Go to the item nearest this frame"
                   testId="review-jump-frame"
                 />
-                {item.trackName ? ` · ${item.trackName}` : ""}
+                {item?.trackName ? ` · ${item.trackName}` : ""}
+                {entry.kind === "claude" ? " · Claude" : ""}
               </>
             ) : (
               "–"
             )}
           </span>
-          <Button size="sm" variant="outline" className="h-7 w-7 p-0" onClick={() => go(1)} disabled={!item || at >= items.length - 1} aria-label="Next">
+          <Button size="sm" variant="outline" className="h-7 w-7 p-0" onClick={() => go(1)} disabled={!entry || at >= items.length - 1} aria-label="Next">
             <ChevronRight className="h-4 w-4" />
           </Button>
           <button type="button" className="ml-2 rounded p-1 hover:bg-muted" onClick={onClose} aria-label="Close">
             <X className="h-4 w-4" />
           </button>
         </div>
-        <QueueStatus progress={progress} count={items.length} truncated={truncated} totalFrames={totalFrames} threshold={threshold} shown={shown.length} />
+        {onlyClaude && items.length > 0 ? (
+          <div className="px-2 py-1 text-muted-foreground" data-testid="review-status">
+            No models to compare are shown: listing Claude&apos;s suggestions, each next to the project&apos;s prediction.
+          </div>
+        ) : (
+          <QueueStatus progress={progress} count={groups.length} truncated={truncated} totalFrames={totalFrames} threshold={threshold} shown={shown.length} />
+        )}
+        {entry?.kind === "claude" && video && (
+          <>
+            <div className="px-3 pb-1 text-muted-foreground" data-testid="review-claude-only">
+              Claude&apos;s suggestion for a prediction no models disagree on{entry.sortPx > 0 ? ` · moves a node up to ${entry.sortPx.toFixed(0)} px` : ""} · changed nodes are named on the panes
+            </div>
+            <div className="px-3 pb-1">
+              <ProjectInstancesKey count={projectPoses ? projectPoses.length : null} />
+            </div>
+            <div className="min-h-0 overflow-auto px-3 pb-2">
+              <div className="grid gap-2" style={{ gridTemplateColumns: `repeat(2, ${pane}px)` }}>
+                <PredictionPane
+                  proposal={entry.claude}
+                  entryKey={entry.key}
+                  video={video}
+                  frame={entry.frame}
+                  crop={crop}
+                  nodeNames={nodeNames}
+                  edges={edges}
+                  width={pane - 10}
+                  height={pane - 76}
+                  projectPoses={projectPoses}
+                  onDecided={next}
+                />
+                <ClaudePane proposal={entry.claude} video={video} frame={entry.frame} crop={crop} nodeNames={nodeNames} edges={edges} width={pane - 10} height={pane - 76} onDecided={next} />
+              </div>
+            </div>
+          </>
+        )}
         {item && video && (
           <>
             <div className="px-3 pb-1 text-muted-foreground">
@@ -255,11 +331,14 @@ export function ReviewWindow({ onClose }: { onClose: () => void }) {
                     </div>
                   );
                 })}
+                {entry?.kind === "models" && entry.claude && (
+                  <ClaudePane proposal={entry.claude} video={video} frame={item.frame} crop={crop} nodeNames={nodeNames} edges={edges} width={pane - 10} height={pane - 76} onDecided={next} />
+                )}
               </div>
             </div>
           </>
         )}
-        <ReviewSummary items={items} />
+        <ReviewSummary items={groups} entries={items} />
       </div>
     </div>
   );
