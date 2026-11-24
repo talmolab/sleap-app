@@ -17,7 +17,7 @@ import {
   REVIEW_SWITCH_KEY,
 } from "@/lib/modelOverlay/reviewPrototype";
 import { clearDisagreementIndexCache, disagreementIndexFor, fillIndex, disagreementFrames } from "@/lib/modelOverlay/disagreementIndex";
-import { isReviewed, useCompareReviewStore } from "@/stores/compareReviewStore";
+import { DEFAULT_REVIEW_THRESHOLD_PX, isReviewed, useCompareReviewStore } from "@/stores/compareReviewStore";
 import { useAppStore } from "@/stores/appStore";
 import { useModelOverlayStore, type OverlayModel } from "@/stores/modelOverlayStore";
 import { MODEL_COLORS, type OverlayPose } from "@/lib/modelOverlay/core";
@@ -142,12 +142,13 @@ describe("makeMockModels", () => {
 describe("review decisions", () => {
   beforeEach(() => useCompareReviewStore.getState().clearAll());
 
-  // Accept, reject and "fine" are remembered per item; rejecting the accepted model un-accepts it.
-  it("records accept, reject and skip", () => {
+  // One decision per item — use a model, skip, or label by hand — the latest one wins.
+  it("records use, skip and label-by-hand", () => {
     const s = useCompareReviewStore.getState();
-    s.accept("3:0", "a");
-    s.toggleReject("3:0", "a");
-    expect(useCompareReviewStore.getState().decisions["3:0"]).toEqual({ accepted: null, rejected: ["a"], skipped: false });
+    s.use("3:0", "a");
+    expect(useCompareReviewStore.getState().decisions["3:0"]).toEqual({ used: "a", skipped: false, byHand: false });
+    s.markByHand("3:0");
+    expect(useCompareReviewStore.getState().decisions["3:0"]).toEqual({ used: null, skipped: false, byHand: true });
     s.skip("4:0");
     expect(isReviewed(useCompareReviewStore.getState().decisions["4:0"])).toBe(true);
     s.reset("4:0");
@@ -175,19 +176,46 @@ describe("review prototype windows", () => {
     useModelOverlayStore.getState().clear();
   });
 
-  // Prototype A walks the queue: one row per model, Reject marks it, "fine" moves on.
+  // Prototype A walks the queue: one row per model, Skip moves on and is counted.
   it("A: stepper lists every model and records decisions", async () => {
     render(<ReviewStepperPrototype onClose={() => {}} />);
     await waitFor(() => expect(screen.getAllByTestId("review-proto-model-row").length).toBeGreaterThanOrEqual(2));
     expect(screen.getByTestId("review-proto-status").textContent).toContain("disagreement");
-    fireEvent.click(screen.getByText(/Looks fine, next/));
-    expect(screen.getByTestId("review-proto-summary").textContent).toContain("1 fine");
+    fireEvent.click(screen.getByText("Skip"));
+    expect(screen.getByTestId("review-proto-summary").textContent).toContain("1 skipped");
   });
 
-  // Prototype B shows one pane per model on the item.
-  it("B: side by side has a pane per model", async () => {
+  // Prototype B shows one pane per model, each with a single "Use this one" and no per-model "wrong".
+  it("B: side by side has a pane per model with Use this one", async () => {
     render(<ReviewPanesPrototype onClose={() => {}} />);
     await waitFor(() => expect(screen.getAllByTestId("review-proto-pane").length).toBeGreaterThanOrEqual(2));
+    expect(screen.getAllByTestId("review-proto-use")).toHaveLength(screen.getAllByTestId("review-proto-pane").length);
+    expect(screen.queryByTitle("Mark this model wrong here")).toBeNull();
+    expect(screen.getByTestId("review-proto-summary").textContent).not.toContain("rejected");
+  });
+
+  // User direction: the review starts with the worst disagreement and steps worst first.
+  it("B: goes worst first and Skip moves to the next worse one", async () => {
+    useCompareReviewStore.getState().setThreshold(10);
+    render(<ReviewPanesPrototype onClose={() => {}} />);
+    await waitFor(() => expect(screen.getAllByTestId("review-proto-pane").length).toBeGreaterThanOrEqual(2));
+    const spreadOf = () => Number(/(\d+) px\)/.exec(screen.getByText(/Disputed:/).textContent ?? "")?.[1]);
+    const first = spreadOf();
+    fireEvent.click(screen.getByTestId("review-proto-skip"));
+    expect(spreadOf()).toBeLessThanOrEqual(first);
+    useCompareReviewStore.getState().setThreshold(DEFAULT_REVIEW_THRESHOLD_PX);
+  });
+
+  // User direction: "None are right" sends the frame to the main view to label by hand and closes the review.
+  it("B: None are right goes to the frame and closes the review", async () => {
+    useCompareReviewStore.getState().setOpen("panes");
+    render(<ReviewPanesPrototype onClose={() => {}} />);
+    await waitFor(() => expect(screen.getAllByTestId("review-proto-pane").length).toBeGreaterThanOrEqual(2));
+    const frame = Number(/frame (\d+)/.exec(screen.getByText(/· frame /).textContent ?? "")?.[1]);
+    fireEvent.click(screen.getByTestId("review-proto-none-right"));
+    expect(useAppStore.getState().frameIdx).toBe(frame);
+    expect(useCompareReviewStore.getState().open).toBeNull();
+    expect(Object.values(useCompareReviewStore.getState().decisions).some((d) => d.byHand)).toBe(true);
   });
 
   // Prototype C shows a page of crops (at most 12).
@@ -250,7 +278,7 @@ describe("review fixes", () => {
     useConfirmStore.getState().respond(true);
     expect(await done).toBe(true);
     expect(lf.instances[0]).not.toBe(user);
-    expect(useCompareReviewStore.getState().decisions[reviewItemKey(item)]?.accepted).toBe(models[1].id);
+    expect(useCompareReviewStore.getState().decisions[reviewItemKey(item)]?.used).toBe(models[1].id);
   });
 
   // Review #2: a mock model (noisy copy of the user's labels) must never overwrite the project.
@@ -261,7 +289,7 @@ describe("review fixes", () => {
     expect(await acceptForItem(item, models[1].id)).toBe(true);
     expect(lf.instances).toEqual(before);
     expect(useConfirmStore.getState().request).toBeNull();
-    expect(useCompareReviewStore.getState().decisions[reviewItemKey(item)]?.accepted).toBe(models[1].id);
+    expect(useCompareReviewStore.getState().decisions[reviewItemKey(item)]?.used).toBe(models[1].id);
   });
 
   // Review #3: while "Replace your instance?" is open, the prototypes' Esc/←/→ must leave it alone.

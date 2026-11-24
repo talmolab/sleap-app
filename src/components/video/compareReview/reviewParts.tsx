@@ -27,8 +27,8 @@ export function QueueStatus({
   let text: string;
   if (shown < 2) text = "Show two or more models to compare.";
   else if (progress < 1) text = `Finding disagreements… ${Math.round(progress * 100)}%`;
-  else if (count === 0) text = `No disagreements above ${threshold} px. Lower the threshold in the corner panel.`;
-  else text = `${count} disagreement${count === 1 ? "" : "s"} above ${threshold} px${truncated ? ` — only the worst frames: ${totalFrames} frames disagree in all` : ""}`;
+  else if (count === 0) text = `No disagreements above ${threshold} px. Lower "above … px" to see smaller ones.`;
+  else text = `${count} disagreement${count === 1 ? "" : "s"} above ${threshold} px, worst first${truncated ? ` — only the worst frames: ${totalFrames} frames disagree in all` : ""}`;
   return (
     <div className="px-2 py-1 text-muted-foreground" data-testid="review-proto-status">
       {text}
@@ -36,29 +36,53 @@ export function QueueStatus({
   );
 }
 
-/** Accepted / rejected / skipped / left, over the whole queue. */
+/** Used / skipped / to label by hand / left, over the whole queue. */
 export function ReviewSummary({ items }: { items: readonly ReviewGroup[] }) {
   const decisions = useCompareReviewStore((s) => s.decisions);
   if (items.length === 0) return null;
-  let accepted = 0;
-  let rejected = 0;
+  let used = 0;
   let skipped = 0;
+  let byHand = 0;
   let left = 0;
   for (const it of items) {
     const d = decisions[reviewItemKey(it)];
     if (!isReviewed(d)) left++;
-    else if (d!.accepted) accepted++;
-    else if (d!.rejected.length > 0) rejected++;
+    else if (d!.used) used++;
+    else if (d!.byHand) byHand++;
     else skipped++;
   }
   return (
     <div className="flex gap-2 border-t border-border px-2 py-1 tabular-nums text-muted-foreground" data-testid="review-proto-summary">
-      <span className="text-green-600 dark:text-green-400">{accepted} accepted</span>
-      <span>{rejected} rejected</span>
-      <span>{skipped} fine</span>
-      <span className="flex-1" />
-      <span>{left} left</span>
+      <span className="text-green-600 dark:text-green-400">{used} used</span>
+      <span>· {skipped} skipped</span>
+      {byHand > 0 && <span>· {byHand} to label by hand</span>}
+      <span>· {left} left</span>
     </div>
+  );
+}
+
+/** "Above [25] px": the review's own threshold (the corner panel's rings keep theirs). */
+export function ReviewThresholdInput() {
+  const threshold = useCompareReviewStore((s) => s.threshold);
+  const setThreshold = useCompareReviewStore((s) => s.setThreshold);
+  return (
+    <label className="flex items-center gap-1 text-muted-foreground" title="Only disagreements bigger than this (RMS spread across the models) are listed">
+      above
+      <input
+        type="number"
+        min={0}
+        step={5}
+        className="w-12 rounded border border-border bg-background px-1 text-right tabular-nums text-foreground"
+        value={threshold}
+        onChange={(e) => {
+          const v = Number(e.target.value);
+          if (e.target.value.trim() !== "" && Number.isFinite(v) && v >= 0) setThreshold(v);
+        }}
+        aria-label="Review disagreements above, px"
+        data-testid="review-proto-threshold"
+      />
+      px
+    </label>
   );
 }
 

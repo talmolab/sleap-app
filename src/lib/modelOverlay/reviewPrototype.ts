@@ -244,7 +244,7 @@ function projectPoses(labels: Labels, video: Video, nodeNames: readonly string[]
  * project. Where the project has instances on this video, each model copies
  * them with ~1 px of noise (so crops show real animals); otherwise two animals
  * walk a slow loop. Every few dozen frames one model misplaces a few nodes by
- * 15–45 px for a short stretch, and the last model goes wrong more often, so
+ * 50–120 px for a short stretch, and the last model goes wrong more often, so
  * there is something to review.
  */
 export function makeMockModels(labels: Labels, video: Video, skeleton: Skeleton, seed = 1): NewOverlayModel[] {
@@ -285,7 +285,8 @@ export function makeMockModels(labels: Labels, video: Video, skeleton: Skeleton,
     const model = rand() < 0.4 ? MOCK_NAMES.length - 1 : Math.floor(rand() * MOCK_NAMES.length);
     const k = 1 + Math.floor(rand() * Math.min(4, nNodes));
     const nodes = Array.from({ length: k }, () => Math.floor(rand() * nNodes));
-    const mag = 15 + rand() * 30;
+    // One model of five off by d gives an RMS spread of 2d/5: 50–120 px → 20–48 px, around the review's 25 px.
+    const mag = 50 + rand() * 70;
     const ang = rand() * Math.PI * 2;
     episodes.push({ start: r, len: 1 + Math.floor(rand() * 4), model, nodes, dx: mag * Math.cos(ang), dy: mag * Math.sin(ang) });
   }

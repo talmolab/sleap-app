@@ -2,37 +2,36 @@
  * Review prototype A (dev only): a stepper. A narrow panel docked on the
  * right walks through the disagreements one at a time, like the QC Review
  * window: the main view jumps to each one, and every model gets a row with
- * how far it is from the others, Accept (its pose becomes a user instance)
- * and Reject (mark it wrong here). Accept moves on to the next item.
+ * how far it is from the others and "Use" (its pose becomes a user
+ * instance). Worst disagreements first; "Skip" and "None are right" (label it
+ * by hand in the main view) below.
  */
 import { useEffect, useMemo, useState } from "react";
-import { Check, ChevronLeft, ChevronRight, SkipForward, X } from "lucide-react";
+import { Check, ChevronLeft, ChevronRight, PenLine, SkipForward, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { rgbToCSS } from "@/lib/colorPalettes";
 import { useAppStore } from "@/stores/appStore";
 import { isReviewed, useCompareReviewStore } from "@/stores/compareReviewStore";
 import { reviewItemKey } from "@/lib/modelOverlay/reviewPrototype";
-import { acceptForItem, goToItem, useReviewQueue } from "./useReviewQueue";
-import { ProjectInstancesKey, QueueStatus, ReviewSummary } from "./reviewParts";
+import { acceptForItem, goToItem, labelByHand, useReviewQueue } from "./useReviewQueue";
+import { ProjectInstancesKey, QueueStatus, ReviewSummary, ReviewThresholdInput } from "./reviewParts";
 
 export function ReviewStepperPrototype({ onClose }: { onClose: () => void }) {
   const { shown, progress, items, truncated, totalFrames, threshold } = useReviewQueue();
   const skeleton = useAppStore((s) => s.skeleton);
-  const frameIdx = useAppStore((s) => s.frameIdx);
   const showProject = useAppStore((s) => s.showInstances);
   const decisions = useCompareReviewStore((s) => s.decisions);
-  const toggleReject = useCompareReviewStore((s) => s.toggleReject);
   const skip = useCompareReviewStore((s) => s.skip);
   const [pos, setPos] = useState(0);
 
-  // Start at the first item on or after the frame on screen.
+  // Start at the worst item not decided yet (the queue is worst first).
   const [started, setStarted] = useState(false);
   useEffect(() => {
     if (started || items.length === 0) return;
-    const i = items.findIndex((it) => it.frame >= frameIdx);
+    const i = items.findIndex((it) => !isReviewed(decisions[reviewItemKey(it)]));
     setPos(i >= 0 ? i : 0);
     setStarted(true);
-  }, [items, frameIdx, started]);
+  }, [items, decisions, started]);
 
   const at = Math.min(pos, Math.max(0, items.length - 1));
   const item = items[at];
@@ -70,6 +69,9 @@ export function ReviewStepperPrototype({ onClose }: { onClose: () => void }) {
           <ProjectInstancesKey count={null} />
         </div>
       )}
+      <div className="px-2 pt-1">
+        <ReviewThresholdInput />
+      </div>
       <QueueStatus progress={progress} count={items.length} truncated={truncated} totalFrames={totalFrames} threshold={threshold} shown={shown.length} />
       {item && (
         <>
@@ -113,16 +115,15 @@ export function ReviewStepperPrototype({ onClose }: { onClose: () => void }) {
               .map((m) => {
                 const model = shown.find((x) => x.id === m.modelId);
                 if (!model) return null;
-                const accepted = d?.accepted === m.modelId;
-                const rejected = d?.rejected.includes(m.modelId) ?? false;
+                const used = d?.used === m.modelId;
                 return (
                   <div
                     key={m.modelId}
-                    className={`flex items-center gap-1.5 rounded px-1 py-1 ${accepted ? "bg-green-500/15" : ""} ${rejected ? "opacity-50" : ""}`}
+                    className={`flex items-center gap-1.5 rounded px-1 py-1 ${used ? "bg-green-500/15" : ""}`}
                     data-testid="review-proto-model-row"
                   >
                     <span className="inline-block h-2.5 w-2.5 shrink-0 rounded-full" style={{ backgroundColor: rgbToCSS(model.color) }} />
-                    <span className={`min-w-0 flex-1 truncate ${rejected ? "line-through" : ""}`} title={model.source}>
+                    <span className="min-w-0 flex-1 truncate" title={model.source}>
                       {model.name}
                     </span>
                     <span className="tabular-nums text-muted-foreground" title="Mean distance of its nodes from the models' average">
@@ -130,21 +131,12 @@ export function ReviewStepperPrototype({ onClose }: { onClose: () => void }) {
                     </span>
                     <Button
                       size="sm"
-                      variant={accepted ? "default" : "outline"}
+                      variant={used ? "default" : "outline"}
                       className="h-6 px-1.5 text-[11px]"
                       onClick={() => void acceptForItem(item, m.modelId).then((ok) => ok && nextUnreviewed())}
-                      title="Make this model's pose a user instance (undoable), then go to the next item"
+                      title="Make this model's pose a user instance (undoable), then the next one"
                     >
-                      <Check className="h-3 w-3" />
-                    </Button>
-                    <Button
-                      size="sm"
-                      variant={rejected ? "destructive" : "outline"}
-                      className="h-6 px-1.5 text-[11px]"
-                      onClick={() => toggleReject(key, m.modelId)}
-                      title="Mark this model wrong here"
-                    >
-                      <X className="h-3 w-3" />
+                      <Check className="mr-1 h-3 w-3" /> Use
                     </Button>
                   </div>
                 );
@@ -153,17 +145,25 @@ export function ReviewStepperPrototype({ onClose }: { onClose: () => void }) {
           <div className="flex items-center gap-1 border-t border-border px-2 py-1.5">
             <Button
               size="sm"
-              variant="outline"
+              variant={d?.skipped ? "default" : "outline"}
               className="h-6 text-[11px]"
               onClick={() => {
                 skip(key);
                 nextUnreviewed();
               }}
+              title="Either is acceptable: leave it and go to the next one"
             >
-              <SkipForward className="mr-1 h-3 w-3" /> Looks fine, next
+              <SkipForward className="mr-1 h-3 w-3" /> Skip
             </Button>
-            <span className="flex-1" />
-            <span className="text-muted-foreground">sorted closest to the others first</span>
+            <Button
+              size="sm"
+              variant={d?.byHand ? "default" : "outline"}
+              className="h-6 text-[11px]"
+              onClick={() => labelByHand(item)}
+              title="No model got it right: stay on this frame in the main view (this panel closes) to label it by hand"
+            >
+              <PenLine className="mr-1 h-3 w-3" /> None are right
+            </Button>
           </div>
         </>
       )}

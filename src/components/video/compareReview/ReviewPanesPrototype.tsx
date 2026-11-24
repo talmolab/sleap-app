@@ -3,37 +3,49 @@
  * the current disagreement once per model — each pane has only that model's
  * pose on the frame (zoomed to the animal, or the whole frame), with the
  * models' average as white crosses and the disputed nodes ringed red — plus
- * an "all models" pane. Accept / Reject under each pane; ◀ ▶ step through.
+ * an "all models" pane. Worst disagreements first. One decision per item:
+ * "Use this one" under a model (its pose becomes a user instance, undoable),
+ * "None are right" (go label it by hand in the main view), or "Skip" (either
+ * is fine). ◀ ▶ or ← → step through.
  */
 import { useEffect, useMemo, useState } from "react";
-import { Check, ChevronLeft, ChevronRight, SkipForward, X } from "lucide-react";
+import { Check, ChevronLeft, ChevronRight, PenLine, SkipForward, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { rgbToCSS } from "@/lib/colorPalettes";
 import { useAppStore } from "@/stores/appStore";
-import { useCompareReviewStore } from "@/stores/compareReviewStore";
+import { isReviewed, useCompareReviewStore } from "@/stores/compareReviewStore";
 import { cropAround, itemRings, reviewItemKey } from "@/lib/modelOverlay/reviewPrototype";
 import { videoDims } from "@/lib/modelOverlay/core";
-import { acceptForItem, goToItem, keysBelongElsewhere, useReviewQueue } from "./useReviewQueue";
+import { acceptForItem, goToItem, keysBelongElsewhere, labelByHand, useReviewQueue } from "./useReviewQueue";
 import { ModelCropCanvas, type CropPose } from "./ModelCropCanvas";
-import { ProjectInstancesKey, QueueStatus, ReviewSummary, useProjectPoses } from "./reviewParts";
+import { ProjectInstancesKey, QueueStatus, ReviewSummary, ReviewThresholdInput, useProjectPoses } from "./reviewParts";
 
 export function ReviewPanesPrototype({ onClose }: { onClose: () => void }) {
   const { shown, progress, items, truncated, totalFrames, threshold } = useReviewQueue();
   const video = useAppStore((s) => s.video);
   const skeleton = useAppStore((s) => s.skeleton);
-  const frameIdx = useAppStore((s) => s.frameIdx);
   const decisions = useCompareReviewStore((s) => s.decisions);
-  const toggleReject = useCompareReviewStore((s) => s.toggleReject);
   const skip = useCompareReviewStore((s) => s.skip);
   const [pos, setPos] = useState<number | null>(null);
   const [zoomed, setZoomed] = useState(true);
 
-  const at = pos ?? Math.max(0, items.findIndex((it) => it.frame >= frameIdx));
+  // Start at the worst item not decided yet, then stay put until the user moves
+  // (a decision on this item must not make the view jump to another one).
+  const firstOpen = Math.max(0, items.findIndex((it) => !isReviewed(decisions[reviewItemKey(it)])));
+  useEffect(() => {
+    if (pos === null && items.length > 0) setPos(firstOpen);
+  }, [pos, items.length, firstOpen]);
+  const at = pos ?? firstOpen;
   const item = items[Math.min(at, items.length - 1)];
   useEffect(() => {
     if (item) goToItem(item);
   }, [item]);
   const go = (d: number) => setPos(Math.max(0, Math.min(items.length - 1, at + d)));
+  /** After a decision: the next item not decided yet (else just the next one). */
+  const next = () => {
+    for (let i = at + 1; i < items.length; i++) if (!isReviewed(decisions[reviewItemKey(items[i])])) return setPos(i);
+    go(1);
+  };
 
   const edges = useMemo(() => skeleton?.edgeIndices ?? [], [skeleton]);
   const nodeNames = useMemo(() => skeleton?.nodes.map((n) => n.name) ?? [], [skeleton]);
@@ -83,6 +95,7 @@ export function ReviewPanesPrototype({ onClose }: { onClose: () => void }) {
           <span className="text-sm font-semibold">Review disagreements</span>
           <span className="rounded bg-amber-500/20 px-1 text-[10px] text-amber-600 dark:text-amber-400">prototype B · side by side</span>
           <span className="flex-1" />
+          <ReviewThresholdInput />
           <label className="flex items-center gap-1">
             <input type="checkbox" checked={zoomed} onChange={(e) => setZoomed(e.target.checked)} />
             Zoom to the animal
@@ -112,33 +125,43 @@ export function ReviewPanesPrototype({ onClose }: { onClose: () => void }) {
             </div>
             <div className="min-h-0 overflow-auto px-3 pb-2">
               <div className="grid gap-2" style={{ gridTemplateColumns: `repeat(${cols}, ${pane}px)` }}>
-                <div className="rounded border border-border p-1">
-                  <ModelCropCanvas video={video} frame={item.frame} crop={crop} poses={allPoses} consensus={null} rings={rings} projectPoses={projectPoses} edges={edges} width={pane - 10} height={pane - 50} />
+                <div className="flex flex-col rounded border border-border p-1">
+                  <ModelCropCanvas video={video} frame={item.frame} crop={crop} poses={allPoses} consensus={null} rings={rings} projectPoses={projectPoses} edges={edges} width={pane - 10} height={pane - 76} />
+                  <div className="px-1 pt-1 font-medium">All models</div>
                   <div className="flex items-center gap-1 px-1 pt-1">
-                    <span className="font-medium">All models</span>
-                    <span className="flex-1" />
+                    <Button
+                      size="sm"
+                      variant={d?.byHand ? "default" : "outline"}
+                      className="h-7 flex-1 text-[11px]"
+                      onClick={() => labelByHand(item)}
+                      title="No model got it right: go to this frame in the main view (this window closes) to label it by hand"
+                      data-testid="review-proto-none-right"
+                    >
+                      <PenLine className="mr-1 h-3 w-3" /> None are right
+                    </Button>
                     <Button
                       size="sm"
                       variant={d?.skipped ? "default" : "outline"}
-                      className="h-6 text-[11px]"
+                      className="h-7 flex-1 text-[11px]"
                       onClick={() => {
                         skip(key);
-                        go(1);
+                        next();
                       }}
+                      title="Either is acceptable: leave it as is and go to the next one"
+                      data-testid="review-proto-skip"
                     >
-                      <SkipForward className="mr-1 h-3 w-3" /> Fine, next
+                      <SkipForward className="mr-1 h-3 w-3" /> Skip
                     </Button>
                   </div>
                 </div>
                 {item.members.map((m) => {
                   const model = shown.find((x) => x.id === m.modelId);
                   if (!model) return null;
-                  const accepted = d?.accepted === m.modelId;
-                  const rejected = d?.rejected.includes(m.modelId) ?? false;
+                  const used = d?.used === m.modelId;
                   return (
                     <div
                       key={m.modelId}
-                      className={`rounded border p-1 ${accepted ? "border-green-500 bg-green-500/10" : "border-border"} ${rejected ? "opacity-50" : ""}`}
+                      className={`flex flex-col rounded border p-1 ${used ? "border-green-500 bg-green-500/10" : "border-border"}`}
                       data-testid="review-proto-pane"
                     >
                       <ModelCropCanvas
@@ -151,19 +174,27 @@ export function ReviewPanesPrototype({ onClose }: { onClose: () => void }) {
                         projectPoses={projectPoses}
                         edges={edges}
                         width={pane - 10}
-                        height={pane - 50}
+                        height={pane - 76}
                       />
                       <div className="flex items-center gap-1 px-1 pt-1">
                         <span className="inline-block h-2.5 w-2.5 shrink-0 rounded-full" style={{ backgroundColor: rgbToCSS(model.color) }} />
-                        <span className={`min-w-0 flex-1 truncate ${rejected ? "line-through" : ""}`} title={model.source}>
+                        <span className="min-w-0 flex-1 truncate" title={model.source}>
                           {model.name}
                         </span>
-                        <span className="tabular-nums text-muted-foreground">{Number.isFinite(m.distance) ? `${m.distance.toFixed(1)} px` : "–"}</span>
-                        <Button size="sm" variant={accepted ? "default" : "outline"} className="h-6 px-1.5" onClick={() => void acceptForItem(item, m.modelId).then((ok) => ok && go(1))} title="Accept this pose (undoable), then next">
-                          <Check className="h-3 w-3" />
-                        </Button>
-                        <Button size="sm" variant={rejected ? "destructive" : "outline"} className="h-6 px-1.5" onClick={() => toggleReject(key, m.modelId)} title="Mark this model wrong here">
-                          <X className="h-3 w-3" />
+                        <span className="tabular-nums text-muted-foreground" title="Mean distance of its nodes from the models' average">
+                          {Number.isFinite(m.distance) ? `${m.distance.toFixed(1)} px` : "–"}
+                        </span>
+                      </div>
+                      <div className="px-1 pt-1">
+                        <Button
+                          size="sm"
+                          variant={used ? "default" : "outline"}
+                          className="h-7 w-full text-[11px]"
+                          onClick={() => void acceptForItem(item, m.modelId).then((ok) => ok && next())}
+                          title="Make this model's pose a user instance (replaces the matching prediction; asks before replacing your own instance; ⌘Z undoes), then the next one"
+                          data-testid="review-proto-use"
+                        >
+                          <Check className="mr-1 h-3 w-3" /> Use this one
                         </Button>
                       </div>
                     </div>

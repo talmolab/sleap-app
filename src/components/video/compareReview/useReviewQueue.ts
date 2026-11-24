@@ -3,8 +3,9 @@
  * steps through, and the shared Accept action.
  *
  * The queue is built from the disagreement index (filled in time slices, with
- * progress) at the corner panel's threshold: one item per animal per frame
- * where the shown models disagree, in frame order.
+ * progress) at the review's own threshold (default 25 px, bigger than the
+ * corner panel's 10 px rings, so only big disagreements show): one item per
+ * animal per frame where the shown models disagree, worst first.
  */
 import { useEffect, useMemo, useState } from "react";
 import { useAppStore } from "@/stores/appStore";
@@ -51,7 +52,7 @@ export interface ReviewQueue {
 
 export function useReviewQueue(): ReviewQueue {
   const models = useModelOverlayStore((s) => s.models);
-  const threshold = useModelOverlayStore((s) => s.threshold);
+  const threshold = useCompareReviewStore((s) => s.threshold);
   const video = useAppStore((s) => s.video);
   const shown = useMemo(() => shownOn(models, video), [models, video]);
   const index = useMemo(() => disagreementIndexFor(models, video), [models, video]);
@@ -76,7 +77,8 @@ export function useReviewQueue(): ReviewQueue {
     const kept = worstFrames(frames, (f) => index.maxSpread[rowOf.get(f) ?? -1] ?? -Infinity, MAX_REVIEW_FRAMES);
     const out: ReviewGroup[] = [];
     for (const f of kept) out.push(...reviewGroupsOnFrame(shown, f, index.byTrack, threshold));
-    out.sort((a, b) => a.frame - b.frame || a.group - b.group);
+    // Worst first: the biggest disagreements are the ones worth fixing.
+    out.sort((a, b) => b.maxSpread - a.maxSpread || a.frame - b.frame || a.group - b.group);
     return { items: out, truncated: frames.length > MAX_REVIEW_FRAMES, totalFrames: frames.length };
   }, [ready, index, threshold, shown]);
 
@@ -104,8 +106,19 @@ export async function acceptForItem(item: ReviewGroup, modelId: string): Promise
   if (!m || !model) return false;
   goToItem(item);
   const ok = isMockSource(model.source) ? true : await acceptModelPose(modelId, m.poseIdx);
-  if (ok) useCompareReviewStore.getState().accept(reviewItemKey(item), modelId);
+  if (ok) useCompareReviewStore.getState().use(reviewItemKey(item), modelId);
   return ok;
+}
+
+/**
+ * "None are right": go to the item's frame in the main view and close the
+ * review, so the animal can be labeled by hand there.
+ */
+export function labelByHand(item: ReviewGroup): void {
+  goToItem(item);
+  const store = useCompareReviewStore.getState();
+  store.markByHand(reviewItemKey(item));
+  store.setOpen(null);
 }
 
 /**

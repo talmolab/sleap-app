@@ -2,12 +2,13 @@
  * Review prototype C (dev only): a grid of crops. Many disagreements at once,
  * each a crop around the animal with every model's pose and the disputed
  * nodes ringed red. Under each crop, one colour chip per model: click a chip
- * to accept that model's pose there; ✓ marks the crop fine. Page through, or
+ * to use that model's pose there; "skip" leaves it, ✎ = none are right (label
+ * it by hand in the main view). Worst first by default. Page through, or
  * sort by how badly the models disagree. Double-click a crop to look at it in
  * the main view.
  */
 import { useEffect, useMemo, useState } from "react";
-import { Check, ChevronLeft, ChevronRight, X } from "lucide-react";
+import { ChevronLeft, ChevronRight, PenLine, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { rgbToCSS } from "@/lib/colorPalettes";
 import { useAppStore } from "@/stores/appStore";
@@ -16,9 +17,9 @@ import { cropAround, itemRings, reviewItemKey, type ReviewGroup } from "@/lib/mo
 import { videoDims } from "@/lib/modelOverlay/core";
 import type { OverlayModel } from "@/stores/modelOverlayStore";
 import type { Video } from "@/types";
-import { acceptForItem, goToItem, keysBelongElsewhere, useReviewQueue } from "./useReviewQueue";
+import { acceptForItem, goToItem, keysBelongElsewhere, labelByHand, useReviewQueue } from "./useReviewQueue";
 import { ModelCropCanvas } from "./ModelCropCanvas";
-import { ProjectInstancesKey, QueueStatus, ReviewSummary, useProjectPoses } from "./reviewParts";
+import { ProjectInstancesKey, QueueStatus, ReviewSummary, ReviewThresholdInput, useProjectPoses } from "./reviewParts";
 
 const PAGE = 12;
 const CELL = 200;
@@ -52,10 +53,10 @@ function GridCell({
       }),
     [item, shown]
   );
-  const done = d?.accepted || d?.skipped;
+  const done = !!(d?.used || d?.skipped || d?.byHand);
   return (
     <div
-      className={`rounded border p-1 ${d?.accepted ? "border-green-500 bg-green-500/10" : d?.skipped ? "border-border opacity-60" : "border-border"}`}
+      className={`rounded border p-1 ${d?.used ? "border-green-500 bg-green-500/10" : d?.skipped || d?.byHand ? "border-border opacity-60" : "border-border"}`}
       data-testid="review-proto-cell"
     >
       <div onDoubleClick={onOpen} title="Double-click to look at it in the main view" className="cursor-zoom-in">
@@ -66,29 +67,34 @@ function GridCell({
         <span className="text-red-600 dark:text-red-400">{item.maxSpread.toFixed(0)} px</span>
         <span className="flex-1" />
         {done ? (
-          <button type="button" className="rounded px-1 hover:bg-muted" onClick={() => reset(key)} title="Clear this decision (⌘Z undoes an Accept in the project)">
-            undo
+          <button type="button" className="rounded px-1 hover:bg-muted" onClick={() => reset(key)} title="Clear this decision (⌘Z undoes a Use in the project)">
+            {d?.byHand ? "by hand · " : ""}undo
           </button>
         ) : (
-          <button type="button" className="rounded p-0.5 hover:bg-muted" onClick={() => skip(key)} title="Fine as is" aria-label="Fine as is">
-            <Check className="h-3 w-3" />
-          </button>
+          <>
+            <button type="button" className="rounded px-1 hover:bg-muted" onClick={() => skip(key)} title="Either is acceptable: leave it" data-testid="review-proto-cell-skip">
+              skip
+            </button>
+            <button type="button" className="rounded p-0.5 hover:bg-muted" onClick={() => labelByHand(item)} title="None are right: open this frame in the main view to label it by hand" aria-label="None are right">
+              <PenLine className="h-3 w-3" />
+            </button>
+          </>
         )}
       </div>
       <div className="flex flex-wrap gap-1 px-0.5 pt-0.5">
         {item.members.map((m) => {
           const model = shown.find((x) => x.id === m.modelId);
           if (!model) return null;
-          const accepted = d?.accepted === m.modelId;
+          const used = d?.used === m.modelId;
           return (
             <button
               key={m.modelId}
               type="button"
-              className={`h-4 w-4 rounded-full border-2 ${accepted ? "border-foreground" : "border-transparent hover:border-muted-foreground"}`}
+              className={`h-4 w-4 rounded-full border-2 ${used ? "border-foreground" : "border-transparent hover:border-muted-foreground"}`}
               style={{ backgroundColor: rgbToCSS(model.color) }}
               onClick={() => void acceptForItem(item, m.modelId)}
-              title={`Accept ${model.name} here (${Number.isFinite(m.distance) ? m.distance.toFixed(1) : "–"} px from the average)`}
-              aria-label={`Accept ${model.name}`}
+              title={`Use ${model.name}'s pose here (${Number.isFinite(m.distance) ? m.distance.toFixed(1) : "–"} px from the average)`}
+              aria-label={`Use ${model.name}`}
             />
           );
         })}
@@ -135,6 +141,7 @@ export function ReviewGridPrototype({ onClose }: { onClose: () => void }) {
           <span className="text-sm font-semibold">Review disagreements</span>
           <span className="rounded bg-amber-500/20 px-1 text-[10px] text-amber-600 dark:text-amber-400">prototype C · crop grid</span>
           <span className="flex-1" />
+          <ReviewThresholdInput />
           <select className="rounded border border-border bg-background px-1 py-0.5" value={order} onChange={(e) => setOrder(e.target.value as "frame" | "spread")} aria-label="Order">
             <option value="spread">Worst first</option>
             <option value="frame">By frame</option>
@@ -154,7 +161,7 @@ export function ReviewGridPrototype({ onClose }: { onClose: () => void }) {
         </div>
         <QueueStatus progress={progress} count={items.length} truncated={truncated} totalFrames={totalFrames} threshold={threshold} shown={shown.length} />
         <div className="flex flex-wrap items-center gap-x-3 px-3 pb-1 text-muted-foreground">
-          <span>Click a colour to accept that model's pose · ✓ = fine as is · double-click a crop to open it in the main view</span>
+          <span>Click a colour to use that model's pose · skip = either is fine · ✎ = none are right (label by hand) · double-click opens it in the main view</span>
           <ProjectInstancesKey count={null} />
         </div>
         {video && (
