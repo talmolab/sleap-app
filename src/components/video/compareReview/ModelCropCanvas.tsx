@@ -1,40 +1,29 @@
 /**
  * Review prototypes (dev only): one frame (or a crop of it) with model poses
  * drawn on top in the models' colours, the consensus as small white crosses
- * and red rings on the nodes the models disagree on. Decoded frames are
- * shared through a small cache, so several panes of the same frame decode it
- * once.
+ * and red rings on the nodes the models disagree on. The project's own
+ * instances can be drawn underneath in silver (solid: yours, dashed:
+ * predictions already in the project). Decoded frames are shared (see
+ * frameDecodeCache.ts); a frame that can't be read says so instead of
+ * leaving the pane black.
  */
 import { useEffect, useRef } from "react";
 import type { Video } from "@/types";
 import type { RGB } from "@/lib/colorPalettes";
 import { rgbToCSS } from "@/lib/colorPalettes";
-import { frameToCanvas } from "@/lib/frameCanvas";
-import { renderModelOverlay, DISAGREEMENT_COLOR, type ModelOverlayLayer } from "@/canvas/modelOverlayRenderer";
-import type { Rect } from "@/lib/modelOverlay/reviewPrototype";
+import {
+  renderModelOverlay,
+  modelPoseToRendered,
+  modelRenderOptions,
+  DISAGREEMENT_COLOR,
+  type ModelOverlayLayer,
+} from "@/canvas/modelOverlayRenderer";
+import { renderInstances } from "@/canvas/SkeletonRenderer";
+import type { ProjectPose, Rect } from "@/lib/modelOverlay/reviewPrototype";
+import { decodeFrame } from "./frameDecodeCache";
 
-const CACHE_SIZE = 48;
-const frameCache = new Map<string, Promise<OffscreenCanvas | null>>();
-const videoIds = new WeakMap<Video, number>();
-let nextVideoId = 1;
-
-function decodeFrame(video: Video, frame: number): Promise<OffscreenCanvas | null> {
-  let id = videoIds.get(video);
-  if (id === undefined) videoIds.set(video, (id = nextVideoId++));
-  const key = `${id}:${frame}`;
-  const hit = frameCache.get(key);
-  if (hit) return hit;
-  const p = (async () => {
-    try {
-      return await frameToCanvas(await video.getFrame(frame, { prefetch: false }), video.shape);
-    } catch {
-      return null;
-    }
-  })();
-  if (frameCache.size >= CACHE_SIZE) frameCache.delete(frameCache.keys().next().value as string);
-  frameCache.set(key, p);
-  return p;
-}
+/** Colour of the project's own instances in the review crops (not a model colour). */
+export const PROJECT_POSE_COLOR: RGB = [192, 192, 192];
 
 export interface CropPose {
   modelId: string;
@@ -49,6 +38,7 @@ export function ModelCropCanvas({
   poses,
   consensus,
   rings,
+  projectPoses,
   edges,
   width,
   height,
@@ -62,6 +52,8 @@ export function ModelCropCanvas({
   consensus?: Float64Array | null;
   /** Red rings: source-pixel centre and radius. */
   rings?: readonly { x: number; y: number; r: number }[];
+  /** The project's own instances on this frame, drawn under the models (omit to hide them). */
+  projectPoses?: readonly ProjectPose[];
   edges: readonly (readonly [number, number])[];
   width: number;
   height: number;
@@ -91,19 +83,30 @@ export function ModelCropCanvas({
       ctx.fillRect(0, 0, width, height);
       ctx.setTransform(dpr * scale, 0, 0, dpr * scale, dpr * (ox - r.x * scale), dpr * (oy - r.y * scale));
       if (img) ctx.drawImage(img, 0, 0);
+      const ident = (x: number, y: number): [number, number] => [x, y];
+      const drawOpts = { markerSize: 4, poseOpacity: 1, showEdges: true, zoom: scale, toImage: ident };
+      if (projectPoses && projectPoses.length > 0) {
+        const rendered = projectPoses.map((p) => ({
+          ...modelPoseToRendered({ xy: p.xy, score: null, trackName: null }, PROJECT_POSE_COLOR, edges, ident),
+          isPredicted: p.predicted,
+        }));
+        // A dark halo so silver stays visible on bright (and dark) video.
+        ctx.save();
+        ctx.shadowColor = "rgba(0,0,0,0.9)";
+        ctx.shadowBlur = 3 * dpr;
+        renderInstances(ctx, rendered, modelRenderOptions(drawOpts));
+        ctx.restore();
+      }
       const layers: ModelOverlayLayer[] = poses.map((p) => ({
         modelId: p.modelId,
         color: p.color,
         poses: [{ xy: p.xy, score: null, trackName: null }],
       }));
-      renderModelOverlay(ctx, layers, edges, {
-        markerSize: 4,
-        poseOpacity: 1,
-        showEdges: true,
-        zoom: scale,
-        toImage: (x, y) => [x, y],
-      });
+      renderModelOverlay(ctx, layers, edges, drawOpts);
       if (consensus) {
+        ctx.save();
+        ctx.shadowColor = "rgba(0,0,0,0.9)";
+        ctx.shadowBlur = 3 * dpr;
         ctx.strokeStyle = "rgba(255,255,255,0.9)";
         ctx.lineWidth = 1.5 / scale;
         const s = 4 / scale;
@@ -118,6 +121,7 @@ export function ModelCropCanvas({
           ctx.lineTo(x, y + s);
         }
         ctx.stroke();
+        ctx.restore();
       }
       if (rings && rings.length > 0) {
         ctx.strokeStyle = rgbToCSS(DISAGREEMENT_COLOR, 0.95);
@@ -128,11 +132,18 @@ export function ModelCropCanvas({
           ctx.stroke();
         }
       }
+      if (!img) {
+        // Say so rather than leave a black pane that looks like a dark frame.
+        ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+        ctx.fillStyle = "rgba(255,255,255,0.75)";
+        ctx.font = "11px sans-serif";
+        ctx.fillText(`Frame ${frame} not available`, 6, 14);
+      }
     });
     return () => {
       cancelled = true;
     };
-  }, [video, frame, crop, poses, consensus, rings, edges, width, height]);
+  }, [video, frame, crop, poses, consensus, rings, projectPoses, edges, width, height]);
 
   return <canvas ref={ref} className={className} style={{ width, height }} />;
 }

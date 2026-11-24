@@ -13,12 +13,13 @@ import { useAppStore } from "@/stores/appStore";
 import { isReviewed, useCompareReviewStore } from "@/stores/compareReviewStore";
 import { reviewItemKey } from "@/lib/modelOverlay/reviewPrototype";
 import { acceptForItem, goToItem, useReviewQueue } from "./useReviewQueue";
-import { QueueStatus, ReviewSummary } from "./reviewParts";
+import { ProjectInstancesKey, QueueStatus, ReviewSummary } from "./reviewParts";
 
 export function ReviewStepperPrototype({ onClose }: { onClose: () => void }) {
   const { shown, progress, items, truncated, totalFrames, threshold } = useReviewQueue();
   const skeleton = useAppStore((s) => s.skeleton);
   const frameIdx = useAppStore((s) => s.frameIdx);
+  const showProject = useAppStore((s) => s.showInstances);
   const decisions = useCompareReviewStore((s) => s.decisions);
   const toggleReject = useCompareReviewStore((s) => s.toggleReject);
   const skip = useCompareReviewStore((s) => s.skip);
@@ -64,6 +65,11 @@ export function ReviewStepperPrototype({ onClose }: { onClose: () => void }) {
           <X className="h-3.5 w-3.5" />
         </button>
       </div>
+      {!showProject && (
+        <div className="px-2 pb-1">
+          <ProjectInstancesKey count={null} />
+        </div>
+      )}
       <QueueStatus progress={progress} count={items.length} truncated={truncated} totalFrames={totalFrames} threshold={threshold} shown={shown.length} />
       {item && (
         <>

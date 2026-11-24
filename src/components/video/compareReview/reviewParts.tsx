@@ -1,5 +1,11 @@
 /** Review prototypes (dev only): small parts every prototype shows. */
-import { reviewItemKey, type ReviewGroup } from "@/lib/modelOverlay/reviewPrototype";
+import { useMemo } from "react";
+import { Eye, EyeOff } from "lucide-react";
+import { projectPosesOnFrame, reviewItemKey, type ProjectPose, type ReviewGroup } from "@/lib/modelOverlay/reviewPrototype";
+import { useAppStore } from "@/stores/appStore";
+import { toggleProjectInstances } from "@/lib/modelOverlay/canvasActions";
+import { rgbToCSS } from "@/lib/colorPalettes";
+import { PROJECT_POSE_COLOR } from "./ModelCropCanvas";
 import { isReviewed, useCompareReviewStore } from "@/stores/compareReviewStore";
 
 /** "Indexing… 40%" while the index fills; then how many items, at what threshold. */
@@ -53,5 +59,53 @@ export function ReviewSummary({ items }: { items: readonly ReviewGroup[] }) {
       <span className="flex-1" />
       <span>{left} left</span>
     </div>
+  );
+}
+
+/**
+ * The project's own instances on `frame` for the crops, or undefined while
+ * "Show project instances (H)" is off (then the crops leave them out, like
+ * the main view). Refreshes after an Accept changes the frame.
+ */
+export function useProjectPoses(frame: number | null): ProjectPose[] | undefined {
+  const labels = useAppStore((s) => s.labels);
+  const video = useAppStore((s) => s.video);
+  const skeleton = useAppStore((s) => s.skeleton);
+  const show = useAppStore((s) => s.showInstances);
+  const version = useAppStore((s) => s.overlayVersion);
+  return useMemo(() => {
+    void version;
+    if (!show || frame === null) return undefined;
+    return projectPosesOnFrame(labels, video, frame, skeleton?.nodes.map((n) => n.name) ?? []);
+  }, [labels, video, skeleton, show, frame, version]);
+}
+
+/**
+ * Says how the project's instances look in the crops, or — very visibly —
+ * that they're hidden (H), with a button to show them.
+ */
+export function ProjectInstancesKey({ count }: { count: number | null }) {
+  const show = useAppStore((s) => s.showInstances);
+  if (!show) {
+    return (
+      <button
+        type="button"
+        className="flex items-center gap-1 rounded bg-amber-500/25 px-1.5 py-0.5 font-medium text-amber-700 hover:bg-amber-500/40 dark:text-amber-300"
+        onClick={toggleProjectInstances}
+        data-testid="review-proto-project-hidden"
+        title="Your labels and the project's predictions are hidden (H). Click to show them in the crops and the main view."
+      >
+        <EyeOff className="h-3 w-3" /> Project instances hidden (H) · show
+      </button>
+    );
+  }
+  return (
+    <span className="flex items-center gap-1 text-muted-foreground" data-testid="review-proto-project-key">
+      <span className="inline-block h-0.5 w-4" style={{ backgroundColor: rgbToCSS(PROJECT_POSE_COLOR) }} />
+      Project instances{count !== null ? ` (${count} here)` : ""}: solid = yours, dashed = predictions
+      <button type="button" className="ml-1 rounded p-0.5 hover:bg-muted" onClick={toggleProjectInstances} title="Hide project instances (H)" aria-label="Hide project instances">
+        <Eye className="h-3 w-3" />
+      </button>
+    </span>
   );
 }

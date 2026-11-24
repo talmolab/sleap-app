@@ -15,7 +15,7 @@ import { cropAround, itemRings, reviewItemKey } from "@/lib/modelOverlay/reviewP
 import { videoDims } from "@/lib/modelOverlay/core";
 import { acceptForItem, goToItem, keysBelongElsewhere, useReviewQueue } from "./useReviewQueue";
 import { ModelCropCanvas, type CropPose } from "./ModelCropCanvas";
-import { QueueStatus, ReviewSummary } from "./reviewParts";
+import { ProjectInstancesKey, QueueStatus, ReviewSummary, useProjectPoses } from "./reviewParts";
 
 export function ReviewPanesPrototype({ onClose }: { onClose: () => void }) {
   const { shown, progress, items, truncated, totalFrames, threshold } = useReviewQueue();
@@ -43,6 +43,7 @@ export function ReviewPanesPrototype({ onClose }: { onClose: () => void }) {
     [item, zoomed, dims?.width, dims?.height]
   );
   const rings = useMemo(() => (item ? itemRings(item) : []), [item]);
+  const projectPoses = useProjectPoses(item?.frame ?? null);
   const allPoses = useMemo<CropPose[]>(
     () =>
       item
@@ -106,10 +107,13 @@ export function ReviewPanesPrototype({ onClose }: { onClose: () => void }) {
               Disputed:{" "}
               {item.flagged.map((k) => `${nodeNames[k] ?? k} (${item.spread[k].toFixed(0)} px)`).join(", ")} · white crosses = the models' average
             </div>
+            <div className="px-3 pb-1">
+              <ProjectInstancesKey count={projectPoses ? projectPoses.length : null} />
+            </div>
             <div className="min-h-0 overflow-auto px-3 pb-2">
               <div className="grid gap-2" style={{ gridTemplateColumns: `repeat(${cols}, ${pane}px)` }}>
                 <div className="rounded border border-border p-1">
-                  <ModelCropCanvas video={video} frame={item.frame} crop={crop} poses={allPoses} consensus={null} rings={rings} edges={edges} width={pane - 10} height={pane - 50} />
+                  <ModelCropCanvas video={video} frame={item.frame} crop={crop} poses={allPoses} consensus={null} rings={rings} projectPoses={projectPoses} edges={edges} width={pane - 10} height={pane - 50} />
                   <div className="flex items-center gap-1 px-1 pt-1">
                     <span className="font-medium">All models</span>
                     <span className="flex-1" />
@@ -144,6 +148,7 @@ export function ReviewPanesPrototype({ onClose }: { onClose: () => void }) {
                         poses={[{ modelId: m.modelId, color: model.color, xy: m.xy }]}
                         consensus={item.consensus}
                         rings={rings}
+                        projectPoses={projectPoses}
                         edges={edges}
                         width={pane - 10}
                         height={pane - 50}

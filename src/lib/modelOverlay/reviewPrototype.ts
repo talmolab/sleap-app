@@ -316,3 +316,38 @@ export function itemRings(item: ReviewGroup): { x: number; y: number; r: number 
     .map((k) => ({ x: item.consensus[2 * k], y: item.consensus[2 * k + 1], r: item.spread[k] }))
     .filter((r) => Number.isFinite(r.x) && Number.isFinite(r.y));
 }
+
+/** One of the project's own instances, for drawing under the models in the review crops. */
+export interface ProjectPose {
+  xy: Float64Array;
+  /** A prediction already in the project (dashed), not one of your instances (solid). */
+  predicted: boolean;
+}
+
+/** The project's instances on `frame` of `video`, as `[x, y, …]` in `nodeNames` order. */
+export function projectPosesOnFrame(
+  labels: Labels | null,
+  video: Video | null,
+  frame: number,
+  nodeNames: readonly string[]
+): ProjectPose[] {
+  if (!labels || !video) return [];
+  const out: ProjectPose[] = [];
+  for (const lf of labels.labeledFrames) {
+    if (lf.video !== video || lf.frameIdx !== frame) continue;
+    for (const inst of lf.instances) {
+      const names = inst.skeleton.nodes.map((n) => n.name);
+      const pts = inst.numpy({ invisibleAsNaN: true });
+      const xy = new Float64Array(nodeNames.length * 2).fill(NaN);
+      nodeNames.forEach((n, i) => {
+        const j = names.indexOf(n);
+        if (j >= 0 && Number.isFinite(pts[j]?.[0]) && Number.isFinite(pts[j]?.[1])) {
+          xy[2 * i] = pts[j][0];
+          xy[2 * i + 1] = pts[j][1];
+        }
+      });
+      out.push({ xy, predicted: inst.constructor !== Instance });
+    }
+  }
+  return out;
+}

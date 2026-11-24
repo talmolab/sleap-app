@@ -18,7 +18,7 @@ import type { OverlayModel } from "@/stores/modelOverlayStore";
 import type { Video } from "@/types";
 import { acceptForItem, goToItem, keysBelongElsewhere, useReviewQueue } from "./useReviewQueue";
 import { ModelCropCanvas } from "./ModelCropCanvas";
-import { QueueStatus, ReviewSummary } from "./reviewParts";
+import { ProjectInstancesKey, QueueStatus, ReviewSummary, useProjectPoses } from "./reviewParts";
 
 const PAGE = 12;
 const CELL = 200;
@@ -43,6 +43,7 @@ function GridCell({
   const dims = useMemo(() => videoDims(video), [video]);
   const crop = useMemo(() => cropAround(item.members.map((m) => m.xy), dims.width, dims.height, 0.5), [item, dims]);
   const rings = useMemo(() => itemRings(item), [item]);
+  const projectPoses = useProjectPoses(item.frame);
   const poses = useMemo(
     () =>
       item.members.flatMap((m) => {
@@ -58,7 +59,7 @@ function GridCell({
       data-testid="review-proto-cell"
     >
       <div onDoubleClick={onOpen} title="Double-click to look at it in the main view" className="cursor-zoom-in">
-        <ModelCropCanvas video={video} frame={item.frame} crop={crop} poses={poses} rings={rings} edges={edges} width={CELL - 10} height={CELL - 50} />
+        <ModelCropCanvas video={video} frame={item.frame} crop={crop} poses={poses} rings={rings} projectPoses={projectPoses} edges={edges} width={CELL - 10} height={CELL - 50} />
       </div>
       <div className="flex items-center gap-1 px-0.5 pt-1 tabular-nums text-muted-foreground">
         <span>f {item.frame}</span>
@@ -152,7 +153,10 @@ export function ReviewGridPrototype({ onClose }: { onClose: () => void }) {
           </button>
         </div>
         <QueueStatus progress={progress} count={items.length} truncated={truncated} totalFrames={totalFrames} threshold={threshold} shown={shown.length} />
-        <div className="px-3 pb-1 text-muted-foreground">Click a colour to accept that model's pose · ✓ = fine as is · double-click a crop to open it in the main view</div>
+        <div className="flex flex-wrap items-center gap-x-3 px-3 pb-1 text-muted-foreground">
+          <span>Click a colour to accept that model's pose · ✓ = fine as is · double-click a crop to open it in the main view</span>
+          <ProjectInstancesKey count={null} />
+        </div>
         {video && (
           <div className="min-h-0 overflow-auto px-3 pb-2">
             <div className="grid gap-2" style={{ gridTemplateColumns: `repeat(4, ${CELL}px)` }}>

@@ -4,12 +4,13 @@
  * to try them, the shared decisions, and that each window opens on a queue.
  */
 import { describe, it, expect, beforeEach, afterEach } from "../bun-test";
-import { render, screen, fireEvent, cleanup, waitFor } from "@testing-library/react";
+import { render, renderHook, act, screen, fireEvent, cleanup, waitFor } from "@testing-library/react";
 import { Labels, LabeledFrame, Skeleton } from "@talmolab/sleap-io.js";
 import {
   cropAround,
   itemRings,
   makeMockModels,
+  projectPosesOnFrame,
   readReviewSwitch,
   reviewGroupsOnFrame,
   reviewItemKey,
@@ -23,11 +24,14 @@ import { MODEL_COLORS, type OverlayPose } from "@/lib/modelOverlay/core";
 import { ReviewStepperPrototype } from "@/components/video/compareReview/ReviewStepperPrototype";
 import { ReviewPanesPrototype } from "@/components/video/compareReview/ReviewPanesPrototype";
 import { ReviewGridPrototype } from "@/components/video/compareReview/ReviewGridPrototype";
-import { makePredictionLabels, makeUser, makeVideo, NODES, poseAt } from "./modelOverlayTestData";
+import { makePred, makePredictionLabels, makeUser, makeVideo, NODES, poseAt } from "./modelOverlayTestData";
 import { acceptForItem, keysBelongElsewhere, worstFrames } from "@/components/video/compareReview/useReviewQueue";
 import { acceptModelPose } from "@/lib/modelOverlay/canvasActions";
 import { useConfirmStore } from "@/stores/confirmStore";
 import { PoseStore } from "@/lib/modelOverlay/poseStore";
+import { clearFrameDecodeCache, decodeFrame, DECODE_ATTEMPTS } from "@/components/video/compareReview/frameDecodeCache";
+import { ProjectInstancesKey, useProjectPoses } from "@/components/video/compareReview/reviewParts";
+import { rawFrameToRGBA } from "@/lib/videoExport";
 
 function memStorage() {
   const m = new Map<string, string>();
@@ -309,5 +313,112 @@ describe("review fixes", () => {
     clearDisagreementIndexCache();
     fillIndex(disagreementIndexFor([a, b], video), Infinity);
     expect(a.frames.get(0)).toBe(onScreen!);
+  });
+});
+
+describe("hand-test fixes (real grayscale video, project instances)", () => {
+  afterEach(() => {
+    cleanup();
+    clearFrameDecodeCache();
+  });
+
+  const fakeVideo = () => makeVideo("/data/gray.mp4", [10, 4, 4, 1]) as unknown as Parameters<typeof decodeFrame>[0];
+  const noSleep = () => Promise.resolve();
+
+  // Hand-test #525: a read that failed once (e.g. during the main canvas's seek) left the pane black for good.
+  it("retries a failed frame read and never caches the failure", async () => {
+    const video = fakeVideo();
+    let reads = 0;
+    const canvas = { width: 4, height: 4 } as unknown as OffscreenCanvas;
+    const deps = {
+      read: async () => {
+        reads++;
+        if (reads === 1) throw new Error("busy");
+        return { data: new Uint8ClampedArray(16), width: 4, height: 4, channels: 1 };
+      },
+      toDrawable: async () => canvas,
+      sleep: noSleep,
+    };
+    expect(await decodeFrame(video, 3, deps)).toBe(canvas);
+    expect(reads).toBe(2);
+    // Cached once it worked: no new read.
+    expect(await decodeFrame(video, 3, deps)).toBe(canvas);
+    expect(reads).toBe(2);
+
+    // A frame that keeps failing gives null, and the next request tries again.
+    let fails = 0;
+    const bad = { read: async () => { fails++; throw new Error("no"); }, toDrawable: async () => canvas, sleep: noSleep };
+    const warn = console.warn;
+    console.warn = () => {};
+    expect(await decodeFrame(video, 4, bad)).toBeNull();
+    expect(fails).toBe(DECODE_ATTEMPTS);
+    await decodeFrame(video, 4, bad);
+    console.warn = warn;
+    expect(fails).toBe(2 * DECODE_ATTEMPTS);
+  });
+
+  // Hand-test #525: the worker decoder returns grayscale frames as {data, width, height, channels: 1}.
+  it("expands a 1-channel raw frame to grey RGBA", () => {
+    const raw = { data: new Uint8ClampedArray([10, 20, 30, 40]), width: 2, height: 2, channels: 1 };
+    const out = rawFrameToRGBA(raw)!;
+    expect([out.width, out.height]).toEqual([2, 2]);
+    expect([...out.rgba.slice(0, 8)]).toEqual([10, 10, 10, 255, 20, 20, 20, 255]);
+  });
+
+  // Hand-test #525: the panes must show the project's own instances, yours solid and predictions dashed.
+  it("lists the project's instances on the frame in skeleton order", () => {
+    const skeleton = new Skeleton({ nodes: NODES, name: "s" });
+    const video = makeVideo();
+    const lf = new LabeledFrame({ video, frameIdx: 5 });
+    lf.instances.push(makeUser(skeleton, poseAt(10, 20)));
+    lf.instances.push(makePred(skeleton, poseAt(30, 40)));
+    const labels = new Labels({ videos: [video], skeletons: [skeleton], labeledFrames: [lf] });
+    const poses = projectPosesOnFrame(labels, video, 5, ["thorax", "head", "abdomen"]);
+    expect(poses.map((p) => p.predicted)).toEqual([false, true]);
+    expect([...poses[0].xy.slice(0, 2)]).toEqual([10, 20]); // thorax first
+    expect(projectPosesOnFrame(labels, video, 6, NODES)).toEqual([]);
+  });
+
+  // Hand-test #525: with "Show project instances (H)" off the crops leave them out, and say so loudly.
+  it("follows the H toggle and shows when instances are hidden", () => {
+    const skeleton = new Skeleton({ nodes: NODES, name: "s" });
+    const video = makeVideo();
+    const lf = new LabeledFrame({ video, frameIdx: 0 });
+    lf.instances.push(makeUser(skeleton, poseAt(10, 20)));
+    const labels = new Labels({ videos: [video], skeletons: [skeleton], labeledFrames: [lf] });
+    useAppStore.setState({ ...useAppStore.getInitialState(), labels, video, skeleton, showInstances: true });
+    const shown = renderHook(() => useProjectPoses(0));
+    expect(shown.result.current).toHaveLength(1);
+    act(() => useAppStore.setState({ showInstances: false }));
+    expect(shown.result.current).toBeUndefined();
+    render(<ProjectInstancesKey count={null} />);
+    fireEvent.click(screen.getByTestId("review-proto-project-hidden"));
+    expect(useAppStore.getState().showInstances).toBe(true);
+    expect(screen.getByTestId("review-proto-project-key")).toBeTruthy();
+  });
+});
+
+describe("frame reads one at a time", () => {
+  afterEach(() => clearFrameDecodeCache());
+
+  // Hand-test #525: a page of crops reading at once made the worker decoder drop some reads.
+  it("never runs two reads at the same time", async () => {
+    const video = makeVideo("/data/q.mp4", [10, 4, 4, 1]) as unknown as Parameters<typeof decodeFrame>[0];
+    let running = 0;
+    let maxRunning = 0;
+    const canvas = { width: 4, height: 4 } as unknown as OffscreenCanvas;
+    const deps = {
+      read: async () => {
+        running++;
+        maxRunning = Math.max(maxRunning, running);
+        await new Promise((r) => setTimeout(r, 2));
+        running--;
+        return {};
+      },
+      toDrawable: async () => canvas,
+      sleep: () => Promise.resolve(),
+    };
+    await Promise.all([0, 1, 2, 3, 4].map((f) => decodeFrame(video, f, deps)));
+    expect(maxRunning).toBe(1);
   });
 });
