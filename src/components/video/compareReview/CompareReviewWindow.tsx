@@ -18,7 +18,7 @@ import { Checkbox } from "@/components/ui/checkbox";
 import { rgbToCSS } from "@/lib/colorPalettes";
 import { useAppStore } from "@/stores/appStore";
 import { isReviewed, useCompareReviewStore } from "@/stores/compareReviewStore";
-import { cropAround, itemRings, reviewItemKey } from "@/lib/modelOverlay/review";
+import { cropAround, disputedNodeMarks, itemRings, reviewItemKey } from "@/lib/modelOverlay/review";
 import { videoDims } from "@/lib/modelOverlay/core";
 import { acceptForItem, goToItem, keysBelongElsewhere, labelByHand, useReviewQueue } from "./useReviewQueue";
 import { ModelCropCanvas, type CropPose } from "./ModelCropCanvas";
@@ -78,6 +78,12 @@ export function ReviewWindow({ onClose }: { onClose: () => void }) {
     [item, zoomed, dims?.width, dims?.height]
   );
   const rings = useMemo(() => (item ? itemRings(item) : []), [item]);
+  // Name tags on the disputed nodes: at the average in "All models", at each model's own points in its pane.
+  const averageMarks = useMemo(() => (item ? disputedNodeMarks(item, nodeNames) : []), [item, nodeNames]);
+  const modelMarks = useMemo(
+    () => new Map(item ? item.members.map((m) => [m.modelId, disputedNodeMarks(item, nodeNames, m.xy)]) : []),
+    [item, nodeNames]
+  );
   const projectPoses = useProjectPoses(item?.frame ?? null);
   const allPoses = useMemo<CropPose[]>(
     () =>
@@ -162,8 +168,11 @@ export function ReviewWindow({ onClose }: { onClose: () => void }) {
         {item && video && (
           <>
             <div className="px-3 pb-1 text-muted-foreground">
-              Disputed:{" "}
-              {item.flagged.map((k) => `${nodeNames[k] ?? k} (${item.spread[k].toFixed(0)} px)`).join(", ")} · white crosses = the models' average
+              {item.flagged.length > 1 ? `${item.flagged.length} nodes disagree on this animal: ` : "Disputed: "}
+              <span data-testid="review-disputed">
+                {item.flagged.map((k) => `${nodeNames[k] ?? k} (${item.spread[k].toFixed(0)} px)`).join(", ")}
+              </span>{" "}
+              · each is ringed and named on the panes · white crosses = the models' average
             </div>
             <div className="px-3 pb-1">
               <ProjectInstancesKey count={projectPoses ? projectPoses.length : null} />
@@ -171,7 +180,7 @@ export function ReviewWindow({ onClose }: { onClose: () => void }) {
             <div className="min-h-0 overflow-auto px-3 pb-2">
               <div className="grid gap-2" style={{ gridTemplateColumns: `repeat(${cols}, ${pane}px)` }}>
                 <div className="flex flex-col rounded border border-border p-1">
-                  <ModelCropCanvas video={video} frame={item.frame} crop={crop} poses={allPoses} consensus={null} rings={rings} projectPoses={projectPoses} edges={edges} width={pane - 10} height={pane - 76} />
+                  <ModelCropCanvas video={video} frame={item.frame} crop={crop} poses={allPoses} consensus={null} rings={rings} marks={averageMarks} projectPoses={projectPoses} edges={edges} width={pane - 10} height={pane - 76} />
                   <div className="px-1 pt-1 font-medium">All models</div>
                   <div className="flex items-center gap-1 px-1 pt-1">
                     <Button
@@ -216,6 +225,7 @@ export function ReviewWindow({ onClose }: { onClose: () => void }) {
                         poses={[{ modelId: m.modelId, color: model.color, xy: m.xy }]}
                         consensus={item.consensus}
                         rings={rings}
+                        marks={modelMarks.get(m.modelId)}
                         projectPoses={projectPoses}
                         edges={edges}
                         width={pane - 10}

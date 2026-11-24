@@ -158,6 +158,26 @@ export function itemRings(item: ReviewGroup): { x: number; y: number; r: number 
     .filter((r) => Number.isFinite(r.x) && Number.isFinite(r.y));
 }
 
+/** A disputed node to point out on a pane: where it is and its name. */
+export interface NodeMark {
+  x: number;
+  y: number;
+  label: string;
+}
+
+/**
+ * Name tags for the disputed nodes, so each pane says which node is which:
+ * at one model's own placement (`xy` = that model's pose), or at the models'
+ * average when `xy` is omitted (the "All models" pane). Nodes that pose
+ * didn't place are left out.
+ */
+export function disputedNodeMarks(item: ReviewGroup, nodeNames: readonly string[], xy?: Float64Array): NodeMark[] {
+  const at = xy ?? item.consensus;
+  return item.flagged
+    .map((k) => ({ x: at[2 * k], y: at[2 * k + 1], label: nodeNames[k] ?? `node ${k}` }))
+    .filter((m) => Number.isFinite(m.x) && Number.isFinite(m.y));
+}
+
 /** One of the project's own instances, for drawing under the models in the review crops. */
 export interface ProjectPose {
   xy: Float64Array;

@@ -8,7 +8,7 @@ import { rgbToCSS } from "@/lib/colorPalettes";
 import { PROJECT_POSE_COLOR } from "./ModelCropCanvas";
 import { isReviewed, useCompareReviewStore } from "@/stores/compareReviewStore";
 
-/** "Indexing… 40%" while the index fills; then how many items, at what threshold. */
+/** "Finding disagreements… 40%", "none above N px", or the cap note — nothing when the header already says it all. */
 export function QueueStatus({
   progress,
   count,
@@ -28,7 +28,9 @@ export function QueueStatus({
   if (shown < 2) text = "Show two or more models to compare.";
   else if (progress < 1) text = `Finding disagreements… ${Math.round(progress * 100)}%`;
   else if (count === 0) text = `No disagreements above ${threshold} px. Lower "above … px" to see smaller ones.`;
-  else text = `${count} disagreement${count === 1 ? "" : "s"} above ${threshold} px, worst first${truncated ? ` — only the worst frames: ${totalFrames} frames disagree in all` : ""}`;
+  else if (truncated) text = `Only the worst frames are listed: ${totalFrames} frames disagree in all.`;
+  // The count and threshold are already in the header ("above N px", "i / N").
+  else return null;
   return (
     <div className="px-2 py-1 text-muted-foreground" data-testid="review-status">
       {text}

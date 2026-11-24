@@ -19,7 +19,7 @@ import {
   type ModelOverlayLayer,
 } from "@/canvas/modelOverlayRenderer";
 import { renderInstances } from "@/canvas/SkeletonRenderer";
-import type { ProjectPose, Rect } from "@/lib/modelOverlay/review";
+import type { NodeMark, ProjectPose, Rect } from "@/lib/modelOverlay/review";
 import { decodeFrame } from "./frameDecodeCache";
 
 /** Colour of the project's own instances in the review crops (not a model colour). */
@@ -38,6 +38,7 @@ export function ModelCropCanvas({
   poses,
   consensus,
   rings,
+  marks,
   projectPoses,
   edges,
   width,
@@ -52,6 +53,8 @@ export function ModelCropCanvas({
   consensus?: Float64Array | null;
   /** Red rings: source-pixel centre and radius. */
   rings?: readonly { x: number; y: number; r: number }[];
+  /** Disputed nodes to point out: a small red marker and the node's name. */
+  marks?: readonly NodeMark[];
   /** The project's own instances on this frame, drawn under the models (omit to hide them). */
   projectPoses?: readonly ProjectPose[];
   edges: readonly (readonly [number, number])[];
@@ -132,6 +135,30 @@ export function ModelCropCanvas({
           ctx.stroke();
         }
       }
+      if (marks && marks.length > 0) {
+        // Which node is which: a small red ring on each disputed node and its
+        // name beside it (white text on a dark halo, readable on any video).
+        ctx.save();
+        ctx.lineWidth = 2 / scale;
+        ctx.strokeStyle = rgbToCSS(DISAGREEMENT_COLOR, 1);
+        for (const m of marks) {
+          ctx.beginPath();
+          ctx.arc(m.x, m.y, 6 / scale, 0, Math.PI * 2);
+          ctx.stroke();
+        }
+        ctx.font = `600 ${11 / scale}px sans-serif`;
+        ctx.textBaseline = "middle";
+        ctx.lineJoin = "round";
+        for (const m of marks) {
+          const tx = m.x + 9 / scale;
+          ctx.lineWidth = 3 / scale;
+          ctx.strokeStyle = "rgba(0,0,0,0.85)";
+          ctx.strokeText(m.label, tx, m.y);
+          ctx.fillStyle = "#ffffff";
+          ctx.fillText(m.label, tx, m.y);
+        }
+        ctx.restore();
+      }
       if (!img) {
         // Say so rather than leave a black pane that looks like a dark frame.
         ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
@@ -143,7 +170,7 @@ export function ModelCropCanvas({
     return () => {
       cancelled = true;
     };
-  }, [video, frame, crop, poses, consensus, rings, projectPoses, edges, width, height]);
+  }, [video, frame, crop, poses, consensus, rings, marks, projectPoses, edges, width, height]);
 
   return <canvas ref={ref} className={className} style={{ width, height }} />;
 }

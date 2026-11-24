@@ -8,6 +8,7 @@ import { render, renderHook, act, screen, fireEvent, cleanup, waitFor } from "@t
 import { Labels, LabeledFrame, Skeleton } from "@talmolab/sleap-io.js";
 import {
   cropAround,
+  disputedNodeMarks,
   itemRings,
   projectPosesOnFrame,
   reviewGroupsOnFrame,
@@ -168,7 +169,7 @@ describe("review window", () => {
     useCompareReviewStore.getState().setThreshold(10);
     render(<ReviewWindow onClose={() => {}} />);
     await waitFor(() => expect(screen.getAllByTestId("review-pane").length).toBeGreaterThanOrEqual(2));
-    const spreadOf = () => Number(/(\d+) px\)/.exec(screen.getByText(/Disputed:/).textContent ?? "")?.[1]);
+    const spreadOf = () => Number(/(\d+) px\)/.exec(screen.getByTestId("review-disputed").textContent ?? "")?.[1]);
     const first = spreadOf();
     fireEvent.click(screen.getByTestId("review-skip"));
     expect(spreadOf()).toBeLessThanOrEqual(first);
@@ -514,5 +515,41 @@ describe("review window: opening and jumping", () => {
     expect(got).toBe(-1);
     fireEvent.keyDown(box, { key: "Enter" });
     expect(got).toBe(7);
+  });
+});
+
+describe("review window: which node is which", () => {
+  const same = poseAt(100, 100);
+  // Head and abdomen both off in model c: two nodes disagree on one animal.
+  const off: [number, number][] = same.map((p, i) => (i === 1 ? p : [p[0] + 25, p[1]]));
+
+  // User question: several disputed nodes on one animal are one item, each named on the panes.
+  it("puts every disputed node of an animal on one item, each with its name", () => {
+    const models = [model("a", { 0: [pose(same)] }), model("b", { 0: [pose(same)] }), model("c", { 0: [pose(off)] })];
+    const items = reviewGroupsOnFrame(models, 0, false, 10);
+    expect(items).toHaveLength(1);
+    expect([...items[0].flagged].sort()).toEqual([0, 2]);
+    const names = disputedNodeMarks(items[0], NODES).map((m) => m.label).sort();
+    expect(names).toEqual(["abdomen", "head"]);
+    // In model c's own pane the tags sit on c's points, not on the average.
+    const c = items[0].members.find((m) => m.modelId === "c")!;
+    const headTag = disputedNodeMarks(items[0], NODES, c.xy).find((m) => m.label === "head")!;
+    expect(headTag.x).toBe(off[0][0]);
+  });
+
+  // User feedback: "N disagreements above N px, worst first" repeated the header, so it's gone once listed.
+  it("drops the status line once the queue is listed", async () => {
+    const video = makeVideo("/data/v.mp4", [300, 480, 640, 1]);
+    const skeleton = new Skeleton({ nodes: NODES, name: "s" });
+    const labels = new Labels({ videos: [video], skeletons: [skeleton] });
+    useAppStore.setState({ ...useAppStore.getInitialState(), labels, video, skeleton, frameIdx: 0 });
+    useModelOverlayStore.getState().clear();
+    clearDisagreementIndexCache();
+    useModelOverlayStore.getState().addModels(labels, makeMockModels(labels, video, skeleton));
+    render(<ReviewWindow onClose={() => {}} />);
+    await waitFor(() => expect(screen.getAllByTestId("review-pane").length).toBeGreaterThanOrEqual(2));
+    expect(screen.queryByTestId("review-status")).toBeNull();
+    cleanup();
+    useModelOverlayStore.getState().clear();
   });
 });
