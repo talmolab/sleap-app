@@ -26,6 +26,12 @@ export const DEFAULT_REVIEW_THRESHOLD_PX = 25;
 interface CompareReviewState {
   open: boolean;
   setOpen: (open: boolean) => void;
+  /**
+   * A Claude proposal to show first when the window opens (its id), e.g. from
+   * the "Claude suggested N changes" toast. The window clears it once shown.
+   */
+  focusProposal: string | null;
+  setFocusProposal: (id: string | null) => void;
   /** Only disagreements above this many px are reviewed (bigger than the corner panel's rings). */
   threshold: number;
   setThreshold: (px: number) => void;
@@ -43,6 +49,8 @@ const empty: ReviewDecision = { accepted: null, skipped: false, byHand: false };
 export const useCompareReviewStore = create<CompareReviewState>()((set) => ({
   open: false,
   setOpen: (open) => set({ open }),
+  focusProposal: null,
+  setFocusProposal: (id) => set({ focusProposal: id }),
   threshold: DEFAULT_REVIEW_THRESHOLD_PX,
   setThreshold: (px) => set((s) => ({ threshold: Number.isFinite(px) && px >= 0 ? px : s.threshold })),
   decisions: {},

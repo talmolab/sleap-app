@@ -7,6 +7,7 @@ import { toggleProjectInstances } from "@/lib/modelOverlay/canvasActions";
 import { rgbToCSS } from "@/lib/colorPalettes";
 import { PROJECT_POSE_COLOR } from "./ModelCropCanvas";
 import { isReviewed, useCompareReviewStore } from "@/stores/compareReviewStore";
+import { proposalState, type Proposal } from "@/stores/proposalStore";
 
 /** "Finding disagreements… 40%", "none above N px", or the cap note — nothing when the header already says it all. */
 export function QueueStatus({
@@ -38,17 +39,29 @@ export function QueueStatus({
   );
 }
 
-/** Accepted / skipped / to label by hand / left, over the whole queue. */
-export function ReviewSummary({ items }: { items: readonly ReviewGroup[] }) {
+/**
+ * Accepted / skipped / to label by hand / left, over the whole queue. With
+ * `entries` (the queue including Claude's items), an item whose Claude
+ * suggestion was accepted counts as accepted.
+ */
+export function ReviewSummary({
+  items,
+  entries,
+}: {
+  items: readonly ReviewGroup[];
+  entries?: readonly { key: string; claude: Proposal | null }[];
+}) {
   const decisions = useCompareReviewStore((s) => s.decisions);
-  if (items.length === 0) return null;
+  const list = entries ?? items.map((it) => ({ key: reviewItemKey(it), claude: null }));
+  if (list.length === 0) return null;
   let accepted = 0;
   let skipped = 0;
   let byHand = 0;
   let left = 0;
-  for (const it of items) {
-    const d = decisions[reviewItemKey(it)];
-    if (!isReviewed(d)) left++;
+  for (const it of list) {
+    const d = decisions[it.key];
+    if (it.claude && proposalState(it.claude) === "accepted") accepted++;
+    else if (!isReviewed(d)) left++;
     else if (d!.accepted) accepted++;
     else if (d!.byHand) byHand++;
     else skipped++;
