@@ -9,7 +9,7 @@ import { Checkbox } from "@/components/ui/checkbox";
 import { ownsConnector, useClaudeConnectorStore } from "@/stores/claudeConnectorStore";
 import { useProposalStore } from "@/stores/proposalStore";
 import { useAppStore } from "@/stores/appStore";
-import { openClaudeReview, undecidedCount } from "@/lib/proposalReview";
+import { openClaudeSuggestions, undecidedCount } from "@/lib/proposalReview";
 
 /** How often the panel re-reads the endpoint's state while shown. */
 const REFRESH_MS = 5000;
@@ -157,7 +157,7 @@ function ReviewSuggestionsButton() {
       size="sm"
       variant="outline"
       className="mt-2 h-6 text-[11px]"
-      onClick={() => openClaudeReview()}
+      onClick={() => openClaudeSuggestions()}
       data-testid="claude-review-suggestions"
     >
       Review Claude&apos;s suggestions{n > 0 ? ` (${n} to decide)` : ""}

@@ -37,7 +37,6 @@ import { makeQCConfig } from "@/lib/analyze/qc/config";
 import { useAppStore } from "@/stores/appStore";
 import { dirtyFrameTracker } from "@/lib/autosaveDirty";
 import { toast } from "@/lib/notify";
-import { reviewKeyOverride } from "@/lib/reviewKeyOverride";
 import { resolveProjectKey } from "@/lib/trackColorOverrides";
 import { addQcMarks, loadQcMarks, qcMarkKey, removeQcMark } from "@/lib/qcReviewed";
 import {
@@ -666,7 +665,6 @@ export function handleQcReviewKey(
 ): boolean {
   if (!useQcStore.getState().reviewOpen) return false;
   if (shortcut === "clear selection") useQcStore.getState().setReviewOpen(false);
-  else if (reviewKeyOverride(shortcut)) return true; // stepping through Claude's suggestions
   else if (shortcut === "refit") refocusQcReview();
   else stepQcQueue(shortcut === "frame next" ? 1 : -1);
   return true;

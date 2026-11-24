@@ -1,79 +1,64 @@
 /**
- * Which of Claude's proposals the Review window shows, its A / X keys, and
- * stepping through Claude's suggestions.
+ * Where the user reviews Claude's proposals, and the QC Review window's A / X
+ * keys for them.
  *
- * The proposal shown is the latest one for the selected instance on this
- * frame (for a correction: the prediction, or the user instance accepting it
- * made); with none for it (or nothing selected), the first pending one on the
- * frame. In Claude's-suggestions mode, the one stepped to, while it is on
- * screen and about the selection. With an instance selected, A / X only act
- * on its own proposal, so they never change an animal the user isn't looking at.
+ * - Fixes and ignores (QC flags on user instances) show in the Label QC
+ *   Review window, as a "Claude suggests" row for the instance on screen.
+ * - Corrections (predictions) show in Compare Models' "Review disagreements"
+ *   window as a "Claude's suggestion" pane — next to the models' panes when
+ *   the models disagree on that animal, else next to the project's own
+ *   prediction (no models needed).
  *
- * "Claude's suggestions" mode (proposalStore.claudeReview): the same Review
- * window, but ← / → and Prev / Next step through Claude's proposals — every
- * kind, in video and frame order — instead of Label QC flags, so predictions
- * Claude corrected can be reviewed without a QC run. Opened from the toast
- * that appears when Claude proposes something, or from the Claude section of
- * the Environment panel.
+ * In QC Review the proposal shown is the latest one for the selected instance
+ * on this frame; with none for it (or nothing selected), the first pending
+ * one on the frame. With an instance selected, A / X only act on its own
+ * proposal, so they never change an animal the user isn't looking at.
  */
 import { useAppStore } from "@/stores/appStore";
-import { useQcStore } from "@/stores/qcStore";
-import {
-  canAccept,
-  correctionResult,
-  proposalInstance,
-  proposalState,
-  useProposalStore,
-  type Proposal,
-} from "@/stores/proposalStore";
+import { openQcReview, useQcStore } from "@/stores/qcStore";
+import { useCompareReviewStore } from "@/stores/compareReviewStore";
+import { canAccept, proposalInstance, proposalState, useProposalStore, type Proposal } from "@/stores/proposalStore";
 import { AutomationError } from "@/automation/errors";
 import { toast } from "@/lib/notify";
-import { setReviewKeyOverride } from "@/lib/reviewKeyOverride";
 import type { Instance } from "@/types";
 
-/** Whether `p` is about `inst` (the instance it would change, or — accepted — did). */
+/** Whether `p` is about `inst`. */
 export function proposalIsAbout(p: Proposal, inst: Instance | null): boolean {
-  if (!inst) return false;
-  if (p.kind === "correct") return proposalInstance(p) === inst || correctionResult(p) === inst;
-  return proposalInstance(p) === inst;
+  return !!inst && proposalInstance(p) === inst;
 }
 
+/** The QC proposal (fix or ignore) the Label QC Review window shows for the frame on screen. */
 export function currentProposal(): Proposal | null {
   const app = useAppStore.getState();
   const labels = app.labels;
   const proposals = useProposalStore.getState().proposals;
   if (!labels || !app.video || proposals.length === 0) return null;
   const videoIdx = labels.videos.indexOf(app.video);
-  const here = proposals.filter((p) => p.videoIdx === videoIdx && p.frameIdx === app.frameIdx);
+  // Corrections are reviewed in Compare Models' Review disagreements window.
+  const here = proposals.filter((p) => p.kind !== "correct" && p.videoIdx === videoIdx && p.frameIdx === app.frameIdx);
   if (here.length === 0) return null;
-  const { claudeReview, claudeShown } = useProposalStore.getState();
-  if (claudeReview && claudeShown) {
-    const shown = here.find((p) => p.id === claudeShown);
-    if (shown && (!app.instance || proposalIsAbout(shown, app.instance))) return shown;
-  }
   const mine = here.filter((p) => proposalIsAbout(p, app.instance));
   if (mine.length > 0) return mine[mine.length - 1];
   return here.find((p) => canAccept(p)) ?? null;
 }
 
-/** Accept a proposal from the UI: errors become a toast. */
-export async function acceptProposal(id: string): Promise<boolean> {
+/** Run a proposal action from the UI: errors become a toast. */
+async function attempt(what: string, fn: () => unknown): Promise<boolean> {
   try {
-    await useProposalStore.getState().accept(id);
+    await fn();
     return true;
   } catch (e) {
-    toast.error(e instanceof AutomationError ? e.message : `Couldn't apply Claude's suggestion: ${String(e)}`);
+    toast.error(e instanceof AutomationError ? e.message : `Couldn't ${what}: ${String(e)}`);
     return false;
   }
 }
 
-export function rejectProposal(id: string): void {
-  try {
-    useProposalStore.getState().reject(id);
-  } catch (e) {
-    toast.error(e instanceof AutomationError ? e.message : String(e));
-  }
-}
+export const acceptProposal = (id: string) =>
+  attempt("apply Claude's suggestion", () => useProposalStore.getState().accept(id));
+export const revertProposal = (id: string) =>
+  attempt("revert Claude's suggestion", () => useProposalStore.getState().revert(id));
+export const rejectProposal = (id: string) => void attempt("reject", () => useProposalStore.getState().reject(id));
+export const unrejectProposal = (id: string) => void attempt("undo the reject", () => useProposalStore.getState().unreject(id));
 
 /**
  * Review's A (accept) / X (reject) for the proposal shown. Returns false (key
@@ -97,16 +82,6 @@ export function handleProposalKey(key: "accept" | "reject"): boolean {
   return true;
 }
 
-// ---------------------------------------------------------------------------
-// Claude's suggestions mode
-
-/** Every proposal, in video, frame, then proposal order (what ← / → step through). */
-export function claudeQueue(proposals: readonly Proposal[] = useProposalStore.getState().proposals): Proposal[] {
-  return [...proposals].sort(
-    (a, b) => a.videoIdx - b.videoIdx || a.frameIdx - b.frameIdx || Number(a.id.slice(1)) - Number(b.id.slice(1)),
-  );
-}
-
 /** Proposals the user can still decide on (pending, or undone). */
 export const undecidedCount = (proposals: readonly Proposal[]) =>
   proposals.filter((p) => {
@@ -114,66 +89,40 @@ export const undecidedCount = (proposals: readonly Proposal[]) =>
     return st === "pending" || st === "undone";
   }).length;
 
-/** Show a proposal: go to its frame, select what it is about, zoom to it. */
-export function goToProposal(p: Proposal): void {
+/** In frame order. */
+const byFrame = (a: Proposal, b: Proposal) => a.videoIdx - b.videoIdx || a.frameIdx - b.frameIdx;
+
+/**
+ * Open the window where Claude's proposals are reviewed: Compare Models'
+ * Review disagreements window at the first correction still to decide (or
+ * the first correction), else Label QC Review at the first QC proposal.
+ * False (with a hint) when there is nothing to show.
+ */
+export function openClaudeSuggestions(): boolean {
   const app = useAppStore.getState();
-  const video = app.labels?.videos[p.videoIdx];
-  if (!video) return;
-  useProposalStore.getState().setClaudeShown(p.id);
-  if (app.video !== video) app.setVideo(video);
-  // setFrameIdx clears the selection, so select after it.
-  useAppStore.getState().setFrameIdx(p.frameIdx);
-  const inst = proposalInstance(p) ?? correctionResult(p);
-  useAppStore.getState().setInstance(inst);
-  if (inst) useAppStore.getState().set("fitSelection", true);
-}
-
-/**
- * The next (dir 1) or previous (-1) of Claude's proposals. From a frame with
- * none, the first (or last) one.
- */
-export function stepClaudeReview(dir: 1 | -1): void {
-  const queue = claudeQueue();
-  if (queue.length === 0) {
-    toast.info("Claude hasn't suggested anything yet.");
-    return;
-  }
-  const cur = currentProposal();
-  const pos = cur ? queue.indexOf(cur) : -1;
-  const i = pos < 0 ? (dir === 1 ? 0 : queue.length - 1) : (pos + dir + queue.length) % queue.length;
-  goToProposal(queue[i]);
-}
-
-/**
- * Open the Review window on Claude's suggestions: at the one on screen if
- * there is one to decide, else the first undecided one. False (with a hint)
- * when Claude hasn't proposed anything.
- */
-export function openClaudeReview(): boolean {
-  const queue = claudeQueue();
-  if (!useAppStore.getState().labels || queue.length === 0) {
+  const proposals = [...useProposalStore.getState().proposals].sort(byFrame);
+  const corrections = proposals.filter((p) => p.kind === "correct");
+  if (!app.labels || proposals.length === 0) {
     toast.info("Claude hasn't suggested anything yet.");
     return false;
   }
-  useQcStore.getState().setReviewOpen(true);
-  useProposalStore.getState().setClaudeReview(true);
-  const cur = currentProposal();
-  const target = cur && canAccept(cur) ? cur : (queue.find((p) => canAccept(p)) ?? queue[0]);
-  goToProposal(target);
+  if (corrections.length > 0) {
+    const first = corrections.find((p) => canAccept(p)) ?? corrections[0];
+    const video = app.labels.videos[first.videoIdx];
+    if (video && app.video !== video) app.setVideo(video);
+    const review = useCompareReviewStore.getState();
+    review.setFocusProposal(first.id);
+    review.setOpen(true);
+    return true;
+  }
+  const first = proposals.find((p) => canAccept(p)) ?? proposals[0];
+  if (!openQcReview()) return false;
+  const video = app.labels.videos[first.videoIdx];
+  if (video && useAppStore.getState().video !== video) useAppStore.getState().setVideo(video);
+  useAppStore.getState().setFrameIdx(first.frameIdx);
+  useAppStore.getState().setInstance(proposalInstance(first));
   return true;
 }
-
-// ← / → / 0 in the Review window, while it shows Claude's suggestions.
-setReviewKeyOverride((key) => {
-  if (!useProposalStore.getState().claudeReview) return false;
-  if (key === "refit") {
-    const p = currentProposal();
-    if (p) goToProposal(p);
-  } else {
-    stepClaudeReview(key === "frame next" ? 1 : -1);
-  }
-  return true;
-});
 
 // ---------------------------------------------------------------------------
 // "Claude suggested N changes" toast
@@ -185,16 +134,15 @@ let toastTimer: ReturnType<typeof setTimeout> | null = null;
 
 function showSuggestionsToast(): void {
   toastTimer = null;
-  const s = useProposalStore.getState();
   // Already looking at them.
-  if (useQcStore.getState().reviewOpen && s.claudeReview) return;
-  const n = undecidedCount(s.proposals);
+  if (useCompareReviewStore.getState().open) return;
+  const n = undecidedCount(useProposalStore.getState().proposals);
   if (n === 0) return;
   toast.info(`Claude suggested ${n} change${n === 1 ? "" : "s"}`, {
     id: TOAST_ID,
-    description: "Nothing changes until you accept them in the Review window.",
+    description: "Nothing changes until you accept them.",
     duration: 15_000,
-    action: { label: "Review", onClick: () => void openClaudeReview() },
+    action: { label: "Review", onClick: () => void openClaudeSuggestions() },
   });
 }
 

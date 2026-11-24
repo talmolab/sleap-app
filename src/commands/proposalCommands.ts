@@ -62,3 +62,56 @@ export const AcceptCorrectedPrediction: Command = {
     ctx.state.bumpOverlayVersion();
   },
 };
+
+/**
+ * Revert an accepted Claude correction: the user instance it made turns back
+ * into the prediction it came from (its `fromPredicted`), in place. One undo
+ * step, like any edit.
+ *
+ * Params:
+ *   instance: Instance   the user instance Accept made (on the frame on screen)
+ */
+export const RevertCorrectedPrediction: Command = {
+  name: "RevertCorrectedPrediction",
+  topics: [UpdateTopic.Frame, UpdateTopic.Instance],
+  execute(ctx: CommandContext, params?: Record<string, unknown>) {
+    const user = params?.instance;
+    const lf = ctx.state.labeledFrame;
+    if (!(user instanceof Instance) || user instanceof PredictedInstance || !lf) return;
+    const predicted = user.fromPredicted;
+    const idx = lf.instances.indexOf(user);
+    if (!(predicted instanceof PredictedInstance) || idx < 0) return;
+    lf.instances.splice(idx, 1, predicted);
+    ctx.state.setLabeledFrame(lf);
+    ctx.state.setInstance(null);
+    ctx.state.markChanged();
+    ctx.state.bumpOverlayVersion();
+  },
+};
+
+/**
+ * Put every point of an instance back as it was (revert an accepted Claude
+ * fix): position, visibility and the "complete" mark. One undo step.
+ *
+ * Params:
+ *   instance: Instance                                   on the frame on screen
+ *   points: [x, y, visible, complete][]                  one per node
+ */
+export const RestorePose: Command = {
+  name: "RestorePose",
+  topics: [UpdateTopic.Frame, UpdateTopic.Instance],
+  execute(ctx: CommandContext, params?: Record<string, unknown>) {
+    const inst = params?.instance;
+    const points = params?.points as [number, number, boolean, boolean][] | undefined;
+    if (!(inst instanceof Instance) || !points || !ctx.state.labeledFrame?.instances.includes(inst)) return;
+    points.forEach(([x, y, visible, complete], i) => {
+      const p = inst.points[i];
+      if (!p) return;
+      p.xy = [x, y];
+      p.visible = visible;
+      p.complete = complete;
+    });
+    ctx.state.markChanged();
+    ctx.state.bumpOverlayVersion();
+  },
+};

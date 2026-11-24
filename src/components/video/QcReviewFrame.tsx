@@ -37,13 +37,7 @@ import { formatShortcut } from "@/lib/formatShortcut";
 import { shortcutText } from "@/lib/shortcutPrefs";
 import { useQcView } from "@/hooks/useQcView";
 import { videoBasename } from "@/lib/videoFilter";
-import {
-  ClaudeReviewFooter,
-  ClaudeReviewHeader,
-  ClaudeSuggestionRow,
-  ClaudeSuggestionsLink,
-} from "./ClaudeSuggestion";
-import { useProposalStore } from "@/stores/proposalStore";
+import { ClaudeSuggestionRow, ClaudeSuggestionsLink } from "./ClaudeSuggestion";
 
 const RESCORED_TITLE = "Scored against the last run; Rerun to re-check against all labels.";
 
@@ -66,8 +60,6 @@ const ORDERS: { order: QcReviewOrder; label: string; title: string }[] = [
 
 export function QcReviewFrame({ children }: { children: ReactNode }) {
   const open = useQcStore((s) => s.reviewOpen);
-  // Stepping through Claude's suggestions instead of QC flags (lib/proposalReview).
-  const claude = useProposalStore((s) => s.claudeReview);
   return (
     <>
       {open && (
@@ -89,13 +81,13 @@ export function QcReviewFrame({ children }: { children: ReactNode }) {
         role={open ? "dialog" : undefined}
         aria-label={open ? "Label QC Review" : undefined}
       >
-        {open && (claude ? <ClaudeReviewHeader /> : <ReviewHeader />)}
+        {open && <ReviewHeader />}
         {/* Always rendered, so the canvas's parent never changes. */}
         <div className="relative flex min-h-0 flex-1 flex-col">
           {children}
           {open && <UnplacedHint />}
         </div>
-        {open && (claude ? <ClaudeReviewFooter /> : <ReviewFooter />)}
+        {open && <ReviewFooter />}
       </div>
     </>
   );

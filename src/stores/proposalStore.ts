@@ -18,7 +18,7 @@ import { create } from "zustand";
 import { useAppStore } from "@/stores/appStore";
 import { useQcStore } from "@/stores/qcStore";
 import { SetNodes } from "@/commands/editCommands";
-import { AcceptCorrectedPrediction } from "@/commands/proposalCommands";
+import { AcceptCorrectedPrediction, RestorePose, RevertCorrectedPrediction } from "@/commands/proposalCommands";
 import type { CommandContext } from "@/commands/CommandContext";
 import { AutomationError } from "@/automation/errors";
 import { qcMarkKey } from "@/lib/qcReviewed";
@@ -53,6 +53,10 @@ export interface Proposal {
   /** The instance's whole pose when proposed; a change makes the proposal outdated. */
   fingerprint: string;
   status: ProposalStatus;
+  /** After Accept: the pose Accept left (fingerprint), so Revert can tell whether the user edited it since. */
+  resultFingerprint?: string;
+  /** Fix only: every point before Accept, `[x, y, visible, complete]`, for Revert. */
+  restore?: [number, number, boolean, boolean][];
 }
 
 export interface ProposalTarget {
@@ -80,22 +84,17 @@ interface ProposalState {
   addCorrection: (target: ProposalTarget, nodes: NodeEdits, opts: { pose: PoseSnapshot }) => Proposal;
   /** Apply a pending proposal. `ctx` defaults to the app's command context. */
   accept: (id: string, ctx?: CommandContext) => Promise<void>;
+  /**
+   * Take back an accepted fix or correction as a new, undoable edit: the fix's
+   * nodes go back where they were, a correction's user instance turns back
+   * into the prediction. Only while the instance is as Accept left it (⌘Z
+   * only reaches the newest edit, so it can't take back an older accept).
+   */
+  revert: (id: string, ctx?: CommandContext) => Promise<void>;
   reject: (id: string) => void;
+  /** Take back a Reject: pending again (a reject changes no labels, so ⌘Z can't). */
+  unreject: (id: string) => void;
   clear: () => void;
-  /**
-   * The Review window steps through Claude's suggestions (← / →, Prev /
-   * Next) instead of Label QC flags. Off whenever the window closes.
-   */
-  claudeReview: boolean;
-  setClaudeReview: (on: boolean) => void;
-  /**
-   * In that mode, the proposal stepped to (← / →). Kept here rather than
-   * worked out from the selection: one instance can have several proposals
-   * (a rejected one and its replacement, two QC flags), and the selection
-   * can't tell them apart.
-   */
-  claudeShown: string | null;
-  setClaudeShown: (id: string | null) => void;
 }
 
 /** Longest reason shown in the undo label. */
@@ -188,6 +187,23 @@ export function proposalState(p: Proposal): ProposalStanding {
   return p.status;
 }
 
+/** The instance an accepted fix or correction left: the fixed user instance, or the user instance a correction made. */
+export function acceptedInstance(p: Proposal): Instance | null {
+  if (p.kind === "correct") return correctionResult(p);
+  if (p.kind === "fix") return proposalFrame(p)?.userInstances[p.instIdx] ?? null;
+  return null;
+}
+
+/**
+ * Whether Revert can take an accepted fix or correction back: it is accepted
+ * (not undone) and the instance is still exactly as Accept left it.
+ */
+export function canRevert(p: Proposal): boolean {
+  if (p.kind === "ignore" || !p.resultFingerprint || proposalState(p) !== "accepted") return false;
+  const inst = acceptedInstance(p);
+  return !!inst && poseFingerprint(inst) === p.resultFingerprint;
+}
+
 /** Whether the user can accept it now (pending or undone; not outdated). */
 export const canAccept = (p: Proposal) => {
   const st = proposalState(p);
@@ -221,6 +237,18 @@ export const useProposalStore = create<ProposalState>((set, get) => {
   };
   const setStatus = (id: string, status: ProposalStatus) =>
     set({ proposals: get().proposals.map((p) => (p.id === id ? { ...p, status } : p)) });
+  const patch = (id: string, fields: Partial<Proposal>) =>
+    set({ proposals: get().proposals.map((p) => (p.id === id ? { ...p, ...fields } : p)) });
+  /** Go to the proposal's frame (the undo snapshot is of the frame on screen) and select `inst`. */
+  const goTo = (p: Proposal, inst: Instance) => {
+    const app = useAppStore.getState();
+    const video = app.labels!.videos[p.videoIdx];
+    // setVideo jumps frames and setFrameIdx clears the selection, so this order matters.
+    // setFrameIdx also sets the frame on screen (labeledFrame), which setVideo clears.
+    if (app.video !== video) app.setVideo(video);
+    useAppStore.getState().setFrameIdx(p.frameIdx);
+    useAppStore.getState().setInstance(inst);
+  };
   const find = (id: string): Proposal => {
     const p = get().proposals.find((x) => x.id === id);
     if (!p) throw new AutomationError("UNKNOWN_PROPOSAL", `No proposal "${id}".`);
@@ -326,14 +354,12 @@ export const useProposalStore = create<ProposalState>((set, get) => {
       }
       // Looked up again: an undo or redo replaces instances with copies.
       const inst = proposalInstance(now)!;
-      const app = useAppStore.getState();
-      const video = app.labels!.videos[p.videoIdx];
-      // The undo snapshot is of the frame on screen: go there first. setVideo
-      // jumps frames and setFrameIdx clears the selection, so this order matters.
-      // setFrameIdx also sets the frame on screen (labeledFrame), which setVideo clears.
-      if (app.video !== video) app.setVideo(video);
-      useAppStore.getState().setFrameIdx(p.frameIdx);
-      useAppStore.getState().setInstance(inst);
+      // Every point as it was, so Revert can put a fix back exactly.
+      const restore =
+        p.kind === "fix"
+          ? inst.points.map((q) => [q.xy[0], q.xy[1], q.visible, q.complete] as [number, number, boolean, boolean])
+          : undefined;
+      goTo(p, inst);
       // The instance is passed explicitly, so the command edits it whatever is selected.
       const done = cc.execute(
         p.kind === "correct" ? AcceptCorrectedPrediction : SetNodes,
@@ -342,6 +368,33 @@ export const useProposalStore = create<ProposalState>((set, get) => {
       );
       setStatus(id, "accepted");
       await done;
+      const accepted = get().proposals.find((x) => x.id === id);
+      const result = accepted ? acceptedInstance(accepted) : null;
+      patch(id, { restore, resultFingerprint: result ? poseFingerprint(result) : undefined });
+    },
+
+    revert: async (id, ctx) => {
+      const p = find(id);
+      if (proposalState(p) !== "accepted" || p.kind === "ignore") {
+        throw new AutomationError("NOT_PENDING", "Only an accepted fix or correction can be reverted.");
+      }
+      if (!canRevert(p)) {
+        throw new AutomationError(
+          "OUTDATED",
+          "This instance was changed after you accepted Claude's suggestion, so Revert would undo your edits too. Change it back by hand.",
+        );
+      }
+      const cc = ctx ?? (await import("@/commands/CommandContext")).commandContext;
+      const now = get().proposals.find((x) => x.id === id);
+      if (!now || !canRevert(now)) throw new AutomationError("NOT_PENDING", `Proposal "${id}" can't be reverted any more.`);
+      const inst = acceptedInstance(now)!;
+      goTo(now, inst);
+      await cc.execute(
+        now.kind === "correct" ? RevertCorrectedPrediction : RestorePose,
+        { instance: inst, points: now.restore },
+        { undoLabel: `Revert ${undoLabel(now.reason)}` },
+      );
+      // The proposal now reads "undone": the pose (or prediction) is as it was.
     },
 
     reject: (id) => {
@@ -349,25 +402,23 @@ export const useProposalStore = create<ProposalState>((set, get) => {
       setStatus(id, "rejected");
     },
 
+    unreject: (id) => {
+      const p = find(id);
+      if (p.status !== "rejected") throw new AutomationError("NOT_PENDING", `Proposal "${id}" isn't rejected.`);
+      // Back to pending replaces a newer proposal for the same target the user could still accept.
+      const superseded = (x: Proposal) =>
+        x.id !== id && targetKey(x) === targetKey(p) && (x.status === "pending" || proposalState(x) === "undone");
+      set({
+        proposals: get()
+          .proposals.filter((x) => !superseded(x))
+          .map((x) => (x.id === id ? { ...x, status: "pending" as const } : x)),
+      });
+    },
+
     clear: () => {
-      if (get().proposals.length > 0 || get().claudeShown !== null) set({ proposals: [], claudeShown: null });
-    },
-
-    claudeReview: false,
-    setClaudeReview: (on) => {
-      if (get().claudeReview !== on) set(on ? { claudeReview: true } : { claudeReview: false, claudeShown: null });
-    },
-
-    claudeShown: null,
-    setClaudeShown: (id) => {
-      if (get().claudeShown !== id) set({ claudeShown: id });
+      if (get().proposals.length > 0) set({ proposals: [] });
     },
   };
-});
-
-// Claude's-suggestions mode belongs to one opening of the Review window.
-useQcStore.subscribe((s, prev) => {
-  if (prev.reviewOpen && !s.reviewOpen) useProposalStore.getState().setClaudeReview(false);
 });
 
 // Proposals point at instances by position in one project: drop them when
