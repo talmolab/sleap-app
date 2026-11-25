@@ -9,7 +9,15 @@
 import type { CandidateAnalysis, TargetVideo } from "./core";
 
 export type CheckSummary =
-  | { ok: true; name: string; frameCount: number; matchedBy: "path" | "name" | "probable" }
+  | {
+      ok: true;
+      name: string;
+      frameCount: number;
+      matchedBy: "path" | "name" | "probable";
+      /** See `CandidateAnalysis`: other skeletons left out of a several-skeleton file. */
+      ignoredSkeletons?: number;
+      skeletonName?: string | null;
+    }
   | { ok: false; name: string; reason: string };
 
 const cache = new Map<string, CheckSummary>();
@@ -30,7 +38,14 @@ export function checkCacheKey(
 
 export function summarize(a: CandidateAnalysis): CheckSummary {
   return a.ok
-    ? { ok: true, name: a.name, frameCount: a.frameCount, matchedBy: a.matchedBy }
+    ? {
+        ok: true,
+        name: a.name,
+        frameCount: a.frameCount,
+        matchedBy: a.matchedBy,
+        ignoredSkeletons: a.ignoredSkeletons,
+        skeletonName: a.skeletonName,
+      }
     : { ok: false, name: a.name, reason: a.reason };
 }
 

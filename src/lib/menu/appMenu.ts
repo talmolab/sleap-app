@@ -97,6 +97,7 @@ import {
 } from "./menuActions";
 import type { AppMenu, MenuNode, MenuRadioNode, TopMenu } from "./types";
 import { useModelOverlayStore } from "@/stores/modelOverlayStore";
+import { useCustomDeleteDialog } from "@/stores/customDeleteDialogStore";
 
 /** Everything that changes what the menus show. */
 export interface MenuSnapshot {
@@ -665,6 +666,8 @@ function labelsMenu(s: MenuSnapshot): TopMenu {
         enabled: s.hasInstance,
         run: exec(MergeInstance),
       },
+      // PyQt's place for it: right after Merge Instance (app.py:911).
+      { kind: "item", id: "labels.customDelete", label: "Custom Instance Delete...", enabled: loaded, run: () => useCustomDeleteDialog.getState().setOpen(true) },
       ...clipboardItems(s),
       {
         kind: "check",

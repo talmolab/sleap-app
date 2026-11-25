@@ -39,6 +39,7 @@ export function BboxTrainingFields({
   onUpdateSlot,
   disabled = false,
   size = "sm",
+  boxSettingsLockedBy = null,
 }: {
   modelType: ModelType;
   configs: ConfigFile[];
@@ -46,6 +47,8 @@ export function BboxTrainingFields({
   disabled?: boolean;
   /** "sm" for the Training panel, "md" for the Full Configuration window. */
   size?: "sm" | "md";
+  /** Set when a reused model fixes Box source / padding (lib/reuseTrainedModel.ts): those two are locked, with this as the reason. */
+  boxSettingsLockedBy?: string | null;
 }) {
   if (modelType !== "bbox" && modelType !== "top_down_bbox") return null;
   const detector = configs.find((c) => c.slot === "bbox");
@@ -78,7 +81,7 @@ export function BboxTrainingFields({
         <Select
           value={hp.bboxSource}
           onValueChange={(v) => updateShared({ bboxSource: v as BboxSource })}
-          disabled={disabled}
+          disabled={disabled || !!boxSettingsLockedBy}
         >
           <SelectTrigger className={`${control} w-40`}><SelectValue /></SelectTrigger>
           <SelectContent>
@@ -101,9 +104,12 @@ export function BboxTrainingFields({
           value={hp.bboxPadding}
           onCommit={(n) => updateShared({ bboxPadding: n })}
           className={`${control} w-20`}
-          disabled={disabled}
+          disabled={disabled || !!boxSettingsLockedBy}
         />
       </div>
+      {boxSettingsLockedBy && (
+        <p className={`${text} text-muted-foreground`} data-testid="bbox-settings-locked">{boxSettingsLockedBy}</p>
+      )}
       {mismatch && (
         <p className={`${text} text-yellow-400`}>
           The detector and the instance model were set up with different box settings; changing one here
