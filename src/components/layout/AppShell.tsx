@@ -41,6 +41,7 @@ import { TranscodeConfirmDialog } from "../dialogs/TranscodeConfirmDialog";
 import { VideoCheckDialog } from "../dialogs/VideoCheckDialog";
 import { useQuickVideoChecks } from "@/hooks/useQuickVideoChecks";
 import { ConfirmDialog } from "../dialogs/ConfirmDialog";
+import { SlpFormatRefusalDialog } from "../dialogs/SlpFormatRefusalDialog";
 import { ChoiceDialog } from "../dialogs/ChoiceDialog";
 import { PromptDialog } from "../dialogs/PromptDialog";
 import { SelectToFrameDialog } from "../dialogs/SelectToFrameDialog";
@@ -347,6 +348,7 @@ export function AppShell() {
       <GoToFrameDialog />
       <FrameStepSizesDialog />
       <ConfirmDialog />
+      <SlpFormatRefusalDialog />
       <ChoiceDialog />
       <PromptDialog />
       <TranscodeConfirmDialog />
