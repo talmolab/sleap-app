@@ -29,6 +29,11 @@ export interface RenderedBbox {
   /** Category, else track name, else null. Drawn above the box. */
   label: string | null;
   isSelected: boolean;
+  /**
+   * Drawn around a pose by View ▸ Show Boxes Around Poses, not stored in the
+   * project: dotted, thinner, no caption, and never hit-tested.
+   */
+  isDerived?: boolean;
 }
 
 /** True when any corner is NaN (sleap-io's degenerate/empty box). */
@@ -123,12 +128,14 @@ export function renderBboxes(
       ctx.fillStyle = css(box.color, 0.12);
       ctx.fill();
     }
-    ctx.lineWidth = (box.isSelected ? 3 : 2) * px;
-    ctx.strokeStyle = css(box.color);
-    ctx.setLineDash(box.isPredicted ? [6 * px, 4 * px] : []);
+    ctx.lineWidth = (box.isSelected ? 3 : box.isDerived ? 1.25 : 2) * px;
+    ctx.strokeStyle = css(box.color, box.isDerived ? 0.8 : 1);
+    ctx.setLineDash(
+      box.isDerived ? [1.5 * px, 3 * px] : box.isPredicted ? [6 * px, 4 * px] : [],
+    );
     ctx.stroke();
 
-    const caption = opts.showLabels ? bboxCaption(box) : null;
+    const caption = opts.showLabels && !box.isDerived ? bboxCaption(box) : null;
     if (caption) {
       const fontPx = 11 * px;
       ctx.setLineDash([]);

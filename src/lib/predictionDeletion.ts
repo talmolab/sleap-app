@@ -12,11 +12,13 @@
  * - area tests every frame of that video, not just the current one;
  * - user-labeled frames can act on the current video or all videos.
  *
- * Only `PredictedInstance`s are ever returned, so user instances are never
+ * Only `PredictedInstance`s (and, from the box selectors at the end,
+ * `PredictedBoundingBox`es) are ever returned, so user labels are never
  * deleted by these commands.
  */
 
 import {
+  PredictedBoundingBox,
   PredictedInstance,
   type Labels,
   type LabeledFrame,
@@ -170,6 +172,116 @@ export function predictionsOnUserLabeledFrames(
     }
     for (const p of predictionsIn(lf)) {
       if (!linked.has(p)) out.push([lf, p]);
+    }
+  }
+  return out;
+}
+
+// ---------------------------------------------------------------------------
+// Predicted boxes
+//
+// A box detector's predictions are boxes (`PredictedBoundingBox` in
+// `LabeledFrame.bboxes`), not instances. Each selector below picks the boxes
+// the matching instance selector's command deletes too, with the same scope.
+// User boxes are never returned.
+// ---------------------------------------------------------------------------
+
+/** A predicted box to delete and the frame it is in. */
+export type PredictedBoxPair = [LabeledFrame, PredictedBoundingBox];
+
+function predictedBoxesIn(lf: LabeledFrame): PredictedBoundingBox[] {
+  return lf.bboxes.filter((b): b is PredictedBoundingBox => b instanceof PredictedBoundingBox);
+}
+
+/** Predicted boxes in the current video scoring below `threshold`. */
+export function boxesWithLowScore(labels: Labels, video: Video, threshold: number): PredictedBoxPair[] {
+  const out: PredictedBoxPair[] = [];
+  for (const lf of framesOf(labels, video)) {
+    for (const b of predictedBoxesIn(lf)) if (b.score < threshold) out.push([lf, b]);
+  }
+  return out;
+}
+
+/** Predicted boxes in the current video on frames outside `[start, end]`. */
+export function boxesOutsideFrameRange(labels: Labels, video: Video, start: number, end: number): PredictedBoxPair[] {
+  const out: PredictedBoxPair[] = [];
+  for (const lf of framesOf(labels, video)) {
+    if (lf.frameIdx >= start && lf.frameIdx <= end) continue;
+    for (const b of predictedBoxesIn(lf)) out.push([lf, b]);
+  }
+  return out;
+}
+
+/** Predicted boxes in the current video on frames inside `[start, end]`. */
+export function boxesInClip(labels: Labels, video: Video, start: number, end: number): PredictedBoxPair[] {
+  const out: PredictedBoxPair[] = [];
+  for (const lf of framesOf(labels, video)) {
+    if (lf.frameIdx < start || lf.frameIdx > end) continue;
+    for (const b of predictedBoxesIn(lf)) out.push([lf, b]);
+  }
+  return out;
+}
+
+/** On each frame of the current video, the lowest-scoring predicted boxes beyond the top `maxInstances`. */
+export function boxesBeyondMaxInstances(labels: Labels, video: Video, maxInstances: number): PredictedBoxPair[] {
+  const keep = Math.max(0, Math.floor(maxInstances));
+  const out: PredictedBoxPair[] = [];
+  for (const lf of framesOf(labels, video)) {
+    const boxes = predictedBoxesIn(lf);
+    if (boxes.length <= keep) continue;
+    const byScore = [...boxes].sort((a, b) => a.score - b.score);
+    for (const b of byScore.slice(0, boxes.length - keep)) out.push([lf, b]);
+  }
+  return out;
+}
+
+/** Predicted boxes on every frame of the current video whose corners all lie inside `box`. */
+export function boxesInArea(labels: Labels, video: Video, box: AreaBox): PredictedBoxPair[] {
+  const minX = Math.min(box.x1, box.x2);
+  const maxX = Math.max(box.x1, box.x2);
+  const minY = Math.min(box.y1, box.y2);
+  const maxY = Math.max(box.y1, box.y2);
+  const inside = (b: PredictedBoundingBox) =>
+    b.corners.every(([x, y]) => x >= minX && x <= maxX && y >= minY && y <= maxY);
+  const out: PredictedBoxPair[] = [];
+  for (const lf of framesOf(labels, video)) {
+    for (const b of predictedBoxesIn(lf)) if (inside(b)) out.push([lf, b]);
+  }
+  return out;
+}
+
+/**
+ * Predicted boxes on frames that also have user labels (a user instance or a
+ * user box), in the current video or all videos (`video === null`). With
+ * `unlinkedOnly`, a box linked to a user instance, or to the prediction a user
+ * instance was made from, is kept.
+ */
+export function boxesOnUserLabeledFrames(labels: Labels, video: Video | null, unlinkedOnly: boolean): PredictedBoxPair[] {
+  const out: PredictedBoxPair[] = [];
+  for (const lf of framesOf(labels, video)) {
+    const users = lf.instances.filter((inst) => !(inst instanceof PredictedInstance));
+    const hasUserBox = lf.bboxes.some((b) => !(b instanceof PredictedBoundingBox));
+    if (users.length === 0 && !hasUserBox) continue;
+    const keep = new Set<unknown>();
+    if (unlinkedOnly) {
+      for (const u of users) {
+        keep.add(u);
+        if (u.fromPredicted) keep.add(u.fromPredicted);
+      }
+    }
+    for (const b of predictedBoxesIn(lf)) {
+      if (!(b.instance && keep.has(b.instance))) out.push([lf, b]);
+    }
+  }
+  return out;
+}
+
+/** Predicted boxes on a track (`trackName`), or untracked ones (`null`), in every video. */
+export function boxesOnTrack(labels: Labels, trackName: string | null): PredictedBoxPair[] {
+  const out: PredictedBoxPair[] = [];
+  for (const lf of labels.labeledFrames) {
+    for (const b of predictedBoxesIn(lf)) {
+      if (trackName === null ? !b.track : b.track?.name === trackName) out.push([lf, b]);
     }
   }
   return out;

@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from "../bun-test";
-import { resolveSlotConfigSource } from "@/lib/trainedConfigAutoload";
+import { readTrainedRunConfig, resolveSlotConfigSource } from "@/lib/trainedConfigAutoload";
 import type { DiscoveredModel } from "@/lib/modelDiscovery";
 import type { TrainedConfigFsAccess } from "@/lib/trainedConfigAutoload";
 import type { ModelType } from "@/stores/trainingStore";
@@ -28,7 +28,7 @@ function discoveredFor(
 }
 
 describe("resolveSlotConfigSource", () => {
-  it("prefers a matching trained run's training_config.yaml over the baseline", async () => {
+  it("prefers a matching trained run's initial_config.yaml over the baseline", async () => {
     const fs = fakeFs({ readTextFile: vi.fn(async () => "trained: yaml") });
     const result = await resolveSlotConfigSource(
       "centroid",
@@ -38,11 +38,11 @@ describe("resolveSlotConfigSource", () => {
     );
     expect(result).toEqual({
       yamlText: "trained: yaml",
-      filename: "training_config.yaml",
+      filename: "initial_config.yaml",
       checkpointPath: "/proj/models/run1/best.ckpt",
       source: "trained",
     });
-    expect(fs.join).toHaveBeenCalledWith("/proj/models/run1", "training_config.yaml");
+    expect(fs.join).toHaveBeenCalledWith("/proj/models/run1", "initial_config.yaml");
     expect(fs.join).toHaveBeenCalledWith("/proj/models/run1", "best.ckpt");
   });
 
@@ -65,10 +65,22 @@ describe("resolveSlotConfigSource", () => {
       discoveredFor("bottomup"), // wrong head — doesn't match "centroid"
       fs,
     );
-    expect(result?.filename).not.toBe("training_config.yaml");
+    expect(result?.source).toBe("baseline");
     expect(result?.yamlText.length).toBeGreaterThan(0);
     expect(result?.source).toBe("baseline");
     expect(fs.readTextFile).not.toHaveBeenCalled();
+  });
+
+  it("Top-Down + ID's second stage reuses a multi-class top-down run, never a centered-instance one", async () => {
+    const discovered: DiscoveredModel[] = [
+      { path: "/proj/models/ci", headKey: "centered_instance", runName: "ci", mtimeMs: 2000, checkpointFile: "best.ckpt" },
+      { path: "/proj/models/id", headKey: "multi_class_topdown", runName: "id", mtimeMs: 1000, checkpointFile: "best.ckpt" },
+    ];
+    const result = await resolveSlotConfigSource("centered_instance", "top_down_id", discovered, fakeFs());
+    expect(result?.checkpointPath).toBe("/proj/models/id/best.ckpt");
+
+    const baseline = await resolveSlotConfigSource("centered_instance", "top_down_id", discovered.slice(0, 1), fakeFs());
+    expect(baseline?.filename).toBe("baseline.multi_class_topdown.yaml");
   });
 
   it("picks the Medium RF baseline by default (no recommendation)", async () => {
@@ -88,7 +100,7 @@ describe("resolveSlotConfigSource", () => {
   it("falls back to the baseline when discovered is empty (fresh project, no models/ dir)", async () => {
     const fs = fakeFs();
     const result = await resolveSlotConfigSource("centered_instance", "top_down", [], fs);
-    expect(result?.filename).not.toBe("training_config.yaml");
+    expect(result?.source).toBe("baseline");
     expect(fs.readTextFile).not.toHaveBeenCalled();
   });
 
@@ -104,7 +116,7 @@ describe("resolveSlotConfigSource", () => {
       discoveredFor("centroid"),
       fs,
     );
-    expect(result?.filename).not.toBe("training_config.yaml");
+    expect(result?.source).toBe("baseline");
     expect(result?.yamlText.length).toBeGreaterThan(0);
   });
 
@@ -129,7 +141,7 @@ describe("resolveSlotConfigSource", () => {
         fs,
         { preferTrained: false },
       );
-      expect(result?.filename).not.toBe("training_config.yaml");
+      expect(result?.source).toBe("baseline");
       expect(fs.readTextFile).not.toHaveBeenCalled();
       expect(fs.join).not.toHaveBeenCalled();
     });
@@ -142,7 +154,47 @@ describe("resolveSlotConfigSource", () => {
         discoveredFor("centroid"),
         fs,
       );
-      expect(result?.filename).toBe("training_config.yaml");
+      expect(result?.filename).toBe("initial_config.yaml");
+    });
+  });
+
+  describe("which of the run's two configs", () => {
+    // What sleap-nn 0.3.5 writes into one run folder: the config as launched,
+    // and the same config with every Auto value resolved for that run's data.
+    const files: Record<string, string> = {
+      "/proj/models/run1/initial_config.yaml":
+        "data_config:\n  preprocessing:\n    max_height: null\n    crop_size: null\ntrainer_config:\n  train_steps_per_epoch: null\n",
+      "/proj/models/run1/training_config.yaml":
+        "data_config:\n  preprocessing:\n    max_height: 384\n    crop_size: 144\ntrainer_config:\n  train_steps_per_epoch: 200\n",
+    };
+    const fsWith = (present: Record<string, string>) =>
+      fakeFs({
+        readTextFile: vi.fn(async (path: string) => {
+          if (!(path in present)) throw new Error(`ENOENT: ${path}`);
+          return present[path];
+        }),
+      });
+
+    it("reloads the unresolved config so Auto values stay Auto on Train Again", async () => {
+      const result = await resolveSlotConfigSource("centroid", "top_down", discoveredFor("centroid"), fsWith(files));
+      expect(result?.yamlText).toBe(files["/proj/models/run1/initial_config.yaml"]);
+      expect(result?.yamlText).not.toContain("384");
+      expect(result?.checkpointPath).toBe("/proj/models/run1/best.ckpt");
+    });
+
+    it("falls back to training_config.yaml for a run that has no initial_config.yaml", async () => {
+      const older = { "/proj/models/run1/training_config.yaml": files["/proj/models/run1/training_config.yaml"] };
+      const result = await resolveSlotConfigSource("centroid", "top_down", discoveredFor("centroid"), fsWith(older));
+      expect(result).toEqual({
+        yamlText: older["/proj/models/run1/training_config.yaml"],
+        filename: "training_config.yaml",
+        checkpointPath: "/proj/models/run1/best.ckpt",
+        source: "trained",
+      });
+    });
+
+    it("readTrainedRunConfig throws when the run has neither config", async () => {
+      await expect(readTrainedRunConfig("/proj/models/run1", fsWith({}))).rejects.toThrow("ENOENT");
     });
   });
 });

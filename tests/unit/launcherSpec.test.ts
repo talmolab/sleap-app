@@ -255,6 +255,19 @@ describe("seedFromJobSpec", () => {
     expect(result!.configs[1].slot).toBe("centered_instance");
   });
 
+  it("reconstructs a top-down ID run from its centroid + multi-class top-down jobs", () => {
+    const result = seedFromJobSpec({
+      config_contents: [makeYaml("centroid"), makeYaml("multi_class_topdown")],
+      model_types: ["centroid", "multi_class_topdown"],
+    });
+
+    expect(result!.modelType).toBe("top_down_id");
+    expect(result!.configs.map((c) => [c.slot, c.modelType])).toEqual([
+      ["centroid", "centroid"],
+      ["centered_instance", "multi_class_topdown"],
+    ]);
+  });
+
   it("reconstructs a single-job single_animal run", () => {
     const result = seedFromJobSpec({
       config_contents: [makeYaml("single_instance")],

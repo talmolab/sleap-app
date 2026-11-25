@@ -61,6 +61,21 @@ export interface TrackJobSpec {
   output_dir?: string;
   batch_size?: number;
   peak_threshold?: number;
+  /**
+   * The rest of the Inference panel's sleap-nn settings, named like
+   * sleap-nn's CLI flags. A worker on sleap-connect `main` drops these (see
+   * `lib/remoteInferenceSupport.ts`); one advertising "track_options_v2"
+   * applies them.
+   */
+  max_instances?: number;
+  integral_refinement?: "integral" | "none";
+  integral_patch_size?: number;
+  n_points?: number;
+  max_edge_length_ratio?: number;
+  dist_penalty_weight?: number;
+  min_line_scores?: number;
+  device?: string;
+  runtime?: string;
   only_suggested_frames?: boolean;
   frame_filter?: string;
   video_index?: number;

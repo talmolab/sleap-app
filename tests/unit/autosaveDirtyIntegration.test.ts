@@ -11,7 +11,13 @@ import { describe, it, expect, beforeEach } from "../bun-test";
 import { CommandContext } from "@/commands/CommandContext";
 import { useAppStore } from "@/stores/appStore";
 import { PropagateTrackLabels } from "@/commands/trackCommands";
+import { AddInstance } from "@/commands/editCommands";
 import { dirtyFrameTracker } from "@/lib/autosaveDirty";
+import {
+  runIncrementalAutosave,
+  replayJournal,
+  InMemoryJournalStore,
+} from "@/lib/incrementalAutosave";
 import { UpdateTopic } from "@/types";
 import type { Command } from "@/commands/types";
 import {
@@ -21,6 +27,8 @@ import {
   Video,
   Skeleton,
   Track,
+  loadSlp,
+  saveSlpToBytes,
 } from "@talmolab/sleap-io.js";
 
 function resetStore() {
@@ -173,5 +181,48 @@ describe("store.markChanged → dirtyFrameTracker (untracked-edit coverage)", ()
     dirtyFrameTracker.clear();
     useAppStore.getState().markChanged(); // no labels/video loaded
     expect(dirtyFrameTracker.peekFrames()).toEqual([]);
+  });
+});
+
+describe("undo → incremental autosave journal → recovery", () => {
+  beforeEach(() => {
+    resetStore();
+    dirtyFrameTracker.clear();
+  });
+
+  it("doesn't bring back a frame whose creation was undone after it was journaled", async () => {
+    const { labels, video } = setup(2);
+    const ctx = new CommandContext();
+    const store = new InMemoryJournalStore();
+    let base: Uint8Array = new Uint8Array();
+    const tick = (hasBase: boolean) =>
+      runIncrementalAutosave({
+        labels,
+        drained: dirtyFrameTracker.drain(),
+        store,
+        writeBase: async () => {
+          base = await saveSlpToBytes(labels);
+        },
+        hasBase,
+        journalBytes: 0,
+      });
+
+    dirtyFrameTracker.markStructural();
+    expect(await tick(false)).toBe("full");
+
+    useAppStore.getState().setFrameIdx(7);
+    await ctx.execute(AddInstance);
+    expect(await tick(true)).toBe("append");
+
+    expect(ctx.undo()).toBe(true);
+    expect(labels.find({ video, frameIdx: 7 }).length).toBe(0);
+    expect(await tick(true)).toBe("append");
+
+    const recovered = await loadSlp(
+      base.buffer.slice(base.byteOffset, base.byteOffset + base.byteLength) as ArrayBuffer,
+      { openVideos: false },
+    );
+    await replayJournal(store, recovered);
+    expect(recovered.labeledFrames.map((lf) => lf.frameIdx).sort()).toEqual([0, 1]);
   });
 });

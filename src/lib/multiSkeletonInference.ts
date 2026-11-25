@@ -25,6 +25,8 @@ import { MODEL_TYPE_LABELS, parseTrainingConfig } from "./metrics/loadModelMetri
 import { PIPELINE_HEADS } from "./modelDiscovery";
 import { sameSkeletonStructure, structuralGroups } from "./skeletonStructure";
 import type { InferenceConfig, PipelineType } from "@/stores/inferenceStore";
+import { INFERENCE_DEFAULTS } from "./inferenceDefaults";
+import { remoteIgnoredSettings } from "./remoteInferenceSupport";
 
 /** What the app knows about one model directory (from its training_config.yaml). */
 export interface ModelInfo {
@@ -201,8 +203,11 @@ export function matchModelSkeleton(
 
 // ── Pipeline per skeleton ───────────────────────────────────────────────────
 
-/** A pipeline for one skeleton's models; "centroid-only" = a centroid model alone. */
-export type SkeletonPipeline = PipelineType | "centroid-only";
+/**
+ * A pipeline for one skeleton's models; "centroid-only" = a centroid model
+ * alone (the single-skeleton panel's "centroid" pipeline, planned per skeleton).
+ */
+export type SkeletonPipeline = Exclude<PipelineType, "centroid"> | "centroid-only";
 
 export const SKELETON_PIPELINE_LABELS: Record<SkeletonPipeline, string> = {
   "top-down": "Top-Down",
@@ -462,32 +467,10 @@ export interface SkeletonInferenceSettings extends SkeletonRunSettings {
 }
 
 /** Defaults — the same values the single-skeleton panel starts from. */
-export const DEFAULT_SKELETON_RUN_SETTINGS: SkeletonRunSettings = {
-  maxInstances: null,
-  peakThreshold: 0.2,
-  tracking: false,
-  trackerMethod: "simple",
-  similarityMethod: "oks",
-  matchingMethod: "hungarian",
-  trackingWindowSize: 5,
-  maxTracks: null,
-  connectSingleBreaks: false,
-  robust: 0.95,
-  minMatchPoints: 0,
-  minNewTrackPoints: 0,
-  scoringReduction: "mean",
-  trackingTargetInstanceCount: null,
-  trackingPreCullToTarget: false,
-  trackingPreCullIouThreshold: 0,
-  trackingCleanInstanceCount: null,
-  trackingCleanIouThreshold: 0,
-  flowImgScale: 1.0,
-  flowWindowSize: 21,
-  flowMaxLevels: 3,
-  kfTrackFeatures: "centroid",
-  kfInitFrameCount: 10,
-  kfResetGapSize: 5,
-};
+/** The panel's defaults for the per-skeleton settings (one source: inferenceDefaults.ts). */
+export const DEFAULT_SKELETON_RUN_SETTINGS: SkeletonRunSettings = Object.fromEntries(
+  SKELETON_RUN_SETTING_KEYS.map((k) => [k, INFERENCE_DEFAULTS[k]]),
+) as unknown as SkeletonRunSettings;
 
 export const DEFAULT_SKELETON_INFERENCE_SETTINGS: SkeletonInferenceSettings = {
   ...DEFAULT_SKELETON_RUN_SETTINGS,
@@ -609,6 +592,22 @@ export function configForSkeletonRun(config: InferenceConfig, run: SkeletonRunSp
   // sleap-nn tracks poses, not a box detector's boxes.
   if (run.pipeline === "bbox") cfg.tracking = false;
   return cfg;
+}
+
+/**
+ * The settings a Connect worker won't apply ({@link remoteIgnoredSettings}),
+ * checked against each skeleton's own run and labelled with the skeletons
+ * they affect, e.g. "Max instances (mouse, pellet)".
+ */
+export function remoteIgnoredRunSettings(config: InferenceConfig, workerFeatures: readonly string[] = []): string[] {
+  if (!config.skeletonRuns?.length) return remoteIgnoredSettings(config, workerFeatures);
+  const bySetting = new Map<string, string[]>();
+  for (const run of config.skeletonRuns) {
+    for (const name of remoteIgnoredSettings(configForSkeletonRun(config, run), workerFeatures)) {
+      bySetting.set(name, [...(bySetting.get(name) ?? []), run.skeletonName]);
+    }
+  }
+  return [...bySetting].map(([name, skeletons]) => `${name} (${skeletons.join(", ")})`);
 }
 
 /** A one-line summary of a run's settings for the inference log. */

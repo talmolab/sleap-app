@@ -9,7 +9,7 @@
 
 import { useState, useRef, useEffect, useMemo } from "react";
 import { createPortal } from "react-dom";
-import { useTrainingStore, getConfigSlots, getSlotLabel, countUserLabeledFrames, isBboxModelType, BBOX_REMOTE_UNSUPPORTED } from "@/stores/trainingStore";
+import { useTrainingStore, getConfigSlots, getSlotLabel, countUserLabeledFrames, isBboxModelType, BBOX_REMOTE_UNSUPPORTED, DEFAULT_POST_TRAINING_INFERENCE, type PostTrainingInferenceSettings } from "@/stores/trainingStore";
 import { reusePinNote, reuseStartProblem } from "@/lib/reuseTrainedModel";
 import { useExportStore } from "@/stores/exportStore";
 import type { ModelType, ConfigFile, ConfigHyperparams } from "@/stores/trainingStore";
@@ -378,9 +378,10 @@ function ConfigSlot({
     try {
       const { join } = await import("@tauri-apps/api/path");
       const { readTextFile } = await import("@tauri-apps/plugin-fs");
-      const yamlText = await readTextFile(await join(run.path, "training_config.yaml"));
+      const { readTrainedRunConfig } = await import("@/lib/trainedConfigAutoload");
+      const { yamlText, filename } = await readTrainedRunConfig(run.path, { join, readTextFile });
       const checkpointPath = run.checkpointFile ? await join(run.path, run.checkpointFile) : null;
-      const parsed = parseYamlConfig(yamlText, "training_config.yaml", slot, checkpointPath);
+      const parsed = parseYamlConfig(yamlText, filename, slot, checkpointPath);
       if (parsed) addConfigFile(parsed);
     } catch {
       // Unreadable/missing despite discovery — leave the current config as-is.
@@ -436,7 +437,7 @@ function ConfigSlot({
             ))}
             {forThisHead.map((run) => (
               <SelectItem key={run.path} value={run.path}>
-                [Trained] {run.runName ?? run.path} (training_config.yaml)
+                [Trained] {run.runName ?? run.path}
               </SelectItem>
             ))}
             {configFile && !matchingRun && !baselineProfiles.some((p) => p.filename === configFile.filename) && (
@@ -836,7 +837,8 @@ function TrainingPanelContent() {
       for (const cf of config.configs) {
         // Also drop a config whose slot now wants a different kind of head:
         // Top-Down's fixed-crop centered-instance config doesn't carry over to
-        // Top-Down (Box Crops), which loads its box-crop preset instead.
+        // Top-Down (Box Crops) or Top-Down + ID, which load their box-crop or
+        // multi-class top-down preset instead.
         if (
           !newSlots.includes(cf.slot) ||
           slotToHeadType(prevModelType.current, cf.slot) !== slotToHeadType(config.modelType, cf.slot)
@@ -987,6 +989,8 @@ function TrainingPanelContent() {
   const [sampleCount, setSampleCount] = useState(20);
   const [skipUserLabeled, setSkipUserLabeled] = useState(false);
   const [existingPredictions, setExistingPredictions] = useState<"clear_all" | "replace" | "keep">("replace");
+  // Max instances / overlap filtering for the inference after training (set in the Full Configuration window).
+  const [postInference, setPostInference] = useState<PostTrainingInferenceSettings>(DEFAULT_POST_TRAINING_INFERENCE);
   // Client-side only — no sleap-nn schema field for this (see trainingStore.ts).
   const [autoOpenWandb, setAutoOpenWandb] = useState(false);
   // Client-side only — post-training model export ("none" = don't export) + whether to
@@ -1186,11 +1190,11 @@ function TrainingPanelContent() {
   const reuseProblem = reuseStartProblem(
     requiredSlots,
     config.configs,
-    (slot) => getSlotLabel(slot).replace(" Config", ""),
+    (slot) => getSlotLabel(slot, config.modelType).replace(" Config", ""),
     { remote: remoteEnabled, inferenceTarget },
   );
   // A reused model fixes the anchor part / box settings of the stage that trains.
-  const reusePin = reusePinNote(config.modelType, config.configs, (slot) => getSlotLabel(slot).replace(" Config", ""));
+  const reusePin = reusePinNote(config.modelType, config.configs, (slot) => getSlotLabel(slot, config.modelType).replace(" Config", ""));
   const isModelTypeIncompatible = skeletonCompat.disabledTypes.has(config.modelType);
   // "window" + still-unknown visibility blocks Start: classifyVisibility(null
   // ?? []) would otherwise read as case "all" (same as "nothing hidden"),
@@ -1282,6 +1286,7 @@ function TrainingPanelContent() {
       sampleCount,
       skipUserLabeled,
       existingPredictions,
+      postInference,
     });
   };
 
@@ -1298,6 +1303,7 @@ function TrainingPanelContent() {
           sampleCount,
           skipUserLabeled,
           existingPredictions,
+          postInference,
         });
         return;
       }
@@ -1316,6 +1322,7 @@ function TrainingPanelContent() {
       sampleCount,
       skipUserLabeled,
       existingPredictions,
+      postInference,
       exportFormat,
       useExportedForInference,
     });
@@ -1410,7 +1417,7 @@ function TrainingPanelContent() {
             return (
               <div key={slot} className="space-y-1">
                 <span className="text-[10px] text-muted-foreground flex items-center gap-1">
-                  {getSlotLabel(slot)}
+                  {getSlotLabel(slot, config.modelType)}
                   <HelpTooltip text="Config file for this model in the pipeline. Auto-discovered training_config.yaml files from prior runs are picked up automatically; you can also browse to a specific config or a directory of already-trained model checkpoints to reuse." />
                 </span>
                 <ConfigSlot
@@ -1668,7 +1675,7 @@ function TrainingPanelContent() {
                   <TabsList className="w-full h-7">
                     {config.configs.map((cf) => (
                       <TabsTrigger key={cf.slot} value={cf.slot} className="flex-1 text-[10px] h-6">
-                        {getSlotLabel(cf.slot).replace(" Config", "")}
+                        {getSlotLabel(cf.slot, config.modelType).replace(" Config", "")}
                       </TabsTrigger>
                     ))}
                   </TabsList>
@@ -1737,7 +1744,7 @@ function TrainingPanelContent() {
               {memoryEstimates.map(({ slot, gpu, cache }) => (
                 <div key={slot} className="space-y-1">
                   <div className="flex items-center justify-between gap-2 text-[11px]">
-                    <span className="font-medium shrink-0">{getSlotLabel(slot).replace(" Config", "")}</span>
+                    <span className="font-medium shrink-0">{getSlotLabel(slot, config.modelType).replace(" Config", "")}</span>
                     {gpu ? (
                       <span className={`text-right ${GPU_MEMORY_LEVEL_COLOR[gpu.level]}`}>
                         ~{formatBytes(gpu.totalBytes)} — {gpu.message}
@@ -2296,6 +2303,8 @@ function TrainingPanelContent() {
         onSkipUserLabeledChange={setSkipUserLabeled}
         existingPredictions={existingPredictions}
         onExistingPredictionsChange={setExistingPredictions}
+        postInference={postInference}
+        onPostInferenceChange={setPostInference}
         autoOpenWandb={autoOpenWandb}
         onAutoOpenWandbChange={setAutoOpenWandb}
         exportFormat={exportFormat}

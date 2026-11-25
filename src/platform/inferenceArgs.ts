@@ -34,6 +34,20 @@ import type { InferenceConfig } from "@/stores/inferenceStore";
  */
 export const MIN_SLEAP_NN_PREDICT_VERSION = "0.3.2";
 
+/**
+ * Frame count to draw a `"random_video"` sample from: the target video's own
+ * (`config.videoIndex`), which the "Random sample (all videos)" loops set per
+ * video. Only an `"all"` index falls back to the active video. 0 = unknown.
+ */
+export function randomSampleFrameCount(
+  videoIndex: number | "all",
+  videos: ReadonlyArray<{ shape?: readonly number[] | null }> | undefined,
+  activeVideo: { shape?: readonly number[] | null } | null | undefined,
+): number {
+  const video = videoIndex === "all" ? activeVideo : videos?.[videoIndex];
+  return video?.shape?.[0] ?? 0;
+}
+
 export interface BuildInferenceArgsOptions {
   /**
    * Path to the input .slp (the project file or a serialized temp copy), OR
@@ -62,6 +76,63 @@ export interface BuildInferenceArgsOptions {
   suppressVideoIndex?: boolean;
   /** sleap-nn subcommand. Defaults to `predict` (the current pipeline). */
   subcommand?: string;
+  /**
+   * Frames to predict, already resolved by the caller (see
+   * {@link framesExcludingUserLabeled}). Replaces the frame-range args, and
+   * `--exclude_user_labeled` is not sent: sleap-nn ignores it for a raw-video
+   * `--data_path`, which has no annotations to filter on.
+   */
+  frames?: number[];
+}
+
+/**
+ * Longest `--frames` value the app passes. Windows caps a whole command line at
+ * 32,767 characters, and the model and output paths share that budget.
+ */
+export const MAX_FRAMES_ARG_LENGTH = 16_000;
+
+/**
+ * Format frame indices for `--frames`. sleap-nn accepts either one hyphen range
+ * ("10-20") or a comma list ("1,5,9"), never several ranges, so only a single
+ * contiguous run becomes a range.
+ */
+export function formatFramesArg(frames: number[]): string {
+  const sorted = [...new Set(frames)].sort((a, b) => a - b);
+  const first = sorted[0];
+  const last = sorted[sorted.length - 1];
+  if (sorted.length > 2 && last - first === sorted.length - 1) return `${first}-${last}`;
+  return sorted.join(",");
+}
+
+/**
+ * The frames a single-video target covers, minus that video's user-labeled
+ * frames: how "Exclude user-labeled frames" is applied when `--data_path` is the
+ * raw video. `nFrames` is the video's frame count (needed for "video").
+ */
+export function framesExcludingUserLabeled(
+  config: Pick<InferenceConfig, "frameRange">,
+  opts: {
+    nFrames: number;
+    userLabeledFrames: ReadonlySet<number>;
+    currentFrameIdx?: number;
+    sampledFrames?: number[];
+  },
+): number[] {
+  const { frameRange } = config;
+  let target: number[];
+  if (typeof frameRange === "object") {
+    const end = opts.nFrames > 0 ? Math.min(frameRange.end, opts.nFrames - 1) : frameRange.end;
+    target = Array.from({ length: Math.max(0, end - frameRange.start + 1) }, (_, i) => frameRange.start + i);
+  } else if (frameRange === "video") {
+    target = Array.from({ length: opts.nFrames }, (_, i) => i);
+  } else if (frameRange === "frame" && opts.currentFrameIdx != null) {
+    target = [opts.currentFrameIdx];
+  } else if (frameRange === "random_video" && opts.sampledFrames) {
+    target = opts.sampledFrames;
+  } else {
+    throw new Error(`Cannot list the frames of the '${String(frameRange)}' target.`);
+  }
+  return target.filter((f) => !opts.userLabeledFrames.has(f));
 }
 
 /**
@@ -85,6 +156,7 @@ export function buildInferenceArgs(
     currentFrameIdx,
     suppressVideoIndex = false,
     subcommand = "predict",
+    frames,
   } = opts;
 
   const args = [subcommand, "--gui"];
@@ -102,7 +174,10 @@ export function buildInferenceArgs(
   }
 
   // Frame range → CLI args (fail fast on unhandled types)
-  if (typeof config.frameRange === "object") {
+  if (frames) {
+    if (frames.length === 0) throw new Error("No frames to predict.");
+    args.push("--frames", formatFramesArg(frames));
+  } else if (typeof config.frameRange === "object") {
     args.push("--frames", `${config.frameRange.start}-${config.frameRange.end}`);
   } else {
     switch (config.frameRange) {
@@ -147,7 +222,7 @@ export function buildInferenceArgs(
     }
   }
 
-  if (config.excludeUserLabeled) {
+  if (config.excludeUserLabeled && !frames) {
     args.push("--exclude_user_labeled");
   }
 
@@ -162,15 +237,25 @@ export function buildInferenceArgs(
   if (subcommand === "predict" && config.runtime && config.runtime !== "auto") {
     args.push("--runtime", config.runtime);
   }
+  if (config.pipeline === "centroid") {
+    // sleap-nn detects a lone centroid model by itself; the flag says so
+    // explicitly. Both flags exist from sleap-nn 0.3.5 (predict only).
+    args.push("--centroid_only");
+    if (config.centroidOutput === "centroid") args.push("--centroid-output", "centroid");
+  }
   if (config.maxInstances != null) {
     args.push("--max_instances", String(config.maxInstances));
   }
   args.push("--peak_threshold", String(config.peakThreshold));
 
-  // Bottom-up advanced
+  // Peak refinement. sleap-nn refines by default ("integral"), so turning it off
+  // has to be said: only the value "none" disables it (every version; 0.2.x only
+  // refines when the value is "integral").
   if (config.integralRefinement) {
     args.push("--integral_refinement", "integral");
     args.push("--integral_patch_size", String(config.integralPatchSize));
+  } else {
+    args.push("--integral_refinement", "none");
   }
   if (config.pipeline === "bottom-up" || config.pipeline === "bottom-up-id") {
     args.push("--n_points", String(config.nPoints));
@@ -189,7 +274,11 @@ export function buildInferenceArgs(
   // Tracking. sleap-nn's tracker works on poses and masks, and rejects a box
   // detector's output ("Tracking is not supported for bounding-box detectors"),
   // so a detector-only run never asks for it (track-only runs have no model).
-  const canTrack = config.trackOnly || config.pipeline !== "bbox";
+  // A Centroid Only run that writes centroids can't be tracked either: sleap-nn
+  // tracks instances ("Tracking is incompatible with emit_centroid=...").
+  const canTrack =
+    config.trackOnly ||
+    (config.pipeline !== "bbox" && !(config.pipeline === "centroid" && config.centroidOutput === "centroid"));
   if (config.tracking && canTrack) {
     args.push("--tracking");
     if (config.trackerMethod === "flow") {
@@ -206,10 +295,22 @@ export function buildInferenceArgs(
         args.push("--kf_node_indices", config.kfNodeIndices.join(","));
       }
     }
+    // Similarity. Each scoring method needs the feature it compares:
+    //  - "iou" compares boxes, so it must come with `--features bboxes`. Without
+    //    it sleap-nn passes keypoint arrays to `compute_iou`, which reads them
+    //    as [xmin, ymin, xmax, ymax].
+    //  - "oks" (the default) is left unset. sleap-nn's `predict` then chooses
+    //    per model: centroid tracking for 1-node skeletons, cosine similarity
+    //    for embeddings. Sending it explicitly turned those choices off. The
+    //    legacy `track` command defaults to oks, so leaving it out is the same
+    //    there.
     if (config.similarityMethod === "centroids") {
       args.push("--features", "centroids");
       args.push("--scoring_method", "euclidean_dist");
-    } else {
+    } else if (config.similarityMethod === "iou") {
+      args.push("--features", "bboxes");
+      args.push("--scoring_method", "iou");
+    } else if (config.similarityMethod !== "oks") {
       args.push("--scoring_method", config.similarityMethod);
     }
     args.push("--track_matching_method", config.matchingMethod);

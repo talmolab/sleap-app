@@ -3,6 +3,8 @@ import type { InferenceConfig } from "@/stores/inferenceStore";
 import {
   buildInferenceArgs,
   compareVersions,
+  formatFramesArg,
+  framesExcludingUserLabeled,
   isPredictSupported,
   pickInferenceSubcommand,
   MIN_SLEAP_NN_PREDICT_VERSION,
@@ -233,6 +235,53 @@ describe("buildInferenceArgs — frame ranges", () => {
   });
 });
 
+describe("Exclude user-labeled frames on a raw-video --data_path", () => {
+  it("formats one contiguous run as a range, anything else as a comma list (sleap-nn takes one range only)", () => {
+    expect(formatFramesArg([3, 4, 5, 6])).toBe("3-6");
+    expect(formatFramesArg([1, 2, 3, 5, 6])).toBe("1,2,3,5,6");
+    expect(formatFramesArg([7])).toBe("7");
+    expect(formatFramesArg([9, 8])).toBe("8,9");
+  });
+
+  it("lists the target's frames minus the video's user-labeled ones", () => {
+    const userLabeledFrames = new Set([0, 3, 64]);
+    expect(framesExcludingUserLabeled({ frameRange: "video" }, { nFrames: 6, userLabeledFrames })).toEqual([1, 2, 4, 5]);
+    expect(
+      framesExcludingUserLabeled({ frameRange: { start: 2, end: 99 } }, { nFrames: 6, userLabeledFrames }),
+    ).toEqual([2, 4, 5]);
+    expect(
+      framesExcludingUserLabeled({ frameRange: "frame" }, { nFrames: 6, userLabeledFrames, currentFrameIdx: 3 }),
+    ).toEqual([]);
+    expect(
+      framesExcludingUserLabeled(
+        { frameRange: "random_video" },
+        { nFrames: 100, userLabeledFrames, sampledFrames: [3, 10, 64, 70] },
+      ),
+    ).toEqual([10, 70]);
+  });
+
+  it("passes the frames as --frames and drops --exclude_user_labeled, which sleap-nn ignores for a video", () => {
+    const args = buildInferenceArgs(baseConfig({ frameRange: "video", videoIndex: 1, excludeUserLabeled: true }), {
+      ...io(),
+      suppressVideoIndex: true,
+      frames: [1, 2, 4, 5],
+    });
+    expect(valAfter(args, "--frames")).toBe("1,2,4,5");
+    expect(args).not.toContain("--exclude_user_labeled");
+    expect(args).not.toContain("--video_index");
+  });
+
+  it("keeps --exclude_user_labeled for a .slp --data_path (no caller-resolved frames)", () => {
+    const args = buildInferenceArgs(baseConfig({ frameRange: "suggestions", excludeUserLabeled: true }), io());
+    expect(args).toContain("--exclude_user_labeled");
+    expect(args).not.toContain("--frames");
+  });
+
+  it("refuses an empty frame list rather than predicting the whole video", () => {
+    expect(() => buildInferenceArgs(baseConfig({ excludeUserLabeled: true }), { ...io(), frames: [] })).toThrow();
+  });
+});
+
 describe("buildInferenceArgs — tracking / bottom-up / preprocessing / filter", () => {
   it("emits tracking flags only when tracking is on", () => {
     expect(buildInferenceArgs(baseConfig({ tracking: false }), io())).not.toContain("--tracking");
@@ -241,15 +290,43 @@ describe("buildInferenceArgs — tracking / bottom-up / preprocessing / filter",
       io()
     );
     expect(args).toContain("--tracking");
-    expect(valAfter(args, "--scoring_method")).toBe("oks");
     expect(valAfter(args, "--track_matching_method")).toBe("greedy");
     expect(valAfter(args, "--tracking_window_size")).toBe("7");
+  });
+
+  it("oks similarity (the default) leaves --scoring_method and --features to sleap-nn", () => {
+    // sleap-nn only auto-picks centroid tracking for 1-node skeletons (and
+    // cosine for embeddings) when --scoring_method is left unset.
+    const args = buildInferenceArgs(baseConfig({ tracking: true, similarityMethod: "oks" }), io());
+    expect(args).not.toContain("--scoring_method");
+    expect(args).not.toContain("--features");
   });
 
   it("centroids similarity emits --features centroids + euclidean_dist scoring", () => {
     const args = buildInferenceArgs(baseConfig({ tracking: true, similarityMethod: "centroids" }), io());
     expect(valAfter(args, "--features")).toBe("centroids");
     expect(valAfter(args, "--scoring_method")).toBe("euclidean_dist");
+  });
+
+  it("iou similarity compares boxes: --features bboxes + iou scoring", () => {
+    const args = buildInferenceArgs(baseConfig({ tracking: true, similarityMethod: "iou" }), io());
+    expect(valAfter(args, "--features")).toBe("bboxes");
+    expect(valAfter(args, "--scoring_method")).toBe("iou");
+  });
+
+  it("euclidean_dist similarity is sent as-is, on sleap-nn's default features", () => {
+    const args = buildInferenceArgs(baseConfig({ tracking: true, similarityMethod: "euclidean_dist" }), io());
+    expect(valAfter(args, "--scoring_method")).toBe("euclidean_dist");
+    expect(args).not.toContain("--features");
+  });
+
+  it("integral refinement off sends --integral_refinement none (sleap-nn refines by default)", () => {
+    const off = buildInferenceArgs(baseConfig({ integralRefinement: false }), io());
+    expect(valAfter(off, "--integral_refinement")).toBe("none");
+    expect(off).not.toContain("--integral_patch_size");
+    const on = buildInferenceArgs(baseConfig({ integralRefinement: true, integralPatchSize: 7 }), io());
+    expect(valAfter(on, "--integral_refinement")).toBe("integral");
+    expect(valAfter(on, "--integral_patch_size")).toBe("7");
   });
 
   it("flow tracker emits --use_flow plus the optical-flow sub-params (regression: these were previously dropped)", () => {
@@ -512,6 +589,7 @@ describe("buildInferenceArgs — full-config parity lock", () => {
     "--of_img_scale", "1",
     "--of_window_size", "21",
     "--of_max_levels", "3",
+    "--features", "bboxes",
     "--scoring_method", "iou",
     "--track_matching_method", "greedy",
     "--tracking_window_size", "9",
@@ -551,7 +629,8 @@ describe("tracking args per skeleton run (#99)", () => {
     const pellet = configForSkeletonRun(config, {
       skeletonName: "pellet", skeletonIndex: 1, modelPaths: ["/m/pellet"], pipeline: "centroid-only", nodeCount: 1,
     });
-    expect(valAfter(buildInferenceArgs(mouse, io()), "--scoring_method")).toBe("oks");
+    // OKS is sleap-nn's default for a multi-node skeleton, so the flag is left out.
+    expect(valAfter(buildInferenceArgs(mouse, io()), "--scoring_method")).toBeUndefined();
     expect(valAfter(buildInferenceArgs(pellet, io()), "--scoring_method")).toBe("euclidean_dist");
     expect(valAfter(buildInferenceArgs(pellet, io()), "--max_tracks")).toBe("2");
     // IoU (a box per instance) is swapped too; an explicit centroid/distance choice is kept.

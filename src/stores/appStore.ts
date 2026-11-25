@@ -56,6 +56,7 @@ import { buildTutorialSteps, type TutorialStep } from "@/lib/tutorial/steps";
 import { isTauri } from "@/platform/index";
 import { STEP_SIZES, isValidStepSize, type ShortcutOverrides } from "@/lib/shortcuts";
 import { sanitizeOverrides } from "@/lib/shortcutEditing";
+import type { SavedInferenceSettings } from "@/lib/inferenceSettings";
 
 // Required before immer can draft Set/Map fields (hiddenInstances /
 // showNonVisibleOverride). Idempotent global; must run before store creation.
@@ -187,6 +188,20 @@ export interface AppState {
   showEdges: boolean;
   /** Draw bounding boxes (`LabeledFrame.bboxes`) on the canvas. */
   showBboxes: boolean;
+  /** Draw centroids (`LabeledFrame.centroids`, e.g. a Centroid Only run's) on the canvas. */
+  showCentroids: boolean;
+  /** The Inference panel's settings, remembered between sessions (see lib/inferenceSettings.ts). */
+  inferenceSettings: SavedInferenceSettings | null;
+  /**
+   * View ▸ Show Boxes Around Poses: draw the box around each pose (as sleap-nn
+   * derives a box detector's training boxes from poses). Drawn only, never
+   * saved. See `derivePoseBboxes`.
+   */
+  showPoseBboxes: boolean;
+  /** Padding (px, ≥ 0) of the boxes around poses; also the Boxes from Poses dialog's starting value. */
+  poseBboxPadding: number;
+  /** Also draw boxes around predicted instances (sleap-nn trains on user instances only). */
+  poseBboxIncludePredicted: boolean;
   showNonVisibleNodes: boolean;
   /**
    * Currently-visible portion of the video frame, in frame/scene pixel
@@ -622,6 +637,8 @@ export interface AppState {
   bboxFromPosesOpen: boolean;
   /** While that dialog is open: the padding to preview on the canvas, else null. */
   bboxPosePreviewPadding: number | null;
+  /** With `bboxPosePreviewPadding`: the dialog also boxes predicted instances. */
+  bboxPosePreviewIncludePredicted: boolean;
 
   // === Debug ===
   debugMode: boolean;
@@ -832,6 +849,11 @@ export const PERSISTED_KEYS: (keyof AppState)[] = [
   "showLabels",
   "showEdges",
   "showBboxes",
+  "showCentroids",
+  "inferenceSettings",
+  "showPoseBboxes",
+  "poseBboxPadding",
+  "poseBboxIncludePredicted",
   "showNonVisibleNodes",
   "showCrosshair",
   "colorPredicted",
@@ -941,6 +963,11 @@ export const useAppStore = create<AppState>()(
       showLabels: true,
       showEdges: true,
       showBboxes: true,
+      showCentroids: true,
+      inferenceSettings: null,
+      showPoseBboxes: false,
+      poseBboxPadding: 0,
+      poseBboxIncludePredicted: false,
       showNonVisibleNodes: true,
       visibleSceneRect: null,
       showCrosshair: false,
@@ -1097,6 +1124,7 @@ export const useAppStore = create<AppState>()(
       selectedBboxIdx: null,
       bboxFromPosesOpen: false,
       bboxPosePreviewPadding: null,
+      bboxPosePreviewIncludePredicted: false,
 
       // Debug
       debugMode: false,

@@ -431,6 +431,8 @@ describe("startTraining (remote) — telemetry + post-training inference", () =>
       results: [{ jobId: "track1", success: true, resultBlobs: { predictions: PREDICTIONS } }],
       mode: "keep",
       trackOnly: false,
+      // A suggestions run on the project .slp: its output keeps the project's video order.
+      videoTargets: ["project"],
     });
     expect(mergeRemoteResultsMock).not.toHaveBeenCalled();
 

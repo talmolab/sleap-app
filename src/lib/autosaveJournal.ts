@@ -27,6 +27,8 @@ import {
   LabeledFrame,
   UserBoundingBox,
   PredictedBoundingBox,
+  UserCentroid,
+  PredictedCentroid,
   type BoundingBox,
   type Labels,
   type Video,
@@ -85,6 +87,26 @@ export interface BboxDelta {
   src: string;
 }
 
+/** One centroid's state (e.g. a Centroid Only run's predictions). */
+export interface CentroidDelta {
+  x: number;
+  y: number;
+  /** Predicted centroid? */
+  p: boolean;
+  /** Score (predicted only); null otherwise. */
+  s: number | null;
+  /** Index into base.tracks, or -1 if untracked. */
+  t: number;
+  /** Tracking score; null if unrecorded. */
+  ts: number | null;
+  /** Index of the linked instance in this frame's `ins`, or -1. */
+  i: number;
+  /** Category, name, source. */
+  c: string;
+  n: string;
+  src: string;
+}
+
 /** One frame's full imageless state. */
 export interface FrameDelta {
   /** Index into base.videos. */
@@ -99,6 +121,16 @@ export interface FrameDelta {
    * replay then leaves the base frame's boxes as they are.
    */
   bb?: BboxDelta[];
+  /**
+   * Centroids. Absent in journals written before centroids were recorded;
+   * replay then leaves the base frame's centroids as they are.
+   */
+  ce?: CentroidDelta[];
+  /**
+   * The frame no longer exists (deleted, or its creation undone); replay
+   * removes it. Absent in journals written before deletions were recorded.
+   */
+  del?: true;
 }
 
 /** Reverse lookups from base entities to their array indices (built per tick). */
@@ -119,6 +151,15 @@ export function buildBaseIndex(labels: Labels): BaseIndex {
   return { videos, tracks, skeletons };
 }
 
+/** A delta recording that (video, frameIdx) no longer has a labeled frame. */
+export function encodeFrameDeletion(
+  video: Video,
+  frameIdx: number,
+  index: BaseIndex,
+): FrameDelta {
+  return { v: index.videos.get(video) ?? -1, f: frameIdx, neg: false, ins: [], del: true };
+}
+
 /** Encode one labeled frame to a delta, referencing base entities by index. */
 export function encodeFrameDelta(frame: LabeledFrame, index: BaseIndex): FrameDelta {
   return {
@@ -127,6 +168,18 @@ export function encodeFrameDelta(frame: LabeledFrame, index: BaseIndex): FrameDe
     neg: frame.isNegative,
     ins: frame.instances.map((inst) => encodeInstance(inst, index)),
     bb: (frame.bboxes ?? []).map((box) => encodeBbox(box, frame, index)),
+    ce: (frame.centroids ?? []).map((c) => ({
+      x: c.x,
+      y: c.y,
+      p: c.isPredicted,
+      s: c instanceof PredictedCentroid ? c.score ?? null : null,
+      t: c.track ? index.tracks.get(c.track) ?? -1 : -1,
+      ts: c.trackingScore ?? null,
+      i: c.instance ? frame.instances.indexOf(c.instance) : -1,
+      c: c.category ?? "",
+      n: c.name ?? "",
+      src: c.source ?? "",
+    })),
   };
 }
 
@@ -218,8 +271,9 @@ export function decodeJournal(bytes: Uint8Array): {
 /**
  * Apply journal deltas onto a loaded base `Labels`, in order (last write per
  * (video, frameIdx) wins). Existing frames have their instances replaced;
- * frames absent from the base are created. Instances are rebuilt against the
- * base's own track/skeleton objects (by index) so identity is preserved.
+ * frames absent from the base are created; a deletion record removes the
+ * frame. Instances are rebuilt against the base's own track/skeleton objects
+ * (by index) so identity is preserved.
  * Defensive: a delta referencing an out-of-range video/skeleton is skipped
  * rather than throwing (recovery must never crash on a bad record).
  */
@@ -238,6 +292,7 @@ export function applyDeltas(base: Labels, deltas: FrameDelta[]): void {
     m.set(lf.frameIdx, lf);
   }
 
+  const removed = new Set<LabeledFrame>();
   for (const delta of deltas) {
     const video = base.videos[delta.v];
     if (!video) continue; // unknown/out-of-range video — skip defensively
@@ -245,6 +300,12 @@ export function applyDeltas(base: Labels, deltas: FrameDelta[]): void {
     if (!m) {
       m = new Map();
       byVideo.set(video, m);
+    }
+    if (delta.del) {
+      const gone = m.get(delta.f);
+      if (gone) removed.add(gone);
+      m.delete(delta.f);
+      continue;
     }
     let lf = m.get(delta.f);
     if (!lf) {
@@ -258,6 +319,24 @@ export function applyDeltas(base: Labels, deltas: FrameDelta[]): void {
     lf.instances = slots.filter((inst): inst is Instance => inst !== null);
     lf.isNegative = delta.neg;
     if (delta.bb) lf.bboxes = delta.bb.map((b) => rebuildBbox(b, base, slots));
+    if (delta.ce) {
+      lf.centroids = delta.ce.map((c) => {
+        const opts = {
+          x: c.x ?? Number.NaN,
+          y: c.y ?? Number.NaN,
+          track: c.t >= 0 ? base.tracks[c.t] ?? null : null,
+          trackingScore: c.ts,
+          instance: c.i >= 0 ? slots[c.i] ?? null : null,
+          category: c.c,
+          name: c.n,
+          source: c.src,
+        };
+        return c.p ? new PredictedCentroid({ ...opts, score: c.s ?? Number.NaN }) : new UserCentroid(opts);
+      });
+    }
+  }
+  if (removed.size > 0) {
+    base.labeledFrames = base.labeledFrames.filter((lf) => !removed.has(lf));
   }
 
   // We mutated `labeledFrames`/`instances` directly, so io's count-guarded

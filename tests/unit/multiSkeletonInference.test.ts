@@ -18,6 +18,7 @@ import {
 } from "@talmolab/sleap-io.js";
 import {
   configForSkeletonRun,
+  remoteIgnoredRunSettings,
   forgetFailedModelReads,
   remoteMixedFramesProblem,
   remoteSpecScope,
@@ -719,6 +720,30 @@ describe("per-skeleton settings (one tab per skeleton)", () => {
     // The plan carries each skeleton's node count.
     const plan = planMultiSkeletonInference([mouseCentroid, mouseCi, pelletCentroid], makeTwoSkeletonProject().labels.skeletons);
     expect(runSpecsFromPlan(plan).map((r) => [r.skeletonName, r.nodeCount])).toEqual([["mouse", 3], ["pellet", 1]]);
+  });
+
+  // A worker that drops settings is checked per tab, naming the skeletons affected.
+  it("lists the settings a Connect worker won't apply, per skeleton", () => {
+    const base = {
+      ...DEFAULT_SKELETON_RUN_SETTINGS, pipeline: "top-down", trackOnly: false, modelPaths: [], videoIndex: 0,
+      frameRange: "video", sampleCount: 20, excludeUserLabeled: false, existingPredictions: "replace", batchSize: 4,
+      device: "auto", runtime: "auto", integralRefinement: true, integralPatchSize: 5, kfNodeIndices: [],
+      ensureChannels: "auto", filterOverlapping: false,
+    } as unknown as InferenceConfig;
+    const config: InferenceConfig = {
+      ...base,
+      skeletonRuns: [
+        { skeletonName: "mouse", skeletonIndex: 0, modelPaths: ["/m/c"], pipeline: "top-down", nodeCount: 3,
+          settings: { ...DEFAULT_SKELETON_RUN_SETTINGS, maxInstances: 2, tracking: true, trackerMethod: "kalman" } },
+        { skeletonName: "pellet", skeletonIndex: 1, modelPaths: ["/m/p"], pipeline: "centroid-only", nodeCount: 1,
+          settings: { ...DEFAULT_SKELETON_RUN_SETTINGS, maxInstances: 10 } },
+      ],
+    };
+    expect(remoteIgnoredRunSettings(config)).toEqual([
+      "Max instances (mouse, pellet)",
+      "Kalman tracker (the worker runs the classic tracker) (mouse)",
+    ]);
+    expect(remoteIgnoredRunSettings(config, ["track_options_v2"])).toEqual([]);
   });
 
   // A box detector alone can't be tracked, whatever its tab says.

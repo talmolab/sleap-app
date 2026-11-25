@@ -69,8 +69,10 @@ import { getActiveTrackOverrides } from "../../lib/trackColorOverrides";
 import { COLORMAPS } from "../../lib/colormaps";
 import { renderTrails } from "../../canvas/TrailRenderer";
 import { bboxColor, buildRenderedBboxes, renderBboxes, renderBboxHandles, renderBboxPreview, type RenderedBbox } from "../../canvas/BboxRenderer";
+import { buildRenderedCentroids, renderCentroids, type RenderedCentroid } from "../../canvas/CentroidRenderer";
 import { dragRect, handleCursor, hitTestBbox, MIN_BBOX_SIZE, rectFromPoints, rectOfCorners, type BboxHandle } from "@/lib/bboxEditing";
 import { AddBbox, DeleteBbox, SetBboxGeometry, posesToBboxes } from "@/commands/bboxCommands";
+import { derivePoseBboxes } from "@/lib/poseBboxes";
 import { instanceInsideRect } from "@/lib/bboxLinking";
 import {
   commandContext,
@@ -215,6 +217,10 @@ export function VideoPlayer() {
   const showLabels = useAppStore((s) => s.showLabels);
   const showEdges = useAppStore((s) => s.showEdges);
   const showBboxes = useAppStore((s) => s.showBboxes);
+  const showCentroids = useAppStore((s) => s.showCentroids);
+  const showPoseBboxes = useAppStore((s) => s.showPoseBboxes);
+  const poseBboxPadding = useAppStore((s) => s.poseBboxPadding);
+  const poseBboxIncludePredicted = useAppStore((s) => s.poseBboxIncludePredicted);
   const showNonVisibleNodes = useAppStore((s) => s.showNonVisibleNodes);
   const hiddenInstances = useAppStore((s) => s.hiddenInstances);
   const viewOnlyInstance = useAppStore((s) => s.viewOnlyInstance);
@@ -304,6 +310,7 @@ export function VideoPlayer() {
   const bboxDrawMode = useAppStore((s) => s.bboxDrawMode);
   const selectedBboxIdx = useAppStore((s) => s.selectedBboxIdx);
   const bboxPosePreviewPadding = useAppStore((s) => s.bboxPosePreviewPadding);
+  const bboxPosePreviewIncludePredicted = useAppStore((s) => s.bboxPosePreviewIncludePredicted);
   const showCrosshair = useAppStore((s) => s.showCrosshair);
   // Image-features ROI crop tool (shared with the Suggestions panel).
   const imageFeatureRoiDrawActive = useAppStore((s) => s.imageFeatureRoiDrawActive);
@@ -1566,6 +1573,99 @@ export function VideoPlayer() {
   ]);
   renderedBboxesRef.current = renderedBboxes;
 
+  // Centroids on this frame (a Centroid Only run's predictions, for one),
+  // colored like boxes: by track, yellow when predicted and "Color predicted"
+  // is off, else bright blue.
+  const renderedCentroids = useMemo<RenderedCentroid[]>(() => {
+    if (!labeledFrame || !showInstances || !showCentroids || !video) return [];
+    const centroids = labeledFrame.centroids ?? [];
+    if (centroids.length === 0) return [];
+    const tracks = labels?.tracks ?? [];
+    const colorTarget = resolveColorTarget(distinctlyColor, projectHasTracks);
+    return buildRenderedCentroids(centroids, {
+      toImage: (x, y) => toImageCoords(video, x, y),
+      colorFor: (c, idx) =>
+        bboxColor({
+          index: idx,
+          isPredicted: c.isPredicted,
+          colorPredicted,
+          colorTarget,
+          track: c.track ?? c.instance?.track ?? null,
+          tracks,
+          palette,
+          trackColorOverrides,
+        }),
+    });
+  }, [
+    labeledFrame,
+    showInstances,
+    showCentroids,
+    video,
+    labels,
+    palette,
+    distinctlyColor,
+    colorPredicted,
+    projectHasTracks,
+    trackColorOverrides,
+    overlayVersion,
+  ]);
+
+  // View ▸ Show Boxes Around Poses: the box around each visible pose, in its
+  // color, as sleap-nn would derive it. Drawn only: never saved, and kept out
+  // of renderedBboxesRef so they can't be clicked or selected.
+  const renderedPoseBboxes = useMemo<RenderedBbox[]>(() => {
+    if (!labeledFrame || !showInstances || !showPoseBboxes || !video) return [];
+    const derived = derivePoseBboxes(labeledFrame, {
+      padding: poseBboxPadding,
+      includePredicted: poseBboxIncludePredicted,
+    });
+    if (derived.length === 0) return [];
+    const indexOf = new Map(labeledFrame.instances.map((inst, i) => [inst, i]));
+    const tracks = labels?.tracks ?? [];
+    const colorTarget = resolveColorTarget(distinctlyColor, projectHasTracks);
+    const out: RenderedBbox[] = [];
+    for (const { instance, box } of derived) {
+      const idx = indexOf.get(instance) ?? -1;
+      const ri = renderedInstances[idx];
+      if (!ri || !ri.visible) continue;
+      // Colored like a stored box linked to this instance (its track's color,
+      // yellow for an uncolored prediction, bright blue when untracked), so
+      // it stays visible where an untracked pose's grey would not.
+      const [rb] = buildRenderedBboxes([box], {
+        toImage: (x, y) => toImageCoords(video, x, y),
+        colorFor: () =>
+          bboxColor({
+            index: idx,
+            isPredicted: box instanceof PredictedBoundingBox,
+            colorPredicted,
+            colorTarget,
+            linkedInstanceColor: ri.color,
+            track: instance.track ?? null,
+            tracks,
+            palette,
+            trackColorOverrides,
+          }),
+      });
+      if (rb) out.push({ ...rb, index: -1, label: null, isDerived: true });
+    }
+    return out;
+  }, [
+    labeledFrame,
+    showInstances,
+    showPoseBboxes,
+    poseBboxPadding,
+    poseBboxIncludePredicted,
+    video,
+    labels,
+    renderedInstances,
+    distinctlyColor,
+    projectHasTracks,
+    colorPredicted,
+    palette,
+    trackColorOverrides,
+    overlayVersion,
+  ]);
+
   // A box selection belongs to one frame.
   useEffect(() => {
     useAppStore.getState().set("selectedBboxIdx", null);
@@ -1836,7 +1936,13 @@ export function VideoPlayer() {
       );
     }
 
-    // Bounding boxes sit behind the poses they enclose.
+    // Bounding boxes sit behind the poses they enclose; boxes drawn around
+    // poses (not stored) sit behind the stored ones.
+    renderBboxes(ctx, renderedPoseBboxes, {
+      zoom: baseScale * zoom,
+      opacity: poseOpacity / 100,
+      showLabels: false,
+    });
     renderBboxes(ctx, renderedBboxes, {
       zoom: baseScale * zoom,
       opacity: poseOpacity / 100,
@@ -1847,9 +1953,14 @@ export function VideoPlayer() {
       renderBboxHandles(ctx, rectOfCorners(selectedRb.corners), selectedRb.color, baseScale * zoom);
     }
     if (bboxPreview) renderBboxPreview(ctx, bboxPreview, baseScale * zoom);
+    renderCentroids(ctx, renderedCentroids, {
+      zoom: baseScale * zoom,
+      opacity: poseOpacity / 100,
+      showLabels,
+    });
     // Boxes from Poses dialog: preview the boxes it would add on this frame.
     if (bboxPosePreviewPadding !== null && labeledFrame && video) {
-      for (const b of posesToBboxes(labeledFrame, bboxPosePreviewPadding)) {
+      for (const b of posesToBboxes(labeledFrame, bboxPosePreviewPadding, bboxPosePreviewIncludePredicted)) {
         renderBboxPreview(ctx, b.corners.map(([cx, cy]) => toImageCoords(video, cx, cy)), baseScale * zoom);
       }
     }
@@ -1968,8 +2079,11 @@ export function VideoPlayer() {
   }, [
     renderedInstances,
     renderedBboxes,
+    renderedCentroids,
     bboxPreview,
     bboxPosePreviewPadding,
+    bboxPosePreviewIncludePredicted,
+    renderedPoseBboxes,
     labeledFrame,
     selectedInstance,
     showInstances,
