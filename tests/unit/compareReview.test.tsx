@@ -360,22 +360,26 @@ describe("hand-test fixes (real grayscale video, project instances)", () => {
     expect(projectPosesOnFrame(labels, video, 6, NODES)).toEqual([]);
   });
 
-  // Hand-test #525: with "Show project instances (H)" off the crops leave them out, and say so loudly.
-  it("follows the H toggle and shows when instances are hidden", () => {
+  // Hand-test #538: the cards open without the project's instances (the window's own eye, not H); the eye turns them on.
+  it("opens with project instances off, separate from H", () => {
     const skeleton = new Skeleton({ nodes: NODES, name: "s" });
     const video = makeVideo();
     const lf = new LabeledFrame({ video, frameIdx: 0 });
     lf.instances.push(makeUser(skeleton, poseAt(10, 20)));
     const labels = new Labels({ videos: [video], skeletons: [skeleton], labeledFrames: [lf] });
     useAppStore.setState({ ...useAppStore.getInitialState(), labels, video, skeleton, showInstances: true });
-    const shown = renderHook(() => useProjectPoses(0));
-    expect(shown.result.current).toHaveLength(1);
-    act(() => useAppStore.setState({ showInstances: false }));
-    expect(shown.result.current).toBeUndefined();
-    render(<ProjectInstancesKey count={null} />);
-    fireEvent.click(screen.getByTestId("review-project-hidden"));
+    useCompareReviewStore.getState().setShowProjectInstances(true);
+    useCompareReviewStore.getState().setOpen(true);
+    expect(useCompareReviewStore.getState().showProjectInstances).toBe(false);
+    // The poses are still found (for the "N here" count); the toggle decides whether they're drawn.
+    expect(renderHook(() => useProjectPoses(0)).result.current).toHaveLength(1);
+    render(<ProjectInstancesKey count={1} />);
+    expect(screen.getByTestId("review-project-key").textContent).toContain("hidden");
+    fireEvent.click(screen.getByTestId("review-project-toggle"));
+    expect(useCompareReviewStore.getState().showProjectInstances).toBe(true);
     expect(useAppStore.getState().showInstances).toBe(true);
-    expect(screen.getByTestId("review-project-key")).toBeTruthy();
+    expect(screen.getByTestId("review-project-key").textContent).not.toContain("hidden");
+    useCompareReviewStore.getState().setOpen(false);
   });
 });
 
@@ -551,5 +555,92 @@ describe("review window: which node is which", () => {
     expect(screen.queryByTestId("review-status")).toBeNull();
     cleanup();
     useModelOverlayStore.getState().clear();
+  });
+});
+
+describe("review window card layout (hand-test 2026-11-24)", () => {
+  // Hand-test #538: cards always have a 4-per-row slot's size (2 cards don't grow); a 5th wraps.
+  it("keeps every card the size of a 4-per-row slot and wraps the 5th", async () => {
+    const { cardLayout } = await import("@/components/video/compareReview/CompareReviewWindow");
+    const two = cardLayout(2, 1200, 800);
+    const four = cardLayout(4, 1200, 800);
+    const five = cardLayout(5, 1200, 800);
+    expect([two.cols, two.rows]).toEqual([2, 1]);
+    expect([four.cols, four.rows]).toEqual([4, 1]);
+    expect([five.cols, five.rows]).toEqual([4, 2]);
+    expect(two.cardWidth).toBe(four.cardWidth);
+    expect(two.cardHeight).toBe(four.cardHeight);
+    expect(four.cardWidth).toBe(Math.floor((1200 - 24) / 4) - 10);
+    // Two rows still fit the height with their buttons.
+    expect(2 * (five.cardHeight + 110) + 8).toBeLessThanOrEqual(800);
+});
+});
+
+describe("Hide model predictions (M)", () => {
+  afterEach(() => {
+    cleanup();
+    useModelOverlayStore.getState().clear();
+  });
+
+  // Hand-test: the models could not be hidden to look at the project's own instances; M (remappable) does it.
+  it("is bound to M, listed in the Shortcuts dialog, and hides the models on the canvas only", async () => {
+    const { DEFAULT_SHORTCUTS } = await import("@/lib/shortcuts");
+    const { SHORTCUT_CATEGORIES } = await import("@/lib/shortcutEditing");
+    const { useModelOverlayFrame } = await import("@/hooks/useModelOverlayFrame");
+    const { toggleModelPredictions } = await import("@/lib/modelOverlay/canvasActions");
+    expect(DEFAULT_SHORTCUTS["show model predictions"]).toBe("KeyM");
+    expect(Object.values(DEFAULT_SHORTCUTS).filter((k) => k === "KeyM")).toHaveLength(1);
+    expect(SHORTCUT_CATEGORIES.View).toContain("show model predictions");
+
+    const video = makeVideo();
+    const labels = new Labels({ videos: [video] });
+    useAppStore.setState({ ...useAppStore.getInitialState(), labels, video, frameIdx: 0 });
+    useModelOverlayStore.getState().addModels(labels, [
+      { name: "a", source: "/a.slp", video, frames: new Map([[0, [pose(poseAt(10, 10))]]]) },
+    ]);
+    const frame = renderHook(() => useModelOverlayFrame());
+    expect(frame.result.current.layers).toHaveLength(1);
+    render(<ModelOverlayLegend disagreementCount={0} />);
+    expect(screen.getByTestId("model-overlay-hide-models").textContent).toBe("Hide model predictions (M)");
+    act(() => toggleModelPredictions());
+    expect(frame.result.current.layers).toHaveLength(0);
+    expect(screen.getByTestId("model-overlay-hide-models").textContent).toBe("Show model predictions (M)");
+    // The models stay loaded (the Review window still shows them).
+    expect(useModelOverlayStore.getState().models).toHaveLength(1);
+  });
+});
+
+describe("Label QC Review hides the models", () => {
+  afterEach(async () => {
+    const { useQcStore } = await import("@/stores/qcStore");
+    useQcStore.setState({ reviewOpen: false });
+    useModelOverlayStore.getState().clear();
+  });
+
+  // Hand-test #538: QC Review is about your labels; the models start hidden there, M still shows them, and leaving restores M.
+  it("hides models while QC Review is open and restores the user's choice after", async () => {
+    const { useQcStore } = await import("@/stores/qcStore");
+    const { toggleModelPredictions } = await import("@/lib/modelOverlay/canvasActions");
+    const video = makeVideo();
+    const labels = new Labels({ videos: [video] });
+    useAppStore.setState({ ...useAppStore.getInitialState(), labels, video, frameIdx: 0 });
+    useModelOverlayStore.getState().addModels(labels, [
+      { name: "a", source: "/a.slp", video, frames: new Map([[0, [pose(poseAt(10, 10))]]]) },
+    ]);
+    const hidden = () => useModelOverlayStore.getState().hideModels;
+    expect(hidden()).toBe(false);
+    useQcStore.setState({ reviewOpen: true });
+    expect(hidden()).toBe(true);
+    toggleModelPredictions(); // M during Review shows them
+    expect(hidden()).toBe(false);
+    useQcStore.setState({ reviewOpen: false });
+    expect(hidden()).toBe(false); // back to what it was before Review
+
+    // Hidden before Review: still hidden after.
+    toggleModelPredictions();
+    useQcStore.setState({ reviewOpen: true });
+    toggleModelPredictions();
+    useQcStore.setState({ reviewOpen: false });
+    expect(hidden()).toBe(true);
   });
 });

@@ -57,6 +57,8 @@ import { requestToggleNegativeFrame } from "@/lib/negativeFrame";
 import { isNativeMenuShortcut } from "@/lib/menu/nativeMenuOwnership";
 import { handleQcReviewKey } from "@/stores/qcStore";
 import { handleProposalKey } from "@/lib/proposalReview";
+import { useModelOverlayStore } from "@/stores/modelOverlayStore";
+import { toggleModelPredictions } from "@/lib/modelOverlay/canvasActions";
 
 type Bindings = Record<string, (e: KeyboardEvent) => void>;
 
@@ -277,6 +279,12 @@ export function useKeyboardShortcuts() {
         if (isTextInput(e)) return;
         e.preventDefault();
         store().toggle("showInstances");
+      },
+      "show model predictions": (e) => {
+        if (isTextInput(e)) return;
+        if (useModelOverlayStore.getState().models.length === 0) return;
+        e.preventDefault();
+        toggleModelPredictions();
       },
       "show labels": (e) => {
         if (isTextInput(e)) return;

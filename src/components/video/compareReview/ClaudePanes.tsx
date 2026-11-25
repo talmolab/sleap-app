@@ -11,7 +11,7 @@
  * disagree on it), the project's own prediction stands in as the one model:
  * "Use this one" turns it into a user instance as is.
  */
-import { useMemo } from "react";
+import { useLayoutEffect, useMemo, useRef, useState } from "react";
 import { Check, PenLine, SkipForward, Sparkles, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
@@ -20,7 +20,7 @@ import { rgbToCSS } from "@/lib/colorPalettes";
 import { useAppStore } from "@/stores/appStore";
 import { canAccept, canRevert, proposalInstance, proposalState, useProposalStore, type Proposal } from "@/stores/proposalStore";
 import { isReviewed, useCompareReviewStore } from "@/stores/compareReviewStore";
-import { acceptProposal, rejectProposal, revertProposal, unrejectProposal } from "@/lib/proposalReview";
+import { acceptProposal, proposalChangeText, rejectProposal, revertProposal, unrejectProposal } from "@/lib/proposalReview";
 import { commandContext, ConvertPredictionToInstance } from "@/commands";
 import type { NodeMark, ProjectPose, Rect } from "@/lib/modelOverlay/review";
 import type { Video } from "@/types";
@@ -54,15 +54,44 @@ function changedMarks(p: Proposal, nodeNames: readonly string[], xy: Float64Arra
     .filter((m) => Number.isFinite(m.x) && Number.isFinite(m.y));
 }
 
-/** What Claude's correction would do, in a few words. */
-export function proposalSummary(p: Proposal): string {
-  const vals = Object.values(p.after);
-  const moved = vals.filter((v) => v !== null).length;
-  const hidden = vals.length - moved;
-  const parts = [];
-  if (moved) parts.push(`move ${moved} node${moved === 1 ? "" : "s"}`);
-  if (hidden) parts.push(`hide ${hidden} node${hidden === 1 ? "" : "s"}`);
-  return parts.length === 0 ? "accept the prediction as is" : parts.join(", ");
+/**
+ * Claude's reason: two lines, so the card keeps its size and its buttons stay
+ * in view; click it to read it all in place (click again to fold it). A
+ * "more" / "less" cue shows when there is more to read.
+ */
+export function ClaudeReason({ reason }: { reason: string }) {
+  const [open, setOpen] = useState(false);
+  const [overflows, setOverflows] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
+  useLayoutEffect(() => {
+    const el = ref.current;
+    if (el && !open) setOverflows(el.scrollHeight > el.clientHeight + 1);
+  }, [reason, open]);
+  const canToggle = overflows || open;
+  return (
+    <div className="px-1">
+      <div
+        ref={ref}
+        className={cn("whitespace-pre-wrap break-words text-[11px] leading-snug", !open && "line-clamp-2", canToggle && "cursor-pointer")}
+        onClick={() => canToggle && setOpen(!open)}
+        title={canToggle ? (open ? "Click to show less" : "Click to read it all") : undefined}
+        data-testid="review-claude-reason"
+        data-expanded={open || undefined}
+      >
+        {reason}
+      </div>
+      {canToggle && (
+        <button
+          type="button"
+          className="text-[10px] text-muted-foreground underline decoration-dotted underline-offset-2 hover:text-foreground"
+          onClick={() => setOpen(!open)}
+          data-testid="review-claude-reason-toggle"
+        >
+          {open ? "less" : "more"}
+        </button>
+      )}
+    </div>
+  );
 }
 
 /** Revert (accepted) / Undo reject (rejected): neither is something ⌘Z can reach. */
@@ -113,7 +142,17 @@ function goToFrame(frame: number) {
   if (app.frameIdx !== frame) app.setFrameIdx(frame);
 }
 
-export function ClaudePane({ proposal, video, frame, crop, nodeNames, edges, width, height, onDecided }: PaneProps & { onDecided: () => void }) {
+export function ClaudePane({
+  proposal,
+  video,
+  frame,
+  crop,
+  nodeNames,
+  edges,
+  width,
+  height,
+  onDecided,
+}: PaneProps & { onDecided: () => void }) {
   // Re-render on any proposal change and any edit (outdated / Revert depend on the labels).
   const p = useProposalStore((s) => s.proposals.find((x) => x.id === proposal.id)) ?? proposal;
   useAppStore((s) => s.editSeq);
@@ -130,15 +169,26 @@ export function ClaudePane({ proposal, video, frame, crop, nodeNames, edges, wid
       data-testid="review-claude-pane"
     >
       {/* No projectPoses: Claude's pose shows whatever H says. */}
-      <ModelCropCanvas video={video} frame={frame} crop={crop} poses={poses} consensus={null} marks={marks} edges={edges} width={width} height={height} />
+      <ModelCropCanvas
+        video={video}
+        frame={frame}
+        crop={crop}
+        poses={poses}
+        consensus={null}
+        marks={marks}
+        edges={edges}
+        width={width}
+        height={height}
+      />
       <div className="flex items-center gap-1 px-1 pt-1">
         <Sparkles className="h-3 w-3 shrink-0" style={{ color: rgbToCSS(CLAUDE_COLOR) }} aria-hidden />
-        <span className="font-medium">Claude&apos;s suggestion</span>
-        <span className="ml-auto truncate text-muted-foreground">{proposalSummary(p)}</span>
+        <span className="whitespace-nowrap font-medium">Claude&apos;s suggestion</span>
       </div>
-      <div className="line-clamp-2 px-1 text-[11px]" title={p.reason} data-testid="review-claude-reason">
-        {p.reason}
+      {/* What it changes, naming the nodes, then the reason in full (wrapped, never cut off). */}
+      <div className="px-1 text-[11px] text-muted-foreground" data-testid="review-claude-summary">
+        {proposalChangeText(p, nodeNames)}
       </div>
+      <ClaudeReason reason={p.reason} />
       {status && (
         <div
           className={cn("px-1 text-[11px]", st === "accepted" ? "text-green-500" : st === "outdated" ? "text-amber-500" : "text-muted-foreground")}
@@ -222,10 +272,21 @@ export function PredictionPane({
       className={cn("flex flex-col rounded border p-1", accepted ? "border-green-500 bg-green-500/10" : "border-border")}
       data-testid="review-prediction-pane"
     >
-      <ModelCropCanvas video={video} frame={frame} crop={crop} poses={poses} consensus={null} marks={marks} projectPoses={projectPoses} edges={edges} width={width} height={height} />
+      <ModelCropCanvas
+        video={video}
+        frame={frame}
+        crop={crop}
+        poses={poses}
+        consensus={null}
+        marks={marks}
+        projectPoses={projectPoses}
+        edges={edges}
+        width={width}
+        height={height}
+      />
       <div className="flex items-center gap-1 px-1 pt-1">
         <span className="inline-block h-2.5 w-2.5 shrink-0 rounded-full" style={{ backgroundColor: rgbToCSS(PREDICTION_COLOR) }} />
-        <span className="min-w-0 flex-1 truncate">Project prediction</span>
+        <span className="min-w-0 flex-1 truncate whitespace-nowrap">Project prediction</span>
         {score !== null && (
           <span className="tabular-nums text-muted-foreground" title="The model's instance score">
             {score.toFixed(2)}

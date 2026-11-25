@@ -78,9 +78,14 @@ export function useModelOverlayFrame(): ModelOverlayFrame {
   const highlight = useModelOverlayStore((s) => s.highlightDisagreement);
   const threshold = useModelOverlayStore((s) => s.threshold);
   const sel = useModelOverlayStore((s) => s.selected);
+  const hidden = useModelOverlayStore((s) => s.hideModels);
   const video = useAppStore((s) => s.video);
   const frameIdx = useAppStore((s) => s.frameIdx);
-  const layers = useMemo(() => modelOverlayLayers(models, video, frameIdx), [models, video, frameIdx]);
+  // "Hide model predictions (M)": nothing drawn, ringed or clickable on the canvas.
+  const layers = useMemo(
+    () => (hidden ? [] : modelOverlayLayers(models, video, frameIdx)),
+    [hidden, models, video, frameIdx]
+  );
   const byTrack = useMemo(() => shownModelsShareTracks(models, video), [models, video]);
   const disagreements = useMemo(
     () => (highlight ? frameDisagreements(layers, byTrack, threshold) : []),

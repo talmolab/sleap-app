@@ -71,6 +71,7 @@ export const SHORTCUT_CATEGORIES: Record<string, string[]> = {
     "fit",
     "reset view",
     "show instances",
+    "show model predictions",
     "show labels",
     "show edges",
     "show non-visible nodes",

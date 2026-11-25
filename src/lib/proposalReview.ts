@@ -15,7 +15,7 @@
 import { useAppStore } from "@/stores/appStore";
 import { useQcStore } from "@/stores/qcStore";
 import { useCompareReviewStore } from "@/stores/compareReviewStore";
-import { canAccept, proposalState, useProposalStore, type Proposal } from "@/stores/proposalStore";
+import { canAccept, correctionResult, proposalInstance, proposalState, useProposalStore, type Proposal } from "@/stores/proposalStore";
 import { AutomationError } from "@/automation/errors";
 import { toast } from "@/lib/notify";
 
@@ -162,3 +162,23 @@ useProposalStore.subscribe((s, prev) => {
   if (toastTimer) clearTimeout(toastTimer);
   toastTimer = setTimeout(showSuggestionsToast, TOAST_DELAY_MS);
 });
+
+/**
+ * What Claude's proposal changes, naming the nodes, for the review windows:
+ * "Moves head, torso · hides tail_base". "Ignore this flag" for an ignore,
+ * "Accepts the prediction as is" for a correction with no changes. Names come
+ * from the instance's own skeleton (else `fallbackNames`, else "node k").
+ */
+export function proposalChangeText(p: Proposal, fallbackNames: readonly string[] = []): string {
+  if (p.kind === "ignore") return "Ignore this flag";
+  const names = (proposalInstance(p) ?? correctionResult(p))?.skeleton.nodeNames ?? fallbackNames;
+  const moved: string[] = [];
+  const hidden: string[] = [];
+  for (const [k, v] of Object.entries(p.after)) (v === null ? hidden : moved).push(names[Number(k)] ?? `node ${k}`);
+  const parts: string[] = [];
+  if (moved.length) parts.push(`moves ${moved.join(", ")}`);
+  if (hidden.length) parts.push(`hides ${hidden.join(", ")}`);
+  if (parts.length === 0) return p.kind === "correct" ? "Accepts the prediction as is" : "No changes";
+  const text = parts.join(" · ");
+  return text[0].toUpperCase() + text.slice(1);
+}

@@ -14,6 +14,7 @@ import { nextModelColor, uniqueModelName } from "@/lib/modelOverlay/core";
 import { trackNamesOf, type PoseFrames } from "@/lib/modelOverlay/poseStore";
 import type { TraceTarget } from "@/lib/modelOverlay/traces";
 import { useAppStore } from "@/stores/appStore";
+import { useQcStore } from "@/stores/qcStore";
 
 export interface OverlayModel {
   id: string;
@@ -65,6 +66,9 @@ interface ModelOverlayState {
   setSelected: (sel: SelectedModelPose | null) => void;
   /** The corner panel folded into a small pill (models stay drawn). */
   legendMinimized: boolean;
+  /** The models' poses are hidden on the canvas (M); the Review window still shows them. */
+  hideModels: boolean;
+  toggleHideModels: () => void;
   setLegendMinimized: (minimized: boolean) => void;
   /** The per-node traces strip under the video. */
   tracesOpen: boolean;
@@ -96,6 +100,8 @@ export const useModelOverlayStore = create<ModelOverlayState>()((set) => ({
   selected: null,
   setSelected: (sel) => set({ selected: sel }),
   legendMinimized: false,
+  hideModels: false,
+  toggleHideModels: () => set((s) => ({ hideModels: !s.hideModels, selected: null })),
   setLegendMinimized: (minimized) => set({ legendMinimized: minimized }),
   tracesOpen: false,
   setTracesOpen: (open) => set({ tracesOpen: open }),
@@ -143,7 +149,7 @@ export const useModelOverlayStore = create<ModelOverlayState>()((set) => ({
       models: s.models.map((m) => (m.id === id ? { ...m, visible } : m)),
       selected: s.selected?.modelId === id && !visible ? null : s.selected,
     })),
-  clear: () => set({ models: [], labels: null, selected: null, tracesOpen: false }),
+  clear: () => set({ models: [], labels: null, selected: null, tracesOpen: false, hideModels: false }),
 }));
 
 // A different project: its videos aren't the ones these poses were matched to.
@@ -155,5 +161,23 @@ useAppStore.subscribe((s, prev) => {
   const sel = useModelOverlayStore.getState().selected;
   if (sel && (s.frameIdx !== sel.frameIdx || s.video !== sel.video)) {
     useModelOverlayStore.getState().setSelected(null);
+  }
+});
+
+// Label QC Review is about the project's own labels: while it is open, the
+// models' poses start hidden (as if M were pressed), so they don't clutter the
+// review. M or the panel's button still shows them. Leaving Review puts back
+// whatever the user had before.
+let hideBeforeQcReview: boolean | null = null;
+useQcStore.subscribe((s, prev) => {
+  if (s.reviewOpen === prev.reviewOpen) return;
+  const overlay = useModelOverlayStore.getState();
+  if (s.reviewOpen) {
+    if (overlay.models.length === 0) return;
+    hideBeforeQcReview = overlay.hideModels;
+    if (!overlay.hideModels) useModelOverlayStore.setState({ hideModels: true, selected: null });
+  } else if (hideBeforeQcReview !== null) {
+    if (overlay.models.length > 0) useModelOverlayStore.setState({ hideModels: hideBeforeQcReview });
+    hideBeforeQcReview = null;
   }
 });
