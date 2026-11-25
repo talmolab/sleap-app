@@ -21,7 +21,7 @@ import {
 } from "@/components/ui/select";
 import { Search, HelpCircle, RefreshCw, Check, RotateCcw, Lightbulb, AlertTriangle } from "lucide-react";
 import type { Labels } from "@talmolab/sleap-io.js";
-import type { ConfigFile, ConfigHyperparams, Backbone, BackboneSize, ModelType, DataPipeline, ColorMode } from "@/stores/trainingStore";
+import type { ConfigFile, ConfigHyperparams, Backbone, BackboneSize, ModelType, DataPipeline, ColorMode, PostTrainingInferenceSettings } from "@/stores/trainingStore";
 import { getSlotLabel, getConfigSlots, useTrainingStore, BACKBONE_SIZES, resolveBackboneSize } from "@/stores/trainingStore";
 import { checkWandbAuth, detectGpu, type WandbAuth } from "@/platform/backend";
 import { BackendPicker } from "@/components/common/BackendPicker";
@@ -86,6 +86,12 @@ interface TrainingConfigDialogProps {
   onSkipUserLabeledChange: (v: boolean) => void;
   existingPredictions: "clear_all" | "replace" | "keep";
   onExistingPredictionsChange: (v: "clear_all" | "replace" | "keep") => void;
+  /**
+   * Max instances and overlap filtering for the inference after training.
+   * Without it (the Connect launcher) the two controls stay disabled.
+   */
+  postInference?: PostTrainingInferenceSettings;
+  onPostInferenceChange?: (v: PostTrainingInferenceSettings) => void;
   /** Client-side only — no sleap-nn schema field for this, see trainingStore.ts. */
   autoOpenWandb: boolean;
   onAutoOpenWandbChange: (v: boolean) => void;
@@ -1296,6 +1302,8 @@ export function TrainingConfigDialog({
   onSkipUserLabeledChange,
   existingPredictions,
   onExistingPredictionsChange,
+  postInference,
+  onPostInferenceChange,
   autoOpenWandb,
   onAutoOpenWandbChange,
   exportFormat,
@@ -1307,6 +1315,10 @@ export function TrainingConfigDialog({
   configActions,
   mode = "project",
 }: TrainingConfigDialogProps) {
+  const post = onPostInferenceChange ? postInference : undefined;
+  const setPost = (patch: Partial<PostTrainingInferenceSettings>) => {
+    if (post && onPostInferenceChange) onPostInferenceChange({ ...post, ...patch });
+  };
   const pipelineScrollRef = useRef<HTMLDivElement>(null);
   const headScrollRefs = useRef<Record<string, HTMLDivElement | null>>({});
   const [activeTab, setActiveTab] = useState("pipeline");
@@ -1737,33 +1749,60 @@ export function TrainingConfigDialog({
                           </SelectContent>
                         </Select>
                       </div>
-                      {/* Max Instances and Filter Overlapping Instances are inference-time
-                          post-processing concepts (max detections per frame, NMS/IOU/OKS
-                          overlap filtering) with no sleap-nn training key — disabled here so
-                          the training dialog doesn't imply they affect training. */}
-                      <div id={PIPELINE_FIELD_DEFS.maxInstances.id} data-search-field="" className="flex items-center gap-2 scroll-mt-4 opacity-50">
+                      {/* Max Instances and Filter Overlapping Instances have no sleap-nn
+                          training key: like PyQt's training dialog, they apply to the
+                          inference run after training. */}
+                      <div id={PIPELINE_FIELD_DEFS.maxInstances.id} data-search-field="" className={`flex items-center gap-2 scroll-mt-4 ${post ? "" : "opacity-50"}`}>
                         <span className="text-sm text-muted-foreground flex items-center gap-1.5">
                           {PIPELINE_FIELD_DEFS.maxInstances.label}
-                          <HintBubble text="Maximum number of animal instances to detect per frame. Leave empty or check 'No max' for no limit." />
+                          <HintBubble text="Maximum number of animal instances to detect per frame in the inference after training. Check 'No max' for no limit." />
                         </span>
-                        <Input type="number" placeholder="1" disabled className="h-8 text-sm w-16" />
+                        <Input
+                          type="number"
+                          min={1}
+                          placeholder="1"
+                          disabled={!post || post.maxInstances === null}
+                          value={post?.maxInstances ?? ""}
+                          onChange={(e) => {
+                            const n = Math.floor(Number(e.target.value));
+                            if (post && Number.isFinite(n) && n >= 1) setPost({ maxInstances: n });
+                          }}
+                          className="h-8 text-sm w-16"
+                          aria-label="Max instances after training"
+                        />
                       </div>
-                      <label className="flex items-center gap-1.5 opacity-50">
-                        <input type="checkbox" defaultChecked disabled className="accent-primary" />
+                      <label className={`flex items-center gap-1.5 ${post ? "" : "opacity-50"}`}>
+                        <input
+                          type="checkbox"
+                          checked={!post || post.maxInstances === null}
+                          disabled={!post}
+                          onChange={(e) => setPost({ maxInstances: e.target.checked ? null : 2 })}
+                          className="accent-primary"
+                        />
                         <span className="text-sm">No max</span>
                       </label>
                     </div>
                     <div className="flex items-center gap-4">
-                      <label id={PIPELINE_FIELD_DEFS.filterOverlapping.id} data-search-field="" className="flex items-center gap-1.5 scroll-mt-4 opacity-50">
-                        <input type="checkbox" disabled className="accent-primary" />
+                      <label id={PIPELINE_FIELD_DEFS.filterOverlapping.id} data-search-field="" className={`flex items-center gap-1.5 scroll-mt-4 ${post ? "" : "opacity-50"}`}>
+                        <input
+                          type="checkbox"
+                          checked={!!post?.filterOverlapping}
+                          disabled={!post}
+                          onChange={(e) => setPost({ filterOverlapping: e.target.checked })}
+                          className="accent-primary"
+                        />
                         <span className="text-sm flex items-center gap-1">
                           {PIPELINE_FIELD_DEFS.filterOverlapping.label}
-                          <HintBubble text="Removes duplicate detections of the same animal by bounding-box IOU or pose OKS overlap. This is an inference-time post-processing step, not a training parameter — it's disabled here and configured when running inference instead." />
+                          <HintBubble text="In the inference after training, remove duplicate detections of the same animal by bounding-box IOU or pose OKS overlap." />
                         </span>
                       </label>
-                      <div className="flex items-center gap-2 opacity-50">
+                      <div className={`flex items-center gap-2 ${post?.filterOverlapping ? "" : "opacity-50"}`}>
                         <span className="text-sm text-muted-foreground">Method:</span>
-                        <Select value="iou" disabled>
+                        <Select
+                          value={post?.filterMethod ?? "iou"}
+                          disabled={!post?.filterOverlapping}
+                          onValueChange={(v) => setPost({ filterMethod: v as "iou" | "oks" })}
+                        >
                           <SelectTrigger className="h-8 text-sm w-36"><SelectValue /></SelectTrigger>
                           <SelectContent>
                             <SelectItem value="iou">IOU (bounding box)</SelectItem>
@@ -1771,9 +1810,22 @@ export function TrainingConfigDialog({
                           </SelectContent>
                         </Select>
                       </div>
-                      <div className="flex items-center gap-2 opacity-50">
+                      <div className={`flex items-center gap-2 ${post?.filterOverlapping ? "" : "opacity-50"}`}>
                         <span className="text-sm text-muted-foreground">Threshold:</span>
-                        <Input type="number" value={0.80} disabled step={0.05} className="h-8 text-sm w-16" />
+                        <Input
+                          type="number"
+                          value={post?.filterThreshold ?? 0.8}
+                          disabled={!post?.filterOverlapping}
+                          step={0.05}
+                          min={0}
+                          max={1}
+                          onChange={(e) => {
+                            const n = Number(e.target.value);
+                            if (Number.isFinite(n) && n >= 0 && n <= 1) setPost({ filterThreshold: n });
+                          }}
+                          className="h-8 text-sm w-16"
+                          aria-label="Overlap threshold after training"
+                        />
                       </div>
                     </div>
                   </div>

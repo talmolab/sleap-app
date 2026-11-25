@@ -421,8 +421,10 @@ export const DeleteFramePredictions: Command = {
 
     const lf = frames[0];
     lf.instances = lf.instances.filter((inst) => !(inst instanceof PredictedInstance));
-    // A box detector's predictions are boxes: they go too.
+    // A box detector's predictions are boxes, a Centroid Only run's can be
+    // centroids: they go too.
     lf.bboxes = lf.bboxes.filter((b) => !b.isPredicted);
+    lf.centroids = lf.centroids.filter((c) => !c.isPredicted);
     repairBboxLinks(lf);
 
     // If selected instance was predicted, deselect
@@ -930,11 +932,13 @@ export const DeleteAllPredictions: Command = {
 
     let removed = 0;
     for (const lf of labels.labeledFrames) {
-      const before = lf.instances.length + lf.bboxes.length;
+      const before = lf.instances.length + lf.bboxes.length + lf.centroids.length;
       lf.instances = lf.instances.filter((inst) => !(inst instanceof PredictedInstance));
-      // A box detector's predictions are boxes: they go too.
+      // A box detector's predictions are boxes, a Centroid Only run's can be
+      // centroids: they go too.
       lf.bboxes = lf.bboxes.filter((b) => !b.isPredicted);
-      removed += before - lf.instances.length - lf.bboxes.length;
+      lf.centroids = lf.centroids.filter((c) => !c.isPredicted);
+      removed += before - lf.instances.length - lf.bboxes.length - lf.centroids.length;
       repairBboxLinks(lf);
     }
 
@@ -958,6 +962,17 @@ export const DeleteAllPredictions: Command = {
     ctx.state.markChanged();
   },
 };
+
+/**
+ * Remove the skeletons no instance in `labels` uses, so merging `labels` into
+ * a project adds no skeleton the merged data doesn't need.
+ */
+export function dropUnusedSkeletons(labels: Labels): void {
+  const used = new Set<unknown>();
+  for (const lf of labels.labeledFrames) for (const inst of lf.instances) used.add(inst.skeleton);
+  if (labels.skeletons.every((s) => used.has(s))) return;
+  labels.skeletons = labels.skeletons.filter((s) => used.has(s));
+}
 
 /**
  * How inference output combines with the project's EXISTING predictions.
@@ -1053,8 +1068,10 @@ export const MergePredictions: Command = {
         lf.instances = lf.instances.filter(
           (inst) => !(inst instanceof PredictedInstance)
         );
-        // A box detector's predictions are boxes: clear those too.
+        // A box detector's predictions are boxes, a centroid model's can be
+        // centroids: clear those too.
         lf.bboxes = lf.bboxes.filter((b) => !b.isPredicted);
+        lf.centroids = lf.centroids.filter((c) => !c.isPredicted);
       }
       labels.labeledFrames = labels.labeledFrames.filter(frameHasContent);
     }
@@ -1068,6 +1085,12 @@ export const MergePredictions: Command = {
     // Unlike the retired hand-rolled merge, io carries centroids/bboxes/masks/
     // rois + fromPredicted provenance, so the active-learning locator's
     // centroid-only output now survives the merge.
+    // A skeleton no predicted instance uses would still be added to the
+    // project by the merge: a Centroid Only run on a multi-node skeleton lists
+    // sleap-nn's 1-node "centroid" skeleton but writes only centroids, and that
+    // extra skeleton would make this a multi-skeleton project.
+    dropUnusedSkeletons(predictions);
+
     const result = await labels.merge(predictions, {
       track: "name",
       video: predictionVideoMatcher(predictions, labels, videoTarget),
@@ -1090,9 +1113,15 @@ export const MergePredictions: Command = {
       (n, lf) => n + lf.bboxes.filter((b) => b.isPredicted).length,
       0,
     );
+    // A Centroid Only run on a multi-node skeleton predicts centroids.
+    const centroids = predictions.labeledFrames.reduce(
+      (n, lf) => n + lf.centroids.filter((c) => c.isPredicted).length,
+      0,
+    );
     toast.success(
       `Merged ${result.instancesAdded} prediction(s)` +
         (boxes > 0 ? ` and ${boxes} box(es)` : "") +
+        (centroids > 0 ? ` and ${centroids} centroid(s)` : "") +
         ` across ${result.framesMerged} frame(s)` +
         (conflicts > 0 ? `, ${conflicts} conflict(s)` : "") +
         "."

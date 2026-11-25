@@ -32,7 +32,13 @@ export type PipelineType =
   /** A box detector alone: predicted boxes, no poses (sleap-nn >= 0.3.5). */
   | "bbox"
   /** Box detector + centered-instance model: poses, cropped to each predicted box. */
-  | "top-down-bbox";
+  | "top-down-bbox"
+  /**
+   * A centroid model alone (sleap-nn >= 0.3.5): one point per animal. On a
+   * 1-node skeleton that point is the whole pose (a predicted instance); on a
+   * larger skeleton it's a `PredictedCentroid` (see `centroidOutput`).
+   */
+  | "centroid";
 
 export interface InferenceConfig {
   // Pipeline
@@ -119,6 +125,14 @@ export interface InferenceConfig {
   filterMinMeanNodeScore: number | null;
   filterMinInstanceScore: number | null;
   filterMinCentroidDistance: number | null;
+  /**
+   * Centroid Only runs: how sleap-nn packages the points (`--centroid-output`).
+   * "instance" (sleap-nn's default) keeps a 1-node skeleton's own instances;
+   * "centroid" writes `PredictedCentroid`s, for a model trained on a larger
+   * skeleton, whose instances sleap-nn would otherwise put on a separate
+   * 1-node "centroid" skeleton. See {@link centroidOutputFor}.
+   */
+  centroidOutput?: "instance" | "centroid";
 
   /**
    * Projects with several skeletons (#99): one run per skeleton, each with
@@ -127,6 +141,14 @@ export interface InferenceConfig {
    * ignored otherwise; `modelPaths`/`pipeline` above are then unused.
    */
   skeletonRuns?: SkeletonRunSpec[];
+}
+
+/**
+ * `--centroid-output` for a Centroid Only run on a skeleton with `nodeCount`
+ * nodes: on one node the point is the pose ("instance"); on more, a centroid.
+ */
+export function centroidOutputFor(nodeCount: number): "instance" | "centroid" {
+  return nodeCount > 1 ? "centroid" : "instance";
 }
 
 export interface RemoteInferenceOptions {

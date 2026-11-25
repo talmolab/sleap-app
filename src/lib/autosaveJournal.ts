@@ -27,6 +27,8 @@ import {
   LabeledFrame,
   UserBoundingBox,
   PredictedBoundingBox,
+  UserCentroid,
+  PredictedCentroid,
   type BoundingBox,
   type Labels,
   type Video,
@@ -85,6 +87,26 @@ export interface BboxDelta {
   src: string;
 }
 
+/** One centroid's state (e.g. a Centroid Only run's predictions). */
+export interface CentroidDelta {
+  x: number;
+  y: number;
+  /** Predicted centroid? */
+  p: boolean;
+  /** Score (predicted only); null otherwise. */
+  s: number | null;
+  /** Index into base.tracks, or -1 if untracked. */
+  t: number;
+  /** Tracking score; null if unrecorded. */
+  ts: number | null;
+  /** Index of the linked instance in this frame's `ins`, or -1. */
+  i: number;
+  /** Category, name, source. */
+  c: string;
+  n: string;
+  src: string;
+}
+
 /** One frame's full imageless state. */
 export interface FrameDelta {
   /** Index into base.videos. */
@@ -99,6 +121,11 @@ export interface FrameDelta {
    * replay then leaves the base frame's boxes as they are.
    */
   bb?: BboxDelta[];
+  /**
+   * Centroids. Absent in journals written before centroids were recorded;
+   * replay then leaves the base frame's centroids as they are.
+   */
+  ce?: CentroidDelta[];
   /**
    * The frame no longer exists (deleted, or its creation undone); replay
    * removes it. Absent in journals written before deletions were recorded.
@@ -141,6 +168,18 @@ export function encodeFrameDelta(frame: LabeledFrame, index: BaseIndex): FrameDe
     neg: frame.isNegative,
     ins: frame.instances.map((inst) => encodeInstance(inst, index)),
     bb: (frame.bboxes ?? []).map((box) => encodeBbox(box, frame, index)),
+    ce: (frame.centroids ?? []).map((c) => ({
+      x: c.x,
+      y: c.y,
+      p: c.isPredicted,
+      s: c instanceof PredictedCentroid ? c.score ?? null : null,
+      t: c.track ? index.tracks.get(c.track) ?? -1 : -1,
+      ts: c.trackingScore ?? null,
+      i: c.instance ? frame.instances.indexOf(c.instance) : -1,
+      c: c.category ?? "",
+      n: c.name ?? "",
+      src: c.source ?? "",
+    })),
   };
 }
 
@@ -280,6 +319,21 @@ export function applyDeltas(base: Labels, deltas: FrameDelta[]): void {
     lf.instances = slots.filter((inst): inst is Instance => inst !== null);
     lf.isNegative = delta.neg;
     if (delta.bb) lf.bboxes = delta.bb.map((b) => rebuildBbox(b, base, slots));
+    if (delta.ce) {
+      lf.centroids = delta.ce.map((c) => {
+        const opts = {
+          x: c.x ?? Number.NaN,
+          y: c.y ?? Number.NaN,
+          track: c.t >= 0 ? base.tracks[c.t] ?? null : null,
+          trackingScore: c.ts,
+          instance: c.i >= 0 ? slots[c.i] ?? null : null,
+          category: c.c,
+          name: c.n,
+          source: c.src,
+        };
+        return c.p ? new PredictedCentroid({ ...opts, score: c.s ?? Number.NaN }) : new UserCentroid(opts);
+      });
+    }
   }
   if (removed.size > 0) {
     base.labeledFrames = base.labeledFrames.filter((lf) => !removed.has(lf));

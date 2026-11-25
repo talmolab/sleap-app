@@ -11,7 +11,12 @@ import { useState, useRef, useEffect, useMemo } from "react";
 import { useAppStore } from "../../stores/appStore";
 import { useEnvironmentStore } from "../../stores/environmentStore";
 import { useInferenceStore } from "../../stores/inferenceStore";
-import type { InferenceConfig, PipelineType } from "@/stores/inferenceStore";
+import { centroidOutputFor, type InferenceConfig, type PipelineType } from "@/stores/inferenceStore";
+import { centroidOnlyProblem } from "@/lib/centroidOnly";
+import { INFERENCE_DEFAULTS as DEFAULTS } from "@/lib/inferenceDefaults";
+import { remoteIgnoredSettings } from "@/lib/remoteInferenceSupport";
+import { describeClip, normalizeClip } from "@/lib/postTrainingTarget";
+import { sanitizeSavedInferenceSettings, settingsToSave, type SavedInferenceSettings } from "@/lib/inferenceSettings";
 import { useConnectStore } from "@/stores/connectStore";
 import { BackendPicker } from "@/components/common/BackendPicker";
 import { RemoteFileBrowser } from "@/components/dialogs/RemoteFileBrowser";
@@ -65,7 +70,7 @@ import {
 
 // ── Types & Constants ─────────────────────────────────────────────────────────
 
-type FrameRange = "all_videos" | "video" | "suggestions" | "user_labeled" | "predicted" | "random_video" | "random" | "frame" | "custom";
+type FrameRange = "all_videos" | "video" | "suggestions" | "user_labeled" | "predicted" | "random_video" | "random" | "frame" | "custom" | "clip";
 
 const PIPELINE_OPTIONS: { value: PipelineType; label: string; desc: string }[] =
   [
@@ -76,6 +81,7 @@ const PIPELINE_OPTIONS: { value: PipelineType; label: string; desc: string }[] =
     { value: "bottom-up-id", label: "Bottom-Up + ID", desc: "Bottom-up with identity classification." },
     { value: "bbox", label: "Box Detector", desc: "One box-detector model: a box around each animal, no poses. Needs sleap-nn 0.3.5+." },
     { value: "top-down-bbox", label: "Top-Down (Box Crops)", desc: "Two models: box detector + centered instance. Needs sleap-nn 0.3.5+." },
+    { value: "centroid", label: "Centroid Only", desc: "One centroid model: one point per animal. On a 1-node skeleton that's the whole pose; on a larger skeleton the points are shown as centroids. Needs sleap-nn 0.3.5+." },
   ];
 
 const DEVICE_OPTIONS = [
@@ -346,58 +352,6 @@ function NodeCheckboxList({
   );
 }
 
-// ── Defaults ──────────────────────────────────────────────────────────────────
-
-const DEFAULTS: Omit<InferenceConfig, "modelPaths" | "videoIndex" | "frameRange"> = {
-  pipeline: "top-down",
-  trackOnly: false,
-  sampleCount: 20,
-  excludeUserLabeled: false,
-  existingPredictions: "replace",
-  batchSize: 4,
-  device: "auto",
-  runtime: "auto",
-  maxInstances: null,
-  peakThreshold: 0.2,
-  integralRefinement: true,
-  integralPatchSize: 5,
-  nPoints: 10,
-  maxEdgeLengthRatio: 0.25,
-  distPenaltyWeight: 1.0,
-  minLineScores: 0.25,
-  tracking: false,
-  trackerMethod: "simple",
-  similarityMethod: "oks",
-  matchingMethod: "hungarian",
-  trackingWindowSize: 5,
-  maxTracks: null,
-  connectSingleBreaks: false,
-  robust: 0.95,
-  minMatchPoints: 0,
-  minNewTrackPoints: 0,
-  scoringReduction: "mean",
-  trackingTargetInstanceCount: null,
-  trackingPreCullToTarget: false,
-  trackingPreCullIouThreshold: 0,
-  trackingCleanInstanceCount: null,
-  trackingCleanIouThreshold: 0,
-  flowImgScale: 1.0,
-  flowWindowSize: 21,
-  flowMaxLevels: 3,
-  kfTrackFeatures: "centroid",
-  kfInitFrameCount: 10,
-  kfNodeIndices: [],
-  kfResetGapSize: 5,
-  ensureChannels: "auto",
-  filterOverlapping: false,
-  filterMethod: "iou",
-  filterThreshold: 0.8,
-  filterMinVisibleNodes: null,
-  filterMinVisibleNodeFraction: null,
-  filterMinMeanNodeScore: null,
-  filterMinInstanceScore: null,
-  filterMinCentroidDistance: null,
-};
 
 // ── Panel ─────────────────────────────────────────────────────────────────────
 
@@ -440,6 +394,10 @@ async function readLocalText(path: string): Promise<string> {
 function InferencePanelContent() {
   const video = useAppStore((s) => s.video);
   const projectPath = useAppStore((s) => s.projectPath);
+  // The seekbar selection: the "Selected clip" target, and the starting
+  // values of a custom range.
+  const seekbarSelection = useAppStore((s) => s.frameRange);
+  const selectedClip = normalizeClip(seekbarSelection);
   const skeleton = useAppStore((s) => s.skeleton);
   const labels = useAppStore((s) => s.labels);
   // Instances' skeletons change on edits (editSeq) and undo (overlayVersion);
@@ -552,6 +510,26 @@ function InferencePanelContent() {
 
   const connectionStatus = useConnectStore((s) => s.connectionStatus);
   const selectedWorkerId = useConnectStore((s) => s.selectedWorkerId);
+  const clientFor = useConnectStore((s) => s.clientFor);
+  // What the selected worker supports (`worker.info.features`), to say which
+  // settings it won't apply (see remoteInferenceSupport.ts).
+  const [workerFeatures, setWorkerFeatures] = useState<string[]>([]);
+  useEffect(() => {
+    setWorkerFeatures([]);
+    if (!remoteEnabled || !selectedWorkerId || connectionStatus !== "connected") return;
+    let cancelled = false;
+    void (async () => {
+      try {
+        const info = await (await clientFor(selectedWorkerId)).workerInfo();
+        if (!cancelled) setWorkerFeatures(info.features);
+      } catch {
+        /* unknown: treat as a worker without extra features */
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [remoteEnabled, selectedWorkerId, connectionStatus, clientFor]);
   const connectedMounts = useConnectStore((s) => s.workerMounts);
 
   // Empty (not ["/"]) while disconnected: RemoteFileBrowser treats a single
@@ -577,7 +555,7 @@ function InferencePanelContent() {
   // back to a contiguous target instead of leaving an option selected that's
   // no longer even shown in the dropdown.
   useEffect(() => {
-    if (trackOnly && !["video", "all_videos", "custom"].includes(frameRange)) {
+    if (trackOnly && !["video", "all_videos", "custom", "clip"].includes(frameRange)) {
       setFrameRange("video");
     }
   }, [trackOnly, frameRange]);
@@ -710,6 +688,7 @@ function InferencePanelContent() {
 
   // Custom range validation: check against current video's frame count
   const currentVideoFrameCount = video?.shape?.[0] ?? Infinity;
+  const clipMissing = frameRange === "clip" && !selectedClip;
   const customRangeInvalid = frameRange === "custom" && (
     Number(frameStart) < 0 ||
     Number(frameEnd) < 0 ||
@@ -720,10 +699,17 @@ function InferencePanelContent() {
     isNaN(Number(frameEnd))
   );
 
+  const sleapNnVersion = tools.find((t) => t.name === "sleap-nn")?.version ?? null;
+  // Shown under the pipeline as soon as it's picked, before any model is added.
+  // (Several skeletons pick a pipeline per skeleton instead.)
+  const pipelineProblem =
+    !multiSkeleton && !trackOnly && pipeline === "centroid"
+      ? centroidOnlyProblem({ remote: remoteEnabled, sleapNnVersion })
+      : null;
   // A worker reads its own copy of the project, and sleap-nn (≤ 0.3.5) crashes
   // on frames mixing skeletons: refuse targets that read such frames. Random
   // samples are checked on submit (their frames are drawn then).
-  const remoteMixedTarget = multiSkeleton && remoteEnabled && ["frame", "video", "custom"].includes(frameRange);
+  const remoteMixedTarget = multiSkeleton && remoteEnabled && ["frame", "video", "custom", "clip"].includes(frameRange);
   const watchedFrameIdx = useAppStore((s) => (remoteMixedTarget && frameRange === "frame" ? s.frameIdx : -1));
   const remoteMixedProblem = useMemo(() => {
     if (!remoteMixedTarget || !labels || !video) return null;
@@ -731,10 +717,12 @@ function InferencePanelContent() {
     if (vi < 0) return null;
     const range = (frameRange === "custom"
       ? { start: Number(frameStart), end: Number(frameEnd) }
-      : frameRange) as InferenceConfig["frameRange"];
+      : frameRange === "clip"
+        ? (selectedClip ?? { start: 0, end: 0 })
+        : frameRange) as InferenceConfig["frameRange"];
     return remoteMixedFramesProblem(labels, localRunScope({ frameRange: range, videoIndex: vi }, watchedFrameIdx));
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [remoteMixedTarget, labels, video, frameRange, frameStart, frameEnd, watchedFrameIdx, editSeq, overlayVersion]);
+  }, [remoteMixedTarget, labels, video, frameRange, frameStart, frameEnd, selectedClip?.start, selectedClip?.end, watchedFrameIdx, editSeq, overlayVersion]);
   const multiTargetProblem =
     multiSkeleton && remoteEnabled ? (remoteMultiSkeletonTargetProblem(frameRange) ?? remoteMixedProblem) : null;
   const modelsProblem = multiSkeleton
@@ -746,10 +734,151 @@ function InferencePanelContent() {
     : trackOnly
       ? null
       : pipelineModelsProblem(pipeline, activeModelPaths.map((p) => (remoteEnabled ? null : (modelHeads[p] ?? null))));
-  const canRun = (remoteEnabled ? (!!selectedWorkerId && connectionStatus === "connected" && !!remoteDataPath) : sleapNnAvailable) && !isRunning && !isDone && (multiSkeleton ? !modelsProblem && !multiTargetProblem : (trackOnly || (activeModelPaths.length > 0 && !modelsProblem))) && !customRangeInvalid;
+  const canRun = (remoteEnabled ? (!!selectedWorkerId && connectionStatus === "connected" && !!remoteDataPath) : sleapNnAvailable) && !isRunning && !isDone && (multiSkeleton ? !modelsProblem && !multiTargetProblem : (trackOnly || (activeModelPaths.length > 0 && !modelsProblem && !pipelineProblem))) && !customRangeInvalid && !clipMissing;
   const isTopDown = pipeline === "top-down" || pipeline === "top-down-id" || pipeline === "top-down-bbox";
   // sleap-nn tracks poses and masks only, not a detector's boxes.
-  const trackingUnavailable = !trackOnly && pipeline === "bbox";
+  // A Centroid Only run on a multi-node skeleton writes centroids, which
+  // sleap-nn doesn't track (on a 1-node skeleton it writes instances).
+  // The skeleton's own node count: skeletonNodeNames is empty with several skeletons.
+  const centroidOutput = centroidOutputFor(skeleton?.nodes?.length ?? 0);
+  const trackingUnavailable =
+    !trackOnly && (pipeline === "bbox" || (pipeline === "centroid" && centroidOutput === "centroid"));
+
+  // ── Remembered settings (lib/inferenceSettings.ts) ─────────────
+  // Restored once on mount, then saved whenever they change. `restored` keeps
+  // the first render's defaults from overwriting what was saved: it turns true
+  // in the same update as the restored values, so the first save has them.
+  const [restored, setRestored] = useState(false);
+  useEffect(() => {
+    const saved = sanitizeSavedInferenceSettings(useAppStore.getState().inferenceSettings);
+    const apply: { [K in keyof SavedInferenceSettings]-?: (v: NonNullable<SavedInferenceSettings[K]> | null) => void } = {
+      pipeline: (v) => v && setPipeline(v),
+      sampleCount: (v) => v != null && setSampleCount(v),
+      excludeUserLabeled: (v) => v != null && setExcludeUserLabeled(v),
+      existingPredictions: (v) => v && setExistingPredictions(v),
+      batchSize: (v) => v != null && setBatchSize(v),
+      device: (v) => v && setDevice(v),
+      runtime: (v) => v && setRuntime(v),
+      maxInstances: (v) => {
+        setNoMaxInstances(v == null);
+        if (v != null) setMaxInstances(v);
+      },
+      peakThreshold: (v) => v != null && setPeakThreshold(v),
+      integralRefinement: (v) => v != null && setIntegralRefinement(v),
+      integralPatchSize: (v) => v != null && setIntegralPatchSize(v),
+      nPoints: (v) => v != null && setNPoints(v),
+      maxEdgeLengthRatio: (v) => v != null && setMaxEdgeLengthRatio(v),
+      distPenaltyWeight: (v) => v != null && setDistPenaltyWeight(v),
+      minLineScores: (v) => v != null && setMinLineScores(v),
+      tracking: (v) => v != null && setTracking(v),
+      trackerMethod: (v) => v && setTrackerMethod(v),
+      similarityMethod: (v) => v && setSimilarityMethod(v),
+      matchingMethod: (v) => v && setMatchingMethod(v),
+      trackingWindowSize: (v) => v != null && setTrackingWindowSize(v),
+      maxTracks: (v) => {
+        setNoMaxTracks(v == null);
+        if (v != null) setMaxTracks(v);
+      },
+      connectSingleBreaks: (v) => v != null && setConnectSingleBreaks(v),
+      robust: (v) => v != null && setRobust(v),
+      minMatchPoints: (v) => v != null && setMinMatchPoints(v),
+      minNewTrackPoints: (v) => v != null && setMinNewTrackPoints(v),
+      scoringReduction: (v) => v && setScoringReduction(v),
+      trackingTargetInstanceCount: (v) => setTrackingTargetInstanceCount(v ?? null),
+      trackingPreCullToTarget: (v) => v != null && setTrackingPreCullToTarget(v),
+      trackingPreCullIouThreshold: (v) => v != null && setTrackingPreCullIouThreshold(v),
+      trackingCleanInstanceCount: (v) => setTrackingCleanInstanceCount(v ?? null),
+      trackingCleanIouThreshold: (v) => v != null && setTrackingCleanIouThreshold(v),
+      flowImgScale: (v) => v != null && setFlowImgScale(v),
+      flowWindowSize: (v) => v != null && setFlowWindowSize(v),
+      flowMaxLevels: (v) => v != null && setFlowMaxLevels(v),
+      kfTrackFeatures: (v) => v && setKfTrackFeatures(v),
+      kfInitFrameCount: (v) => v != null && setKfInitFrameCount(v),
+      kfNodeIndices: (v) => v && setKfNodeIndices(v),
+      kfResetGapSize: (v) => v != null && setKfResetGapSize(v),
+      ensureChannels: (v) => v && setEnsureChannels(v),
+      filterOverlapping: (v) => v != null && setFilterOverlapping(v),
+      filterMethod: (v) => v && setFilterMethod(v),
+      filterThreshold: (v) => v != null && setFilterThreshold(v),
+      filterMinVisibleNodes: (v) => setFilterMinVisibleNodes(v ?? null),
+      filterMinVisibleNodeFraction: (v) => setFilterMinVisibleNodeFraction(v ?? null),
+      filterMinMeanNodeScore: (v) => setFilterMinMeanNodeScore(v ?? null),
+      filterMinInstanceScore: (v) => setFilterMinInstanceScore(v ?? null),
+      filterMinCentroidDistance: (v) => setFilterMinCentroidDistance(v ?? null),
+      target: (v) => v && setFrameRange(v as FrameRange),
+      customStart: (v) => v != null && setFrameStart(v),
+      customEnd: (v) => v != null && setFrameEnd(v),
+    };
+    for (const [k, v] of Object.entries(saved)) {
+      (apply as Record<string, (v: unknown) => void>)[k]?.(v);
+    }
+    setRestored(true);
+  }, []);
+
+  /** The run's settings as they stand in the panel. */
+  const buildInferenceConfig = (): InferenceConfig => {
+    // Derive video index from inference target: "current video" targets use the
+    // active video from appStore, "all videos" targets use "all"
+    const currentVideoTargets = ["frame", "video", "random_video", "custom", "clip"];
+    const currentVideoIdx = (() => {
+      const { labels, video: activeVideo } = useAppStore.getState();
+      if (!labels || !activeVideo) return 0;
+      const idx = labels.videos.indexOf(activeVideo);
+      return idx >= 0 ? idx : 0;
+    })();
+    const videoIndex = currentVideoTargets.includes(frameRange as string)
+      ? currentVideoIdx
+      : ("all" as const);
+
+    return {
+      pipeline, trackOnly,
+      // Track-only never sends a model: sleap-nn's predict CLI detects
+      // "--tracking with no --model_paths" and takes its dedicated
+      // retrack-only path (see InferenceConfig.trackOnly's doc).
+      modelPaths: trackOnly ? [] : (remoteEnabled ? remoteModelPaths : modelPaths),
+      videoIndex,
+      frameRange:
+        frameRange === "custom"
+          ? { start: Number(frameStart), end: Number(frameEnd) }
+          : frameRange === "clip"
+            ? (selectedClip ?? { start: 0, end: 0 })
+            : frameRange,
+      sampleCount,
+      excludeUserLabeled: trackOnly ? false : excludeUserLabeled,
+      existingPredictions, batchSize, device, runtime,
+      maxInstances: noMaxInstances ? null : maxInstances,
+      peakThreshold,
+      integralRefinement, integralPatchSize,
+      nPoints, maxEdgeLengthRatio, distPenaltyWeight, minLineScores,
+      // Track-only implies tracking is always on, regardless of the
+      // (hidden, in this mode) "Enable tracking" checkbox's own state.
+      tracking: trackOnly || tracking, trackerMethod, similarityMethod, matchingMethod,
+      trackingWindowSize,
+      maxTracks: noMaxTracks ? null : maxTracks,
+      connectSingleBreaks, robust,
+      minMatchPoints, minNewTrackPoints, scoringReduction,
+      trackingTargetInstanceCount, trackingPreCullToTarget, trackingPreCullIouThreshold,
+      trackingCleanInstanceCount, trackingCleanIouThreshold,
+      flowImgScale, flowWindowSize, flowMaxLevels,
+      kfTrackFeatures, kfInitFrameCount, kfNodeIndices, kfResetGapSize,
+      ensureChannels, filterOverlapping, filterMethod, filterThreshold,
+      filterMinVisibleNodes, filterMinVisibleNodeFraction, filterMinMeanNodeScore,
+      filterMinInstanceScore, filterMinCentroidDistance,
+      ...(pipeline === "centroid" ? { centroidOutput } : {}),
+      // Several skeletons: one run per skeleton, models matched by node names.
+      skeletonRuns: multiSkeleton && multiPlan ? runSpecsFromPlan(multiPlan.plan) : undefined,
+    };
+  };
+
+
+  // Save on every change (after the restore above has run).
+  const settingsJson = JSON.stringify(
+    settingsToSave(buildInferenceConfig(), { target: frameRange, customStart: frameStart, customEnd: frameEnd }),
+  );
+  useEffect(() => {
+    if (!restored) return;
+    useAppStore.getState().set("inferenceSettings", JSON.parse(settingsJson));
+  }, [settingsJson, restored]);
 
   if (!isTauri && connectionStatus !== "connected") {
     return (
@@ -772,52 +901,7 @@ function InferencePanelContent() {
   };
 
   const handleRunInference = async () => {
-    // Derive video index from inference target: "current video" targets use the
-    // active video from appStore, "all videos" targets use "all"
-    const currentVideoTargets = ["frame", "video", "random_video", "custom"];
-    const currentVideoIdx = (() => {
-      const { labels, video: activeVideo } = useAppStore.getState();
-      if (!labels || !activeVideo) return 0;
-      const idx = labels.videos.indexOf(activeVideo);
-      return idx >= 0 ? idx : 0;
-    })();
-    const videoIndex = currentVideoTargets.includes(frameRange as string)
-      ? currentVideoIdx
-      : ("all" as const);
-
-    const config: InferenceConfig = {
-      pipeline, trackOnly,
-      // Track-only never sends a model: sleap-nn's predict CLI detects
-      // "--tracking with no --model_paths" and takes its dedicated
-      // retrack-only path (see InferenceConfig.trackOnly's doc).
-      modelPaths: trackOnly ? [] : (remoteEnabled ? remoteModelPaths : modelPaths),
-      videoIndex,
-      frameRange: frameRange === "custom" ? { start: Number(frameStart), end: Number(frameEnd) } : frameRange,
-      sampleCount,
-      excludeUserLabeled: trackOnly ? false : excludeUserLabeled,
-      existingPredictions, batchSize, device, runtime,
-      maxInstances: noMaxInstances ? null : maxInstances,
-      peakThreshold,
-      integralRefinement, integralPatchSize,
-      nPoints, maxEdgeLengthRatio, distPenaltyWeight, minLineScores,
-      // Track-only implies tracking is always on, regardless of the
-      // (hidden, in this mode) "Enable tracking" checkbox's own state.
-      tracking: trackOnly || tracking, trackerMethod, similarityMethod, matchingMethod,
-      trackingWindowSize,
-      maxTracks: noMaxTracks ? null : maxTracks,
-      connectSingleBreaks, robust,
-      minMatchPoints, minNewTrackPoints, scoringReduction,
-      trackingTargetInstanceCount, trackingPreCullToTarget, trackingPreCullIouThreshold,
-      trackingCleanInstanceCount, trackingCleanIouThreshold,
-      flowImgScale, flowWindowSize, flowMaxLevels,
-      kfTrackFeatures, kfInitFrameCount, kfNodeIndices, kfResetGapSize,
-      ensureChannels, filterOverlapping, filterMethod, filterThreshold,
-      filterMinVisibleNodes, filterMinVisibleNodeFraction, filterMinMeanNodeScore,
-      filterMinInstanceScore, filterMinCentroidDistance,
-      // Several skeletons: one run per skeleton, models matched by node names.
-      skeletonRuns: multiSkeleton && multiPlan ? runSpecsFromPlan(multiPlan.plan) : undefined,
-    };
-
+    const config = buildInferenceConfig();
     if (remoteEnabled) {
       await startInference(config, {
         remote: true,
@@ -879,6 +963,9 @@ function InferencePanelContent() {
               <p className="text-[10px] text-muted-foreground">
                 {PIPELINE_OPTIONS.find((o) => o.value === pipeline)?.desc}
               </p>
+              {pipelineProblem && (
+                <p className="text-[10px] text-red-400" data-testid="inference-pipeline-problem">{pipelineProblem}</p>
+              )}
               </>)}
             </Section>
 
@@ -979,9 +1066,21 @@ function InferencePanelContent() {
         <Section title="Data" defaultOpen={true}>
           <div className="space-y-1">
             <span className="text-[10px] text-muted-foreground">Inference Target</span>
-            <Select value={frameRange} onValueChange={(v) => setFrameRange(v as FrameRange)} disabled={isRunning}>
+            <Select
+              value={frameRange}
+              onValueChange={(v) => {
+                // A custom range starts from the seekbar selection, if any.
+                if (v === "custom" && selectedClip) {
+                  setFrameStart(String(selectedClip.start));
+                  setFrameEnd(String(selectedClip.end));
+                }
+                setFrameRange(v as FrameRange);
+              }}
+              disabled={isRunning}
+            >
               <SelectTrigger className="h-7 text-xs" data-tutorial="inference-target-select"><SelectValue /></SelectTrigger>
               <SelectContent>
+                <SelectItem value="clip">Selected clip</SelectItem>
                 <SelectItem value="custom">Custom range</SelectItem>
                 <SelectItem value="video">Entire current video</SelectItem>
                 <SelectItem value="all_videos">All videos</SelectItem>
@@ -1004,6 +1103,11 @@ function InferencePanelContent() {
                   onCommit={(n) => setSampleCount(n)}
                   className="h-6 text-[10px] w-20" disabled={isRunning} />
               </div>
+            )}
+            {frameRange === "clip" && (
+              <p className={`text-[10px] mt-1 ${selectedClip ? "text-muted-foreground" : "text-red-400"}`} data-testid="inference-clip-description">
+                {describeClip(seekbarSelection) ?? "Select a clip first: shift-drag on the seekbar."}
+              </p>
             )}
             {frameRange === "custom" && (
               <div className="space-y-1 mt-1">
@@ -1164,7 +1268,9 @@ function InferencePanelContent() {
             hint={trackOnly
               ? "Always on in track-only mode."
               : trackingUnavailable
-                ? "Not available for a box detector alone: sleap-nn tracks poses, not boxes. Use Top-Down (Box Crops) to track."
+                ? pipeline === "centroid"
+                  ? "Not available for Centroid Only on a skeleton with more than one node: sleap-nn tracks instances, not centroids."
+                  : "Not available for a box detector alone: sleap-nn tracks poses, not boxes. Use Top-Down (Box Crops) to track."
                 : "Connect predicted instances across frames to maintain identity over time."}
             checked={trackOnly || (tracking && !trackingUnavailable)} onChange={setTracking} disabled={isRunning || trackOnly || trackingUnavailable} />
           {(trackOnly || (tracking && !trackingUnavailable)) && (
@@ -1376,6 +1482,16 @@ function InferencePanelContent() {
           <Settings2 className="h-3 w-3 mr-1.5" />
           Full Configuration...
         </Button>
+        {remoteEnabled && (() => {
+          const ignored = remoteIgnoredSettings(buildInferenceConfig(), workerFeatures);
+          return ignored.length > 0 ? (
+            <div className="rounded-md border border-yellow-500/40 bg-yellow-500/10 p-2 text-[10px] text-yellow-700 dark:text-yellow-400" data-testid="remote-ignored-settings">
+              <p className="font-medium">This worker won&apos;t apply these settings:</p>
+              <p className="mt-0.5">{ignored.join("; ")}.</p>
+              <p className="mt-0.5">It runs sleap-nn&apos;s defaults for them. Run on this computer to use them.</p>
+            </div>
+          ) : null;
+        })()}
         <Button
           className="w-full h-8 text-xs"
           onClick={handleRunInference}

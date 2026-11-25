@@ -9,7 +9,7 @@
 
 import { useState, useRef, useEffect, useMemo } from "react";
 import { createPortal } from "react-dom";
-import { useTrainingStore, getConfigSlots, getSlotLabel, countUserLabeledFrames, isBboxModelType, BBOX_REMOTE_UNSUPPORTED } from "@/stores/trainingStore";
+import { useTrainingStore, getConfigSlots, getSlotLabel, countUserLabeledFrames, isBboxModelType, BBOX_REMOTE_UNSUPPORTED, DEFAULT_POST_TRAINING_INFERENCE, type PostTrainingInferenceSettings } from "@/stores/trainingStore";
 import { reusePinNote, reuseStartProblem } from "@/lib/reuseTrainedModel";
 import { useExportStore } from "@/stores/exportStore";
 import type { ModelType, ConfigFile, ConfigHyperparams } from "@/stores/trainingStore";
@@ -989,6 +989,8 @@ function TrainingPanelContent() {
   const [sampleCount, setSampleCount] = useState(20);
   const [skipUserLabeled, setSkipUserLabeled] = useState(false);
   const [existingPredictions, setExistingPredictions] = useState<"clear_all" | "replace" | "keep">("replace");
+  // Max instances / overlap filtering for the inference after training (set in the Full Configuration window).
+  const [postInference, setPostInference] = useState<PostTrainingInferenceSettings>(DEFAULT_POST_TRAINING_INFERENCE);
   // Client-side only — no sleap-nn schema field for this (see trainingStore.ts).
   const [autoOpenWandb, setAutoOpenWandb] = useState(false);
   // Client-side only — post-training model export ("none" = don't export) + whether to
@@ -1284,6 +1286,7 @@ function TrainingPanelContent() {
       sampleCount,
       skipUserLabeled,
       existingPredictions,
+      postInference,
     });
   };
 
@@ -1300,6 +1303,7 @@ function TrainingPanelContent() {
           sampleCount,
           skipUserLabeled,
           existingPredictions,
+          postInference,
         });
         return;
       }
@@ -1318,6 +1322,7 @@ function TrainingPanelContent() {
       sampleCount,
       skipUserLabeled,
       existingPredictions,
+      postInference,
       exportFormat,
       useExportedForInference,
     });
@@ -2298,6 +2303,8 @@ function TrainingPanelContent() {
         onSkipUserLabeledChange={setSkipUserLabeled}
         existingPredictions={existingPredictions}
         onExistingPredictionsChange={setExistingPredictions}
+        postInference={postInference}
+        onPostInferenceChange={setPostInference}
         autoOpenWandb={autoOpenWandb}
         onAutoOpenWandbChange={setAutoOpenWandb}
         exportFormat={exportFormat}

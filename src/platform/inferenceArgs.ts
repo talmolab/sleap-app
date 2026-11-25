@@ -237,6 +237,12 @@ export function buildInferenceArgs(
   if (subcommand === "predict" && config.runtime && config.runtime !== "auto") {
     args.push("--runtime", config.runtime);
   }
+  if (config.pipeline === "centroid") {
+    // sleap-nn detects a lone centroid model by itself; the flag says so
+    // explicitly. Both flags exist from sleap-nn 0.3.5 (predict only).
+    args.push("--centroid_only");
+    if (config.centroidOutput === "centroid") args.push("--centroid-output", "centroid");
+  }
   if (config.maxInstances != null) {
     args.push("--max_instances", String(config.maxInstances));
   }
@@ -268,7 +274,11 @@ export function buildInferenceArgs(
   // Tracking. sleap-nn's tracker works on poses and masks, and rejects a box
   // detector's output ("Tracking is not supported for bounding-box detectors"),
   // so a detector-only run never asks for it (track-only runs have no model).
-  const canTrack = config.trackOnly || config.pipeline !== "bbox";
+  // A Centroid Only run that writes centroids can't be tracked either: sleap-nn
+  // tracks instances ("Tracking is incompatible with emit_centroid=...").
+  const canTrack =
+    config.trackOnly ||
+    (config.pipeline !== "bbox" && !(config.pipeline === "centroid" && config.centroidOutput === "centroid"));
   if (config.tracking && canTrack) {
     args.push("--tracking");
     if (config.trackerMethod === "flow") {
