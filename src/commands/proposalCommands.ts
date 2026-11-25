@@ -15,8 +15,7 @@ import { Instance, PredictedInstance } from "@talmolab/sleap-io.js";
 import { UpdateTopic } from "../types";
 import type { Command } from "./types";
 import type { CommandContext } from "./CommandContext";
-import { clonePredictedPoints } from "./editCommands";
-import { fillMissingPredictedNodes } from "@/lib/instancePlacement";
+import { clonePredictedPoints, fillMissingPredictedNodes } from "@/lib/instancePlacement";
 
 /**
  * Params:

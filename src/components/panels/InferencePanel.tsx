@@ -1597,11 +1597,11 @@ function InferencePanelContent() {
           setFilterMinCentroidDistance(DEFAULTS.filterMinCentroidDistance);
         }}
         values={{
-          peakThreshold, maxInstances,
+          peakThreshold, maxInstances: noMaxInstances ? null : maxInstances,
           integralRefinement, integralPatchSize,
           nPoints, maxEdgeLengthRatio, distPenaltyWeight, minLineScores,
           trackerMethod, similarityMethod, matchingMethod,
-          trackingWindowSize, maxTracks, connectSingleBreaks, robust,
+          trackingWindowSize, maxTracks: noMaxTracks ? null : maxTracks, connectSingleBreaks, robust,
           minMatchPoints, minNewTrackPoints, scoringReduction,
           trackingTargetInstanceCount, trackingPreCullToTarget, trackingPreCullIouThreshold,
           trackingCleanInstanceCount, trackingCleanIouThreshold,
@@ -1613,7 +1613,7 @@ function InferencePanelContent() {
         }}
         onUpdate={(updates) => {
           if ("peakThreshold" in updates) setPeakThreshold(updates.peakThreshold!);
-          if ("maxInstances" in updates) setMaxInstances(updates.maxInstances!);
+          if ("maxInstances" in updates) { setMaxInstances(updates.maxInstances!); setNoMaxInstances(updates.maxInstances === null); }
           if ("integralRefinement" in updates) setIntegralRefinement(updates.integralRefinement!);
           if ("integralPatchSize" in updates) setIntegralPatchSize(updates.integralPatchSize!);
           if ("nPoints" in updates) setNPoints(updates.nPoints!);

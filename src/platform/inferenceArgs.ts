@@ -34,6 +34,20 @@ import type { InferenceConfig } from "@/stores/inferenceStore";
  */
 export const MIN_SLEAP_NN_PREDICT_VERSION = "0.3.2";
 
+/**
+ * Frame count to draw a `"random_video"` sample from: the target video's own
+ * (`config.videoIndex`), which the "Random sample (all videos)" loops set per
+ * video. Only an `"all"` index falls back to the active video. 0 = unknown.
+ */
+export function randomSampleFrameCount(
+  videoIndex: number | "all",
+  videos: ReadonlyArray<{ shape?: readonly number[] | null }> | undefined,
+  activeVideo: { shape?: readonly number[] | null } | null | undefined,
+): number {
+  const video = videoIndex === "all" ? activeVideo : videos?.[videoIndex];
+  return video?.shape?.[0] ?? 0;
+}
+
 export interface BuildInferenceArgsOptions {
   /**
    * Path to the input .slp (the project file or a serialized temp copy), OR
