@@ -25,6 +25,8 @@ import { MODEL_TYPE_LABELS, parseTrainingConfig } from "./metrics/loadModelMetri
 import { PIPELINE_HEADS } from "./modelDiscovery";
 import { sameSkeletonStructure, structuralGroups } from "./skeletonStructure";
 import type { InferenceConfig, PipelineType } from "@/stores/inferenceStore";
+import { INFERENCE_DEFAULTS } from "./inferenceDefaults";
+import { remoteIgnoredSettings } from "./remoteInferenceSupport";
 
 /** What the app knows about one model directory (from its training_config.yaml). */
 export interface ModelInfo {
@@ -416,18 +418,153 @@ export function planMultiSkeletonInference(
   return { runs, models: verdicts, problem };
 }
 
+// ── Per-skeleton settings (one tab per skeleton in the Inference panel) ────
+
+/**
+ * The inference settings each skeleton's run sets for itself — e.g. mice: 2
+ * instances + tracking; pellets: 10 instances, no tracking. Everything else
+ * (target frames, existing predictions, device, post-processing…) is shared.
+ */
+export const SKELETON_RUN_SETTING_KEYS = [
+  "maxInstances",
+  "peakThreshold",
+  "tracking",
+  "trackerMethod",
+  "similarityMethod",
+  "matchingMethod",
+  "trackingWindowSize",
+  "maxTracks",
+  "connectSingleBreaks",
+  "robust",
+  "minMatchPoints",
+  "minNewTrackPoints",
+  "scoringReduction",
+  "trackingTargetInstanceCount",
+  "trackingPreCullToTarget",
+  "trackingPreCullIouThreshold",
+  "trackingCleanInstanceCount",
+  "trackingCleanIouThreshold",
+  "flowImgScale",
+  "flowWindowSize",
+  "flowMaxLevels",
+  "kfTrackFeatures",
+  "kfInitFrameCount",
+  "kfResetGapSize",
+] as const satisfies readonly (keyof InferenceConfig)[];
+
+export type SkeletonRunSettingKey = (typeof SKELETON_RUN_SETTING_KEYS)[number];
+
+/** What one skeleton's run sends sleap-nn for the keys above. */
+export type SkeletonRunSettings = Pick<InferenceConfig, SkeletonRunSettingKey>;
+
+/**
+ * A skeleton tab's state: the run settings plus the two "No limit" boxes,
+ * which keep the number typed under them (like the single-skeleton panel).
+ */
+export interface SkeletonInferenceSettings extends SkeletonRunSettings {
+  noMaxInstances: boolean;
+  noMaxTracks: boolean;
+}
+
+/** Defaults — the same values the single-skeleton panel starts from. */
+/** The panel's defaults for the per-skeleton settings (one source: inferenceDefaults.ts). */
+export const DEFAULT_SKELETON_RUN_SETTINGS: SkeletonRunSettings = Object.fromEntries(
+  SKELETON_RUN_SETTING_KEYS.map((k) => [k, INFERENCE_DEFAULTS[k]]),
+) as unknown as SkeletonRunSettings;
+
+export const DEFAULT_SKELETON_INFERENCE_SETTINGS: SkeletonInferenceSettings = {
+  ...DEFAULT_SKELETON_RUN_SETTINGS,
+  noMaxInstances: true,
+  noMaxTracks: true,
+};
+
+/** Settings where null means "off" / "no limit" / "auto". */
+const NULLABLE_SETTINGS = new Set<keyof SkeletonInferenceSettings>([
+  "maxInstances",
+  "maxTracks",
+  "trackingTargetInstanceCount",
+  "trackingCleanInstanceCount",
+]);
+
+/**
+ * A skeleton's saved settings filled out with defaults (a setting added in a
+ * later version, or a corrupt entry, falls back to its default).
+ */
+export function resolveSkeletonInferenceSettings(saved: unknown): SkeletonInferenceSettings {
+  const out: SkeletonInferenceSettings = { ...DEFAULT_SKELETON_INFERENCE_SETTINGS };
+  if (!saved || typeof saved !== "object") return out;
+  const rec = saved as Record<string, unknown>;
+  const target = out as unknown as Record<string, unknown>;
+  for (const key of Object.keys(out) as (keyof SkeletonInferenceSettings)[]) {
+    const v = rec[key];
+    const ok = NULLABLE_SETTINGS.has(key)
+      ? v === null || (typeof v === "number" && Number.isFinite(v))
+      : typeof v === typeof out[key] && (typeof v !== "number" || Number.isFinite(v));
+    if (ok) target[key] = v;
+  }
+  return out;
+}
+
+/** The settings a tab sends to its run ("No limit" ticked → null). */
+export function skeletonRunSettings(s: SkeletonInferenceSettings): SkeletonRunSettings {
+  const out = {} as Record<SkeletonRunSettingKey, unknown>;
+  for (const key of SKELETON_RUN_SETTING_KEYS) out[key] = s[key];
+  const run = out as SkeletonRunSettings;
+  run.maxInstances = s.noMaxInstances ? null : s.maxInstances;
+  run.maxTracks = s.noMaxTracks ? null : s.maxTracks;
+  return run;
+}
+
+/**
+ * The key a skeleton's settings are saved under: its name plus its node set
+ * (sorted), so a renamed or re-noded skeleton starts from defaults instead of
+ * inheriting another skeleton's settings.
+ */
+export function skeletonSettingsKey(skeleton: Pick<Skeleton, "name" | "nodeNames">): string {
+  return `${skeleton.name?.trim() ?? ""}|${[...skeleton.nodeNames].sort().join(",")}`;
+}
+
+/** Why a 1-node skeleton is matched by point distance (shown in its tab). */
+export const SINGLE_POINT_SIMILARITY_NOTE =
+  "1-node skeleton: tracks are matched by point distance. OKS and IoU need several points (sleap-nn fails on a single point).";
+
+/** Whether `method` can score a skeleton with `nodeCount` nodes. */
+export function similarityAllowed(method: InferenceConfig["similarityMethod"], nodeCount: number | undefined): boolean {
+  return !(nodeCount === 1 && (method === "oks" || method === "iou"));
+}
+
+/**
+ * The similarity a skeleton's run actually uses. A 1-node skeleton (a pellet)
+ * has no box or spread: sleap-nn's OKS and IoU scoring crash on a single point
+ * (0.3.5: AxisError in OKS's bbox area), so it's matched by point distance.
+ */
+export function similarityForNodeCount(
+  method: InferenceConfig["similarityMethod"],
+  nodeCount: number | undefined,
+): InferenceConfig["similarityMethod"] {
+  return similarityAllowed(method, nodeCount) ? method : "euclidean_dist";
+}
+
 /** What the inference store needs per run (serializable; no Skeleton objects). */
 export interface SkeletonRunSpec {
   skeletonName: string;
   skeletonIndex: number;
   modelPaths: string[];
   pipeline: SkeletonPipeline;
+  /** This skeleton's own settings (its tab); absent = the shared config's. */
+  settings?: SkeletonRunSettings;
   /** The skeleton's node count (1 = a pellet: tracked by distance, see configForSkeletonRun). */
   nodeCount?: number;
 }
 
-/** The runnable part of a plan (only call when `plan.problem` is null). */
-export function runSpecsFromPlan(plan: MultiSkeletonPlan): SkeletonRunSpec[] {
+/**
+ * The runnable part of a plan (only call when `plan.problem` is null). With
+ * `settingsFor`, each run carries its skeleton's own settings.
+ */
+export function runSpecsFromPlan(
+  plan: MultiSkeletonPlan,
+  settingsFor?: (run: SkeletonRunPlan) => SkeletonRunSettings,
+): SkeletonRunSpec[] {
   return plan.runs
     .filter((r): r is SkeletonRunPlan & { pipeline: SkeletonPipeline } => r.pipeline !== null)
     .map((r) => ({
@@ -436,26 +573,51 @@ export function runSpecsFromPlan(plan: MultiSkeletonPlan): SkeletonRunSpec[] {
       modelPaths: r.modelPaths,
       pipeline: r.pipeline,
       nodeCount: r.skeleton.nodeNames.length,
+      ...(settingsFor ? { settings: settingsFor(r) } : {}),
     }));
 }
 
 /** The config for one skeleton's run of a multi-skeleton inference. */
 export function configForSkeletonRun(config: InferenceConfig, run: SkeletonRunSpec): InferenceConfig {
-  return {
+  const cfg: InferenceConfig = {
     ...config,
+    ...run.settings,
     modelPaths: run.modelPaths,
     pipeline: configPipeline(run.pipeline),
     // Kalman node indices point into ONE skeleton's nodes; use all nodes.
     kfNodeIndices: [],
-    // A 1-node skeleton (a pellet) has no box or spread: sleap-nn's OKS and
-    // IoU scoring crash on a single point (0.3.5: AxisError in OKS's bbox
-    // area). Match its tracks by point distance instead.
-    similarityMethod:
-      run.nodeCount === 1 && (config.similarityMethod === "oks" || config.similarityMethod === "iou")
-        ? "euclidean_dist"
-        : config.similarityMethod,
     skeletonRuns: undefined,
   };
+  cfg.similarityMethod = similarityForNodeCount(cfg.similarityMethod, run.nodeCount);
+  // sleap-nn tracks poses, not a box detector's boxes.
+  if (run.pipeline === "bbox") cfg.tracking = false;
+  return cfg;
+}
+
+/**
+ * The settings a Connect worker won't apply ({@link remoteIgnoredSettings}),
+ * checked against each skeleton's own run and labelled with the skeletons
+ * they affect, e.g. "Max instances (mouse, pellet)".
+ */
+export function remoteIgnoredRunSettings(config: InferenceConfig, workerFeatures: readonly string[] = []): string[] {
+  if (!config.skeletonRuns?.length) return remoteIgnoredSettings(config, workerFeatures);
+  const bySetting = new Map<string, string[]>();
+  for (const run of config.skeletonRuns) {
+    for (const name of remoteIgnoredSettings(configForSkeletonRun(config, run), workerFeatures)) {
+      bySetting.set(name, [...(bySetting.get(name) ?? []), run.skeletonName]);
+    }
+  }
+  return [...bySetting].map(([name, skeletons]) => `${name} (${skeletons.join(", ")})`);
+}
+
+/** A one-line summary of a run's settings for the inference log. */
+export function describeRunSettings(cfg: Pick<InferenceConfig, "maxInstances" | "peakThreshold" | "tracking" | "maxTracks">): string {
+  const parts = [
+    cfg.maxInstances === null ? "no instance limit" : `max ${cfg.maxInstances} instance${cfg.maxInstances === 1 ? "" : "s"}`,
+    `peak threshold ${cfg.peakThreshold}`,
+    cfg.tracking ? `tracking${cfg.maxTracks === null ? "" : ` (max ${cfg.maxTracks} track${cfg.maxTracks === 1 ? "" : "s"})`}` : "no tracking",
+  ];
+  return parts.join(", ");
 }
 
 // ── Targets and input ───────────────────────────────────────────────────────
