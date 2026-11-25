@@ -9,6 +9,7 @@
 import type { NavigationDomain } from "@/stores/appStore";
 import { useAppStore } from "@/stores/appStore";
 import { useExportStore } from "@/stores/exportStore";
+import { openKeypointReview } from "@/stores/keypointReviewStore";
 import { PANELS } from "@/components/layout/panelRegistry";
 import { DEFAULT_SHORTCUTS } from "@/lib/shortcuts";
 import { getDocsUrl } from "@/lib/docsUrl";
@@ -674,6 +675,13 @@ function labelsMenu(s: MenuSnapshot): TopMenu {
       },
       // PyQt's place for it: right after Merge Instance (app.py:911).
       { kind: "item", id: "labels.customDelete", label: "Custom Instance Delete...", enabled: loaded, run: () => useCustomDeleteDialog.getState().setOpen(true) },
+      {
+        kind: "item",
+        id: "labels.reviewNode",
+        label: "Review One Node…",
+        enabled: loaded,
+        run: () => openKeypointReview(),
+      },
       {
         kind: "item",
         id: "labels.swapLeftRight",
