@@ -538,3 +538,30 @@ describe("buildInferenceArgs — full-config parity lock", () => {
     expect(trackArgs.slice(1)).toEqual(predictArgs.slice(1));
   });
 });
+
+describe("tracking args per skeleton run (#99)", () => {
+  // Hand-test of #531: OKS on the 1-node pellet run crashed sleap-nn 0.3.5
+  // (AxisError in OKS's bbox area). Its run scores by point distance; the mouse keeps OKS.
+  it("scores a 1-node skeleton's run by distance, a multi-node one by OKS", async () => {
+    const { configForSkeletonRun } = await import("@/lib/multiSkeletonInference");
+    const config = baseConfig({ tracking: true, trackerMethod: "simple", similarityMethod: "oks", maxTracks: 2 });
+    const mouse = configForSkeletonRun(config, {
+      skeletonName: "mouse", skeletonIndex: 0, modelPaths: ["/m/c", "/m/ci"], pipeline: "top-down", nodeCount: 3,
+    });
+    const pellet = configForSkeletonRun(config, {
+      skeletonName: "pellet", skeletonIndex: 1, modelPaths: ["/m/pellet"], pipeline: "centroid-only", nodeCount: 1,
+    });
+    expect(valAfter(buildInferenceArgs(mouse, io()), "--scoring_method")).toBe("oks");
+    expect(valAfter(buildInferenceArgs(pellet, io()), "--scoring_method")).toBe("euclidean_dist");
+    expect(valAfter(buildInferenceArgs(pellet, io()), "--max_tracks")).toBe("2");
+    // IoU (a box per instance) is swapped too; an explicit centroid/distance choice is kept.
+    const iou = configForSkeletonRun({ ...config, similarityMethod: "iou" }, {
+      skeletonName: "pellet", skeletonIndex: 1, modelPaths: ["/m/pellet"], pipeline: "centroid-only", nodeCount: 1,
+    });
+    expect(iou.similarityMethod).toBe("euclidean_dist");
+    const centroids = configForSkeletonRun({ ...config, similarityMethod: "centroids" }, {
+      skeletonName: "pellet", skeletonIndex: 1, modelPaths: ["/m/pellet"], pipeline: "centroid-only", nodeCount: 1,
+    });
+    expect(centroids.similarityMethod).toBe("centroids");
+  });
+});

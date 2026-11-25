@@ -419,6 +419,8 @@ export interface SkeletonRunSpec {
   skeletonIndex: number;
   modelPaths: string[];
   pipeline: SkeletonPipeline;
+  /** The skeleton's node count (1 = a pellet: tracked by distance, see configForSkeletonRun). */
+  nodeCount?: number;
 }
 
 /** The runnable part of a plan (only call when `plan.problem` is null). */
@@ -430,6 +432,7 @@ export function runSpecsFromPlan(plan: MultiSkeletonPlan): SkeletonRunSpec[] {
       skeletonIndex: r.skeletonIndex,
       modelPaths: r.modelPaths,
       pipeline: r.pipeline,
+      nodeCount: r.skeleton.nodeNames.length,
     }));
 }
 
@@ -441,6 +444,13 @@ export function configForSkeletonRun(config: InferenceConfig, run: SkeletonRunSp
     pipeline: configPipeline(run.pipeline),
     // Kalman node indices point into ONE skeleton's nodes; use all nodes.
     kfNodeIndices: [],
+    // A 1-node skeleton (a pellet) has no box or spread: sleap-nn's OKS and
+    // IoU scoring crash on a single point (0.3.5: AxisError in OKS's bbox
+    // area). Match its tracks by point distance instead.
+    similarityMethod:
+      run.nodeCount === 1 && (config.similarityMethod === "oks" || config.similarityMethod === "iou")
+        ? "euclidean_dist"
+        : config.similarityMethod,
     skeletonRuns: undefined,
   };
 }

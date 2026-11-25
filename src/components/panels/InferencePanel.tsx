@@ -1215,7 +1215,8 @@ function InferencePanelContent() {
                 {multiSkeleton && (
                   <p className="text-[10px] text-muted-foreground" data-testid="multi-skeleton-per-run-tracks">
                     Several skeletons: each skeleton is tracked separately, with its own tracks. Max tracks and
-                    Target instance count apply to each skeleton&apos;s run.
+                    Target instance count apply to each skeleton&apos;s run. A 1-node skeleton (e.g. a pellet) is
+                    matched by point distance, since OKS and IoU need several points.
                   </p>
                 )}
               </div>

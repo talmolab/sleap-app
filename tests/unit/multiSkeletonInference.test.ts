@@ -132,8 +132,8 @@ describe("the mice + pellet plan", () => {
     ]);
     expect(plan.models.map((v) => v.skeletonName)).toEqual(["pellet", "mouse", "mouse"]);
     expect(runSpecsFromPlan(plan)).toEqual([
-      { skeletonName: "mouse", skeletonIndex: 0, modelPaths: ["/m/mouse_centroid", "/m/mouse_ci"], pipeline: "top-down" },
-      { skeletonName: "pellet", skeletonIndex: 1, modelPaths: ["/m/pellet_centroid"], pipeline: "centroid-only" },
+      { skeletonName: "mouse", skeletonIndex: 0, modelPaths: ["/m/mouse_centroid", "/m/mouse_ci"], pipeline: "top-down", nodeCount: 3 },
+      { skeletonName: "pellet", skeletonIndex: 1, modelPaths: ["/m/pellet_centroid"], pipeline: "centroid-only", nodeCount: 1 },
     ]);
   });
 
