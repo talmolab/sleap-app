@@ -410,7 +410,7 @@ async function runLocalSkeletonRuns(
         set({ status: "error", error: `The project's skeletons changed since the models were matched — check the Models list and run again.` });
         return;
       }
-      const runConfig = configForSkeletonRun(config, run);
+      const runConfig = configForSkeletonRun(config, { ...run, nodeCount: skeleton.nodeNames.length });
       const outputTag = skeletonFileTag(run.skeletonName);
       set((s) => ({
         progress: null,
@@ -639,7 +639,10 @@ export const useInferenceStore = create<InferenceState>()((set) => ({
       const msi = multiSkeleton ? await import("@/lib/multiSkeletonInference") : null;
       const runConfigs: { config: InferenceConfig; skeleton?: PendingMergeSkeleton }[] = msi
         ? config.skeletonRuns!.map((run) => ({
-            config: msi.configForSkeletonRun(config, run),
+            config: msi.configForSkeletonRun(config, {
+              ...run,
+              nodeCount: labels?.skeletons[run.skeletonIndex]?.nodeNames.length ?? run.nodeCount,
+            }),
             skeleton: { name: run.skeletonName, index: run.skeletonIndex },
           }))
         : [{ config }];

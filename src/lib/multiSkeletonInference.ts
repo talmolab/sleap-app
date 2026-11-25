@@ -541,6 +541,27 @@ export function skeletonSettingsKey(skeleton: Pick<Skeleton, "name" | "nodeNames
   return `${skeleton.name?.trim() ?? ""}|${[...skeleton.nodeNames].sort().join(",")}`;
 }
 
+/** Why a 1-node skeleton is matched by point distance (shown in its tab). */
+export const SINGLE_POINT_SIMILARITY_NOTE =
+  "1-node skeleton: tracks are matched by point distance. OKS and IoU need several points (sleap-nn fails on a single point).";
+
+/** Whether `method` can score a skeleton with `nodeCount` nodes. */
+export function similarityAllowed(method: InferenceConfig["similarityMethod"], nodeCount: number | undefined): boolean {
+  return !(nodeCount === 1 && (method === "oks" || method === "iou"));
+}
+
+/**
+ * The similarity a skeleton's run actually uses. A 1-node skeleton (a pellet)
+ * has no box or spread: sleap-nn's OKS and IoU scoring crash on a single point
+ * (0.3.5: AxisError in OKS's bbox area), so it's matched by point distance.
+ */
+export function similarityForNodeCount(
+  method: InferenceConfig["similarityMethod"],
+  nodeCount: number | undefined,
+): InferenceConfig["similarityMethod"] {
+  return similarityAllowed(method, nodeCount) ? method : "euclidean_dist";
+}
+
 /** What the inference store needs per run (serializable; no Skeleton objects). */
 export interface SkeletonRunSpec {
   skeletonName: string;
@@ -549,6 +570,8 @@ export interface SkeletonRunSpec {
   pipeline: SkeletonPipeline;
   /** This skeleton's own settings (its tab); absent = the shared config's. */
   settings?: SkeletonRunSettings;
+  /** The skeleton's node count (1 = a pellet: tracked by distance, see configForSkeletonRun). */
+  nodeCount?: number;
 }
 
 /**
@@ -566,6 +589,7 @@ export function runSpecsFromPlan(
       skeletonIndex: r.skeletonIndex,
       modelPaths: r.modelPaths,
       pipeline: r.pipeline,
+      nodeCount: r.skeleton.nodeNames.length,
       ...(settingsFor ? { settings: settingsFor(r) } : {}),
     }));
 }
@@ -581,6 +605,7 @@ export function configForSkeletonRun(config: InferenceConfig, run: SkeletonRunSp
     kfNodeIndices: [],
     skeletonRuns: undefined,
   };
+  cfg.similarityMethod = similarityForNodeCount(cfg.similarityMethod, run.nodeCount);
   // sleap-nn tracks poses, not a box detector's boxes.
   if (run.pipeline === "bbox") cfg.tracking = false;
   return cfg;

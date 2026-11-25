@@ -66,7 +66,10 @@ import {
   skeletonRunSettings,
   skeletonSettingsKey,
   skeletonsInUse,
+  similarityAllowed,
+  similarityForNodeCount,
   DEFAULT_SKELETON_RUN_SETTINGS,
+  SINGLE_POINT_SIMILARITY_NOTE,
   SKELETON_PIPELINE_LABELS,
   SKELETON_RUN_SETTING_KEYS,
   type ModelInfo,
@@ -370,6 +373,7 @@ function TrackingFields({
   disabled,
   trackOnly = false,
   trackingUnavailable = false,
+  nodeCount,
   kalmanNodes,
 }: {
   v: TrackingValues;
@@ -378,6 +382,8 @@ function TrackingFields({
   trackOnly?: boolean;
   /** A box detector alone: sleap-nn tracks poses, not boxes. */
   trackingUnavailable?: boolean;
+  /** The skeleton's node count, when known (1 = matched by point distance only). */
+  nodeCount?: number;
   /** The Kalman "Tracked nodes" control. */
   kalmanNodes: React.ReactNode;
 }) {
@@ -405,16 +411,21 @@ function TrackingFields({
           </div>
           <div className="flex items-center justify-between gap-2">
             <FieldLabel label="Similarity" hint="Metric for comparing instances across frames. OKS uses keypoint positions, IoU uses bounding boxes, Centroids uses center distance." />
-            <Select value={v.similarityMethod} onValueChange={(x) => set({ similarityMethod: x as TrackingValues["similarityMethod"] })} disabled={disabled}>
-              <SelectTrigger className="h-6 text-[10px] w-28"><SelectValue /></SelectTrigger>
+            <Select value={similarityForNodeCount(v.similarityMethod, nodeCount)} onValueChange={(x) => set({ similarityMethod: x as TrackingValues["similarityMethod"] })} disabled={disabled}>
+              <SelectTrigger className="h-6 text-[10px] w-28" data-testid="tracking-similarity"><SelectValue /></SelectTrigger>
               <SelectContent>
-                <SelectItem value="oks">OKS</SelectItem>
-                <SelectItem value="iou">IoU</SelectItem>
+                <SelectItem value="oks" disabled={!similarityAllowed("oks", nodeCount)}>OKS</SelectItem>
+                <SelectItem value="iou" disabled={!similarityAllowed("iou", nodeCount)}>IoU</SelectItem>
                 <SelectItem value="centroids">Centroid dist.</SelectItem>
                 <SelectItem value="euclidean_dist">Euclidean dist.</SelectItem>
               </SelectContent>
             </Select>
           </div>
+          {nodeCount === 1 && (
+            <p className="text-[10px] text-muted-foreground" data-testid="single-point-similarity-note">
+              {SINGLE_POINT_SIMILARITY_NOTE}
+            </p>
+          )}
           <div className="flex items-center justify-between gap-2">
             <FieldLabel label="Matching" hint="Algorithm for assigning detections to tracks. Hungarian finds the globally optimal assignment; Greedy is faster but may be suboptimal." />
             <Select value={v.matchingMethod} onValueChange={(x) => set({ matchingMethod: x as TrackingValues["matchingMethod"] })} disabled={disabled}>
@@ -1104,6 +1115,7 @@ function InferencePanelContent() {
           set={set}
           disabled={isRunning}
           trackingUnavailable={r.pipeline === "bbox"}
+          nodeCount={r.skeleton.nodeNames.length}
           kalmanNodes={<NodeCheckboxList nodes={[]} selected={[]} onChange={() => {}} emptyText="Several skeletons — all of this skeleton's nodes are used." />}
         />
         <button type="button" className="text-[10px] text-muted-foreground underline hover:text-foreground disabled:opacity-50"
@@ -1732,7 +1744,13 @@ function InferencePanelContent() {
           filterMinVisibleNodes, filterMinVisibleNodeFraction, filterMinMeanNodeScore,
           filterMinInstanceScore, filterMinCentroidDistance,
           // Several skeletons: the open tab's own settings.
-          ...(activeRunSettings ? skeletonRunSettings(activeRunSettings) : {}),
+          ...(activeRunSettings && activeRun
+            ? {
+                ...skeletonRunSettings(activeRunSettings),
+                // What the run will use (a 1-node skeleton can't use OKS/IoU).
+                similarityMethod: similarityForNodeCount(activeRunSettings.similarityMethod, activeRun.skeleton.nodeNames.length),
+              }
+            : {}),
         }}
         onUpdate={(allUpdates) => {
           let updates = allUpdates;

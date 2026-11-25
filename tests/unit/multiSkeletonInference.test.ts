@@ -140,8 +140,8 @@ describe("the mice + pellet plan", () => {
     ]);
     expect(plan.models.map((v) => v.skeletonName)).toEqual(["pellet", "mouse", "mouse"]);
     expect(runSpecsFromPlan(plan)).toEqual([
-      { skeletonName: "mouse", skeletonIndex: 0, modelPaths: ["/m/mouse_centroid", "/m/mouse_ci"], pipeline: "top-down" },
-      { skeletonName: "pellet", skeletonIndex: 1, modelPaths: ["/m/pellet_centroid"], pipeline: "centroid-only" },
+      { skeletonName: "mouse", skeletonIndex: 0, modelPaths: ["/m/mouse_centroid", "/m/mouse_ci"], pipeline: "top-down", nodeCount: 3 },
+      { skeletonName: "pellet", skeletonIndex: 1, modelPaths: ["/m/pellet_centroid"], pipeline: "centroid-only", nodeCount: 1 },
     ]);
   });
 
@@ -696,6 +696,29 @@ describe("per-skeleton settings (one tab per skeleton)", () => {
     const run = skeletonRunSettings(s);
     expect([run.maxInstances, run.maxTracks]).toEqual([null, null]);
     expect(Object.keys(run).sort()).toEqual([...SKELETON_RUN_SETTING_KEYS].sort());
+  });
+
+  // A 1-node tab's OKS/IoU becomes point distance; other tabs keep their own pick.
+  it("tracks a 1-node skeleton by point distance, from its own tab", () => {
+    const base = {
+      ...DEFAULT_SKELETON_RUN_SETTINGS, pipeline: "top-down", trackOnly: false, modelPaths: [], videoIndex: 0,
+      frameRange: "video", sampleCount: 20, excludeUserLabeled: false, existingPredictions: "replace", batchSize: 4,
+      device: "auto", runtime: "auto", kfNodeIndices: [], ensureChannels: "auto", filterOverlapping: false,
+    } as unknown as InferenceConfig;
+    const run = (skeletonName: string, nodeCount: number, similarityMethod: InferenceConfig["similarityMethod"]) =>
+      configForSkeletonRun(base, {
+        skeletonName, skeletonIndex: 0, modelPaths: ["/m/x"], pipeline: nodeCount === 1 ? "centroid-only" : "top-down", nodeCount,
+        settings: { ...DEFAULT_SKELETON_RUN_SETTINGS, tracking: true, similarityMethod },
+      });
+    expect(run("mouse", 3, "iou").similarityMethod).toBe("iou");
+    expect(run("pellet", 1, "oks").similarityMethod).toBe("euclidean_dist");
+    expect(run("pellet", 1, "iou").similarityMethod).toBe("euclidean_dist");
+    expect(run("pellet", 1, "centroids").similarityMethod).toBe("centroids");
+    const args = buildInferenceArgs(run("pellet", 1, "oks"), { dataPath: "/p.slp", outputPath: "/o.slp" }).join(" ");
+    expect(args).toContain("--scoring_method euclidean_dist");
+    // The plan carries each skeleton's node count.
+    const plan = planMultiSkeletonInference([mouseCentroid, mouseCi, pelletCentroid], makeTwoSkeletonProject().labels.skeletons);
+    expect(runSpecsFromPlan(plan).map((r) => [r.skeletonName, r.nodeCount])).toEqual([["mouse", 3], ["pellet", 1]]);
   });
 
   // A box detector alone can't be tracked, whatever its tab says.

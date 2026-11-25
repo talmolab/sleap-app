@@ -137,6 +137,12 @@ describe("per-skeleton tabs", () => {
     const pelletTab = await screen.findByTestId("skeleton-tab-content-pellet");
     expect(within(pelletTab).getByText("/w/pellet_centroid")).toBeTruthy();
     expect(within(pelletTab).getByText(/Centroid only/)).toBeTruthy();
+
+    // A 1-node skeleton's tracking shows point distance and says why.
+    expect(within(mouseTab).queryByTestId("single-point-similarity-note")).toBeNull();
+    fireEvent.click(within(pelletTab).getByLabelText("Enable tracking"));
+    expect(within(pelletTab).getByTestId("single-point-similarity-note").textContent).toMatch(/OKS and IoU need several points/);
+    expect(within(pelletTab).getByTestId("tracking-similarity").textContent).toMatch(/Euclidean dist\./);
   });
 
   // Run sends each skeleton's own settings, and they're saved by name + node set.
