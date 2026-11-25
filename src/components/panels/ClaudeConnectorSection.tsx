@@ -7,6 +7,9 @@ import { Check, Copy, Loader2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import { ownsConnector, useClaudeConnectorStore } from "@/stores/claudeConnectorStore";
+import { useProposalStore } from "@/stores/proposalStore";
+import { useAppStore } from "@/stores/appStore";
+import { openClaudeSuggestions, undecidedCount } from "@/lib/proposalReview";
 
 /** How often the panel re-reads the endpoint's state while shown. */
 const REFRESH_MS = 5000;
@@ -56,8 +59,9 @@ export function ClaudeConnectorSection() {
         <span>
           Allow Claude to control SLEAP
           <span className="block text-[10px] text-muted-foreground">
-            Claude Code on this computer can review Label QC flags and propose fixes. Nothing changes until you
-            accept a fix in the QC Review window. Claude can&apos;t save.
+            Claude Code on this computer can review Label QC flags and predictions and propose fixes. Nothing
+            changes until you accept a fix (in the QC Review window; corrected predictions in Review
+            disagreements). Claude can&apos;t save.
           </span>
         </span>
       </label>
@@ -99,6 +103,8 @@ export function ClaudeConnectorSection() {
         </div>
       )}
 
+      <ReviewSuggestionsButton />
+
       {mine && command && (
         <div className="mt-2 space-y-1">
           {portChanged && (
@@ -129,12 +135,34 @@ export function ClaudeConnectorSection() {
             </Button>
           </div>
           <p className="text-[10px] text-muted-foreground">
-            Then ask Claude to &quot;review the Label QC flags in SLEAP&quot;. SLEAP makes a new access token each
+            Then ask Claude to &quot;review the Label QC flags in SLEAP&quot; or &quot;correct the
+            low-confidence predictions in SLEAP&quot;. SLEAP makes a new access token each
             launch; Claude Code reads it from ~/.sleap-app/mcp-headers.json each time it connects, so the command is
             only needed once. Listening on {status!.info?.url}.
           </p>
         </div>
       )}
     </section>
+  );
+}
+
+/** Opens Compare Models' Review disagreements window on Claude's corrected predictions, while there are any. */
+function ReviewSuggestionsButton() {
+  const proposals = useProposalStore((s) => s.proposals);
+  // An edit can make a suggestion outdated (no longer to decide).
+  useAppStore((s) => s.editSeq);
+  const corrections = proposals.filter((p) => p.kind === "correct");
+  if (corrections.length === 0) return null;
+  const n = undecidedCount(corrections);
+  return (
+    <Button
+      size="sm"
+      variant="outline"
+      className="mt-2 h-6 text-[11px]"
+      onClick={() => openClaudeSuggestions()}
+      data-testid="claude-review-suggestions"
+    >
+      Review Claude&apos;s corrections{n > 0 ? ` (${n} to decide)` : ""}
+    </Button>
   );
 }

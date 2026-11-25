@@ -34,6 +34,7 @@ import { commandContext, DeleteSelectedInstance, MarkQcFlagOk } from "@/commands
 import { QC_KIND_LABEL, SOFT_QC_KINDS } from "@/lib/analyze/labelQc";
 import { qcIssueText } from "@/lib/qcReview";
 import { formatShortcut } from "@/lib/formatShortcut";
+import { shortcutText } from "@/lib/shortcutPrefs";
 import { useQcView } from "@/hooks/useQcView";
 import { videoBasename } from "@/lib/videoFilter";
 import { ClaudeSuggestionRow } from "./ClaudeSuggestion";
@@ -364,7 +365,7 @@ function ReviewFooter() {
               className="h-7 border-red-500/50 text-red-400 hover:bg-red-500/10 hover:text-red-400"
               disabled={!selected}
               onClick={() => commandContext.execute(DeleteSelectedInstance)}
-              title={`Delete the selected instance, e.g. a duplicate (${formatShortcut("$mod+Backspace")})`}
+              title={`Delete the selected instance, e.g. a duplicate (${shortcutText("delete instance")})`}
             >
               Delete instance
             </Button>
