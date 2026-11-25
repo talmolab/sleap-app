@@ -1,0 +1,1 @@
+async function r(i){throw new Error("readFile is only available in Tauri runtime")}async function e(i,a){throw new Error("writeFile is only available in Tauri runtime")}async function n(i){return!1}export{n as exists,r as readFile,e as writeFile};

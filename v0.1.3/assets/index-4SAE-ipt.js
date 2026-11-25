@@ -1,0 +1,1 @@
+async function e(r,n={},o){return window.__TAURI_INTERNALS__.invoke(r,n,o)}async function s(r=0){await e("plugin:process|exit",{code:r})}async function t(){await e("plugin:process|restart")}export{s as exit,t as relaunch};
