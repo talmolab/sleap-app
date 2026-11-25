@@ -71,6 +71,18 @@ describe("resolveSlotConfigSource", () => {
     expect(fs.readTextFile).not.toHaveBeenCalled();
   });
 
+  it("Top-Down + ID's second stage reuses a multi-class top-down run, never a centered-instance one", async () => {
+    const discovered: DiscoveredModel[] = [
+      { path: "/proj/models/ci", headKey: "centered_instance", runName: "ci", mtimeMs: 2000, checkpointFile: "best.ckpt" },
+      { path: "/proj/models/id", headKey: "multi_class_topdown", runName: "id", mtimeMs: 1000, checkpointFile: "best.ckpt" },
+    ];
+    const result = await resolveSlotConfigSource("centered_instance", "top_down_id", discovered, fakeFs());
+    expect(result?.checkpointPath).toBe("/proj/models/id/best.ckpt");
+
+    const baseline = await resolveSlotConfigSource("centered_instance", "top_down_id", discovered.slice(0, 1), fakeFs());
+    expect(baseline?.filename).toBe("baseline.multi_class_topdown.yaml");
+  });
+
   it("picks the Medium RF baseline by default (no recommendation)", async () => {
     const fs = fakeFs();
     const result = await resolveSlotConfigSource("centroid", "top_down", [], fs);

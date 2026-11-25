@@ -201,6 +201,25 @@ describe("mergePendingRemoteResults", () => {
     expect(useInferenceStore.getState().pendingRemoteMerge).toBeNull();
   });
 
+  it("per-video results: Clear all clears on the first merge only, and each merges onto its own video", async () => {
+    const results: JobResult[] = [0, 1].map((i) => ({
+      jobId: `job_${i}`,
+      success: true,
+      resultBlobs: { predictions: { sha256: String(i), size: 1 } },
+    }));
+    useInferenceStore.setState({
+      pendingRemoteMerge: { results, mode: "clear_all", trackOnly: false, videoTargets: [0, 1] },
+    });
+
+    await useInferenceStore.getState().mergePendingRemoteResults();
+
+    const params = executeMock.mock.calls.map((c) => c[1] as unknown as Record<string, unknown>);
+    expect(params.map((p) => [p.mode, p.videoTarget])).toEqual([
+      ["clear_all", 0],
+      ["replace", 1],
+    ]);
+  });
+
   it("surfaces a failure as a store error but KEEPS pendingRemoteMerge (and status) so the retry button stays usable (#44)", async () => {
     fetchResultBlobMock.mockImplementationOnce(async () => {
       throw new Error("worker unreachable");

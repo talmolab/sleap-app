@@ -6,12 +6,14 @@
  * refusal on each way a `.slp` comes in:
  *
  * - opening a project by path (desktop: Open, Open With, drag-and-drop, which
- *   all end in loadProjectFromPath): an error toast with the library's
- *   message, and nothing installed in the store, so no project path or file
- *   handle points at the refused file and a later Save cannot write over it;
+ *   all end in loadProjectFromPath): opens the SLP format refusal modal (no
+ *   raw error toast), and installs nothing in the store, so no project path or
+ *   file handle points at the refused file and a later Save cannot write over
+ *   it;
  * - a project already open stays open, unchanged, with its own path;
+ * - non-format load failures still surface through the error toast;
  * - Merge into Project and prediction overlays (loadLabelsFromSlpPath):
- *   the read rejects with the library's message, which both callers show;
+ *   the read rejects with the library's message, which both callers handle;
  * - importing a skeleton from a `.slp`: the same, naming the user's file.
  *
  * Under bun these run sleap-io.js's main-thread reader; in the app's WebView,
@@ -47,6 +49,7 @@ import { loadLabelsFromSlpPath, loadProjectFromPath } from "@/lib/loadProject";
 import { loadAndAnalyze } from "@/lib/modelOverlay/load";
 import { parseSkeletonFile } from "@/lib/skeletonIO";
 import { useAppStore } from "@/stores/appStore";
+import { useSlpFormatDialogStore } from "@/stores/slpFormatDialogStore";
 import { toast } from "@/lib/notify";
 
 const FORMAT3 = join(import.meta.dir, "../fixtures/format3_minimal.slp");
@@ -59,29 +62,24 @@ function format3Bytes(): Uint8Array {
   return new Uint8Array(readFileSync(FORMAT3));
 }
 
-/** The one error toast shown, as [title, description]. */
-function shownError(): [string, string] {
-  expect(toastError.mock.calls.length).toBe(1);
-  const [title, opts] = toastError.mock.calls[0] as [string, { description: string }];
-  return [title, opts.description];
-}
-
 beforeEach(() => {
   useAppStore.setState(useAppStore.getInitialState());
+  useSlpFormatDialogStore.setState({ refusal: null, welcomeEnvironmentRequestSeq: 0 });
   toastError.mockClear();
   (toast.success as unknown as Mock).mockClear();
 });
 
-describe("a format 3.0 .slp is refused with the library's message", () => {
-  it("open by path (desktop): error toast, nothing loaded", async () => {
+describe("a format 3.0 .slp is refused cleanly", () => {
+  it("open by path (desktop): opens the refusal modal, no error toast, nothing loaded", async () => {
     const ok = await loadProjectFromPath(FORMAT3, async () => format3Bytes());
     expect(ok).toBe(false);
 
-    const [title, description] = shownError();
-    expect(title).toBe("Failed to load project");
-    expect(description).toContain("format3_minimal.slp");
-    expect(description).toContain("SLP format 3.0");
-    expect(description).toContain("legacy_format=True");
+    expect(toastError.mock.calls.length).toBe(0);
+    const refusal = useSlpFormatDialogStore.getState().refusal;
+    expect(refusal).not.toBeNull();
+    expect(refusal?.fileName).toBe("format3_minimal.slp");
+    expect(refusal?.formatId).toBe(3);
+    expect(refusal?.detail).toContain("SLP format 3.0");
 
     const s = useAppStore.getState();
     expect(s.labels).toBeNull();
@@ -108,8 +106,22 @@ describe("a format 3.0 .slp is refused with the library's message", () => {
     expect(after.projectPath).toBe(V2);
     expect(after.projectLoaded).toBe(true);
     expect(after.isLoading).toBe(false);
-    const [, description] = shownError();
-    expect(description).toContain("SLP format 3.0");
+    expect(toastError.mock.calls.length).toBe(0);
+    const refusal = useSlpFormatDialogStore.getState().refusal;
+    expect(refusal?.fileName).toBe("format3_minimal.slp");
+    expect(refusal?.formatId).toBe(3);
+  });
+
+  it("still shows toast.error for non-format load failures", async () => {
+    const ok = await loadProjectFromPath("/tmp/missing.slp", async () => {
+      throw new Error("ENOENT: no such file");
+    });
+    expect(ok).toBe(false);
+    expect(useSlpFormatDialogStore.getState().refusal).toBeNull();
+    expect(toastError.mock.calls.length).toBe(1);
+    const [title, opts] = toastError.mock.calls[0] as [string, { description: string }];
+    expect(title).toBe("Failed to load project");
+    expect(opts.description).toContain("ENOENT");
   });
 
   it("Merge into Project / overlay reads reject with SlpFormatError", async () => {

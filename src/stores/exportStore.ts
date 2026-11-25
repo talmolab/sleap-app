@@ -20,7 +20,10 @@ interface ExportState {
   log: string[];
   /** Where the exported model was/will be written (<first model dir>/exported). */
   outputDir: string | null;
-  openExport: (modelPaths: string[]) => void;
+  /** Set by `openExport(…, { outputDir })`; used instead of the default when exporting. */
+  outputDirOverride: string | null;
+  /** `outputDir` overrides `<first model dir's parent>/exported` (e.g. a pipeline whose first model is reused from another project). */
+  openExport: (modelPaths: string[], opts?: { outputDir?: string }) => void;
   /** Replace the run directories to export (used by the in-dialog model picker). */
   setModelPaths: (paths: string[]) => void;
   /**
@@ -59,9 +62,10 @@ export const useExportStore = create<ExportState>((set, get) => ({
   status: "idle",
   log: [],
   outputDir: null,
+  outputDirOverride: null,
 
-  openExport: (modelPaths) =>
-    set({ open: true, modelPaths, status: "idle", log: [], outputDir: null }),
+  openExport: (modelPaths, opts) =>
+    set({ open: true, modelPaths, status: "idle", log: [], outputDir: null, outputDirOverride: opts?.outputDir ?? null }),
 
   setModelPaths: (paths) => set({ modelPaths: paths }),
 
@@ -79,7 +83,7 @@ export const useExportStore = create<ExportState>((set, get) => ({
   startExport: async (format, precision) => {
     const { modelPaths } = get();
     if (modelPaths.length === 0) return;
-    const outputDir = defaultExportOutputDir(modelPaths);
+    const outputDir = get().outputDirOverride ?? defaultExportOutputDir(modelPaths);
     set({ status: "exporting", log: [], outputDir });
 
     const result = await runExport({ modelPaths, outputDir, format, precision }, (event) => {

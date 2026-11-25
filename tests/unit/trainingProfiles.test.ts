@@ -7,6 +7,7 @@ import {
   getRecommendedProfileForHead,
   slotToHeadType,
 } from "@/lib/trainingProfiles";
+import { getConfigSlots } from "@/stores/trainingStore";
 
 describe("trainingProfiles", () => {
   it("has 14 baseline profiles", () => {
@@ -167,8 +168,18 @@ describe("trainingProfiles", () => {
       expect(slotToHeadType("bottom_up_id", "config")).toBe("multi_class_bottomup");
     });
 
-    it("maps config slot for top_down_id to multi_class_topdown", () => {
-      expect(slotToHeadType("top_down_id", "config")).toBe("multi_class_topdown");
+    it("maps top_down_id's crop-stage slot to multi_class_topdown, not centered_instance", () => {
+      expect(slotToHeadType("top_down_id", "centroid")).toBe("centroid");
+      expect(slotToHeadType("top_down_id", "centered_instance")).toBe("multi_class_topdown");
     });
+  });
+
+  // Top-Down + ID used to resolve its second stage to the plain centered-instance
+  // preset, training a pose model with no identity head.
+  it("every top_down_id slot resolves to its own head's preset", () => {
+    const files = getConfigSlots("top_down_id").map(
+      (slot) => getRecommendedProfileForHead(slotToHeadType("top_down_id", slot), null)?.filename,
+    );
+    expect(files).toEqual(["baseline_medium_rf.centroid.yaml", "baseline.multi_class_topdown.yaml"]);
   });
 });

@@ -57,6 +57,7 @@ import { toast } from "@/lib/notify";
 import { useAppStore } from "@/stores/appStore";
 import { useQcStore } from "@/stores/qcStore";
 import { formatShortcut } from "@/lib/formatShortcut";
+import { shortcutText } from "@/lib/shortcutPrefs";
 
 export type LabelingHintId =
   | "missing-nodes-right-click"
@@ -99,7 +100,7 @@ const HINT_BODY: Record<LabelingHintId, React.ReactNode> = {
     <>
       To move the whole instance at once instead of node-by-node, hold{" "}
       <strong>{formatShortcut("Alt")}</strong> and drag any node (or press{" "}
-      <strong>{formatShortcut("Shift+KeyA")}</strong> to select all of its
+      <strong>{shortcutText("select instance nodes")}</strong> to select all of its
       nodes, then drag any one). Hold{" "}
       <strong>{formatShortcut("Alt")}</strong> while scrolling to rotate the
       selected instance.
@@ -117,7 +118,7 @@ const HINT_BODY: Record<LabelingHintId, React.ReactNode> = {
   "add-another-instance": (
     <>
       More than one animal in this frame? Right-click → <strong>Add
-      Instance</strong> (or <strong>{formatShortcut("$mod+KeyI")}</strong>) to
+      Instance</strong> (or <strong>{shortcutText("add instance")}</strong>) to
       place another one, or hold <strong>{formatShortcut("Ctrl")}</strong> and
       drag any node of this instance to clone its pose.
     </>

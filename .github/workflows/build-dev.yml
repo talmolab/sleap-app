@@ -38,10 +38,16 @@ jobs:
     outputs:
       version: ${{ steps.compute.outputs.version }}
       short_sha: ${{ steps.compute.outputs.short_sha }}
+      base_tag: ${{ steps.compute.outputs.base_tag }}
+      count: ${{ steps.compute.outputs.count }}
       should_build: ${{ steps.should_build.outputs.should_build }}
     steps:
       - name: Checkout
         uses: actions/checkout@v5
+        with:
+          # Full history + tags so BASE_TAG can verify git ancestry against HEAD
+          # (prevents tags on diverged release/* branches from poisoning main).
+          fetch-depth: 0
 
       # Compares against the exact commit the LAST dev build actually used
       # (the `dev` tag, which the publish job below pins via
@@ -83,83 +89,103 @@ jobs:
         run: |
           set -euo pipefail
 
-          # BASE is the HIGHEST-precedence version tag actually published on
-          # GitHub (release OR pre-release, drafts excluded), reused VERBATIM
-          # -- NOT `package.json`'s committed version. package.json is never
-          # updated on `main` by the real release pipeline (build.yml only
-          # patches it inside its own ephemeral, unpushed CI checkout when
-          # stamping a release build), so it silently drifts arbitrarily far
-          # behind actual shipped versions. Deriving from real tags instead is
-          # self-correcting: it reflects whatever has ACTUALLY shipped, with
-          # no dependency on anyone remembering to bump a committed file. A
-          # real release outranks a pre-release of the same base (semver:
-          # "1.0.0" > "1.0.0-1"), which the sort key below encodes explicitly.
+          # BASE_TAG is the HIGHEST-precedence version tag actually published on
+          # GitHub (release OR pre-release, drafts excluded) that is ALSO a git
+          # ancestor of HEAD -- NOT `package.json`'s committed version (which
+          # build.yml never bumps on `main`), and NOT a tag on a diverged side
+          # branch such as `release/0.2`. Without the ancestry check, tagging
+          # `v0.2.0-1` on `release/0.2` would stamp `main`'s dev builds as
+          # `0.2.0-1+<N>.<sha>` even though `main` does not contain `release/0.2`.
           #
-          # Yields the TAG rather than the bare version: the commit count
-          # below has to compare against the real ref name, so strip the
-          # optional "v" afterwards instead of inside the jq.
-          BASE_TAG="$(gh api "repos/$REPO/releases?per_page=100" --paginate \
-            --jq '[.[] | select(.draft == false) | .tag_name as $t
-                   | ($t | capture("^v?(?<major>[0-9]+)\\.(?<minor>[0-9]+)\\.(?<patch>[0-9]+)(-(?<pre>[0-9]+))?$"))?
-                   | select(. != null)
-                   | {sortkey: [(.major|tonumber), (.minor|tonumber), (.patch|tonumber),
-                                (if .pre == null then 1 else 0 end), (.pre // "0" | tonumber)],
-                      tag: $t}]
-                  | max_by(.sortkey) | if . == null then null else .tag end')"
-          if [ -n "$BASE_TAG" ] && [ "$BASE_TAG" != "null" ]; then
+          # A real release outranks a pre-release of the same base (semver:
+          # "1.0.0" > "1.0.0-1"), which the sort key below encodes explicitly.
+          git fetch --tags --force --quiet
+          CANDIDATES="$(gh api "repos/$REPO/releases?per_page=100" --paginate | python3 -c '
+          import json, re, sys
+          raw = sys.stdin.read()
+          dec = json.JSONDecoder()
+          releases = []
+          idx = 0
+          while idx < len(raw):
+              while idx < len(raw) and raw[idx].isspace():
+                  idx += 1
+              if idx >= len(raw):
+                  break
+              page, idx = dec.raw_decode(raw, idx)
+              if isinstance(page, list):
+                  releases.extend(page)
+          pat = re.compile(r"^v?(?P<major>[0-9]+)\.(?P<minor>[0-9]+)\.(?P<patch>[0-9]+)(?:-(?P<pre>[0-9]+))?$")
+          parsed = []
+          for rel in releases:
+              if rel.get("draft"):
+                  continue
+              tag = rel.get("tag_name") or ""
+              m = pat.match(tag)
+              if not m:
+                  continue
+              key = (
+                  int(m.group("major")),
+                  int(m.group("minor")),
+                  int(m.group("patch")),
+                  1 if m.group("pre") is None else 0,
+                  int(m.group("pre") or 0),
+              )
+              parsed.append((key, tag))
+          for _, tag in sorted(parsed, key=lambda x: x[0], reverse=True):
+              print(tag)
+          ')"
+
+          BASE_TAG=""
+          while IFS= read -r tag; do
+            [ -n "$tag" ] || continue
+            if git rev-parse --verify --quiet "refs/tags/$tag^{commit}" >/dev/null \
+              && git merge-base --is-ancestor "refs/tags/$tag^{commit}" HEAD; then
+              BASE_TAG="$tag"
+              break
+            fi
+          done <<< "$CANDIDATES"
+
+          if [ -n "$BASE_TAG" ]; then
             BASE="${BASE_TAG#v}"
           else
-            # Defensive fallback (e.g. a brand-new repo with no version-tagged
-            # releases yet) -- package.json's committed version is at least a
-            # starting point, even though it can't be trusted to track reality.
-            BASE_TAG=""
+            # Defensive fallback (e.g. a brand-new repo with no ancestor
+            # version-tagged releases yet) -- package.json's committed version
+            # is at least a starting point, even though it can't be trusted to
+            # track reality.
             BASE="$(python3 -c "import json; print(json.load(open('package.json'))['version'])")"
-            echo "No valid version-tagged releases found on GitHub; falling back to package.json's $BASE"
+            echo "No ancestor version-tagged releases found for HEAD; falling back to package.json's $BASE"
           fi
 
           SHORT_SHA="$(printf '%s' "${{ github.sha }}" | cut -c1-7)"
 
-          # COUNT is how far `main` has advanced past BASE_TAG, `git
-          # describe` style -- a counter that RESTARTS at every new release
+          # COUNT is how far HEAD has advanced past BASE_TAG, `git describe`
+          # style -- a counter that RESTARTS at every new ancestor release
           # (stable or pre-release), so a dev build cut just after v0.1.3 is
-          # "0.1.3+1.abc1234", not "0.1.3+<some four-digit repo-lifetime run
-          # number>.abc1234". It was `github.run_number` before, which is
-          # per-workflow-file and monotonic for the repo's whole lifetime, so
-          # it never restarted and drifted arbitrarily far from anything
-          # meaningful about the build it labelled.
+          # "0.1.3+1.abc1234", not a repo-lifetime run number.
           #
-          # Derived, not stored: no counter lives anywhere: this is a property
-          # of the commit graph, so it cannot drift, and there is nothing to
-          # reset by hand when a release is cut. `ahead_by` is a true total,
-          # NOT capped by the compare endpoint's 250-commit `commits[]` page
-          # limit (checked against a 287-commit range).
+          # Derived directly from the local full-history commit graph (now that
+          # BASE_TAG is verified to be an ancestor of HEAD), so it is exact,
+          # has no API pagination cap, and cannot drift.
           #
           # COUNT can legitimately be 0 -- a release tagged at `main`'s head,
-          # then a workflow_dispatch build before the next merge. That is
-          # valid semver build metadata and orders correctly: "+0" still sorts
-          # above the plain tag (as any dev build does over its own base) and
-          # below "+1", and a base bump still dominates a higher count on the
-          # old base ("0.1.2-2+9" < "0.1.3+0"), which is what makes restarting
-          # the counter safe for clients in the first place. All four checked
-          # against the Cargo.lock-pinned semver crate.
+          # then a workflow_dispatch build before the next merge. That is valid
+          # semver build metadata and orders correctly: "+0" still sorts above
+          # the plain tag and below "+1", and a base bump dominates a higher
+          # count on the old base ("0.1.2-2+9" < "0.1.3+0").
           #
           # No silent fallback to run_number when the count fails: mixing the
-          # two scales would emit e.g. "+2" right after a "+52" and strand
-          # every client sitting on the higher number (the updater only
-          # offers a STRICTLY greater version -- see should_offer_update in
-          # src-tauri/src/update_channels.rs). `set -e` plus the numeric
-          # guard turns that into a loud build failure instead. The only
-          # exception is the no-releases-at-all case above, where BASE itself
-          # is already a guess and there are no clients to strand.
+          # two scales would strand clients sitting on a higher number (the
+          # updater only offers strictly greater versions -- see
+          # should_offer_update in src-tauri/src/update_channels.rs).
           if [ -n "$BASE_TAG" ]; then
-            COUNT="$(gh api "repos/$REPO/compare/${BASE_TAG}...${{ github.sha }}" --jq .ahead_by)"
+            COUNT="$(git rev-list --count "refs/tags/$BASE_TAG^{commit}..HEAD")"
             case "$COUNT" in
               "" | *[!0-9]*)
                 echo "::error::Commits-since-$BASE_TAG count was '$COUNT', not a number; refusing to stamp an unorderable dev version."
                 exit 1
                 ;;
             esac
-            echo "main is $COUNT commit(s) past $BASE_TAG"
+            echo "HEAD is $COUNT commit(s) past $BASE_TAG"
           else
             COUNT="${{ github.run_number }}"
             echo "No base tag to count from; falling back to run_number $COUNT"
@@ -193,6 +219,8 @@ jobs:
           VERSION="${BASE}+${COUNT}.${SHORT_SHA}"
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
           echo "short_sha=$SHORT_SHA" >> "$GITHUB_OUTPUT"
+          echo "base_tag=$BASE_TAG" >> "$GITHUB_OUTPUT"
+          echo "count=$COUNT" >> "$GITHUB_OUTPUT"
           echo "Dev build version: $VERSION (base tag ${BASE_TAG:-none}; commit $SHORT_SHA)"
 
   # Mirrors build.yml's `build` job matrix/steps, minus the install.ps1 lint
@@ -764,8 +792,18 @@ jobs:
       GH_TOKEN: ${{ github.token }}
       VERSION: ${{ needs.meta.outputs.version }}
       SHORT_SHA: ${{ needs.meta.outputs.short_sha }}
+      BASE_TAG: ${{ needs.meta.outputs.base_tag }}
+      FULL_SHA: ${{ github.sha }}
 
     steps:
+      # Checked out BEFORE downloading artifacts so checkout never clears
+      # `artifacts/`. Full history + tags let us summarize recent changes since
+      # BASE_TAG cleanly from the local commit graph.
+      - name: Checkout
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
       - name: Download all artifacts
         uses: actions/download-artifact@v7
         continue-on-error: true
@@ -792,6 +830,118 @@ jobs:
             fi
           done
 
+      - name: Generate dev release notes
+        run: |
+          set -euo pipefail
+          git fetch --tags --force --quiet
+          python3 <<'PY'
+          import os, re, subprocess
+
+          repo = os.environ["REPO"]
+          base_tag = os.environ.get("BASE_TAG", "").strip()
+          short_sha = os.environ["SHORT_SHA"]
+          full_sha = os.environ["FULL_SHA"]
+
+          MAX_ITEMS = 10
+          CONVENTIONAL_PREFIX = re.compile(
+              r"^(?:feat|fix|chore|docs|refactor|perf|test|ci|build|style)(?:\([^)]+\))?!?:\s*",
+              re.IGNORECASE,
+          )
+
+          def clean_subject(raw: str) -> str:
+              text = CONVENTIONAL_PREFIX.sub("", raw.strip())
+              if not text:
+                  return raw.strip()
+              # Capitalize leading lowercase word (preserve acronyms/identifiers like "sleap-nn").
+              first_word = text.split()[0]
+              if text[0].islower() and "-" not in first_word and "_" not in first_word and "." not in first_word:
+                  text = text[0].upper() + text[1:]
+              return text
+
+          def git_subjects(rev_range: str, limit: int | None = None) -> list[str]:
+              cmd = ["git", "log", "--first-parent", "--no-merges", "--pretty=format:%s"]
+              if limit is not None:
+                  cmd.extend(["-n", str(limit)])
+              cmd.append(rev_range)
+              out = subprocess.check_output(cmd, text=True)
+              return [line.strip() for line in out.splitlines() if line.strip()]
+
+          has_base = False
+          if base_tag:
+              check = subprocess.run(
+                  ["git", "rev-parse", "--verify", "--quiet", f"refs/tags/{base_tag}^{{commit}}"],
+                  stdout=subprocess.DEVNULL,
+                  stderr=subprocess.DEVNULL,
+              )
+              has_base = check.returncode == 0
+
+          if has_base:
+              raw_subjects = git_subjects(f"refs/tags/{base_tag}^{{commit}}..HEAD")
+          else:
+              raw_subjects = git_subjects("HEAD", limit=MAX_ITEMS)
+
+          seen: set[str] = set()
+          items: list[str] = []
+          for subj in raw_subjects:
+              cleaned = clean_subject(subj)
+              key = cleaned.lower()
+              if key in seen:
+                  continue
+              seen.add(key)
+              items.append(cleaned)
+
+          lines = [
+              "Automated nightly preview of the latest changes on `main` for early testing. "
+              "Preview builds may contain rough edges — use the **Stable** release for everyday work.",
+              "",
+              "## Try it",
+              "",
+              "- **Web preview:** [app.sleap.ai/dev](https://app.sleap.ai/dev/)",
+              "- **Desktop installers:** Download the installer for your platform below "
+              "(macOS `.dmg` is signed and notarized; Windows and Linux installers are unsigned).",
+              "- **Switch channels anytime:** Open the **Environment** panel in the desktop app "
+              "to move between **Stable**, **Latest**, and **Dev**.",
+              "",
+          ]
+
+          if has_base:
+              lines.append(f"## Recent changes since `{base_tag}`")
+              lines.append("")
+              compare_url = f"https://github.com/{repo}/compare/{base_tag}...{short_sha}"
+              if not items:
+                  lines.append(
+                      f"No new changes since `{base_tag}` (built from commit [`{short_sha}`](https://github.com/{repo}/commit/{full_sha}))."
+                  )
+              else:
+                  for item in items[:MAX_ITEMS]:
+                      lines.append(f"- {item}")
+                  lines.append("")
+                  if len(items) > MAX_ITEMS:
+                      lines.append(
+                          f"Showing the {MAX_ITEMS} most recent changes — "
+                          f"[view all {len(items)} changes since `{base_tag}`]({compare_url})."
+                      )
+                  else:
+                      lines.append(
+                          f"[View full changelog since `{base_tag}`]({compare_url})."
+                      )
+          else:
+              lines.append("## Recent changes")
+              lines.append("")
+              if items:
+                  for item in items[:MAX_ITEMS]:
+                      lines.append(f"- {item}")
+              else:
+                  lines.append(
+                      f"Built from commit [`{short_sha}`](https://github.com/{repo}/commit/{full_sha})."
+                  )
+
+          body = "\n".join(lines).rstrip() + "\n"
+          with open("dev-release-notes.md", "w", encoding="utf-8") as fh:
+              fh.write(body)
+          print(body)
+          PY
+
       # Delete-then-recreate is what makes this "rolling": old assets never
       # accumulate, and a stale filename from a prior run can't linger
       # alongside a same-named new one.
@@ -808,7 +958,7 @@ jobs:
             --target "${{ github.sha }}" \
             --prerelease \
             --title "Dev channel — v$VERSION" \
-            --notes "Continuous build from \`main\` @ $SHORT_SHA (run #${{ github.run_number }}). macOS is Developer ID signed and notarized (opens normally, no Gatekeeper override needed); Windows/Linux are unsigned. Built nightly (or on-demand via workflow_dispatch); not a stable release." \
+            --notes-file dev-release-notes.md \
             artifacts/*
 
       - name: Generate update manifest (latest.json)
@@ -820,7 +970,6 @@ jobs:
 
           repo = os.environ["REPO"]
           version = os.environ["VERSION"]
-          short_sha = os.environ["SHORT_SHA"]
           base = f"https://github.com/{repo}/releases/download/dev"
 
           # Same RULES/keys as build.yml's manifest step -- see there for the
@@ -861,7 +1010,10 @@ jobs:
 
           manifest = {
               "version": version,
-              "notes": f"Continuous build from main @ {short_sha}.",
+              "notes": (
+                  f"Nightly preview build (v{version}). "
+                  f"See https://github.com/{repo}/releases/tag/dev for recent changes."
+              ),
               "pub_date": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
               "platforms": platforms,
           }
