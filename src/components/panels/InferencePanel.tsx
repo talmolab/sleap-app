@@ -1683,8 +1683,9 @@ function InferencePanelContent() {
         tracking={activeRunSettings ? activeRunSettings.tracking : tracking}
         onTrackingChange={activeRunKey ? (t) => updateSkeletonSettings(activeRunKey, { tracking: t }) : setTracking}
         skeletonNodes={skeletonNodeNames}
+        skeletonName={activeRun?.skeletonName}
         subtitle={activeRun
-          ? `Peak threshold, Max instances and Tracking: ${activeRun.skeletonName} (its tab in the panel). Other settings apply to every skeleton.`
+          ? `Peak threshold, Max instances and Tracking apply to ${activeRun.skeletonName} only (its tab in the panel). Other settings apply to every skeleton.`
           : undefined}
         onResetDefaults={() => {
           if (activeRunKey) resetSkeletonSettings(activeRunKey);

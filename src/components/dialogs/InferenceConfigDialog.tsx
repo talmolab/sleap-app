@@ -73,6 +73,8 @@ interface InferenceConfigDialogProps {
   onResetDefaults?: () => void;
   /** A line under the title (several skeletons: which skeleton's settings are edited). */
   subtitle?: string;
+  /** Several skeletons: the skeleton whose tab is being edited, shown as a green text by the title. */
+  skeletonName?: string;
 }
 
 const CATEGORIES = [
@@ -280,6 +282,7 @@ export function InferenceConfigDialog({
   skeletonNodes,
   onResetDefaults,
   subtitle,
+  skeletonName,
 }: InferenceConfigDialogProps) {
   const scrollRef = useRef<HTMLDivElement>(null);
   const [searchQuery, setSearchQuery] = useState("");
@@ -324,7 +327,18 @@ export function InferenceConfigDialog({
         {/* Compact header: title (left) · saved indicator (right) */}
         <div className="relative flex items-center justify-between gap-4 px-6 py-2.5 border-b shrink-0">
           <div className="min-w-0">
-            <DialogTitle className="text-base font-semibold">Inference Configuration</DialogTitle>
+            <div className="flex items-center gap-2 min-w-0">
+              <DialogTitle className="text-base font-semibold">Inference Configuration</DialogTitle>
+              {skeletonName && (
+                <span
+                  className="truncate text-sm font-semibold text-green-600 dark:text-green-400"
+                  data-testid="inference-config-skeleton"
+                  title={`Editing the ${skeletonName} skeleton's settings`}
+                >
+                  Skeleton: {skeletonName}
+                </span>
+              )}
+            </div>
             {subtitle && (
               <p className="text-xs text-muted-foreground truncate" data-testid="inference-config-subtitle">{subtitle}</p>
             )}
