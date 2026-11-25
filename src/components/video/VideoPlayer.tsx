@@ -70,9 +70,18 @@ import { COLORMAPS } from "../../lib/colormaps";
 import { renderTrails } from "../../canvas/TrailRenderer";
 import { bboxColor, buildRenderedBboxes, renderBboxes, renderBboxHandles, renderBboxPreview, type RenderedBbox } from "../../canvas/BboxRenderer";
 import { buildRenderedCentroids, renderCentroids, type RenderedCentroid } from "../../canvas/CentroidRenderer";
-import { buildRenderedMasks, maskColor, renderMasks, type RenderedMask } from "../../canvas/MaskRenderer";
+import { buildRenderedMasks, maskColor, renderMasks, renderPolygonPreview, type RenderedMask } from "../../canvas/MaskRenderer";
 import { dragRect, handleCursor, hitTestBbox, MIN_BBOX_SIZE, rectFromPoints, rectOfCorners, type BboxHandle } from "@/lib/bboxEditing";
 import { AddBbox, DeleteBbox, SetBboxGeometry, posesToBboxes } from "@/commands/bboxCommands";
+import { AddMaskPolygon, DeleteMask, EditMaskPolygon } from "@/commands/maskCommands";
+import {
+  MIN_POLYGON_POINTS,
+  closesPolygon,
+  dedupePolygon,
+  instanceInsidePolygon,
+  maskIndexAt,
+  type Pt,
+} from "@/lib/maskPolygon";
 import { derivePoseBboxes } from "@/lib/poseBboxes";
 import { instanceInsideRect } from "@/lib/bboxLinking";
 import {
@@ -151,7 +160,7 @@ import { actualSizeView, fitPointsView, type CanvasFit, type CanvasView } from "
 import { useFollowSelection } from "@/hooks/useFollowSelection";
 import { getPlatform, isTauri } from "@/platform/index";
 import { spawnOverlayServe, killOverlayServe, detectGpu } from "@/platform/backend";
-import { Film, Frame, Hand, ImageOff, MousePointer2, SquareDashed, Tag, ZoomIn } from "lucide-react";
+import { Film, Frame, Hand, ImageOff, MousePointer2, Pentagon, SquareDashed, Tag, ZoomIn } from "lucide-react";
 import { renderProposalGhosts } from "@/canvas/proposalGhost";
 import { useProposalGhosts } from "@/hooks/useProposalGhosts";
 
@@ -312,6 +321,8 @@ export function VideoPlayer() {
   const areaDeleteMode = useAppStore((s) => s.areaDeleteMode);
   const bboxDrawMode = useAppStore((s) => s.bboxDrawMode);
   const selectedBboxIdx = useAppStore((s) => s.selectedBboxIdx);
+  const maskPolygonMode = useAppStore((s) => s.maskPolygonMode);
+  const selectedMaskIdx = useAppStore((s) => s.selectedMaskIdx);
   const bboxPosePreviewPadding = useAppStore((s) => s.bboxPosePreviewPadding);
   const bboxPosePreviewIncludePredicted = useAppStore((s) => s.bboxPosePreviewIncludePredicted);
   const showCrosshair = useAppStore((s) => s.showCrosshair);
@@ -545,6 +556,19 @@ export function VideoPlayer() {
   // Live outline of that gesture (image coords), and the hover cursor over a box.
   const [bboxPreview, setBboxPreview] = useState<[number, number][] | null>(null);
   const [bboxHoverCursor, setBboxHoverCursor] = useState<string | null>(null);
+  // Mask polygon tool: the polygon being drawn (image coords), whether it will
+  // cut from the selected mask (Alt held at its first click) or start a new
+  // mask even with one selected (Shift), and the cursor for the rubber band.
+  const [maskPolygon, setMaskPolygonState] = useState<{ points: Pt[]; cut: boolean; fresh: boolean } | null>(null);
+  const maskPolygonRef = useRef<typeof maskPolygon>(null);
+  const setMaskPolygon = useCallback((next: typeof maskPolygon) => {
+    maskPolygonRef.current = next;
+    setMaskPolygonState(next);
+  }, []);
+  const [polygonCursor, setPolygonCursor] = useState<Pt | null>(null);
+  const renderedMasksRef = useRef<RenderedMask[]>([]);
+  // Set every render (see below): closes the polygon and runs the command.
+  const commitMaskPolygonRef = useRef<() => void>(() => {});
 
   // Store frame as ImageBitmap so we can re-draw with transforms
   const frameBitmapRef = useRef<OffscreenCanvas | null>(null);
@@ -763,6 +787,13 @@ export function VideoPlayer() {
       if (selBox !== null) {
         e.preventDefault();
         commandContext.execute(DeleteBbox, { index: selBox });
+        return;
+      }
+      // Then a selected mask.
+      const selMask = useAppStore.getState().selectedMaskIdx;
+      if (selMask !== null) {
+        e.preventDefault();
+        commandContext.execute(DeleteMask, { index: selMask });
         return;
       }
       if (selectedNodes.size === 0) return;
@@ -1591,6 +1622,7 @@ export function VideoPlayer() {
     });
     const colorTarget = resolveColorTarget(distinctlyColor, projectHasTracks);
     return buildRenderedMasks(masks, {
+      selected: selectedMaskIdx !== null ? masks[selectedMaskIdx] ?? null : null,
       toImage: (x, y) => toImageCoords(video, x, y),
       colorFor: (mask, idx) =>
         maskColor({
@@ -1618,7 +1650,94 @@ export function VideoPlayer() {
     projectHasTracks,
     trackColorOverrides,
     overlayVersion,
+    selectedMaskIdx,
   ]);
+  renderedMasksRef.current = renderedMasks;
+
+  // A mask selection and an unfinished polygon belong to one frame.
+  useEffect(() => {
+    useAppStore.getState().set("selectedMaskIdx", null);
+    setMaskPolygon(null);
+    setPolygonCursor(null);
+  }, [frameIdx, video, setMaskPolygon]);
+
+  // One drawing tool at a time: turning on the polygon tool turns off the box
+  // tool and vice versa. Leaving the polygon tool drops an unfinished polygon.
+  useEffect(() => {
+    if (!maskPolygonMode) {
+      setMaskPolygon(null);
+      setPolygonCursor(null);
+      return;
+    }
+    const st = useAppStore.getState();
+    if (st.bboxDrawMode) st.set("bboxDrawMode", false);
+  }, [maskPolygonMode, setMaskPolygon]);
+  useEffect(() => {
+    const st = useAppStore.getState();
+    if (bboxDrawMode && st.maskPolygonMode) st.set("maskPolygonMode", false);
+  }, [bboxDrawMode]);
+
+  // Finish the polygon being drawn: a new mask (linked to the pose it encloses,
+  // if exactly one), or an add to / cut from the selected mask. One undo step.
+  commitMaskPolygonRef.current = () => {
+    const poly = maskPolygonRef.current;
+    setMaskPolygon(null);
+    setPolygonCursor(null);
+    const st = useAppStore.getState();
+    if (!poly || !st.video) return;
+    const video = st.video;
+    const pts = dedupePolygon(poly.points, 0.5);
+    if (pts.length < MIN_POLYGON_POINTS) return;
+    const src = pts.map(([x, y]) => toSourceCoords(video, x, y) as Pt);
+    const lf = st.labeledFrame;
+    const sel = st.selectedMaskIdx;
+    const target = sel !== null && lf?.masks[sel] ? sel : null;
+    if (poly.cut) {
+      if (target === null) {
+        toast.info("Select a mask first (click it), then hold Alt as you start the polygon to cut from it.");
+        return;
+      }
+      commandContext.execute(EditMaskPolygon, { index: target, points: src, op: "cut" });
+      return;
+    }
+    if (target !== null && !poly.fresh) {
+      commandContext.execute(EditMaskPolygon, { index: target, points: src, op: "add" });
+      return;
+    }
+    const [fw, fh] = frameDims;
+    const inside = (lf?.instances ?? []).filter((inst) => instanceInsidePolygon(inst, src));
+    commandContext.execute(AddMaskPolygon, {
+      points: src,
+      height: fh,
+      width: fw,
+      offset: toSourceCoords(video, 0, 0),
+      instance: inside.length === 1 ? inside[0] : null,
+    });
+  };
+
+  // Polygon tool keys while a polygon is being drawn: Enter closes it,
+  // Backspace / Delete removes the last point. (Esc is handled below.)
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      const poly = maskPolygonRef.current;
+      if (!poly) return;
+      const tag = (e.target as HTMLElement)?.tagName;
+      if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") return;
+      if (e.key === "Enter") {
+        e.preventDefault();
+        e.stopImmediatePropagation();
+        commitMaskPolygonRef.current();
+      } else if (e.key === "Backspace" || e.key === "Delete") {
+        e.preventDefault();
+        e.stopImmediatePropagation();
+        const points = poly.points.slice(0, -1);
+        setMaskPolygon(points.length ? { ...poly, points } : null);
+      }
+    };
+    // Capture phase, so it runs before the Delete-instance / Delete-box handler.
+    window.addEventListener("keydown", onKey, true);
+    return () => window.removeEventListener("keydown", onKey, true);
+  }, [setMaskPolygon]);
 
   // Centroids on this frame (a Centroid Only run's predictions, for one),
   // colored like boxes: by track, yellow when predicted and "Color predicted"
@@ -1723,17 +1842,25 @@ export function VideoPlayer() {
     const onKey = (e: KeyboardEvent) => {
       if (e.key !== "Escape") return;
       const st = useAppStore.getState();
-      if (st.bboxDrawMode) {
+      if (maskPolygonRef.current) {
+        // First Esc drops the unfinished polygon; the next leaves the tool.
+        setMaskPolygon(null);
+        setPolygonCursor(null);
+      } else if (st.maskPolygonMode) {
+        st.set("maskPolygonMode", false);
+      } else if (st.bboxDrawMode) {
         st.set("bboxDrawMode", false);
         bboxGestureRef.current = null;
         setBboxPreview(null);
       } else if (st.selectedBboxIdx !== null) {
         st.set("selectedBboxIdx", null);
+      } else if (st.selectedMaskIdx !== null) {
+        st.set("selectedMaskIdx", null);
       }
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, []);
+  }, [setMaskPolygon]);
 
   // Neighbor-frame poses for the magnifier: each neighbor frame's poses,
   // colored the way that frame would color them, drawn by the loupe over the
@@ -1898,6 +2025,18 @@ export function VideoPlayer() {
       }
     };
 
+    // The mask polygon being drawn (polygon tool). Needs no instances.
+    const paintMaskPolygon = () => {
+      if (!maskPolygon) return;
+      renderPolygonPreview(ctx, maskPolygon.points, {
+        zoom: baseScale * zoom,
+        cursor: polygonCursor,
+        cut: maskPolygon.cut,
+        canClose:
+          !!polygonCursor && closesPolygon(maskPolygon.points, polygonCursor, 8 / (baseScale * zoom)),
+      });
+    };
+
     // Alt+drag zoom box, drawn like the selection box. Needs no instances.
     const paintZoomBox = () => {
       if (zoomBox) renderMarqueeRect(ctx, zoomBox.x1, zoomBox.y1, zoomBox.x2, zoomBox.y2, baseScale * zoom);
@@ -1932,7 +2071,7 @@ export function VideoPlayer() {
       // The ROI + builder overlays are independent of instance rendering — still
       // draw them (persisted region / live rubber-band / scratch skeleton).
       const hasRoi = video ? imageFeatureRois.has(video) : false;
-      if (imageFeatureRoiDrawActive || hasRoi || skeletonBuildMode || zoomBox || modelLayers.length > 0 || bboxPreview) {
+      if (imageFeatureRoiDrawActive || hasRoi || skeletonBuildMode || zoomBox || modelLayers.length > 0 || bboxPreview || maskPolygon) {
         ctx.save();
         applyImageTransform();
         paintModelOverlay();
@@ -1941,6 +2080,8 @@ export function VideoPlayer() {
         paintZoomBox();
         // A box being drawn on a frame with no labels yet (e.g. a new video).
         if (bboxPreview) renderBboxPreview(ctx, bboxPreview, baseScale * zoom);
+        // A mask polygon being drawn on a frame with no labels yet.
+        paintMaskPolygon();
         ctx.restore();
       }
       return;
@@ -2008,6 +2149,7 @@ export function VideoPlayer() {
       renderBboxHandles(ctx, rectOfCorners(selectedRb.corners), selectedRb.color, baseScale * zoom);
     }
     if (bboxPreview) renderBboxPreview(ctx, bboxPreview, baseScale * zoom);
+    paintMaskPolygon();
     renderCentroids(ctx, renderedCentroids, {
       zoom: baseScale * zoom,
       opacity: poseOpacity / 100,
@@ -2137,6 +2279,8 @@ export function VideoPlayer() {
     renderedCentroids,
     renderedMasks,
     maskOpacity,
+    maskPolygon,
+    polygonCursor,
     bboxPreview,
     bboxPosePreviewPadding,
     bboxPosePreviewIncludePredicted,
@@ -2890,6 +3034,22 @@ export function VideoPlayer() {
       // starts a move/resize. Nodes win over box borders.
       {
         const st = useAppStore.getState();
+        // Mask polygon tool: each click adds a point; a click on the first
+        // point, a double-click, or Enter closes the polygon.
+        if (st.maskPolygonMode && st.labels && st.video) {
+          e.preventDefault();
+          const p: Pt = [x, y];
+          const poly = maskPolygonRef.current;
+          if (!poly) {
+            setMaskPolygon({ points: [p], cut: e.altKey, fresh: e.shiftKey });
+          } else if (e.detail >= 2 || closesPolygon(poly.points, p, 8 / (baseScale * zoom))) {
+            commitMaskPolygonRef.current();
+          } else {
+            setMaskPolygon({ ...poly, points: [...poly.points, p] });
+          }
+          setPolygonCursor(p);
+          return;
+        }
         if (st.bboxDrawMode && st.labels && st.video) {
           e.preventDefault();
           bboxGestureRef.current = { kind: "draw", start: { x, y } };
@@ -2916,6 +3076,17 @@ export function VideoPlayer() {
           return;
         }
         if (st.selectedBboxIdx !== null) st.set("selectedBboxIdx", null);
+        // A press inside a drawn mask selects it (and carries on, so poses and
+        // marquee selection still work over masks); elsewhere drops the selection.
+        if (!nodeHit && renderedMasksRef.current.length > 0 && st.labeledFrame && st.video) {
+          const [sx, sy] = toSourceCoords(st.video, x, y);
+          const shown = new Set(renderedMasksRef.current.map((m) => m.index));
+          const hit = maskIndexAt(st.labeledFrame.masks, sx, sy, st.selectedMaskIdx);
+          const next = hit !== null && shown.has(hit) ? hit : null;
+          if (next !== st.selectedMaskIdx) st.set("selectedMaskIdx", next);
+        } else if (st.selectedMaskIdx !== null && !nodeHit) {
+          st.set("selectedMaskIdx", null);
+        }
       }
 
       // In pan mode, check for node hits first so nodes are still draggable
@@ -3184,7 +3355,7 @@ export function VideoPlayer() {
       setMarqueeStart({ x, y });
       setMarqueeEnd({ x, y });
     },
-    [canvasToScene, markerSize, nodeLabelSize, showLabels, panX, panY, zoom, baseScale, shouldPan, isCmdHeld, isSpaceHeld, offsetX, offsetY, selectedNodes, areaDeleteMode, imageFeatureRoiDrawActive, skeletonBuildMode, skeleton, builderRI, pickingAnchor, instanceSequencePick, hitModelPose]
+    [canvasToScene, markerSize, nodeLabelSize, showLabels, panX, panY, zoom, baseScale, shouldPan, isCmdHeld, isSpaceHeld, offsetX, offsetY, selectedNodes, areaDeleteMode, imageFeatureRoiDrawActive, skeletonBuildMode, skeleton, builderRI, pickingAnchor, instanceSequencePick, hitModelPose, setMaskPolygon]
   );
 
   // Node-drag perf (#329): coalesce the overlay redraw to one per frame and
@@ -3302,6 +3473,12 @@ export function VideoPlayer() {
         return;
       }
 
+      // Polygon tool: the rubber-band edge follows the cursor.
+      if (maskPolygonRef.current) {
+        const p = canvasToScene(e.clientX, e.clientY);
+        setPolygonCursor([p.x, p.y]);
+      }
+
       // Bounding boxes: update the live outline of a draw / move / resize.
       const boxGesture = bboxGestureRef.current;
       if (boxGesture) {
@@ -3324,7 +3501,7 @@ export function VideoPlayer() {
       // Hovering a box: show the move/resize cursor for what a press would grab.
       if (!isDragging && !isPanning) {
         const st = useAppStore.getState();
-        if (st.bboxDrawMode) {
+        if (st.bboxDrawMode || st.maskPolygonMode) {
           if (bboxHoverCursor !== "crosshair") setBboxHoverCursor("crosshair");
         } else if (renderedBboxesRef.current.length > 0) {
           const p = canvasToScene(e.clientX, e.clientY);
@@ -4279,6 +4456,31 @@ export function VideoPlayer() {
               </TooltipTrigger>
               <TooltipContent side="top">
                 <p>{bboxDrawMode ? "Box tool on: drag to draw a box (B or Esc to stop)" : "Draw bounding boxes (B)"}</p>
+              </TooltipContent>
+            </Tooltip>
+            {/* Polygon tool (L): click points to outline a segmentation mask. */}
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Button
+                  variant="secondary"
+                  size="icon-xs"
+                  className={cn(
+                    "pointer-events-auto rounded-md bg-black/60 border-none hover:bg-black/70 hover:text-white",
+                    maskPolygonMode ? "text-white ring-1 ring-white/70" : "text-white/40",
+                  )}
+                  aria-label="Polygon tool"
+                  aria-pressed={maskPolygonMode}
+                  onClick={() => useAppStore.getState().toggle("maskPolygonMode")}
+                >
+                  <Pentagon />
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent side="top">
+                <p>
+                  {maskPolygonMode
+                    ? "Polygon tool on: click points, then click the first point or press Enter. Adds to the selected mask; hold Alt to cut, Shift for a new mask (L or Esc to stop)"
+                    : "Draw masks with polygons (L)"}
+                </p>
               </TooltipContent>
             </Tooltip>
             <Tooltip>

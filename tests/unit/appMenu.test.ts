@@ -37,6 +37,8 @@ const BASE: MenuSnapshot = {
   showPoseBboxes: false,
   showMasks: false,
   bboxDrawMode: false,
+  maskPolygonMode: false,
+  hasSelectedMask: false,
   showCrosshair: true,
   showInset: true,
   temporalLoupe: false,

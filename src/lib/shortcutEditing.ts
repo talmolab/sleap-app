@@ -66,6 +66,7 @@ export const SHORTCUT_CATEGORIES: Record<string, string[]> = {
     "delete clip predictions",
     "delete area predictions",
     "box tool",
+    "polygon tool",
   ],
   View: [
     "fit",
