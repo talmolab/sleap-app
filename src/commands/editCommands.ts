@@ -7,6 +7,7 @@
  */
 
 import { frameHasContent } from "@/lib/frameLabeling";
+import { repairAllBboxLinks, repairBboxLinks } from "@/lib/bboxLinks";
 import { predictionVideoMatcher, type PredictionVideoTarget } from "@/lib/predictionVideoMatch";
 import { Instance, LabeledFrame, PredictedInstance } from "@talmolab/sleap-io.js";
 import type { Labels, Skeleton } from "@talmolab/sleap-io.js";
@@ -205,6 +206,7 @@ export const DeleteSelectedInstance: Command = {
     if (idx === -1) return;
 
     lf.instances.splice(idx, 1);
+    repairBboxLinks(lf);
 
     // Clear selection
     ctx.state.setInstance(null);
@@ -418,14 +420,19 @@ export const DeleteFramePredictions: Command = {
     if (frames.length === 0) return;
 
     const lf = frames[0];
-    const userInstances = lf.instances.filter((inst) => !(inst instanceof PredictedInstance));
-    lf.instances = userInstances;
+    lf.instances = lf.instances.filter((inst) => !(inst instanceof PredictedInstance));
+    // A box detector's predictions are boxes: they go too.
+    lf.bboxes = lf.bboxes.filter((b) => !b.isPredicted);
+    repairBboxLinks(lf);
 
     // If selected instance was predicted, deselect
     if (instance instanceof PredictedInstance) {
       ctx.state.setInstance(null);
     }
+    ctx.state.set("selectedBboxIdx", null);
+    // Keep showing the frame while it still has user boxes (or other annotations).
     ctx.state.setLabeledFrame(frameHasContent(lf) ? lf : null);
+    ctx.state.bumpOverlayVersion();
     ctx.state.markChanged();
   },
 };
@@ -479,8 +486,10 @@ export const ConvertPredictionToInstance: Command = {
     }
     fillMissingPredictedNodes(userInstance);
 
-    // Replace the predicted instance with the user instance
+    // Replace the predicted instance with the user instance. A box linked to
+    // the prediction now belongs to the user instance.
     lf.instances.splice(instanceIdx, 1, userInstance);
+    repairBboxLinks(lf);
 
     ctx.state.setLabeledFrame(lf);
     ctx.state.setInstance(userInstance);
@@ -584,6 +593,7 @@ export const MergeInstance: Command = {
     // Remove the donor by identity (never by pose: after the merge the two
     // can be identical).
     lf.instances = lf.instances.filter((inst) => inst !== donor);
+    repairBboxLinks(lf);
 
     ctx.state.setLabeledFrame(lf);
     ctx.state.setInstance(survivor);
@@ -716,6 +726,7 @@ export const AddInstancesFromAllPredictions: Command = {
       if (!firstConverted) firstConverted = userInstance;
       return userInstance;
     });
+    repairBboxLinks(lf);
 
     ctx.state.setLabeledFrame(lf);
     if (firstConverted) ctx.state.setInstance(firstConverted);
@@ -774,6 +785,7 @@ export const AddInstancesFromAllPredictionsInProject: Command = {
         totalAccepted++;
         return userInstance;
       });
+      repairBboxLinks(lf);
     }
 
     ctx.pushUndoSnapshot(snapshot);
@@ -918,9 +930,12 @@ export const DeleteAllPredictions: Command = {
 
     let removed = 0;
     for (const lf of labels.labeledFrames) {
-      const before = lf.instances.length;
+      const before = lf.instances.length + lf.bboxes.length;
       lf.instances = lf.instances.filter((inst) => !(inst instanceof PredictedInstance));
-      removed += before - lf.instances.length;
+      // A box detector's predictions are boxes: they go too.
+      lf.bboxes = lf.bboxes.filter((b) => !b.isPredicted);
+      removed += before - lf.instances.length - lf.bboxes.length;
+      repairBboxLinks(lf);
     }
 
     // Remove empty labeled frames
@@ -935,6 +950,11 @@ export const DeleteAllPredictions: Command = {
     if (instance instanceof PredictedInstance) {
       ctx.state.setInstance(null);
     }
+    ctx.state.set("selectedBboxIdx", null);
+    const { video, frameIdx } = ctx.state;
+    const cur = video ? labels.find({ video, frameIdx })[0] ?? null : null;
+    ctx.state.setLabeledFrame(cur);
+    ctx.state.bumpOverlayVersion();
     ctx.state.markChanged();
   },
 };
@@ -1013,6 +1033,8 @@ export const MergePredictions: Command = {
         mode,
         predictionVideoMatcher(predictions, labels, videoTarget),
       );
+      // Replaced or cleared predictions may have had boxes linked to them.
+      repairAllBboxLinks(labels);
       ctx.pushUndoSnapshot(snapshot);
       ctx.state.markChanged();
       ctx.state.bumpOverlayVersion();
@@ -1051,6 +1073,8 @@ export const MergePredictions: Command = {
       video: predictionVideoMatcher(predictions, labels, videoTarget),
       frame,
     });
+    // Replaced or cleared predictions may have had boxes linked to them.
+    repairAllBboxLinks(labels);
     ctx.pushUndoSnapshot(snapshot);
     ctx.state.markChanged();
     // Merge mutates `labels` in place, so overlayVersion-gated consumers (the

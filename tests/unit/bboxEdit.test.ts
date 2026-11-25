@@ -17,6 +17,8 @@ import { CommandContext } from "@/commands/CommandContext";
 import { AddBbox, DeleteBbox, SetBboxGeometry, SetBboxProps } from "@/commands/bboxCommands";
 import { useAppStore } from "@/stores/appStore";
 import { classifyDirty } from "@/lib/autosaveDirty";
+import { applyDeltas, buildBaseIndex, encodeFrameDelta } from "@/lib/autosaveJournal";
+import { frameHasContent } from "@/lib/frameLabeling";
 import type { RenderedBbox } from "@/canvas/BboxRenderer";
 import { dragRect, handleCursor, hitTestBbox, rectFromPoints } from "@/lib/bboxEditing";
 import { instanceInsideRect } from "@/lib/bboxLinking";
@@ -176,16 +178,41 @@ describe("box commands", () => {
     expect([lf.bboxes[0].x1, lf.bboxes[0].x2]).toEqual([0, 10]);
   });
 
-  it("DeleteBbox removes the box, clears selection, and drops a now-empty frame", async () => {
+  it("DeleteBbox removes the box and clears selection; a now-empty frame is kept but shows as unlabeled", async () => {
     const { labels, lf, video } = setup();
     lf.instances = [];
     lf.bboxes.push(new UserBoundingBox({ x1: 0, y1: 0, x2: 10, y2: 10 }));
     useAppStore.getState().set("selectedBboxIdx", 0);
     await ctx.execute(DeleteBbox, { index: 0 });
     expect(useAppStore.getState().selectedBboxIdx).toBeNull();
-    expect(labels.find({ video, frameIdx: 0 })).toHaveLength(0);
+    const kept = labels.find({ video, frameIdx: 0 });
+    expect(kept).toHaveLength(1);
+    expect(kept[0].bboxes).toHaveLength(0);
+    expect(frameHasContent(kept[0])).toBe(false);
+    expect(useAppStore.getState().labeledFrame).toBeNull();
     expect(ctx.undo()).toBe(true);
     expect(labels.find({ video, frameIdx: 0 })[0].bboxes).toHaveLength(1);
+  });
+
+  // Crash recovery: the deletion of a frame's last box must be journaled, or
+  // replaying the journal onto the saved base brings the box back.
+  it("deleting a frame's last box survives autosave journal replay", async () => {
+    const { labels, lf, video } = setup();
+    lf.instances = [];
+    lf.bboxes.push(new UserBoundingBox({ x1: 0, y1: 0, x2: 10, y2: 10 }));
+    // The saved base still has the box.
+    const base = new Labels({
+      labeledFrames: [new LabeledFrame({ video, frameIdx: 0, bboxes: [new UserBoundingBox({ x1: 0, y1: 0, x2: 10, y2: 10 })] })],
+      skeletons: labels.skeletons,
+      videos: [video],
+      tracks: labels.tracks,
+    });
+    await ctx.execute(DeleteBbox, { index: 0 });
+    // The autosave encodes the dirty frame only if it still exists.
+    const now = labels.find({ video, frameIdx: 0 })[0];
+    expect(now).toBeDefined();
+    applyDeltas(base, [encodeFrameDelta(now, buildBaseIndex(labels))]);
+    expect(base.find({ video, frameIdx: 0 })[0]?.bboxes ?? []).toHaveLength(0);
   });
 
   it("SetBboxProps sets category, track and instance link (link brings its track)", async () => {

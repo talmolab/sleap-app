@@ -10,6 +10,7 @@ import { UpdateTopic } from "../types";
 import type { Command } from "./types";
 import type { CommandContext } from "./CommandContext";
 import { useAppStore } from "../stores/appStore";
+import { repairBboxLinks, syncLinkedBboxTracks } from "@/lib/bboxLinks";
 import { frameHasContent } from "@/lib/frameLabeling";
 import { frameTrackHolders, staticRoiHolders, type TrackHolder } from "@/lib/trackHolders";
 
@@ -34,6 +35,11 @@ function applyTrackSwapForward(
     const reverseInstances = lf.instances.filter((inst) => inst.track === newTrack);
     for (const inst of matchingInstances) inst.track = newTrack;
     for (const inst of reverseInstances) inst.track = oldTrack;
+    // Boxes on these tracks swap with them, linked or not.
+    for (const box of lf.bboxes) {
+      if (box.track === oldTrack) box.track = newTrack;
+      else if (box.track === newTrack) box.track = oldTrack;
+    }
   }
 }
 
@@ -51,6 +57,7 @@ export const AddTrack: Command = {
 
     labels.tracks.push(track);
     instance.track = track;
+    if (ctx.state.labeledFrame) syncLinkedBboxTracks(ctx.state.labeledFrame);
 
     ctx.state.markChanged();
   },
@@ -113,6 +120,7 @@ export const SetInstanceTrack: Command = {
       if (instance.fromPredicted) {
         instance.fromPredicted.track = newTrack;
       }
+      if (labeledFrame) syncLinkedBboxTracks(labeledFrame);
     }
 
     ctx.state.markChanged();
@@ -185,6 +193,8 @@ export const TransposeInstances: Command = {
     const tempTrack = first.track;
     first.track = second.track;
     second.track = tempTrack;
+    const current = videoFrames.find((lf) => lf.frameIdx === frameIdx);
+    if (current) syncLinkedBboxTracks(current);
 
     if (propagate) {
       applyTrackSwapForward(
@@ -326,10 +336,12 @@ export const DeleteInstanceAndTrack: Command = {
     // The selected instance first, then (on a track) every instance on that
     // track in this video, matching legacy's order of removal.
     current.instances = current.instances.filter((inst) => inst !== instance);
+    repairBboxLinks(current);
     if (track) {
       for (const lf of frames) {
         if (lf.instances.some((inst) => inst.track === track)) {
           lf.instances = lf.instances.filter((inst) => inst.track !== track);
+          repairBboxLinks(lf);
         }
       }
     }
