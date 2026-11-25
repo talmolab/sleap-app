@@ -16,7 +16,6 @@ import {
   readCoco,
   isCocoData,
   RemoteIOError,
-  SlpFormatError,
   redactUrl,
   redactedCauseSummary,
   type CocoJson,
@@ -25,6 +24,7 @@ import {
   type DlcFileSystem,
 } from "@talmolab/sleap-io.js";
 import { loadSlp, readSlpStreaming } from "@/lib/slpRead";
+import { handleSlpFormatError } from "./slpFormatRefusal";
 import { useAppStore } from "../stores/appStore";
 import { useEnvironmentStore } from "../stores/environmentStore";
 import {
@@ -201,6 +201,10 @@ export async function loadProjectFromFile(file: File): Promise<boolean> {
     useEnvironmentStore.getState().checkSleapNnUpdateAndNotify();
     return true;
   } catch (err) {
+    if (handleSlpFormatError(err, file.name)) {
+      console.warn("Unsupported SLP format:", err);
+      return false;
+    }
     const msg = err instanceof Error ? err.message : String(err);
     toast.error("Failed to load project", { description: msg });
     console.error("Failed to load project:", err);
@@ -248,18 +252,22 @@ export async function loadProjectFromUrl(url: string): Promise<boolean> {
     });
     return true;
   } catch (err) {
+    if (handleSlpFormatError(err, name)) {
+      console.warn(
+        "Unsupported SLP format from URL:",
+        redactUrl(url),
+        redactedCauseSummary(err),
+      );
+      return false;
+    }
     // A RemoteIOError's message is already human-readable AND URL/token-redacted
-    // (expired/invalid token, 404, network/CORS). So is an SlpFormatError's (a
-    // file in an SLP format this sleap-io.js can't read): it names the file by
-    // the bare filenameHint and says which tool reads it. Show those as they
-    // are; redactedCauseSummary would prefix the class name, which the
-    // production build minifies. For any other failure (e.g. a corrupt/non-SLP
-    // file, an h5wasm parse error) fall back to io's redactedCauseSummary — an
-    // accurate, credential-scrubbed one-liner — rather than mislabelling
-    // everything "network/CORS". Never log the raw URL or raw error: both can
-    // carry the access token, so redact on the way out.
+    // (expired/invalid token, 404, network/CORS). For any other failure (e.g. a
+    // corrupt/non-SLP file, an h5wasm parse error) fall back to io's
+    // redactedCauseSummary — an accurate, credential-scrubbed one-liner —
+    // rather than mislabelling everything "network/CORS". Never log the raw URL
+    // or raw error: both can carry the access token, so redact on the way out.
     const msg =
-      err instanceof RemoteIOError || err instanceof SlpFormatError
+      err instanceof RemoteIOError
         ? err.message
         : redactedCauseSummary(err);
     toast.error("Failed to open dataset", { description: msg });
@@ -373,6 +381,10 @@ export async function loadProjectFromPath(
     // resolveExternalVideos above — no separate toast here (avoids a duplicate).
     return true;
   } catch (err) {
+    if (handleSlpFormatError(err, filename)) {
+      console.warn("Unsupported SLP format:", err);
+      return false;
+    }
     const msg = err instanceof Error ? err.message : String(err);
     toast.error("Failed to load project", { description: msg });
     console.error("Failed to load project:", err);

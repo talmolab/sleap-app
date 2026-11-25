@@ -34,6 +34,20 @@ import type { InferenceConfig } from "@/stores/inferenceStore";
  */
 export const MIN_SLEAP_NN_PREDICT_VERSION = "0.3.2";
 
+/**
+ * Frame count to draw a `"random_video"` sample from: the target video's own
+ * (`config.videoIndex`), which the "Random sample (all videos)" loops set per
+ * video. Only an `"all"` index falls back to the active video. 0 = unknown.
+ */
+export function randomSampleFrameCount(
+  videoIndex: number | "all",
+  videos: ReadonlyArray<{ shape?: readonly number[] | null }> | undefined,
+  activeVideo: { shape?: readonly number[] | null } | null | undefined,
+): number {
+  const video = videoIndex === "all" ? activeVideo : videos?.[videoIndex];
+  return video?.shape?.[0] ?? 0;
+}
+
 export interface BuildInferenceArgsOptions {
   /**
    * Path to the input .slp (the project file or a serialized temp copy), OR
@@ -62,6 +76,63 @@ export interface BuildInferenceArgsOptions {
   suppressVideoIndex?: boolean;
   /** sleap-nn subcommand. Defaults to `predict` (the current pipeline). */
   subcommand?: string;
+  /**
+   * Frames to predict, already resolved by the caller (see
+   * {@link framesExcludingUserLabeled}). Replaces the frame-range args, and
+   * `--exclude_user_labeled` is not sent: sleap-nn ignores it for a raw-video
+   * `--data_path`, which has no annotations to filter on.
+   */
+  frames?: number[];
+}
+
+/**
+ * Longest `--frames` value the app passes. Windows caps a whole command line at
+ * 32,767 characters, and the model and output paths share that budget.
+ */
+export const MAX_FRAMES_ARG_LENGTH = 16_000;
+
+/**
+ * Format frame indices for `--frames`. sleap-nn accepts either one hyphen range
+ * ("10-20") or a comma list ("1,5,9"), never several ranges, so only a single
+ * contiguous run becomes a range.
+ */
+export function formatFramesArg(frames: number[]): string {
+  const sorted = [...new Set(frames)].sort((a, b) => a - b);
+  const first = sorted[0];
+  const last = sorted[sorted.length - 1];
+  if (sorted.length > 2 && last - first === sorted.length - 1) return `${first}-${last}`;
+  return sorted.join(",");
+}
+
+/**
+ * The frames a single-video target covers, minus that video's user-labeled
+ * frames: how "Exclude user-labeled frames" is applied when `--data_path` is the
+ * raw video. `nFrames` is the video's frame count (needed for "video").
+ */
+export function framesExcludingUserLabeled(
+  config: Pick<InferenceConfig, "frameRange">,
+  opts: {
+    nFrames: number;
+    userLabeledFrames: ReadonlySet<number>;
+    currentFrameIdx?: number;
+    sampledFrames?: number[];
+  },
+): number[] {
+  const { frameRange } = config;
+  let target: number[];
+  if (typeof frameRange === "object") {
+    const end = opts.nFrames > 0 ? Math.min(frameRange.end, opts.nFrames - 1) : frameRange.end;
+    target = Array.from({ length: Math.max(0, end - frameRange.start + 1) }, (_, i) => frameRange.start + i);
+  } else if (frameRange === "video") {
+    target = Array.from({ length: opts.nFrames }, (_, i) => i);
+  } else if (frameRange === "frame" && opts.currentFrameIdx != null) {
+    target = [opts.currentFrameIdx];
+  } else if (frameRange === "random_video" && opts.sampledFrames) {
+    target = opts.sampledFrames;
+  } else {
+    throw new Error(`Cannot list the frames of the '${String(frameRange)}' target.`);
+  }
+  return target.filter((f) => !opts.userLabeledFrames.has(f));
 }
 
 /**
@@ -85,6 +156,7 @@ export function buildInferenceArgs(
     currentFrameIdx,
     suppressVideoIndex = false,
     subcommand = "predict",
+    frames,
   } = opts;
 
   const args = [subcommand, "--gui"];
@@ -102,7 +174,10 @@ export function buildInferenceArgs(
   }
 
   // Frame range → CLI args (fail fast on unhandled types)
-  if (typeof config.frameRange === "object") {
+  if (frames) {
+    if (frames.length === 0) throw new Error("No frames to predict.");
+    args.push("--frames", formatFramesArg(frames));
+  } else if (typeof config.frameRange === "object") {
     args.push("--frames", `${config.frameRange.start}-${config.frameRange.end}`);
   } else {
     switch (config.frameRange) {
@@ -147,7 +222,7 @@ export function buildInferenceArgs(
     }
   }
 
-  if (config.excludeUserLabeled) {
+  if (config.excludeUserLabeled && !frames) {
     args.push("--exclude_user_labeled");
   }
 

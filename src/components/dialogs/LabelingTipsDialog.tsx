@@ -13,6 +13,7 @@
 
 import { Lightbulb } from "lucide-react";
 import { formatShortcut } from "@/lib/formatShortcut";
+import { shortcutText } from "@/lib/shortcutPrefs";
 import { rgbToCSS, type RGB } from "@/lib/colorPalettes";
 import { useDocsUrl } from "@/lib/docsUrl";
 import {
@@ -98,7 +99,7 @@ export function LabelingTipsDialog({ open, onOpenChange }: LabelingTipsDialogPro
               <ColorLabel color={MISSING_LABEL_COLOR}>Hollow / grey</ColorLabel>{" "}
               — a node marked <em>not visible</em>. Right-click a node to
               toggle this directly, or hover/select it and press{" "}
-              <Kbd>{formatShortcut("KeyV")}</Kbd>. Mark genuinely occluded
+              <Kbd>{shortcutText("toggle node visibility")}</Kbd>. Mark genuinely occluded
               nodes not-visible instead of guessing a position — SLEAP trains
               on that correctly, rather than learning an overconfident wrong
               location.
@@ -108,7 +109,7 @@ export function LabelingTipsDialog({ open, onOpenChange }: LabelingTipsDialogPro
           <Section title="User labeling — creating instances from scratch">
             <li>
               Right-click the canvas → <strong>Add Instance</strong>, or{" "}
-              <Kbd>{formatShortcut("$mod+KeyI")}</Kbd>. Pick a placement
+              <Kbd>{shortcutText("add instance")}</Kbd>. Pick a placement
               method (Best / Template / Force Directed / Random / Copy Prior
               Frame / Copy Predictions) from Labels menu →{" "}
               <strong>Instance Placement Method</strong>.
@@ -123,7 +124,7 @@ export function LabelingTipsDialog({ open, onOpenChange }: LabelingTipsDialogPro
               To move a <em>whole</em> instance at once instead of
               repositioning each node individually, hold{" "}
               <Kbd>{formatShortcut("Alt")}</Kbd> and drag any node, or press{" "}
-              <Kbd>{formatShortcut("Shift+KeyA")}</Kbd> to select all of its
+              <Kbd>{shortcutText("select instance nodes")}</Kbd> to select all of its
               nodes, then drag any one.
             </li>
             <li>
@@ -132,7 +133,7 @@ export function LabelingTipsDialog({ open, onOpenChange }: LabelingTipsDialogPro
             </li>
             <li>
               If a node is hidden or occluded in the frame, right-click it (or
-              select it and press <Kbd>{formatShortcut("KeyV")}</Kbd>) to mark
+              select it and press <Kbd>{shortcutText("toggle node visibility")}</Kbd>) to mark
               it not-visible instead of placing it at a guessed position. NOTE: The location of the invisible nodes doesn't affect training,
               the nodes marked as invisible will be ignored while training the model!
             </li>
@@ -159,12 +160,12 @@ export function LabelingTipsDialog({ open, onOpenChange }: LabelingTipsDialogPro
             <li>
               Model split one animal into two instances? Accept both, then
               select one and use <strong>Labels ▸ Merge Instance</strong>{" "}
-              (<Kbd>{formatShortcut("Shift+KeyM")}</Kbd>) to fill its missing
+              (<Kbd>{shortcutText("merge instance")}</Kbd>) to fill its missing
               nodes from the other.
             </li>
             <li>
               To accept everything on the current frame at once:{" "}
-              <Kbd>{formatShortcut("$mod+Shift+KeyA")}</Kbd> (Labels menu →{" "}
+              <Kbd>{shortcutText("accept all predictions")}</Kbd> (Labels menu →{" "}
               <strong>Accept All Predictions on Current Frame</strong>), or
               Labels menu → <strong>Accept All Predictions</strong> for the
               whole project.
@@ -188,7 +189,7 @@ export function LabelingTipsDialog({ open, onOpenChange }: LabelingTipsDialogPro
               (by score threshold, frame range, user-labeled frames, max
               instances per frame, track, or instance type);{" "}
               <strong>Delete Predictions from Area...</strong> (
-              <Kbd>{formatShortcut("$mod+KeyK")}</Kbd>, drag a rectangle on
+              <Kbd>{shortcutText("delete area predictions")}</Kbd>, drag a rectangle on
               the canvas); or <strong>Delete All Predictions...</strong> for
               the whole project.
             </li>

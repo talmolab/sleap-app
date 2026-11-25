@@ -36,6 +36,11 @@ interface SkeletonSnapshot {
   /** True when the project had at most one skeleton when this was taken. */
   singleSkeleton: boolean;
   nodes: Node[];
+  /**
+   * Each node's name at snapshot time. Rename mutates `node.name` in place, so
+   * the shared Node objects in `nodes` alone can't restore it.
+   */
+  nodeNames: string[];
   edges: Edge[];
   symmetries: Symmetry[];
   /** For each labeled frame, the points arrays for every instance. */
@@ -88,6 +93,7 @@ function takeSkeletonSnapshot(
 ): SkeletonSnapshot {
   const { labels } = ctx.state;
   const nodes = skeleton ? [...skeleton.nodes] : [];
+  const nodeNames = nodes.map((n) => n.name);
   const edges = skeleton ? [...skeleton.edges] : [];
   const symmetries = skeleton ? [...skeleton.symmetries] : [];
 
@@ -109,6 +115,7 @@ function takeSkeletonSnapshot(
     name: skeleton?.name,
     singleSkeleton: !labels || labels.skeletons.length <= 1,
     nodes,
+    nodeNames,
     edges,
     symmetries,
     instancePoints,
@@ -162,9 +169,14 @@ function restoreSkeletonSnapshot(
   if (!skeleton) return;
 
   skeleton.name = snapshot.name;
-  skeleton.nodes = snapshot.nodes;
-  skeleton.edges = snapshot.edges;
-  skeleton.symmetries = snapshot.symmetries;
+  snapshot.nodes.forEach((n, i) => {
+    n.name = snapshot.nodeNames[i];
+  });
+  // Copies, so a later in-place edit (DeleteNode's splice) can't reach back
+  // into a snapshot still held for redo.
+  skeleton.nodes = [...snapshot.nodes];
+  skeleton.edges = [...snapshot.edges];
+  skeleton.symmetries = [...snapshot.symmetries];
   skeleton.rebuildCache(skeleton.nodes);
   // Single-skeleton projects re-point every instance at the skeleton (the
   // original behavior); with several, each instance keeps its own skeleton.
@@ -312,8 +324,8 @@ export const AddNodeCommand: Command = {
 /**
  * Delete a node from the skeleton.
  *
- * Removes the node, any edges referencing it, and the corresponding point
- * from every instance.
+ * Removes the node, any edges and symmetries referencing it, and the
+ * corresponding point from every instance.
  *
  * Params: { nodeIdx: number }
  */
@@ -333,30 +345,36 @@ export const DeleteNodeCommand: Command = {
 
     const node = skeleton.nodes[nodeIdx];
 
-    // Remove edges referencing this node
-    skeleton.edges = skeleton.edges.filter(
-      (e) => e.source !== node && e.destination !== node
-    );
-
-    // Remove the node
-    skeleton.nodes.splice(nodeIdx, 1);
-    skeleton.rebuildCache(skeleton.nodes);
-
-    // Remove corresponding point from every instance of this skeleton
+    // Clone the surviving points BEFORE the skeleton changes: a point's name
+    // is read from the skeleton by index, so cloning afterwards shifts names.
+    const keptPoints = new Map<Instance, Instance["points"]>();
     if (labels) {
       for (const lf of labels.labeledFrames) {
         for (const inst of lf.instances) {
           if (!instanceUsesSkeleton(labels, inst, skeleton)) continue;
           if (nodeIdx < inst.points.length) {
-            // Reassign, don't splice in place: `inst.points` is a columnar
-            // snapshot array since sleap-io.js 0.5.x (see AddNode).
             const kept = inst.points.map(clonePoint);
             kept.splice(nodeIdx, 1);
-            inst.points = kept;
+            keptPoints.set(inst, kept);
           }
         }
       }
     }
+
+    skeleton.edges = skeleton.edges.filter(
+      (e) => e.source !== node && e.destination !== node
+    );
+    // A leftover symmetry would be written with the missing node as index 0.
+    skeleton.symmetries = skeleton.symmetries.filter(
+      (sym) => !sym.nodes.has(node)
+    );
+
+    skeleton.nodes = skeleton.nodes.filter((_, i) => i !== nodeIdx);
+    skeleton.rebuildCache(skeleton.nodes);
+
+    // Reassign, don't splice in place: `inst.points` is a columnar snapshot
+    // array since sleap-io.js 0.5.x (see AddNode).
+    for (const [inst, kept] of keptPoints) inst.points = kept;
 
     const afterSnapshot = takeSkeletonSnapshot(ctx);
     storeSkeletonUndo(ctx, "DeleteNode", before, afterSnapshot);

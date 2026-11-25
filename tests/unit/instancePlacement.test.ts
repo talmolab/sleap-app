@@ -165,6 +165,71 @@ describe("placePriorFrame", () => {
   });
 });
 
+describe("placePrediction", () => {
+  const skeleton = makeSkeleton();
+  const video = makeVideo();
+
+  it("copies a different unused prediction each time and links it", () => {
+    const p1 = makePredicted(skeleton, [[100, 100], [110, 110]]);
+    const p2 = makePredicted(skeleton, [[300, 300], [310, 310]]);
+    const existing: Instance[] = [p1, p2];
+
+    const first = placeInstance("prediction", skeleton, video, existing, null);
+    existing.push(first);
+    const second = placeInstance("prediction", skeleton, video, existing, null);
+
+    expect(first.points[0].xy).toEqual([100, 100]);
+    expect(first.fromPredicted).toBe(p1);
+    expect(second.points[0].xy).toEqual([300, 300]);
+    expect(second.fromPredicted).toBe(p2);
+  });
+
+  it("skips a prediction already accepted (linked) on the frame", () => {
+    const p1 = makePredicted(skeleton, [[100, 100], [110, 110]]);
+    const p2 = makePredicted(skeleton, [[300, 300], [310, 310]]);
+    const accepted = makeInstance(skeleton, [[100, 100], [110, 110]]);
+    accepted.fromPredicted = p1;
+
+    const inst = placeInstance("prediction", skeleton, video, [accepted, p2], null);
+
+    expect(inst.fromPredicted).toBe(p2);
+  });
+
+  it("skips a tracked prediction whose track already has a user instance", () => {
+    const trackA = new Track("A");
+    const trackB = new Track("B");
+    const pA = makePredicted(skeleton, [[100, 100], [110, 110]], trackA);
+    const pB = makePredicted(skeleton, [[300, 300], [310, 310]], trackB);
+    const user = makeInstance(skeleton, [[0, 0], [1, 1]], trackA);
+
+    const inst = placeInstance("prediction", skeleton, video, [pA, pB, user], null);
+
+    expect(inst.fromPredicted).toBe(pB);
+    expect(inst.track).toBe(trackB);
+  });
+
+  it("marks a NaN point the model flagged visible as not visible", () => {
+    const pred = makePredicted(skeleton, [[100, 100], [NaN, NaN]]);
+    pred.points[1].visible = true;
+
+    const inst = placeInstance("prediction", skeleton, video, [pred], null);
+
+    expect(inst instanceof PredictedInstance).toBe(false);
+    expect(inst.points[0].visible).toBe(true);
+    expect(inst.points[1].visible).toBe(false);
+  });
+
+  it("falls back to another method once every prediction is used", () => {
+    const pred = makePredicted(skeleton, [[100, 100], [110, 110]]);
+    const accepted = makeInstance(skeleton, [[100, 100], [110, 110]]);
+    accepted.fromPredicted = pred;
+
+    const inst = placeInstance("prediction", skeleton, video, [pred, accepted], null);
+
+    expect(inst.fromPredicted).toBeNull();
+  });
+});
+
 describe("template layout seeding (skeleton-builder drawn layout)", () => {
   function makeSkeleton3(): Skeleton {
     return new Skeleton({ nodes: ["A", "B", "C"], name: "t3" });

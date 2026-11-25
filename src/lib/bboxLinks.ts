@@ -1,6 +1,7 @@
 /**
  * Keep bounding boxes' `instance` and `track` references valid when commands
- * remove, replace or retrack instances, or delete tracks.
+ * remove, replace or retrack instances. (Deleting tracks clears box tracks
+ * through `unassignTracks` in trackCommands.ts.)
  *
  * A box links to a pose instance (`box.instance`) and may carry a track. The
  * link is saved as an index into the frame's instances, so a link to an
@@ -8,7 +9,7 @@
  * box are no longer paired. sleap-nn's `topdown_bbox` pipeline then crops that
  * instance from its keypoints instead of from its box.
  */
-import { PredictedInstance, type Labels, type LabeledFrame, type Track } from "@talmolab/sleap-io.js";
+import { PredictedInstance, type Labels, type LabeledFrame } from "@talmolab/sleap-io.js";
 
 /**
  * Fix links on `lf` after instances were removed or replaced. A box linked to
@@ -44,22 +45,4 @@ export function syncLinkedBboxTracks(lf: LabeledFrame): void {
   for (const box of lf.bboxes) {
     if (box.instance) box.track = box.instance.track ?? null;
   }
-}
-
-/** Clear `box.track` wherever it is one of `tracks` (every track when `null`). */
-export function clearBboxTracks(labels: Labels, tracks: Set<Track> | null): void {
-  for (const lf of labels.labeledFrames) {
-    for (const box of lf.bboxes) {
-      if (box.track && (tracks === null || tracks.has(box.track))) box.track = null;
-    }
-  }
-}
-
-/** Tracks that at least one box is on. */
-export function tracksUsedByBboxes(labels: Labels): Set<Track> {
-  const used = new Set<Track>();
-  for (const lf of labels.labeledFrames) {
-    for (const box of lf.bboxes) if (box.track) used.add(box.track);
-  }
-  return used;
 }

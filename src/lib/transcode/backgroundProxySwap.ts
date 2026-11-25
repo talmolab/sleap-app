@@ -17,6 +17,10 @@
  * unit-testable with fakes.
  */
 
+import {
+  GrayscaleVideoBackend,
+  type VideoBackend,
+} from "@talmolab/sleap-io.js";
 import type { ScrubProxyResult } from "./scrubProxy.js";
 
 /** The minimal backend surface the swap touches (decodes + frees resources). */
@@ -90,7 +94,16 @@ export async function runBackgroundProxySwap(
     }
 
     const old = video.backend;
-    video.backend = proxyBackend;
+    // A grayscale-forced video (import checkbox, Toggle Grayscale, or the
+    // .slp's flag) keeps its grayscale layer on the proxy; a bare swap showed
+    // it in colour again while its metadata still said grayscale.
+    video.backend =
+      old instanceof GrayscaleVideoBackend
+        ? GrayscaleVideoBackend.wrap({
+            inner: proxyBackend as unknown as VideoBackend,
+            grayscale: old.grayscale,
+          })
+        : proxyBackend;
     deps.triggerReread();
     deps.onSwapped?.(name);
     if (old && old !== proxyBackend) {

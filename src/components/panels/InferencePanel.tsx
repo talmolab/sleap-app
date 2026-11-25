@@ -7,7 +7,7 @@
  *  - Progress / log (when running or done, at bottom)
  */
 
-import { useState, useRef, useEffect } from "react";
+import { useState, useRef, useEffect, useMemo } from "react";
 import { useAppStore } from "../../stores/appStore";
 import { useEnvironmentStore } from "../../stores/environmentStore";
 import { useInferenceStore } from "../../stores/inferenceStore";
@@ -49,7 +49,19 @@ import {
 } from "lucide-react";
 import { InferenceConfigDialog } from "@/components/dialogs/InferenceConfigDialog";
 import { LogTerminalDialog } from "@/components/monitors/LogTerminalDialog";
-import { SingleSkeletonGate } from "./SingleSkeletonGate";
+import { hasMultipleSkeletons } from "@/lib/multiSkeleton";
+import {
+  forgetFailedModelReads,
+  localRunScope,
+  planMultiSkeletonInference,
+  readModelInfo,
+  remoteMixedFramesProblem,
+  remoteMultiSkeletonTargetProblem,
+  runSpecsFromPlan,
+  skeletonsInUse,
+  SKELETON_PIPELINE_LABELS,
+  type ModelInfo,
+} from "@/lib/multiSkeletonInference";
 
 // ── Types & Constants ─────────────────────────────────────────────────────────
 
@@ -300,14 +312,16 @@ function NodeCheckboxList({
   selected,
   onChange,
   disabled,
+  emptyText = "No skeleton loaded — all nodes used.",
 }: {
   nodes: string[];
   selected: number[];
   onChange: (indices: number[]) => void;
   disabled?: boolean;
+  emptyText?: string;
 }) {
   if (nodes.length === 0) {
-    return <p className="text-[10px] text-muted-foreground">No skeleton loaded — all nodes used.</p>;
+    return <p className="text-[10px] text-muted-foreground">{emptyText}</p>;
   }
   const toggle = (i: number) => {
     onChange(
@@ -387,22 +401,60 @@ const DEFAULTS: Omit<InferenceConfig, "modelPaths" | "videoIndex" | "frameRange"
 
 // ── Panel ─────────────────────────────────────────────────────────────────────
 
-/** Gated: needs a single-skeleton project (see SingleSkeletonGate). */
+/**
+ * Not gated on several skeletons (#99): on such a project every model is
+ * matched to the project skeleton with the same node names, and each
+ * skeleton's models run (and merge) separately — see multiSkeletonInference.ts.
+ */
 export function InferencePanel() {
-  // A job that's running (or finished and showing results) stays visible.
-  const busy = useInferenceStore((s) => s.status !== "idle");
-  return (
-    <SingleSkeletonGate feature="Running inference" configRequest="inference" busy={busy}>
-      <InferencePanelContent />
-    </SingleSkeletonGate>
-  );
+  return <InferencePanelContent />;
+}
+
+/** Reads a small worker-side text file over Connect (`fs.read`, paged). */
+async function readWorkerText(path: string): Promise<string> {
+  const client = useConnectStore.getState()._client;
+  if (!client) throw new Error("Not connected to a worker");
+  const chunks: Uint8Array[] = [];
+  let offset = 0;
+  for (;;) {
+    const { content, eof } = await client.fsRead(path, offset);
+    chunks.push(content);
+    offset += content.length;
+    if (eof || content.length === 0) break;
+  }
+  const all = new Uint8Array(offset);
+  let pos = 0;
+  for (const c of chunks) {
+    all.set(c, pos);
+    pos += c.length;
+  }
+  return new TextDecoder().decode(all);
+}
+
+/** Reads a local text file (desktop). */
+async function readLocalText(path: string): Promise<string> {
+  const { readTextFile } = await import("@tauri-apps/plugin-fs");
+  return readTextFile(path);
 }
 
 function InferencePanelContent() {
   const video = useAppStore((s) => s.video);
   const projectPath = useAppStore((s) => s.projectPath);
   const skeleton = useAppStore((s) => s.skeleton);
-  const skeletonNodeNames = skeleton?.nodes?.map((n) => n.name) ?? [];
+  const labels = useAppStore((s) => s.labels);
+  // Instances' skeletons change on edits (editSeq) and undo (overlayVersion);
+  // the skeleton list on Add/undo. Recount only then.
+  const editSeq = useAppStore((s) => s.editSeq);
+  const overlayVersion = useAppStore((s) => s.overlayVersion);
+  const skeletonObjects = useAppStore((s) => s.labels?.skeletons.length ?? 0);
+  const multiSkeleton = useMemo(
+    () => hasMultipleSkeletons(labels, skeleton),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [labels, skeleton, editSeq, overlayVersion, skeletonObjects]
+  );
+  // Several skeletons: node-based options (Kalman nodes) can't name one
+  // skeleton's nodes for every run, so they use all nodes.
+  const skeletonNodeNames = multiSkeleton ? [] : (skeleton?.nodes?.map((n) => n.name) ?? []);
   const tools = useEnvironmentStore((s) => s.tools);
   const detectionStatus = useEnvironmentStore((s) => s.detectionStatus);
   const refresh = useEnvironmentStore((s) => s.refresh);
@@ -561,14 +613,28 @@ function InferencePanelContent() {
       const projectDir = await dirname(projectPath);
       const models = await findTrainedModels(projectDir);
       if (cancelled) return;
-      const picked = pickModelsForPipeline(models, pipeline);
+      const projectLabels = useAppStore.getState().labels;
+      let picked: string[];
+      if (multiSkeleton && projectLabels) {
+        // One model set per project skeleton, matched by node names.
+        const { pickModelsForSkeletons } = await import("@/lib/multiSkeletonInference");
+        const infos = await Promise.all(models.map((m) => readModelInfo(m.path, readLocalText)));
+        if (cancelled) return;
+        picked = pickModelsForSkeletons(
+          infos,
+          projectLabels.skeletons,
+          skeletonsInUse(projectLabels, useAppStore.getState().skeleton),
+        );
+      } else {
+        picked = pickModelsForPipeline(models, pipeline);
+      }
       if (picked.length === 0) return;
       setModelPaths((prev) => (prev.length === 0 ? picked : prev));
     })();
     return () => {
       cancelled = true;
     };
-  }, [remoteEnabled, projectPath, pipeline]);
+  }, [remoteEnabled, projectPath, pipeline, multiSkeleton]);
 
   // Head of each local model directory, so Run can require one per head the
   // pipeline needs. Worker paths can't be read from here.
@@ -585,6 +651,46 @@ function InferencePanelContent() {
       cancelled = true;
     };
   }, [modelPaths, modelHeads, remoteEnabled]);
+
+  // Several skeletons: each model's head + node names (local file, or the
+  // worker's copy over Connect), to match it to a project skeleton.
+  const [modelInfos, setModelInfos] = useState<Record<string, ModelInfo>>({});
+  const activePaths = remoteEnabled ? remoteModelPaths : modelPaths;
+  // Local and worker paths are different files: re-read on switching.
+  useEffect(() => {
+    setModelInfos({});
+  }, [remoteEnabled, selectedWorkerId]);
+  // A model whose config couldn't be read is retried when it's added again
+  // (or via its Retry link): forget failed reads once the path is removed.
+  useEffect(() => {
+    setModelInfos((prev) => forgetFailedModelReads(prev, activePaths));
+  }, [activePaths]);
+  const retryModelInfo = (path: string) => setModelInfos((prev) => forgetFailedModelReads(prev, [], [path]));
+  useEffect(() => {
+    if (!multiSkeleton) return;
+    const unread = activePaths.filter((p) => !(p in modelInfos));
+    if (unread.length === 0) return;
+    let cancelled = false;
+    const readText = remoteEnabled ? readWorkerText : readLocalText;
+    Promise.all(unread.map((p) => readModelInfo(p, readText))).then((infos) => {
+      if (!cancelled) setModelInfos((prev) => ({ ...prev, ...Object.fromEntries(infos.map((i) => [i.path, i])) }));
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [multiSkeleton, activePaths, modelInfos, remoteEnabled]);
+
+  const multiPlan = useMemo(() => {
+    if (!multiSkeleton || !labels) return null;
+    const pending = activePaths.some((p) => !(p in modelInfos));
+    const plan = planMultiSkeletonInference(
+      activePaths.filter((p) => p in modelInfos).map((p) => modelInfos[p]),
+      labels.skeletons,
+      skeletonsInUse(labels, skeleton),
+    );
+    return { plan, pending };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [multiSkeleton, labels, skeleton, activePaths, modelInfos, skeletonObjects, editSeq, overlayVersion]);
 
   const sleapNnAvailable = tools.some(
     (t) => t.name === "sleap-nn" || t.commands?.includes("sleap-nn")
@@ -614,10 +720,33 @@ function InferencePanelContent() {
     isNaN(Number(frameEnd))
   );
 
-  const modelsProblem = trackOnly
-    ? null
-    : pipelineModelsProblem(pipeline, activeModelPaths.map((p) => (remoteEnabled ? null : (modelHeads[p] ?? null))));
-  const canRun = (remoteEnabled ? (!!selectedWorkerId && connectionStatus === "connected" && !!remoteDataPath) : sleapNnAvailable) && !isRunning && !isDone && (trackOnly || (activeModelPaths.length > 0 && !modelsProblem)) && !customRangeInvalid;
+  // A worker reads its own copy of the project, and sleap-nn (≤ 0.3.5) crashes
+  // on frames mixing skeletons: refuse targets that read such frames. Random
+  // samples are checked on submit (their frames are drawn then).
+  const remoteMixedTarget = multiSkeleton && remoteEnabled && ["frame", "video", "custom"].includes(frameRange);
+  const watchedFrameIdx = useAppStore((s) => (remoteMixedTarget && frameRange === "frame" ? s.frameIdx : -1));
+  const remoteMixedProblem = useMemo(() => {
+    if (!remoteMixedTarget || !labels || !video) return null;
+    const vi = labels.videos.indexOf(video);
+    if (vi < 0) return null;
+    const range = (frameRange === "custom"
+      ? { start: Number(frameStart), end: Number(frameEnd) }
+      : frameRange) as InferenceConfig["frameRange"];
+    return remoteMixedFramesProblem(labels, localRunScope({ frameRange: range, videoIndex: vi }, watchedFrameIdx));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [remoteMixedTarget, labels, video, frameRange, frameStart, frameEnd, watchedFrameIdx, editSeq, overlayVersion]);
+  const multiTargetProblem =
+    multiSkeleton && remoteEnabled ? (remoteMultiSkeletonTargetProblem(frameRange) ?? remoteMixedProblem) : null;
+  const modelsProblem = multiSkeleton
+    ? trackOnly
+      ? "Track only with several skeletons isn't supported yet."
+      : multiPlan?.pending
+        ? "Reading the models' skeletons…"
+        : (multiPlan?.plan.problem ?? null)
+    : trackOnly
+      ? null
+      : pipelineModelsProblem(pipeline, activeModelPaths.map((p) => (remoteEnabled ? null : (modelHeads[p] ?? null))));
+  const canRun = (remoteEnabled ? (!!selectedWorkerId && connectionStatus === "connected" && !!remoteDataPath) : sleapNnAvailable) && !isRunning && !isDone && (multiSkeleton ? !modelsProblem && !multiTargetProblem : (trackOnly || (activeModelPaths.length > 0 && !modelsProblem))) && !customRangeInvalid;
   const isTopDown = pipeline === "top-down" || pipeline === "top-down-id" || pipeline === "top-down-bbox";
   // sleap-nn tracks poses and masks only, not a detector's boxes.
   const trackingUnavailable = !trackOnly && pipeline === "bbox";
@@ -685,6 +814,8 @@ function InferencePanelContent() {
       ensureChannels, filterOverlapping, filterMethod, filterThreshold,
       filterMinVisibleNodes, filterMinVisibleNodeFraction, filterMinMeanNodeScore,
       filterMinInstanceScore, filterMinCentroidDistance,
+      // Several skeletons: one run per skeleton, models matched by node names.
+      skeletonRuns: multiSkeleton && multiPlan ? runSpecsFromPlan(multiPlan.plan) : undefined,
     };
 
     if (remoteEnabled) {
@@ -717,8 +848,11 @@ function InferencePanelContent() {
           hint="Run tracking on the instances already in this project (labeled or predicted) without running pose estimation. No model needed — hides pipeline/model selection below."
           checked={trackOnly}
           onChange={setTrackOnly}
-          disabled={isRunning}
+          disabled={isRunning || (multiSkeleton && !trackOnly)}
         />
+        {multiSkeleton && trackOnly && (
+          <p className="text-[10px] text-red-400">Track only with several skeletons isn&apos;t supported yet — untick it to run models.</p>
+        )}
 
         <Separator />
 
@@ -726,6 +860,14 @@ function InferencePanelContent() {
         {!trackOnly && (
           <>
             <Section title="Pipeline" defaultOpen={true}>
+              {multiSkeleton ? (
+                <p className="text-[10px] text-muted-foreground" data-testid="multi-skeleton-pipeline-note">
+                  This project has several skeletons. Each model is matched to the
+                  skeleton with the same node names, and each skeleton&apos;s models run
+                  separately (the pipeline follows from their types). Predictions are
+                  merged under their own skeleton.
+                </p>
+              ) : (<>
               <Select value={pipeline} onValueChange={(v) => setPipeline(v as PipelineType)} disabled={isRunning}>
                 <SelectTrigger className="h-7 text-xs"><SelectValue /></SelectTrigger>
                 <SelectContent>
@@ -737,6 +879,7 @@ function InferencePanelContent() {
               <p className="text-[10px] text-muted-foreground">
                 {PIPELINE_OPTIONS.find((o) => o.value === pipeline)?.desc}
               </p>
+              </>)}
             </Section>
 
             <Separator />
@@ -761,16 +904,27 @@ function InferencePanelContent() {
               </div>
               {activeModelPaths.length === 0 ? (
                 <p className="text-[10px] text-muted-foreground">
-                  {pipeline === "top-down-bbox"
+                  {multiSkeleton
+                    ? "Add model directories — at least one per skeleton you want to predict."
+                    : pipeline === "top-down-bbox"
                     ? "Add two directories (box detector + centered-instance)."
                     : isTopDown ? "Add two directories (centroid + centered-instance)." : "Add a model directory."}
                 </p>
               ) : (
                 <div className="space-y-1">
-                  {activeModelPaths.map((p, i) => (
-                    <div key={i} className="flex items-center gap-1 rounded border border-green-500/50 bg-green-500/5 px-2 py-1">
-                      <Folder className="h-3.5 w-3.5 text-green-500 flex-shrink-0" />
+                  {activeModelPaths.map((p, i) => {
+                    const verdict = multiPlan?.plan.models.find((m) => m.path === p) ?? null;
+                    const refused = !!verdict?.reason;
+                    return (
+                    <div key={i} className="space-y-0.5">
+                    <div className={`flex items-center gap-1 rounded border px-2 py-1 ${refused ? "border-red-500/50 bg-red-500/5" : "border-green-500/50 bg-green-500/5"}`}>
+                      <Folder className={`h-3.5 w-3.5 flex-shrink-0 ${refused ? "text-red-400" : "text-green-500"}`} />
                       <span className="text-[10px] truncate flex-1 font-medium" title={p}>{remoteEnabled ? p : p.split(/[\\/]/).pop()}</span>
+                      {verdict?.skeletonName && (
+                        <span className="text-[10px] text-muted-foreground shrink-0" data-testid="model-skeleton-match">
+                          → {verdict.skeletonName}
+                        </span>
+                      )}
                       <button className="text-muted-foreground hover:text-destructive shrink-0"
                         onClick={() => {
                           if (remoteEnabled) {
@@ -783,7 +937,33 @@ function InferencePanelContent() {
                         <X className="h-3 w-3" />
                       </button>
                     </div>
-                  ))}
+                    {verdict?.reason && (
+                      <p className="text-[10px] text-red-400 pl-1" data-testid="model-skeleton-refused">
+                        {verdict.reason}
+                        {modelInfos[p]?.nodeNames === null && (
+                          <>
+                            {" "}
+                            <button type="button" className="underline hover:text-red-300" data-testid="model-skeleton-retry"
+                              onClick={() => retryModelInfo(p)}>Retry</button>
+                          </>
+                        )}
+                      </p>
+                    )}
+                    </div>
+                    );
+                  })}
+                  {multiPlan && !multiPlan.pending && multiPlan.plan.runs.length > 0 && (
+                    <div className="text-[10px] text-muted-foreground space-y-0.5 pt-0.5" data-testid="multi-skeleton-runs">
+                      {multiPlan.plan.runs.map((r) => (
+                        <p key={r.skeletonIndex}>
+                          <span className="font-medium text-foreground">{r.skeletonName}</span>
+                          {": "}
+                          {r.pipeline ? SKELETON_PIPELINE_LABELS[r.pipeline] : "no pipeline"}
+                          {` (${r.modelPaths.length} model${r.modelPaths.length === 1 ? "" : "s"})`}
+                        </p>
+                      ))}
+                    </div>
+                  )}
                   {modelsProblem && (
                     <p className="text-[10px] text-red-400" data-testid="inference-models-problem">{modelsProblem}</p>
                   )}
@@ -850,6 +1030,9 @@ function InferencePanelContent() {
               </div>
             )}
           </div>
+          {multiTargetProblem && (
+            <p className="text-[10px] text-red-400" data-testid="multi-skeleton-target-problem">{multiTargetProblem}</p>
+          )}
           <Check
             label="Exclude user-labeled frames"
             hint={trackOnly
@@ -962,6 +1145,11 @@ function InferencePanelContent() {
                 <Check label="No limit" checked={noMaxInstances}
                   onChange={(v) => { setNoMaxInstances(v); if (!v && maxInstances === null) setMaxInstances(2); }}
                   disabled={isRunning} />
+                {multiSkeleton && (
+                  <p className="text-[10px] text-muted-foreground" data-testid="multi-skeleton-per-run-limit">
+                    Several skeletons: applies to each skeleton&apos;s run separately (a limit of 2 allows 2 mice and 2 pellets).
+                  </p>
+                )}
               </div>
 
             </Section>
@@ -1024,6 +1212,13 @@ function InferencePanelContent() {
                 <Check label="No limit" checked={noMaxTracks}
                   onChange={(v) => { setNoMaxTracks(v); if (!v && maxTracks === null) setMaxTracks(2); }}
                   disabled={isRunning} />
+                {multiSkeleton && (
+                  <p className="text-[10px] text-muted-foreground" data-testid="multi-skeleton-per-run-tracks">
+                    Several skeletons: each skeleton is tracked separately, with its own tracks. Max tracks and
+                    Target instance count apply to each skeleton&apos;s run. A 1-node skeleton (e.g. a pellet) is
+                    matched by point distance, since OKS and IoU need several points.
+                  </p>
+                )}
               </div>
               <Section title="Advanced">
                 <NumField label="Robust (quantile)" value={robust} onChange={setRobust}
@@ -1105,7 +1300,7 @@ function InferencePanelContent() {
                     hint="Number of consecutive missed frames after which a stale track's Kalman filter is reset."
                     min={1} disabled={isRunning} />
                   <FieldLabel label="Tracked nodes (all if none checked)" hint="Skeleton nodes to track with the motion model. Useful for restricting to a stable subset, e.g. spine nodes. Leave all unchecked to use every node." />
-                  <NodeCheckboxList nodes={skeletonNodeNames} selected={kfNodeIndices} onChange={setKfNodeIndices} disabled={isRunning} />
+                  <NodeCheckboxList nodes={skeletonNodeNames} selected={kfNodeIndices} onChange={setKfNodeIndices} disabled={isRunning} emptyText={multiSkeleton ? "Several skeletons — all nodes used." : undefined} />
                 </>
               )}
             </>
@@ -1402,11 +1597,11 @@ function InferencePanelContent() {
           setFilterMinCentroidDistance(DEFAULTS.filterMinCentroidDistance);
         }}
         values={{
-          peakThreshold, maxInstances,
+          peakThreshold, maxInstances: noMaxInstances ? null : maxInstances,
           integralRefinement, integralPatchSize,
           nPoints, maxEdgeLengthRatio, distPenaltyWeight, minLineScores,
           trackerMethod, similarityMethod, matchingMethod,
-          trackingWindowSize, maxTracks, connectSingleBreaks, robust,
+          trackingWindowSize, maxTracks: noMaxTracks ? null : maxTracks, connectSingleBreaks, robust,
           minMatchPoints, minNewTrackPoints, scoringReduction,
           trackingTargetInstanceCount, trackingPreCullToTarget, trackingPreCullIouThreshold,
           trackingCleanInstanceCount, trackingCleanIouThreshold,
@@ -1418,7 +1613,7 @@ function InferencePanelContent() {
         }}
         onUpdate={(updates) => {
           if ("peakThreshold" in updates) setPeakThreshold(updates.peakThreshold!);
-          if ("maxInstances" in updates) setMaxInstances(updates.maxInstances!);
+          if ("maxInstances" in updates) { setMaxInstances(updates.maxInstances!); setNoMaxInstances(updates.maxInstances === null); }
           if ("integralRefinement" in updates) setIntegralRefinement(updates.integralRefinement!);
           if ("integralPatchSize" in updates) setIntegralPatchSize(updates.integralPatchSize!);
           if ("nPoints" in updates) setNPoints(updates.nPoints!);

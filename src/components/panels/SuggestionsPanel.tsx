@@ -18,6 +18,7 @@ import {
   userLabeledFramesAsSuggestions,
 } from "../../lib/suggestionEdits";
 import { toast } from "@/lib/notify";
+import { dirtyFrameTracker } from "@/lib/autosaveDirty";
 import { cn } from "@/lib/utils";
 import { frameHasUserLabels } from "@/lib/frameLabeling";
 import {
@@ -354,6 +355,8 @@ export function SuggestionsPanel({
     if (!labels) return;
     labels.suggestions = next;
     useAppStore.getState().markChanged();
+    // Project-level suggestions aren't in the frame journal → structural.
+    dirtyFrameTracker.markStructural();
     forceUpdate();
   };
 

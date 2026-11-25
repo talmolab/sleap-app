@@ -45,6 +45,11 @@ import {
   type Video,
 } from "@talmolab/sleap-io.js";
 import { getPlatform } from "../platform/index";
+import {
+  RawHdf5VideoBackend,
+  findRank4Datasets,
+  type Hdf5InputFormat,
+} from "./rawHdf5Video";
 import { fileSize, readRange } from "./nativeRange";
 
 /**
@@ -297,6 +302,11 @@ export interface Hdf5VideoHints {
   format?: string;
   /** `"RGB"` / `"BGR"` — matters for correctly decoding legacy packages. */
   channelOrder?: string;
+  /**
+   * Raw rank-4 movies only: how the pixel array is laid out (PyQt's
+   * `input_format`). Absent = `channels_last`, Python sleap-io's default.
+   */
+  inputFormat?: Hdf5InputFormat;
   fps?: number;
   /**
    * Asked which dataset to use when `dataset` is unset AND the container holds
@@ -358,6 +368,56 @@ export async function resolveHdf5Dataset(
 }
 
 /**
+ * The stored shape of `dataset` when it is a raw rank-4 movie (a plain pixel
+ * array), else null. A SLEAP package's embedded frames sit next to a
+ * `frame_numbers` dataset and are read by the package backend instead.
+ */
+export async function rawMovieShape(
+  h5: Hdf5Structure,
+  dataset: string
+): Promise<number[] | null> {
+  const path = dataset.replace(/^\/+/, "");
+  let meta: { shape: number[] };
+  try {
+    meta = await h5.getDatasetMeta(path);
+  } catch {
+    return null;
+  }
+  if (meta?.shape?.length !== 4) return null;
+  const slash = path.lastIndexOf("/");
+  const siblings =
+    slash < 0
+      ? h5.keys()
+      : await h5.getKeys(path.slice(0, slash)).catch(() => [] as string[]);
+  return siblings.includes("frame_numbers") ? null : meta.shape;
+}
+
+/**
+ * The rank-4 datasets PyQt's Import Videos dialog offers for an HDF5 file
+ * (see {@link findRank4Datasets}). Desktop opens the shared container by path
+ * (the import that follows reuses it); the browser opens the picked File and
+ * closes it again. Never throws: an unreadable file lists nothing.
+ */
+export async function listRawMovieDatasets(
+  file: File,
+  absPath: string | null
+): Promise<string[]> {
+  try {
+    if (absPath) return await findRank4Datasets(await openHdf5ContainerForPath(absPath));
+    requireWorkerSupport();
+    const h5 = new StreamingH5File();
+    await h5.openLocal(file, { h5wasmUrl: H5WASM_URL, filenameHint: file.name });
+    try {
+      return await findRank4Datasets(h5);
+    } finally {
+      await h5.close().catch(() => {});
+    }
+  } catch {
+    return [];
+  }
+}
+
+/**
  * Wrap an already-open container as a video backend.
  *
  * {@link StreamingHdf5VideoBackend} in DEFERRED mode, always: the per-video
@@ -379,6 +439,20 @@ async function buildDeferredHdf5Backend(
   // NB: no close() on failure — the container is shared with this package's
   // other videos (see openContainers); it is released per project open.
   const dataset = await resolveHdf5Dataset(h5, name, hints);
+  const raw = await rawMovieShape(h5, dataset);
+  if (raw) {
+    const movie = new RawHdf5VideoBackend({
+      filename,
+      h5file: h5,
+      dataset,
+      storedShape: raw,
+      inputFormat: hints?.inputFormat ?? "channels_last",
+      fps: hints?.fps,
+    });
+    return grayscale === undefined
+      ? movie
+      : GrayscaleVideoBackend.wrap({ inner: movie, grayscale });
+  }
   const backend = new StreamingHdf5VideoBackend({
     filename,
     h5file: h5,
@@ -454,6 +528,11 @@ export function hdf5HintsForVideo(video: Video): Hdf5VideoHints {
     format: typeof meta.format === "string" ? meta.format : undefined,
     channelOrder:
       typeof meta.channel_order === "string" ? meta.channel_order : undefined,
+    inputFormat:
+      meta.input_format === "channels_first" ||
+      meta.input_format === "channels_last"
+        ? meta.input_format
+        : undefined,
     fps: typeof meta.fps === "number" ? meta.fps : undefined,
   };
 }

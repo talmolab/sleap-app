@@ -17,6 +17,7 @@ import { describe, it, expect } from "../bun-test";
 import {
   buildBaseIndex,
   encodeFrameDelta,
+  encodeFrameDeletion,
   frameDeltaToRecord,
   decodeJournal,
   applyDeltas,
@@ -229,6 +230,24 @@ describe("applyDeltas (replay)", () => {
     const created = labels.find({ video, frameIdx: 7 });
     expect(created.length).toBe(1);
     expect(created[0].instances[0].track).toBe(trackA);
+  });
+
+  it("removes a frame on a deletion record; a later record re-creates it", () => {
+    const { labels, video, sk } = makeBase();
+    const idx = buildBaseIndex(labels);
+    const before = labels.labeledFrames.length;
+
+    applyDeltas(labels, [encodeFrameDeletion(video, 0, idx)]);
+    expect(labels.find({ video, frameIdx: 0 }).length).toBe(0);
+    expect(labels.labeledFrames.length).toBe(before - 1);
+
+    const inst = Instance.fromArray([[5, 5], [6, 6]], sk);
+    applyDeltas(labels, [
+      encodeFrameDeletion(video, 9, idx), // never existed: no-op
+      encodeFrameDelta(new LabeledFrame({ video, frameIdx: 0, instances: [inst] }), idx),
+    ]);
+    expect(labels.find({ video, frameIdx: 0 })[0].instances[0].points[0].xy).toEqual([5, 5]);
+    expect(labels.labeledFrames.length).toBe(before);
   });
 
   it("reconstructs a predicted instance as a PredictedInstance with its score", () => {
