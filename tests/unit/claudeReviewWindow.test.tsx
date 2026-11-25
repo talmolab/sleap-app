@@ -268,23 +268,42 @@ describe("Claude's suggestions in Review disagreements", () => {
 });
 
 describe("Review window readability (hand-test 2026-11-24)", () => {
-  // Hand-test: the summary sat squeezed next to the title; it's its own line naming the nodes, and the reason is never cut off.
-  it("names the changed nodes under Claude's title and shows the whole reason", async () => {
+  // Hand-test: the summary sat squeezed next to the title; it's its own line naming the nodes.
+  // Hand-test #538: the reason is 2 lines (buttons stay in view); clicking it shows it all, clicking again folds it.
+  it("names the changed nodes under Claude's title and expands the reason on click", async () => {
     const long = "the tail tip was placed on the cage floor near the wall; the real tail runs along the bedding to the left of the animal ".repeat(2).trim();
     store().addCorrection(
       { flagId: "v0:f30:p0:aaaaaa", videoIdx: 0, frameIdx: 30, instIdx: 0, reason: long },
       { 2: [150, 125], 0: null },
       { pose: poseOf(fx.a) },
     );
-    expect(openClaudeSuggestions()).toBe(true);
-    render(<CompareReviewWindow />);
-    await flush();
-    const names = fx.a.skeleton.nodeNames;
-    expect(screen.getByTestId("review-claude-summary").textContent).toBe(`Moves ${names[2]} · hides ${names[0]}`);
-    const reason = screen.getByTestId("review-claude-reason");
-    expect(reason.textContent).toBe(long);
-    expect(reason.className).not.toContain("line-clamp");
-    expect(reason.className).toContain("whitespace-pre-wrap");
+    // Pretend the reason is taller than two lines (happy-dom doesn't lay text out).
+    const sh = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "scrollHeight");
+    const ch = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "clientHeight");
+    Object.defineProperty(HTMLElement.prototype, "scrollHeight", { configurable: true, get: () => 90 });
+    Object.defineProperty(HTMLElement.prototype, "clientHeight", { configurable: true, get: () => 30 });
+    try {
+      expect(openClaudeSuggestions()).toBe(true);
+      render(<CompareReviewWindow />);
+      await flush();
+      const names = fx.a.skeleton.nodeNames;
+      expect(screen.getByTestId("review-claude-summary").textContent).toBe(`Moves ${names[2]} · hides ${names[0]}`);
+      const reason = screen.getByTestId("review-claude-reason");
+      expect(reason.textContent).toBe(long);
+      expect(reason.className).toContain("line-clamp-2");
+      expect(screen.getByTestId("review-claude-reason-toggle").textContent).toBe("more");
+      fireEvent.click(reason);
+      expect(screen.getByTestId("review-claude-reason").className).not.toContain("line-clamp-2");
+      expect(screen.getByTestId("review-claude-reason-toggle").textContent).toBe("less");
+      fireEvent.click(screen.getByTestId("review-claude-reason-toggle"));
+      expect(screen.getByTestId("review-claude-reason").className).toContain("line-clamp-2");
+    } finally {
+      // Put back what was there (or nothing: the getters may live on Element.prototype).
+      if (sh) Object.defineProperty(HTMLElement.prototype, "scrollHeight", sh);
+      else delete (HTMLElement.prototype as { scrollHeight?: number }).scrollHeight;
+      if (ch) Object.defineProperty(HTMLElement.prototype, "clientHeight", ch);
+      else delete (HTMLElement.prototype as { clientHeight?: number }).clientHeight;
+    }
   });
 });
 

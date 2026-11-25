@@ -11,7 +11,7 @@
  * disagree on it), the project's own prediction stands in as the one model:
  * "Use this one" turns it into a user instance as is.
  */
-import { useMemo } from "react";
+import { useLayoutEffect, useMemo, useRef, useState } from "react";
 import { Check, PenLine, SkipForward, Sparkles, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
@@ -52,6 +52,46 @@ function changedMarks(p: Proposal, nodeNames: readonly string[], xy: Float64Arra
       return { x: at[2 * k], y: at[2 * k + 1], label: `${nodeNames[k] ?? k}${hidden ? " (hidden)" : ""}` };
     })
     .filter((m) => Number.isFinite(m.x) && Number.isFinite(m.y));
+}
+
+/**
+ * Claude's reason: two lines, so the card keeps its size and its buttons stay
+ * in view; click it to read it all in place (click again to fold it). A
+ * "more" / "less" cue shows when there is more to read.
+ */
+export function ClaudeReason({ reason }: { reason: string }) {
+  const [open, setOpen] = useState(false);
+  const [overflows, setOverflows] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
+  useLayoutEffect(() => {
+    const el = ref.current;
+    if (el && !open) setOverflows(el.scrollHeight > el.clientHeight + 1);
+  }, [reason, open]);
+  const canToggle = overflows || open;
+  return (
+    <div className="px-1">
+      <div
+        ref={ref}
+        className={cn("whitespace-pre-wrap break-words text-[11px] leading-snug", !open && "line-clamp-2", canToggle && "cursor-pointer")}
+        onClick={() => canToggle && setOpen(!open)}
+        title={canToggle ? (open ? "Click to show less" : "Click to read it all") : undefined}
+        data-testid="review-claude-reason"
+        data-expanded={open || undefined}
+      >
+        {reason}
+      </div>
+      {canToggle && (
+        <button
+          type="button"
+          className="text-[10px] text-muted-foreground underline decoration-dotted underline-offset-2 hover:text-foreground"
+          onClick={() => setOpen(!open)}
+          data-testid="review-claude-reason-toggle"
+        >
+          {open ? "less" : "more"}
+        </button>
+      )}
+    </div>
+  );
 }
 
 /** Revert (accepted) / Undo reject (rejected): neither is something ⌘Z can reach. */
@@ -148,9 +188,7 @@ export function ClaudePane({
       <div className="px-1 text-[11px] text-muted-foreground" data-testid="review-claude-summary">
         {proposalChangeText(p, nodeNames)}
       </div>
-      <div className="whitespace-pre-wrap break-words px-1 text-[11px] leading-snug" data-testid="review-claude-reason">
-        {p.reason}
-      </div>
+      <ClaudeReason reason={p.reason} />
       {status && (
         <div
           className={cn("px-1 text-[11px]", st === "accepted" ? "text-green-500" : st === "outdated" ? "text-amber-500" : "text-muted-foreground")}

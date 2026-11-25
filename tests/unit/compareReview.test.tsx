@@ -559,18 +559,21 @@ describe("review window: which node is which", () => {
 });
 
 describe("review window card layout (hand-test 2026-11-24)", () => {
-  // Hand-test: at most 4 cards per row, the rest wrap; fewer cards share the row at a larger size.
-  it("puts up to 4 cards in a row and makes fewer cards bigger", async () => {
+  // Hand-test #538: cards always have a 4-per-row slot's size (2 cards don't grow); a 5th wraps.
+  it("keeps every card the size of a 4-per-row slot and wraps the 5th", async () => {
     const { cardLayout } = await import("@/components/video/compareReview/CompareReviewWindow");
     const two = cardLayout(2, 1200, 800);
     const four = cardLayout(4, 1200, 800);
-    const five = cardLayout(5, 1200, 500);
+    const five = cardLayout(5, 1200, 800);
     expect([two.cols, two.rows]).toEqual([2, 1]);
     expect([four.cols, four.rows]).toEqual([4, 1]);
     expect([five.cols, five.rows]).toEqual([4, 2]);
-    expect(two.cardWidth).toBeGreaterThan(four.cardWidth);
-    expect(five.cardHeight).toBeLessThan(four.cardHeight);
-  });
+    expect(two.cardWidth).toBe(four.cardWidth);
+    expect(two.cardHeight).toBe(four.cardHeight);
+    expect(four.cardWidth).toBe(Math.floor((1200 - 24) / 4) - 10);
+    // Two rows still fit the height with their buttons.
+    expect(2 * (five.cardHeight + 110) + 8).toBeLessThanOrEqual(800);
+});
 });
 
 describe("Hide model predictions (M)", () => {

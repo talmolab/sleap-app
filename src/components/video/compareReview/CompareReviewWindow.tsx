@@ -9,8 +9,8 @@
  * "None are right" (go label it by hand in the main view), or "Skip" (either
  * is fine). ◀ ▶ or ← → step through; click the item number (or the frame)
  * in the header to jump. The window fills the screen like Label QC Review:
- * cards share the space, up to 4 per row (more wrap). Only disagreements above the window's own
- * threshold (default 25 px) are listed.
+ * cards keep the size of a slot in a row of 4 (centered; more wrap). Only
+ * disagreements above the window's own threshold (default 25 px) are listed.
  *
  * Claude's corrections of predictions are reviewed here too (claudeEntries.ts):
  * a "Claude's suggestion" pane joins the item for that animal, and a
@@ -43,24 +43,28 @@ import { buildEntries, correctedPoseXy, proposalPoseXy, type ReviewEntry } from 
 import { ClaudePane, entryDone, PredictionPane } from "./ClaudePanes";
 
 /** Height under a card's picture for its name and buttons (Claude's text can make it taller; the area scrolls). */
-export const CARD_FOOTER_PX = 76;
+/** Height under a card's picture for its name, Claude's 2-line text and buttons. */
+export const CARD_FOOTER_PX = 110;
 
 /**
- * Card sizes for `n` cards in a body of `width` × `height` CSS px: at most 4
- * per row (the rest wrap to another row), pictures as large as fit, never
- * wider than tall.
+ * Card sizes for `n` cards in a body of `width` × `height` CSS px. Every card
+ * has the size of a slot in a row of 4, however many there are (2–3 cards
+ * don't grow; the row is centered); a 5th card wraps to another row. The
+ * picture is never taller than it is wide, and rows fit the height with their
+ * buttons in view.
  */
 export function cardLayout(n: number, width: number, height: number) {
   const W = width > 0 ? width : 1000;
   const H = height > 0 ? height : 600;
   const gap = 8;
   const cols = Math.max(1, Math.min(4, n));
-  const rows = Math.max(1, Math.ceil(n / cols));
-  // 10 = the card's padding and border.
-  const cardWidth = Math.max(120, Math.floor((W - gap * (cols - 1)) / cols) - 10);
+  const rows = Math.max(1, Math.ceil(n / 4));
+  // A slot in a row of 4; 10 = the card's padding and border.
+  const slot = Math.floor((W - gap * 3) / 4);
+  const cardWidth = Math.max(120, slot - 10);
   const perRow = (H - gap * (rows - 1)) / rows - CARD_FOOTER_PX;
   const cardHeight = Math.max(120, Math.floor(Math.min(cardWidth, perRow)));
-  return { cols, rows, cardWidth, cardHeight };
+  return { cols, rows, cardWidth, cardHeight, slot: cardWidth + 10 };
 }
 
 /** The element's content size, kept up to date (0 × 0 until measured). */
@@ -423,7 +427,11 @@ export function ReviewWindow({ onClose }: { onClose: () => void }) {
         )}
         {/* The cards fill the rest of the window: up to 4 per row, the rest wrap. */}
         <div ref={bodyRef} className="min-h-0 flex-1 overflow-auto px-3 pb-2" data-testid="review-body">
-          <div className="grid gap-2" style={{ gridTemplateColumns: `repeat(${layout.cols}, minmax(0, 1fr))` }}>
+          <div
+            className="grid items-start justify-center gap-2"
+            style={{ gridTemplateColumns: `repeat(${layout.cols}, ${layout.slot}px)` }}
+            data-testid="review-grid"
+          >
             {cards.map((c) => (
               <div key={c.id} className="min-w-0">
                 {c.render(layout.cardWidth, layout.cardHeight)}
