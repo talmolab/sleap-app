@@ -28,6 +28,7 @@ import type { VideoVisibility } from "@/lib/remoteVisibility";
 import type { JobTelemetry } from "@/lib/protocolV1/jobTelemetry";
 import type { InferenceConfig, PendingRemoteMerge } from "@/stores/inferenceStore";
 import { isBboxHeadKey } from "@/lib/bboxModels";
+import { projectHeadContext, reconcileHeadNameLists, type ProjectHeadContext } from "@/lib/trainingConfigProject";
 import {
   applyReusePins,
   pipelineModelPaths,
@@ -1123,6 +1124,14 @@ function minHeadOutputStride(headConfigs: Record<string, unknown>): number | nul
   return min;
 }
 
+/**
+ * The probability to write for an augmentation the user turned on: the one the
+ * config already has when it's a valid, non-zero probability, else 1.
+ */
+export function keptProbability(current: unknown): number {
+  return typeof current === "number" && current > 0 && current <= 1 ? current : 1.0;
+}
+
 /** Apply ConfigHyperparams overrides to raw YAML config content.
  *
  * `resolvedMaxStride` is used only when `hp.maxStride` is `null` (Auto):
@@ -1140,13 +1149,28 @@ function minHeadOutputStride(headConfigs: Record<string, unknown>): number | nul
  * project's actual video channel count — see `resolveInputChannels` in
  * `modelStats.ts` — before this function runs. Falls back to 1 (grayscale,
  * matching every baseline profile's default) if the caller can't resolve
- * one. */
+ * one.
+ *
+ * Augmentation probabilities: an enabled augmentation keeps the probability
+ * its config already had when that's in (0, 1] (`keptProbability`), so a config
+ * loaded from disk with e.g. `contrast_p: 0.5` isn't rounded up to 1.
+ *
+ * `opts.project`: the skeleton and tracks of the labels being trained, when
+ * the caller knows them. PAF edges and ID class lists that no longer match are
+ * cleared so sleap-nn derives them again (see `reconcileHeadNameLists`).
+ * Leave it out when training on a file other than the open project.
+ *
+ * `opts.valLabelsPath`: when given (including `null`), it decides
+ * `data_config.val_labels_path` outright: the picked file, or none. Without
+ * this, a path carried in by a reused or imported config would be used instead
+ * of what the Training panel shows. Left `undefined`, the field is untouched. */
 export function applyHyperparamsToYaml(
   yamlText: string,
   hp: ConfigHyperparams,
   checkpointPath: string | null = null,
   resolvedMaxStride?: number,
   resolvedInChannels?: number,
+  opts: { project?: ProjectHeadContext | null; valLabelsPath?: string | null } = {},
 ): string {
   const doc = yaml.load(yamlText) as Record<string, unknown> | null;
   if (!doc || typeof doc !== "object") return yamlText;
@@ -1182,6 +1206,20 @@ export function applyHyperparamsToYaml(
 
   if (!trainer.train_data_loader) trainer.train_data_loader = {};
   (trainer.train_data_loader as Record<string, unknown>).batch_size = hp.batchSize;
+  // Validation batches follow the training batch size. Otherwise they stay at
+  // the profile's value (4) whatever the user picks. Validation takes less
+  // memory than training (no gradients), so a size that fits for training fits.
+  if (!trainer.val_data_loader) trainer.val_data_loader = {};
+  (trainer.val_data_loader as Record<string, unknown>).batch_size = hp.batchSize;
+
+  // sleap-nn saves no checkpoint at all unless `save_ckpt` is true (its default
+  // is false). The built-in profiles set it, but a config loaded from disk
+  // without the key would train and leave nothing to run inference with.
+  trainer.save_ckpt = true;
+
+  if (opts.valLabelsPath !== undefined) {
+    data.val_labels_path = opts.valLabelsPath ? [opts.valLabelsPath] : null;
+  }
 
   // Erase any skeleton baked into an imported/baseline config — it may
   // belong to an entirely different project. sleap-nn always re-derives the
@@ -1374,6 +1412,16 @@ export function applyHyperparamsToYaml(
     }
   }
 
+  // PAF edges and ID class lists that sleap-nn wrote into an earlier run's
+  // config: clear the ones the project no longer matches (see
+  // trainingConfigProject.ts for why matching ones are kept).
+  if (opts.project) {
+    const cleared = reconcileHeadNameLists(headConfigs, opts.project);
+    if (cleared.length > 0) {
+      console.log("[training] Cleared stale config lists so sleap-nn derives them again:", cleared.join(", "));
+    }
+  }
+
   // Head params — output_stride and anchor_part
   for (const [headName, headVal] of Object.entries(headConfigs)) {
     if (headVal && typeof headVal === "object") {
@@ -1511,15 +1559,15 @@ export function applyHyperparamsToYaml(
   } else if (hp.rotationPreset === "15") {
     geo.rotation_min = -15;
     geo.rotation_max = 15;
-    geo.affine_p = 1.0;
+    geo.affine_p = keptProbability(geo.affine_p);
   } else if (hp.rotationPreset === "180") {
     geo.rotation_min = -180;
     geo.rotation_max = 180;
-    geo.affine_p = 1.0;
+    geo.affine_p = keptProbability(geo.affine_p);
   } else if (hp.rotationPreset === "custom") {
     geo.rotation_min = -hp.rotationCustomAngle;
     geo.rotation_max = hp.rotationCustomAngle;
-    geo.affine_p = 1.0;
+    geo.affine_p = keptProbability(geo.affine_p);
   }
 
   // Scale
@@ -1534,22 +1582,22 @@ export function applyHyperparamsToYaml(
   // Uniform noise
   int.uniform_noise_min = hp.uniformNoiseMin;
   int.uniform_noise_max = hp.uniformNoiseMax;
-  int.uniform_noise_p = hp.uniformNoiseEnabled ? 1.0 : 0;
+  int.uniform_noise_p = hp.uniformNoiseEnabled ? keptProbability(int.uniform_noise_p) : 0;
 
   // Gaussian noise
   int.gaussian_noise_mean = hp.gaussianNoiseMean;
   int.gaussian_noise_std = hp.gaussianNoiseStd;
-  int.gaussian_noise_p = hp.gaussianNoiseEnabled ? 1.0 : 0;
+  int.gaussian_noise_p = hp.gaussianNoiseEnabled ? keptProbability(int.gaussian_noise_p) : 0;
 
   // Contrast
   int.contrast_min = hp.contrastMin;
   int.contrast_max = hp.contrastMax;
-  int.contrast_p = hp.contrastEnabled ? 1.0 : 0;
+  int.contrast_p = hp.contrastEnabled ? keptProbability(int.contrast_p) : 0;
 
   // Brightness
   int.brightness_min = hp.brightnessMin;
   int.brightness_max = hp.brightnessMax;
-  int.brightness_p = hp.brightnessEnabled ? 1.0 : 0;
+  int.brightness_p = hp.brightnessEnabled ? keptProbability(int.brightness_p) : 0;
 
   // ZMQ — always on for GUI-launched training, unconditionally.
   //
@@ -1586,11 +1634,18 @@ export function applyHyperparamsToYaml(
  * The config YAML and run name a local run of `cf` trains with, resolved
  * against the project. Shared by `startTraining` and `startDryRun`, so a dry
  * run checks exactly the config a real run would use.
+ *
+ * `paths` are the Training panel's file pickers. The picked validation file
+ * (or none) always replaces any `val_labels_path` the config carries. The
+ * project's skeleton and tracks are used to clear stale PAF edges and ID
+ * classes only when training reads the open project, not a separately picked
+ * labels file whose contents may differ.
  */
 export function prepareLocalRun(
   cf: ConfigFile,
   labels: Labels | null,
   sizeStats: ReturnType<typeof computeInstanceSizeStats>,
+  paths: { trainingLabelsPath?: string; validationLabelsPath?: string } = {},
 ): { configYaml: string; runName: string } {
   // max_stride has no server-side Auto resolution (unlike crop_size)
   // — resolve it client-side from the project's actual instance
@@ -1618,6 +1673,10 @@ export function prepareLocalRun(
     cf.checkpointPath,
     resolvedMaxStride,
     resolvedInChannels,
+    {
+      project: paths.trainingLabelsPath ? null : projectHeadContext(labels),
+      valLabelsPath: paths.validationLabelsPath || null,
+    },
   );
   // Default run name matches legacy SLEAP's format exactly:
   // `{timestamp}.{head_name}.n={num_user_labeled_frames}`
@@ -2534,6 +2593,9 @@ export const useTrainingStore = create<TrainingState>()((set, get) => ({
             c.checkpointPath,
             resolveRemoteMaxStride(c.hyperparams, labels),
             resolveInputChannels(c.hyperparams.colorMode, remoteDetectedChannels),
+            // Only a "window" run trains on the open project; a worker file's
+            // skeleton and tracks aren't known here.
+            { project: remoteOpts.labelsSource === "worker-file" ? null : projectHeadContext(labels) },
           ),
         ),
         model_types: orderedConfigs.map((c) => c.modelType),
@@ -2967,7 +3029,7 @@ export const useTrainingStore = create<TrainingState>()((set, get) => ({
             log: i > 0 ? appendLog(s.log, `— Starting ${s.models[i]?.label}...`) : s.log,
           }));
 
-          const prepared = prepareLocalRun(cf, localLabels, localSizeStats);
+          const prepared = prepareLocalRun(cf, localLabels, localSizeStats, config);
           const { configYaml } = prepared;
           const runName = await resolveLocalRunName(modelDir, prepared.runName);
           if (runName !== prepared.runName) {
@@ -3447,7 +3509,7 @@ export const useTrainingStore = create<TrainingState>()((set, get) => ({
 
         const output: string[] = [];
         const stderrTail: string[] = [];
-        const { configYaml, runName } = prepareLocalRun(cf, labels, sizeStats);
+        const { configYaml, runName } = prepareLocalRun(cf, labels, sizeStats, config);
         let success = false;
         try {
           ({ success } = await runTraining(

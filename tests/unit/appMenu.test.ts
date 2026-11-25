@@ -34,6 +34,7 @@ const BASE: MenuSnapshot = {
   showEdges: true,
   showBboxes: true,
   showCentroids: true,
+  showPoseBboxes: false,
   bboxDrawMode: false,
   showCrosshair: true,
   showInset: true,

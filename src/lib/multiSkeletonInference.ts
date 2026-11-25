@@ -201,8 +201,11 @@ export function matchModelSkeleton(
 
 // ── Pipeline per skeleton ───────────────────────────────────────────────────
 
-/** A pipeline for one skeleton's models; "centroid-only" = a centroid model alone. */
-export type SkeletonPipeline = PipelineType | "centroid-only";
+/**
+ * A pipeline for one skeleton's models; "centroid-only" = a centroid model
+ * alone (the single-skeleton panel's "centroid" pipeline, planned per skeleton).
+ */
+export type SkeletonPipeline = Exclude<PipelineType, "centroid"> | "centroid-only";
 
 export const SKELETON_PIPELINE_LABELS: Record<SkeletonPipeline, string> = {
   "top-down": "Top-Down",

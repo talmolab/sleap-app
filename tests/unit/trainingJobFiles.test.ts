@@ -100,6 +100,19 @@ describe("training config files", () => {
     expect(doc.data_config.val_labels_path).toEqual(["/data/val.slp"]);
   });
 
+  // A reused config's own validation path (another run's split, another
+  // machine's file) must not ride along when none is picked.
+  it("clears a validation path carried in by the config when none is picked", () => {
+    const base = inputs();
+    base.configs = base.configs.map((c) => ({
+      ...c,
+      content: c.content.replace(/val_labels_path:.*\n/, "val_labels_path: ['/old/val.slp']\n"),
+    }));
+    expect(base.configs[0].content).toContain("/old/val.slp");
+    const doc = yaml.load(fileText(buildTrainingJobFiles(base), "centroid.yaml")) as { data_config: Record<string, unknown> };
+    expect(doc.data_config.val_labels_path).toBeNull();
+  });
+
   // ZMQ ports only matter when this app watches the run; a shared file must never carry a W&B key.
   it("clears the app's ZMQ ports and drops any W&B API key", () => {
     const base = inputs();

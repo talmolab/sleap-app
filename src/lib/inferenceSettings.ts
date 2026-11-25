@@ -8,7 +8,10 @@
 import type { InferenceConfig } from "@/stores/inferenceStore";
 import { INFERENCE_DEFAULTS } from "@/lib/inferenceDefaults";
 
-type PanelSettings = Omit<InferenceConfig, "modelPaths" | "videoIndex" | "frameRange" | "trackOnly" | "centroidOutput">;
+type PanelSettings = Omit<
+  InferenceConfig,
+  "modelPaths" | "videoIndex" | "frameRange" | "trackOnly" | "centroidOutput" | "skeletonRuns"
+>;
 
 export interface SavedInferenceSettings extends Partial<PanelSettings> {
   /** The Inference Target choice ("suggestions", "clip", "custom", …). */

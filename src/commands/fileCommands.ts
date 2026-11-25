@@ -6,18 +6,28 @@
  */
 
 import { frameHasContent } from "@/lib/frameLabeling";
+import { repairBboxLinks } from "@/lib/bboxLinks";
 import {
+  boxesBeyondMaxInstances,
+  boxesInArea,
+  boxesInClip,
+  boxesOnTrack,
+  boxesOnUserLabeledFrames,
+  boxesOutsideFrameRange,
+  boxesWithLowScore,
   predictionsBeyondMaxInstances,
   predictionsInArea,
   predictionsInClip,
   predictionsOnUserLabeledFrames,
   predictionsOutsideFrameRange,
   predictionsWithLowScore,
+  type PredictedBoxPair,
   type PredictionPair,
 } from "@/lib/predictionDeletion";
 import {
   Labels,
   type LabeledFrame,
+  PredictedBoundingBox,
   PredictedInstance,
   Skeleton,
   labelsToCsv,
@@ -656,14 +666,15 @@ function deletePredictionPairs(
   ctx: CommandContext,
   commandName: string,
   pairs: PredictionPair[],
+  boxPairs: PredictedBoxPair[] = [],
 ): number {
   const { labels, instance } = ctx.state;
-  if (!labels || pairs.length === 0) return 0;
+  if (!labels || pairs.length + boxPairs.length === 0) return 0;
 
   const snapshot = ctx.takeAllFramesSnapshot(commandName);
 
-  const byFrame = new Map<LabeledFrame, Set<PredictedInstance>>();
-  for (const [lf, p] of pairs) {
+  const byFrame = new Map<LabeledFrame, Set<unknown>>();
+  for (const [lf, p] of [...pairs, ...boxPairs]) {
     let set = byFrame.get(lf);
     if (!set) byFrame.set(lf, (set = new Set()));
     set.add(p);
@@ -672,11 +683,13 @@ function deletePredictionPairs(
   let removed = 0;
   const emptied = new Set<LabeledFrame>();
   for (const [lf, doomed] of byFrame) {
-    const before = lf.instances.length;
+    const before = lf.instances.length + lf.bboxes.length;
     lf.instances = lf.instances.filter(
       (inst) => !(inst instanceof PredictedInstance && doomed.has(inst)),
     );
-    removed += before - lf.instances.length;
+    lf.bboxes = lf.bboxes.filter((b) => !(b instanceof PredictedBoundingBox && doomed.has(b)));
+    removed += before - lf.instances.length - lf.bboxes.length;
+    repairBboxLinks(lf);
     if (!frameHasContent(lf)) emptied.add(lf);
   }
   if (emptied.size > 0) {
@@ -691,8 +704,18 @@ function deletePredictionPairs(
   ) {
     ctx.state.setInstance(null);
   }
+  if (boxPairs.length > 0) ctx.state.set("selectedBboxIdx", null);
+  refreshCurrentFrame(ctx);
   ctx.state.markChanged();
   return removed;
+}
+
+/** Show the current frame as it is now (or nothing, if it was removed). */
+function refreshCurrentFrame(ctx: CommandContext): void {
+  const { labels, video, frameIdx } = ctx.state;
+  const cur = labels && video ? labels.find({ video, frameIdx })[0] ?? null : null;
+  ctx.state.setLabeledFrame(cur && frameHasContent(cur) ? cur : null);
+  ctx.state.bumpOverlayVersion();
 }
 
 function numParam(
@@ -718,6 +741,7 @@ export const DeletePredictionsByScore: Command = {
       ctx,
       "DeletePredictionsByScore",
       predictionsWithLowScore(labels, video, threshold),
+      boxesWithLowScore(labels, video, threshold),
     );
     if (removed === 0) {
       toast.info("No predictions in this video scored below the threshold.");
@@ -754,6 +778,7 @@ export const DeletePredictionsByRange: Command = {
       ctx,
       "DeletePredictionsByRange",
       predictionsOutsideFrameRange(labels, video, startFrame, endFrame),
+      boxesOutsideFrameRange(labels, video, startFrame, endFrame),
     );
     if (removed === 0) {
       toast.info("No predictions in this video outside the frame range.");
@@ -788,6 +813,7 @@ export const DeletePredictionsFromClip: Command = {
       ctx,
       "DeletePredictionsFromClip",
       predictionsInClip(labels, video, startFrame, endFrame),
+      boxesInClip(labels, video, startFrame, endFrame),
     );
     if (removed === 0) {
       toast.info("No predictions in the selected clip.");
@@ -820,6 +846,7 @@ export const DeletePredictionsOnLabeledFrames: Command = {
       ctx,
       "DeletePredictionsOnLabeledFrames",
       predictionsOnUserLabeledFrames(labels, allVideos ? null : video, unlinkedOnly),
+      boxesOnUserLabeledFrames(labels, allVideos ? null : video, unlinkedOnly),
     );
     const where = allVideos ? "in all videos" : "in this video";
     if (removed === 0) {
@@ -848,6 +875,7 @@ export const DeletePredictionsByMaxCount: Command = {
       ctx,
       "DeletePredictionsByMaxCount",
       predictionsBeyondMaxInstances(labels, video, maxInstances),
+      boxesBeyondMaxInstances(labels, video, maxInstances),
     );
     if (removed === 0) {
       toast.info("No frame in this video has more predictions than the maximum.");
@@ -884,6 +912,7 @@ export const DeletePredictionsByArea: Command = {
       ctx,
       "DeletePredictionsByArea",
       predictionsInArea(labels, video, box),
+      boxesInArea(labels, video, box),
     );
     if (removed === 0) {
       toast.info("No predictions in this video lie inside the selected area.");
@@ -914,8 +943,9 @@ export const DeletePredictionsByTrack: Command = {
     const snapshot = ctx.takeAllFramesSnapshot("DeletePredictionsByTrack");
     let removed = 0;
 
+    const doomedBoxes = new Set(boxesOnTrack(labels, trackName ?? null).map(([, b]) => b));
     for (const lf of labels.labeledFrames) {
-      const before = lf.instances.length;
+      const before = lf.instances.length + lf.bboxes.length;
       lf.instances = lf.instances.filter((inst) => {
         if (!(inst instanceof PredictedInstance)) return true;
         if (trackName === null || trackName === undefined) {
@@ -924,7 +954,9 @@ export const DeletePredictionsByTrack: Command = {
         }
         return inst.track?.name !== trackName;
       });
-      removed += before - lf.instances.length;
+      lf.bboxes = lf.bboxes.filter((b) => !doomedBoxes.has(b as PredictedBoundingBox));
+      removed += before - lf.instances.length - lf.bboxes.length;
+      repairBboxLinks(lf);
     }
 
     labels.labeledFrames = labels.labeledFrames.filter(frameHasContent);
@@ -965,7 +997,7 @@ export const DeleteInstancesByType: Command = {
     let removed = 0;
 
     for (const lf of labels.labeledFrames) {
-      const before = lf.instances.length;
+      const before = lf.instances.length + lf.bboxes.length;
       lf.instances = lf.instances.filter((inst) => {
         if (instanceType === "predicted") {
           return !(inst instanceof PredictedInstance);
@@ -976,7 +1008,11 @@ export const DeleteInstancesByType: Command = {
           return false;
         }
       });
-      removed += before - lf.instances.length;
+      // Predicted boxes go with the predictions. User boxes are kept: they
+      // are annotations of their own, not instances.
+      if (instanceType !== "user") lf.bboxes = lf.bboxes.filter((b) => !b.isPredicted);
+      removed += before - lf.instances.length - lf.bboxes.length;
+      repairBboxLinks(lf);
     }
 
     labels.labeledFrames = labels.labeledFrames.filter(frameHasContent);
