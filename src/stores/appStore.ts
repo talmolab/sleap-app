@@ -643,6 +643,14 @@ export interface AppState {
   maskPolygonMode: boolean;
   /** Index into the current frame's `masks` of the selected mask, or null. */
   selectedMaskIdx: number | null;
+  /** Mask under the pointer in the Masks list, highlighted on the canvas. */
+  hoveredMaskIdx: number | null;
+  /**
+   * The canvas color of each mask on the current frame (index-aligned with
+   * `masks`; null where a mask isn't drawn), so the Masks list's swatches match.
+   * Published by VideoPlayer.
+   */
+  maskSwatches: ([number, number, number] | null)[];
   /** Labels › Bounding Boxes › Boxes from Poses dialog. */
   bboxFromPosesOpen: boolean;
   /** While that dialog is open: the padding to preview on the canvas, else null. */
@@ -1138,6 +1146,8 @@ export const useAppStore = create<AppState>()(
       selectedBboxIdx: null,
       maskPolygonMode: false,
       selectedMaskIdx: null,
+      hoveredMaskIdx: null,
+      maskSwatches: [],
       bboxFromPosesOpen: false,
       bboxPosePreviewPadding: null,
       bboxPosePreviewIncludePredicted: false,

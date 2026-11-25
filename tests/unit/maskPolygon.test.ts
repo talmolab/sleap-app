@@ -17,7 +17,14 @@ import {
   encodeRle,
 } from "@talmolab/sleap-io.js";
 import { CommandContext } from "@/commands/CommandContext";
-import { AddMaskPolygon, DeleteMask, EditMaskPolygon } from "@/commands/maskCommands";
+import {
+  AcceptMask,
+  AddMaskPolygon,
+  AddMaskTrack,
+  DeleteMask,
+  EditMaskPolygon,
+  SetMaskProps,
+} from "@/commands/maskCommands";
 import { useAppStore } from "@/stores/appStore";
 import { classifyDirty } from "@/lib/autosaveDirty";
 import { DEFAULT_SHORTCUTS } from "@/lib/shortcuts";
@@ -291,5 +298,81 @@ describe("mask commands", () => {
 describe("polygon tool shortcut", () => {
   it("L toggles the polygon tool", () => {
     expect(DEFAULT_SHORTCUTS["polygon tool"]).toBe("KeyL");
+  });
+});
+
+describe("mask list commands", () => {
+  let ctx: CommandContext;
+  beforeEach(() => {
+    useAppStore.setState(useAppStore.getInitialState());
+    ctx = new CommandContext();
+  });
+
+  function setupWithMasks() {
+    const sk = new Skeleton({ nodes: ["a", "b"], name: "s" });
+    const video = new Video({
+      filename: "/v/main.mp4",
+      backendMetadata: { shape: [10, 40, 50, 3] },
+      openBackend: false,
+    });
+    const track = new Track("A");
+    const inst = Instance.fromArray([[10, 10], [20, 20]], sk);
+    inst.track = track;
+    const grid = { ...GRID, height: 40, width: 50 };
+    const user = UserSegmentationMask.fromArray(polygonRaster(square(0, 0, 10, 10), grid), 40, 50);
+    const pred = new PredictedSegmentationMask({
+      rleCounts: encodeRle(polygonRaster(square(20, 20, 30, 30), grid), 40, 50),
+      height: 40,
+      width: 50,
+      score: 0.6,
+      category: "mouse",
+    });
+    const lf = new LabeledFrame({ video, frameIdx: 0, instances: [inst], masks: [user, pred] });
+    const labels = new Labels({ labeledFrames: [lf], skeletons: [sk], videos: [video], tracks: [track] });
+    const store = useAppStore.getState();
+    store.setLabels(labels, "t.slp");
+    store.setVideo(video);
+    store.setFrameIdx(0);
+    store.setLabeledFrame(lf);
+    return { labels, lf, inst, track };
+  }
+
+  it("SetMaskProps sets name, category, track and linked instance (link brings its track); undo restores", async () => {
+    const { lf, inst, track } = setupWithMasks();
+    await ctx.execute(SetMaskProps, { index: 0, name: "  left mouse ", category: " mouse" });
+    expect([lf.masks[0].name, lf.masks[0].category]).toEqual(["left mouse", "mouse"]);
+    await ctx.execute(SetMaskProps, { index: 0, instance: inst });
+    expect(lf.masks[0].instance).toBe(inst);
+    expect(lf.masks[0].track).toBe(track);
+    await ctx.execute(SetMaskProps, { index: 0, track: null });
+    expect(lf.masks[0].track).toBeNull();
+    expect(ctx.undo()).toBe(true);
+    expect(lf.masks[0].track).toBe(track);
+  });
+
+  it("AcceptMask turns a predicted mask into a user mask in place, keeping its raster and metadata", async () => {
+    const { lf } = setupWithMasks();
+    await ctx.execute(AcceptMask, { index: 1 });
+    const m = lf.masks[1];
+    expect(m).toBeInstanceOf(UserSegmentationMask);
+    expect(m.category).toBe("mouse");
+    expect(m.area).toBe(100);
+    await ctx.execute(AcceptMask, { index: 0 }); // already a user mask: no-op
+    expect(lf.masks[0]).toBeInstanceOf(UserSegmentationMask);
+  });
+
+  it("AddMaskTrack starts a new track for the mask", async () => {
+    const { labels, lf } = setupWithMasks();
+    await ctx.execute(AddMaskTrack, { index: 1 });
+    expect(labels.tracks.map((t) => t.name)).toEqual(["A", "Track 2"]);
+    expect(lf.masks[1].track).toBe(labels.tracks[1]);
+  });
+
+  it("SetMaskProps and AcceptMask are frame-level autosave edits; AddMaskTrack is structural", () => {
+    setupWithMasks();
+    for (const name of ["SetMaskProps", "AcceptMask"]) {
+      expect(classifyDirty(ctx.takeSnapshot(name)).kind).toBe("frames");
+    }
+    expect(classifyDirty(ctx.takeSnapshot("AddMaskTrack")).kind).not.toBe("frames");
   });
 });

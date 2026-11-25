@@ -39,6 +39,8 @@ export interface RenderedMask {
   /** Size of one mask pixel in image pixels (`1 / scale`). */
   pixelSize: [number, number];
   isSelected: boolean;
+  /** Under the pointer in the Masks list. */
+  isHovered: boolean;
 }
 
 export interface BuildMaskOptions {
@@ -48,6 +50,8 @@ export interface BuildMaskOptions {
   colorFor: (mask: SegmentationMask, index: number) => RGB;
   /** Currently selected mask, if any. */
   selected?: SegmentationMask | null;
+  /** Mask highlighted from the Masks list, if any. */
+  hovered?: SegmentationMask | null;
 }
 
 /** Turn a frame's masks into image-space placement. Masks with no pixels are skipped. */
@@ -70,6 +74,7 @@ export function buildRenderedMasks(
       origin: opts.toImage(mask.offset[0], mask.offset[1]),
       pixelSize: [1 / sx, 1 / sy],
       isSelected: !!opts.selected && mask === opts.selected,
+      isHovered: !!opts.hovered && mask === opts.hovered,
     });
   });
   return out;
@@ -277,7 +282,8 @@ export function renderMasks(
     ctx.translate(ox, oy);
     ctx.scale(pw, ph);
 
-    const fill = opts.fillOpacity * (m.isPredicted ? PREDICTED_FILL_FACTOR : 1) * (m.isSelected ? 1.3 : 1);
+    const emphasized = m.isSelected || m.isHovered;
+    const fill = opts.fillOpacity * (m.isPredicted ? PREDICTED_FILL_FACTOR : 1) * (emphasized ? 1.3 : 1);
     if (fill > 0) {
       ctx.globalAlpha = clamp(fill);
       ctx.imageSmoothingEnabled = false;
@@ -285,7 +291,7 @@ export function renderMasks(
     }
 
     ctx.globalAlpha = clamp(opts.outlineOpacity);
-    ctx.lineWidth = (m.isSelected ? 3 : 1.5) * px;
+    ctx.lineWidth = (emphasized ? 3 : 1.5) * px;
     ctx.lineJoin = "round";
     ctx.strokeStyle = css(m.color);
     ctx.setLineDash(m.isPredicted ? [6 * px, 4 * px] : []);

@@ -15,10 +15,10 @@ import {
   LabeledFrame,
   PredictedSegmentationMask,
   UserSegmentationMask,
+  Track,
   encodeRle,
   type Instance,
   type SegmentationMask,
-  type Track,
 } from "@talmolab/sleap-io.js";
 import { toast } from "@/lib/notify";
 import { UpdateTopic } from "../types";
@@ -170,5 +170,68 @@ export const DeleteMask: Command = {
     lf.masks.splice(index, 1);
     ctx.state.set("selectedMaskIdx", null);
     touched(ctx, lf);
+  },
+};
+
+/** The mask at `params.index` on the current frame. */
+function targetMask(ctx: CommandContext, params?: Record<string, unknown>) {
+  const lf = currentFrame(ctx);
+  const index = Number(params?.index);
+  const mask = lf && Number.isInteger(index) ? lf.masks[index] : undefined;
+  return lf && mask ? { lf, mask, index } : null;
+}
+
+/**
+ * Set a mask's name, category, track or linked instance. Params: `index`, and
+ * any of `name` (string), `category` (string), `track` (Track | null),
+ * `instance` (Instance | null). Linking an instance also takes its track
+ * unless `track` is given.
+ */
+export const SetMaskProps: Command = {
+  name: "SetMaskProps",
+  topics: TOPICS,
+  execute(ctx, params) {
+    const t = targetMask(ctx, params);
+    if (!t || !params) return;
+    const mask = t.mask;
+    if (typeof params.name === "string") mask.name = params.name.trim();
+    if (typeof params.category === "string") mask.category = params.category.trim();
+    if ("instance" in params) {
+      mask.instance = (params.instance as Instance | null) ?? null;
+      if (mask.instance && !("track" in params)) mask.track = mask.instance.track ?? null;
+    }
+    if ("track" in params) mask.track = (params.track as Track | null) ?? null;
+    touched(ctx, t.lf);
+  },
+};
+
+/** Accept a predicted mask: it becomes a user mask in place. Params: `index`. */
+export const AcceptMask: Command = {
+  name: "AcceptMask",
+  topics: TOPICS,
+  execute(ctx, params) {
+    const t = targetMask(ctx, params);
+    if (!t || !(t.mask instanceof PredictedSegmentationMask)) return;
+    t.lf.masks[t.index] = t.mask.toUser(false);
+    touched(ctx, t.lf);
+  },
+};
+
+/**
+ * Put a mask on a new track ("Track N"), as sam3-segmenter starts a new
+ * object. Params: `index`. Adds to the project's tracks, so (like AddTrack)
+ * it's a structural edit for the incremental autosave.
+ */
+export const AddMaskTrack: Command = {
+  name: "AddMaskTrack",
+  topics: [UpdateTopic.Tracks, ...TOPICS],
+  execute(ctx, params) {
+    const t = targetMask(ctx, params);
+    const labels = ctx.state.labels;
+    if (!t || !labels) return;
+    const track = new Track(`Track ${labels.tracks.length + 1}`);
+    labels.tracks.push(track);
+    t.mask.track = track;
+    touched(ctx, t.lf);
   },
 };
