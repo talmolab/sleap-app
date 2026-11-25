@@ -80,6 +80,7 @@ import {
   dedupePolygon,
   instanceInsidePolygon,
   maskIndexAt,
+  polygonAction,
   type Pt,
 } from "@/lib/maskPolygon";
 import { derivePoseBboxes } from "@/lib/poseBboxes";
@@ -557,9 +558,9 @@ export function VideoPlayer() {
   const [bboxPreview, setBboxPreview] = useState<[number, number][] | null>(null);
   const [bboxHoverCursor, setBboxHoverCursor] = useState<string | null>(null);
   // Mask polygon tool: the polygon being drawn (image coords), whether it will
-  // cut from the selected mask (Alt held at its first click) or start a new
-  // mask even with one selected (Shift), and the cursor for the rubber band.
-  const [maskPolygon, setMaskPolygonState] = useState<{ points: Pt[]; cut: boolean; fresh: boolean } | null>(null);
+  // cut from (Alt held at its first click) or add to (Shift) the selected mask
+  // rather than become a new mask, and the cursor for the rubber band.
+  const [maskPolygon, setMaskPolygonState] = useState<{ points: Pt[]; cut: boolean; add: boolean } | null>(null);
   const maskPolygonRef = useRef<typeof maskPolygon>(null);
   const setMaskPolygon = useCallback((next: typeof maskPolygon) => {
     maskPolygonRef.current = next;
@@ -1677,8 +1678,9 @@ export function VideoPlayer() {
     if (bboxDrawMode && st.maskPolygonMode) st.set("maskPolygonMode", false);
   }, [bboxDrawMode]);
 
-  // Finish the polygon being drawn: a new mask (linked to the pose it encloses,
-  // if exactly one), or an add to / cut from the selected mask. One undo step.
+  // Finish the polygon being drawn. As in labelroi, each polygon is its own
+  // mask (linked to the pose it encloses, if exactly one); Alt cuts it from /
+  // Shift adds it to the selected mask instead. One undo step.
   commitMaskPolygonRef.current = () => {
     const poly = maskPolygonRef.current;
     setMaskPolygon(null);
@@ -1691,17 +1693,13 @@ export function VideoPlayer() {
     const src = pts.map(([x, y]) => toSourceCoords(video, x, y) as Pt);
     const lf = st.labeledFrame;
     const sel = st.selectedMaskIdx;
-    const target = sel !== null && lf?.masks[sel] ? sel : null;
-    if (poly.cut) {
-      if (target === null) {
-        toast.info("Select a mask first (click it), then hold Alt as you start the polygon to cut from it.");
-        return;
-      }
-      commandContext.execute(EditMaskPolygon, { index: target, points: src, op: "cut" });
+    const action = polygonAction(poly, sel !== null && lf?.masks[sel] ? sel : null);
+    if (action.kind === "needsSelection") {
+      toast.info("Select a mask first (click it), then hold Alt as you start the polygon to cut from it.");
       return;
     }
-    if (target !== null && !poly.fresh) {
-      commandContext.execute(EditMaskPolygon, { index: target, points: src, op: "add" });
+    if (action.kind === "edit") {
+      commandContext.execute(EditMaskPolygon, { index: action.index, points: src, op: action.op });
       return;
     }
     const [fw, fh] = frameDims;
@@ -3041,7 +3039,7 @@ export function VideoPlayer() {
           const p: Pt = [x, y];
           const poly = maskPolygonRef.current;
           if (!poly) {
-            setMaskPolygon({ points: [p], cut: e.altKey, fresh: e.shiftKey });
+            setMaskPolygon({ points: [p], cut: e.altKey, add: e.shiftKey });
           } else if (e.detail >= 2 || closesPolygon(poly.points, p, 8 / (baseScale * zoom))) {
             commitMaskPolygonRef.current();
           } else {
@@ -4478,7 +4476,7 @@ export function VideoPlayer() {
               <TooltipContent side="top">
                 <p>
                   {maskPolygonMode
-                    ? "Polygon tool on: click points, then click the first point or press Enter. Adds to the selected mask; hold Alt to cut, Shift for a new mask (L or Esc to stop)"
+                    ? "Polygon tool on: click points, then click the first point or press Enter. Each polygon is a new mask; with a mask selected, hold Shift to add to it or Alt to cut from it (L or Esc to stop)"
                     : "Draw masks with polygons (L)"}
                 </p>
               </TooltipContent>

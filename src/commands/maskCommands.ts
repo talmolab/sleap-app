@@ -70,7 +70,8 @@ function gridOf(mask: SegmentationMask): MaskGrid {
 }
 
 /**
- * Add a user mask filled from a polygon, and select it.
+ * Add a user mask filled from a polygon. As in labelroi, each polygon is its
+ * own mask, and nothing is left selected, so the next polygon is a new mask too.
  *
  * Params: `points` (source coordinates, at least 3), `height` / `width` (the
  * new mask's grid: the displayed frame), optional `offset` (source position
@@ -107,7 +108,7 @@ export const AddMaskPolygon: Command = {
       source: "polygon",
     });
     lf.masks.push(mask);
-    ctx.state.set("selectedMaskIdx", lf.masks.length - 1);
+    ctx.state.set("selectedMaskIdx", null);
     touched(ctx, lf);
   },
 };

@@ -132,3 +132,25 @@ export function instanceInsidePolygon(
   }
   return visible > 0 && inside / visible >= ENCLOSED_FRACTION;
 }
+
+/** What a finished polygon does. */
+export type PolygonAction =
+  | { kind: "new" }
+  | { kind: "edit"; op: "add" | "cut"; index: number }
+  | { kind: "needsSelection" };
+
+/**
+ * Decide what a finished polygon does, from the modifiers held at its first
+ * click and the selected mask. As in labelroi, every polygon is its own mask
+ * by default, whatever is selected. Alt cuts it from the selected mask (with
+ * nothing selected there's nothing to cut). Shift adds it to the selected mask,
+ * for one animal in several pieces (with nothing selected, a new mask).
+ */
+export function polygonAction(
+  mods: { cut: boolean; add: boolean },
+  selected: number | null,
+): PolygonAction {
+  if (mods.cut) return selected === null ? { kind: "needsSelection" } : { kind: "edit", op: "cut", index: selected };
+  if (mods.add && selected !== null) return { kind: "edit", op: "add", index: selected };
+  return { kind: "new" };
+}

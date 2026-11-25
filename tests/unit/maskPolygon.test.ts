@@ -24,6 +24,7 @@ import { DEFAULT_SHORTCUTS } from "@/lib/shortcuts";
 import {
   closesPolygon,
   combineRasters,
+  polygonAction,
   dedupePolygon,
   instanceInsidePolygon,
   isEmptyRaster,
@@ -137,6 +138,22 @@ describe("drawing helpers", () => {
   });
 });
 
+describe("polygonAction (follows labelroi: each polygon its own mask)", () => {
+  it("is a new mask by default, whether or not a mask is selected", () => {
+    expect(polygonAction({ cut: false, add: false }, null)).toEqual({ kind: "new" });
+    expect(polygonAction({ cut: false, add: false }, 2)).toEqual({ kind: "new" });
+  });
+  it("Shift adds to the selected mask (a new mask with nothing selected)", () => {
+    expect(polygonAction({ cut: false, add: true }, 2)).toEqual({ kind: "edit", op: "add", index: 2 });
+    expect(polygonAction({ cut: false, add: true }, null)).toEqual({ kind: "new" });
+  });
+  it("Alt cuts from the selected mask, and needs one", () => {
+    expect(polygonAction({ cut: true, add: false }, 1)).toEqual({ kind: "edit", op: "cut", index: 1 });
+    expect(polygonAction({ cut: true, add: true }, 1)).toEqual({ kind: "edit", op: "cut", index: 1 });
+    expect(polygonAction({ cut: true, add: false }, null)).toEqual({ kind: "needsSelection" });
+  });
+});
+
 describe("mask commands", () => {
   let ctx: CommandContext;
   beforeEach(() => {
@@ -169,7 +186,7 @@ describe("mask commands", () => {
     return { labels, lf, inst, track, video };
   }
 
-  it("AddMaskPolygon adds a user mask on the frame's grid, links the instance and its track, selects it", async () => {
+  it("AddMaskPolygon adds a user mask on the frame's grid, links the instance and its track, leaves nothing selected", async () => {
     const { lf, inst, track } = setup();
     await ctx.execute(AddMaskPolygon, { points: square(5, 5, 25, 25), height: 40, width: 50, instance: inst });
     expect(lf.masks).toHaveLength(1);
@@ -180,7 +197,7 @@ describe("mask commands", () => {
     expect(m.instance).toBe(inst);
     expect(m.track).toBe(track);
     expect(m.source).toBe("polygon");
-    expect(useAppStore.getState().selectedMaskIdx).toBe(0);
+    expect(useAppStore.getState().selectedMaskIdx).toBeNull();
     expect(useAppStore.getState().hasChanges).toBe(true);
     expect(ctx.undo()).toBe(true);
     expect(lf.masks).toHaveLength(0);
