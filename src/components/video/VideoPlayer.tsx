@@ -10,7 +10,7 @@
  */
 
 import { useRef, useEffect, useCallback, useState, useMemo } from "react";
-import { PredictedBoundingBox, PredictedInstance } from "@talmolab/sleap-io.js";
+import { PredictedBoundingBox, PredictedInstance, PredictedSegmentationMask } from "@talmolab/sleap-io.js";
 import type { RGB } from "@/lib/colorPalettes";
 import { useAppStore } from "../../stores/appStore";
 import { debugFlags } from "../panels/DebugPanel";
@@ -70,6 +70,7 @@ import { COLORMAPS } from "../../lib/colormaps";
 import { renderTrails } from "../../canvas/TrailRenderer";
 import { bboxColor, buildRenderedBboxes, renderBboxes, renderBboxHandles, renderBboxPreview, type RenderedBbox } from "../../canvas/BboxRenderer";
 import { buildRenderedCentroids, renderCentroids, type RenderedCentroid } from "../../canvas/CentroidRenderer";
+import { buildRenderedMasks, maskColor, renderMasks, type RenderedMask } from "../../canvas/MaskRenderer";
 import { dragRect, handleCursor, hitTestBbox, MIN_BBOX_SIZE, rectFromPoints, rectOfCorners, type BboxHandle } from "@/lib/bboxEditing";
 import { AddBbox, DeleteBbox, SetBboxGeometry, posesToBboxes } from "@/commands/bboxCommands";
 import { derivePoseBboxes } from "@/lib/poseBboxes";
@@ -221,6 +222,8 @@ export function VideoPlayer() {
   const showPoseBboxes = useAppStore((s) => s.showPoseBboxes);
   const poseBboxPadding = useAppStore((s) => s.poseBboxPadding);
   const poseBboxIncludePredicted = useAppStore((s) => s.poseBboxIncludePredicted);
+  const showMasks = useAppStore((s) => s.showMasks);
+  const maskOpacity = useAppStore((s) => s.maskOpacity);
   const showNonVisibleNodes = useAppStore((s) => s.showNonVisibleNodes);
   const hiddenInstances = useAppStore((s) => s.hiddenInstances);
   const viewOnlyInstance = useAppStore((s) => s.viewOnlyInstance);
@@ -1573,6 +1576,50 @@ export function VideoPlayer() {
   ]);
   renderedBboxesRef.current = renderedBboxes;
 
+  // Segmentation masks on this frame, placed in image coordinates and colored
+  // like the poses they cover (linked instance, else track, else position).
+  // Hidden with the instances, like boxes.
+  const renderedMasks = useMemo<RenderedMask[]>(() => {
+    if (!labeledFrame || !showInstances || !showMasks || !video) return [];
+    const masks = labeledFrame.masks ?? [];
+    if (masks.length === 0) return [];
+    const tracks = labels?.tracks ?? [];
+    const instanceColor = new Map<unknown, RGB>();
+    labeledFrame.instances.forEach((inst, i) => {
+      const ri = renderedInstances[i];
+      if (ri) instanceColor.set(inst, ri.color);
+    });
+    const colorTarget = resolveColorTarget(distinctlyColor, projectHasTracks);
+    return buildRenderedMasks(masks, {
+      toImage: (x, y) => toImageCoords(video, x, y),
+      colorFor: (mask, idx) =>
+        maskColor({
+          index: idx,
+          isPredicted: mask instanceof PredictedSegmentationMask,
+          colorPredicted,
+          colorTarget,
+          linkedInstanceColor: mask.instance ? instanceColor.get(mask.instance) ?? null : null,
+          track: mask.track ?? mask.instance?.track ?? null,
+          tracks,
+          palette,
+          trackColorOverrides,
+        }),
+    });
+  }, [
+    labeledFrame,
+    showInstances,
+    showMasks,
+    video,
+    labels,
+    renderedInstances,
+    palette,
+    distinctlyColor,
+    colorPredicted,
+    projectHasTracks,
+    trackColorOverrides,
+    overlayVersion,
+  ]);
+
   // Centroids on this frame (a Centroid Only run's predictions, for one),
   // colored like boxes: by track, yellow when predicted and "Color predicted"
   // is off, else bright blue.
@@ -1936,6 +1983,14 @@ export function VideoPlayer() {
       );
     }
 
+    // Masks sit behind the boxes and poses on them.
+    renderMasks(ctx, renderedMasks, {
+      zoom: baseScale * zoom,
+      fillOpacity: maskOpacity / 100,
+      outlineOpacity: poseOpacity / 100,
+      showLabels,
+    });
+
     // Bounding boxes sit behind the poses they enclose; boxes drawn around
     // poses (not stored) sit behind the stored ones.
     renderBboxes(ctx, renderedPoseBboxes, {
@@ -2080,6 +2135,8 @@ export function VideoPlayer() {
     renderedInstances,
     renderedBboxes,
     renderedCentroids,
+    renderedMasks,
+    maskOpacity,
     bboxPreview,
     bboxPosePreviewPadding,
     bboxPosePreviewIncludePredicted,
