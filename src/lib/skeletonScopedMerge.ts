@@ -19,6 +19,7 @@ import {
   type MergeResult,
   type Skeleton,
   type Video,
+  type VideoMatcher,
 } from "@talmolab/sleap-io.js";
 import { frameHasContent } from "@/lib/frameLabeling";
 import { matchModelSkeleton, sameNodeNames, skeletonsInUse } from "@/lib/multiSkeletonInference";
@@ -150,15 +151,17 @@ export async function mergePredictionsForSkeleton(
   predictions: Labels,
   target: Skeleton,
   mode: ExistingMode,
+  /** How prediction videos map to project videos (see predictionVideoMatcher). */
+  video: VideoMatcher | "basename" = "basename",
 ): Promise<MergeResult> {
   const problem = predictionsSkeletonProblem(predictions, target);
   if (problem) throw new Error(problem);
   const isTargetPrediction = (inst: unknown): boolean =>
     inst instanceof PredictedInstance && sameSkeletonStructure(inst.skeleton, target);
 
-  // Which project frames the run covered (same basename video matching the
-  // merge itself uses), and which annotation kinds it produced.
-  const match = await project.match(predictions, { video: "basename", track: "name" });
+  // Which project frames the run covered (same video matching the merge
+  // itself uses), and which annotation kinds it produced.
+  const match = await project.match(predictions, { video, track: "name" });
   const covered = new Map<Video, Set<number>>();
   const producedAttrs = new Set<AnnotationAttr>();
   const producedAttrsByFrame = new Map<string, Set<AnnotationAttr>>();
@@ -192,7 +195,7 @@ export async function mergePredictionsForSkeleton(
   return project.merge(predictions, {
     skeleton: new NodeNameSkeletonMatcher(target),
     track: "name",
-    video: "basename",
+    video,
     frame: "keep_both",
   });
 }

@@ -7,6 +7,7 @@
  */
 
 import { frameHasContent } from "@/lib/frameLabeling";
+import { predictionVideoMatcher, type PredictionVideoTarget } from "@/lib/predictionVideoMatch";
 import { Instance, LabeledFrame, PredictedInstance } from "@talmolab/sleap-io.js";
 import type { Labels, Skeleton } from "@talmolab/sleap-io.js";
 import { UpdateTopic } from "../types";
@@ -975,6 +976,8 @@ export type ExistingPredictionsMode = "clear_all" | "replace" | "keep";
 /**
  * Merge predictions from inference output into the current labels, honoring the
  * "Existing predictions" mode (clear_all / replace / keep — default replace).
+ * Pass `videoTarget` (the run's video, or "project") when the run is known, so
+ * predictions land on the video they were made on; see predictionVideoMatcher.
  */
 export const MergePredictions: Command = {
   name: "MergePredictions",
@@ -988,6 +991,7 @@ export const MergePredictions: Command = {
     if (!predictions) return;
 
     const mode = (params?.mode as ExistingPredictionsMode) ?? "replace";
+    const videoTarget = params?.videoTarget as PredictionVideoTarget | undefined;
     // `replace` swaps predictions only on frames present in the new output;
     // `keep`/`clear_all` append (the project-wide wipe below handles clear_all).
     const frame = mode === "replace" ? "replace_predictions" : "keep_both";
@@ -1020,7 +1024,13 @@ export const MergePredictions: Command = {
         toast.error("Couldn't merge predictions", { description: problem });
         return;
       }
-      const scoped = await scopedMerge.mergePredictionsForSkeleton(labels, predictions, target, mode);
+      const scoped = await scopedMerge.mergePredictionsForSkeleton(
+        labels,
+        predictions,
+        target,
+        mode,
+        predictionVideoMatcher(predictions, labels, videoTarget),
+      );
       ctx.pushUndoSnapshot(snapshot);
       ctx.state.markChanged();
       ctx.state.bumpOverlayVersion();
@@ -1048,14 +1058,15 @@ export const MergePredictions: Command = {
     // Route through sleap-io.js's Labels.merge (issue #226). Match tracks by
     // NAME — io's default is object IDENTITY, which would duplicate every track
     // because the predictions are loaded from a separate file and never share
-    // Track objects with the project. Match videos by BASENAME — the predictions
-    // reference the same video under a possibly-different (compute-node) path.
+    // Track objects with the project. Videos go to the run's own video when
+    // known, else by BASENAME — the predictions reference the same video under a
+    // possibly-different (compute-node) path.
     // Unlike the retired hand-rolled merge, io carries centroids/bboxes/masks/
     // rois + fromPredicted provenance, so the active-learning locator's
     // centroid-only output now survives the merge.
     const result = await labels.merge(predictions, {
       track: "name",
-      video: "basename",
+      video: predictionVideoMatcher(predictions, labels, videoTarget),
       frame,
     });
     ctx.pushUndoSnapshot(snapshot);
@@ -1108,16 +1119,17 @@ export const MergeTracks: Command = {
 
     const retracked = params?.retracked as Labels;
     if (!retracked) return;
+    const videoTarget = params?.videoTarget as PredictionVideoTarget | undefined;
 
     const snapshot = ctx.takeAllFramesSnapshot("MergeTracks");
 
     // Match tracks by NAME (retracked.tracks are freshly deserialized from a
     // temp file, so they never share object identity with the project's own
-    // Track objects) and videos by BASENAME (same reasoning as
-    // MergePredictions) — see sleap-io.js's Labels.merge().
+    // Track objects) and videos as MergePredictions does — see sleap-io.js's
+    // Labels.merge().
     const result = await labels.merge(retracked, {
       track: "name",
-      video: "basename",
+      video: predictionVideoMatcher(retracked, labels, videoTarget),
       frame: "update_tracks",
     });
     ctx.pushUndoSnapshot(snapshot);

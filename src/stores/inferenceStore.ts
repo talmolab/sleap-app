@@ -11,8 +11,10 @@ import { hasMultipleSkeletons } from "@/lib/multiSkeleton";
 import type { SkeletonRunSpec } from "@/lib/multiSkeletonInference";
 import type { Labels, Skeleton } from "@talmolab/sleap-io.js";
 import { toast } from "@/lib/notify";
-import { appendLogLine, subprocessFailureMessage } from "@/lib/processLog";
+import { appendLogLine, lastErrorLine, subprocessFailureMessage } from "@/lib/processLog";
 import { buildRemoteTrackSpecs } from "@/lib/remoteTrackSpec";
+import { mergeModeForRun } from "@/lib/predictionMergeMode";
+import { videoTargetOf, type PredictionVideoTarget } from "@/lib/predictionVideoMatch";
 
 export interface InferenceProgress {
   nProcessed: number;
@@ -169,7 +171,11 @@ interface InferenceState {
   reset: () => void;
   cancelInference: () => Promise<void>;
   startInference: (config: InferenceConfig, remoteOpts?: RemoteInferenceOptions) => Promise<void>;
-  loadAndMergeResults: (mode?: ExistingPredictionsMode, trackOnly?: boolean) => Promise<void>;
+  loadAndMergeResults: (
+    mode?: ExistingPredictionsMode,
+    trackOnly?: boolean,
+    videoTarget?: PredictionVideoTarget,
+  ) => Promise<void>;
   /** Explicit trigger for `pendingRemoteMerge` — see its own doc comment. */
   mergePendingRemoteResults: () => Promise<void>;
 }
@@ -178,6 +184,8 @@ export interface PendingRemoteMerge {
   results: JobResult[];
   mode: ExistingPredictionsMode;
   trackOnly: boolean;
+  /** The video each result was predicted on, in `results` order. */
+  videoTargets?: PredictionVideoTarget[];
   /**
    * Several skeletons (#99): the project skeleton each result (same order as
    * `results`) was run for, by name + index in `labels.skeletons`, so Fetch &
@@ -191,6 +199,9 @@ export interface PendingMergeSkeleton {
   name: string;
   index: number;
 }
+
+const NOTHING_TO_PREDICT =
+  "Every frame of the target is already user-labeled, and Exclude user-labeled frames is on.";
 
 const initialState = {
   status: "idle" as InferenceStatus,
@@ -211,6 +222,7 @@ async function mergePredictionsIntoProject(
   predictions: Awaited<ReturnType<typeof loadSlp>>,
   mode: ExistingPredictionsMode,
   trackOnly: boolean,
+  videoTarget?: PredictionVideoTarget,
   skeleton?: Skeleton,
 ): Promise<void> {
   console.log(
@@ -220,9 +232,9 @@ async function mergePredictionsIntoProject(
     predictions.tracks?.length ?? 0,
   );
   if (trackOnly) {
-    await commandContext.execute(MergeTracks, { retracked: predictions });
+    await commandContext.execute(MergeTracks, { retracked: predictions, videoTarget });
   } else {
-    await commandContext.execute(MergePredictions, { predictions, mode, skeleton });
+    await commandContext.execute(MergePredictions, { predictions, mode, videoTarget, skeleton });
   }
 }
 
@@ -239,6 +251,7 @@ export async function loadAndMergePredictionBytes(
   filenameHint: string,
   mode: ExistingPredictionsMode,
   trackOnly: boolean,
+  videoTarget?: PredictionVideoTarget,
   /** Multi-skeleton run: the project skeleton these predictions belong to. */
   skeleton?: Skeleton,
 ): Promise<void> {
@@ -246,7 +259,7 @@ export async function loadAndMergePredictionBytes(
     openVideos: false,
     h5: { filenameHint },
   });
-  await mergePredictionsIntoProject(predictions, mode, trackOnly, skeleton);
+  await mergePredictionsIntoProject(predictions, mode, trackOnly, videoTarget, skeleton);
 }
 
 /**
@@ -308,12 +321,13 @@ export async function fetchAndMergeRemoteResult(
   result: JobResult,
   mode: ExistingPredictionsMode,
   trackOnly: boolean,
+  videoTarget?: PredictionVideoTarget,
   /** Multi-skeleton run: the project skeleton these predictions belong to. */
   skeleton?: Skeleton,
 ): Promise<void> {
   const predictions = await loadRemotePredictions(result);
   if (!predictions) return;
-  await mergePredictionsIntoProject(predictions, mode, trackOnly, skeleton);
+  await mergePredictionsIntoProject(predictions, mode, trackOnly, videoTarget, skeleton);
 }
 
 /**
@@ -340,10 +354,22 @@ async function pendingMergeSkeleton(ref: PendingMergeSkeleton): Promise<Skeleton
  * failure; the caller keeps its pending state so the action stays retriable.
  */
 export async function mergeRemoteResults(pending: PendingRemoteMerge): Promise<void> {
+  // "Clear all" is scoped to a skeleton on a multi-skeleton project, so it
+  // applies to the first result of EACH skeleton (see mergeModeForRun).
+  const runsPerSkeleton = new Map<string, number>();
   for (let i = 0; i < pending.results.length; i++) {
     const ref = pending.skeletons?.[i];
+    const key = ref ? `${ref.index}:${ref.name}` : "";
+    const runIndex = runsPerSkeleton.get(key) ?? 0;
+    runsPerSkeleton.set(key, runIndex + 1);
     const skeleton = ref ? await pendingMergeSkeleton(ref) : undefined;
-    await fetchAndMergeRemoteResult(pending.results[i]!, pending.mode, pending.trackOnly, skeleton);
+    await fetchAndMergeRemoteResult(
+      pending.results[i]!,
+      mergeModeForRun(pending.mode, runIndex),
+      pending.trackOnly,
+      pending.videoTargets?.[i],
+      skeleton,
+    );
   }
 }
 
@@ -415,7 +441,9 @@ async function runLocalSkeletonRuns(
         ],
       }));
 
-      // "Random sample (all videos)" is one sleap-nn call per video.
+      // "Random sample (all videos)" is one sleap-nn call per video, and so is
+      // "All videos" (an "Entire video" run each: the project .slp alone would
+      // predict only its already-labeled frames).
       const perVideo: InferenceConfig[] =
         runConfig.frameRange === "random"
           ? labels.videos.flatMap((v, vi) =>
@@ -423,7 +451,10 @@ async function runLocalSkeletonRuns(
                 ? [{ ...runConfig, videoIndex: vi, frameRange: "random_video" as const }]
                 : [],
             )
-          : [runConfig];
+          : runConfig.frameRange === "all_videos" && !runConfig.trackOnly
+            ? labels.videos.map((_, vi) => ({ ...runConfig, videoIndex: vi, frameRange: "video" as const }))
+            : [runConfig];
+      let runIndex = 0;
       for (const cfg of perVideo) {
         if (cancelled()) return;
         // A per-skeleton copy only when sleap-nn would otherwise read frames
@@ -432,9 +463,15 @@ async function runLocalSkeletonRuns(
         const inputLabels = runNeedsSkeletonCopy(labels, cfg, useAppStore.getState().frameIdx)
           ? labelsForSkeleton(labels, skeleton)
           : undefined;
-        const result = await runInference(cfg, projectPath, handler, { inputLabels, outputTag });
-        if (result.command) set((s) => ({ log: [...s.log, `$ ${result.command}`] }));
+        const result = await runInference(cfg, projectPath, handler, { inputLabels, outputTag, skeleton });
         if (cancelled()) return;
+        if (result.nothingToPredict) {
+          set((s) => ({
+            log: [...s.log, `— ${run.skeletonName}: every target frame is user-labeled; skipped.`],
+          }));
+          continue;
+        }
+        if (result.command) set((s) => ({ log: [...s.log, `$ ${result.command}`] }));
         if (!result.success) {
           set((s) => ({
             status: "error",
@@ -447,7 +484,14 @@ async function runLocalSkeletonRuns(
           const platform = await getPlatform();
           const bytes = await platform.readFile(result.outputPath);
           if (cancelled()) return;
-          await loadAndMergePredictionBytes(bytes, result.outputPath, config.existingPredictions, false, skeleton);
+          await loadAndMergePredictionBytes(
+            bytes,
+            result.outputPath,
+            mergeModeForRun(config.existingPredictions, runIndex++),
+            false,
+            videoTargetOf(cfg.videoIndex),
+            skeleton,
+          );
         }
       }
     }
@@ -665,7 +709,8 @@ export const useInferenceStore = create<InferenceState>()((set) => ({
       }
 
       if (config.frameRange === "random" || specs.length > 1) {
-        // Random sample (all videos): one spec per video, submitted sequentially.
+        // Random sample / all videos (one spec per video) or several skeletons
+        // (one set per skeleton): submitted sequentially.
         set((state) => ({
           log: [`$ Remote (${specs.length} jobs): ${JSON.stringify(specs, null, 2)}`, ...state.log],
         }));
@@ -692,6 +737,7 @@ export const useInferenceStore = create<InferenceState>()((set) => ({
               results: collectedResults,
               mode: config.existingPredictions,
               trackOnly: config.trackOnly,
+              videoTargets: specs.map((s) => videoTargetOf(s.video_index)),
               skeletons: specSkeletons,
             },
           });
@@ -724,6 +770,7 @@ export const useInferenceStore = create<InferenceState>()((set) => ({
               results: [result],
               mode: config.existingPredictions,
               trackOnly: config.trackOnly,
+              videoTargets: [videoTargetOf(spec.video_index)],
               skeletons: specSkeletons,
             },
           });
@@ -804,8 +851,59 @@ export const useInferenceStore = create<InferenceState>()((set) => ({
             }
           }
           set({ status: "completed" });
+        } else if (config.frameRange === "all_videos" && !config.trackOnly) {
+          // One "Entire video" run per video, as PyQt's "All videos" makes one
+          // item per video: a run on the project .slp alone would predict only
+          // its already-labeled frames.
+          const perVideoHandler = (event: ProcessEvent) => {
+            if (event.event !== "finished") handleProcessEvent(event);
+          };
+          const nVideos = labels.videos.length;
+          let runIndex = 0;
+          for (let vi = 0; vi < nVideos; vi++) {
+            set((s) => ({ progress: null, log: [...s.log, `— Video ${vi + 1}/${nVideos}...`] }));
+            const result = await runInference(
+              { ...config, videoIndex: vi, frameRange: "video" },
+              projectPath,
+              perVideoHandler,
+            );
+            if (useInferenceStore.getState().status === "cancelled") return;
+            if (result.nothingToPredict) {
+              set((s) => ({
+                log: [...s.log, `— Video ${vi + 1}/${nVideos}: every frame is user-labeled; skipped.`],
+              }));
+              continue;
+            }
+            if (result.command) set((s) => ({ log: [...s.log, `$ ${result.command}`] }));
+            if (!result.success) {
+              set((s) => {
+                const cause = lastErrorLine(s.stderrTail);
+                return { status: "error", error: `Video ${vi + 1} failed${cause ? `: ${cause}` : ""}` };
+              });
+              return;
+            }
+            if (result.outputPath) {
+              set({ outputPath: result.outputPath });
+              const platform = await getPlatform();
+              const bytes = await platform.readFile(result.outputPath);
+              await loadAndMergePredictionBytes(
+                bytes,
+                result.outputPath,
+                mergeModeForRun(config.existingPredictions, runIndex++),
+                config.trackOnly,
+                vi,
+              );
+            }
+          }
+          set({ status: "completed" });
         } else {
           const result = await runInference(config, projectPath, handleProcessEvent);
+          if (result.nothingToPredict) {
+            set({ status: "idle" });
+            const { toast } = await import("@/lib/notify");
+            toast.info("Nothing to predict", { description: NOTHING_TO_PREDICT });
+            return;
+          }
           if (result.command) {
             set((state) => ({
               log: [`$ ${result.command}`, ...state.log],
@@ -813,7 +911,13 @@ export const useInferenceStore = create<InferenceState>()((set) => ({
           }
           if (result.outputPath) {
             set({ outputPath: result.outputPath });
-            await useInferenceStore.getState().loadAndMergeResults(config.existingPredictions, config.trackOnly);
+            await useInferenceStore
+              .getState()
+              .loadAndMergeResults(
+                config.existingPredictions,
+                config.trackOnly,
+                videoTargetOf(config.videoIndex),
+              );
           }
         }
       } catch (e) {
@@ -825,7 +929,11 @@ export const useInferenceStore = create<InferenceState>()((set) => ({
     }
   },
 
-  loadAndMergeResults: async (mode: ExistingPredictionsMode = "replace", trackOnly = false) => {
+  loadAndMergeResults: async (
+    mode: ExistingPredictionsMode = "replace",
+    trackOnly = false,
+    videoTarget?: PredictionVideoTarget,
+  ) => {
     const { outputPath } = useInferenceStore.getState();
     if (!outputPath) return;
 
@@ -833,7 +941,7 @@ export const useInferenceStore = create<InferenceState>()((set) => ({
       const platform = await getPlatform();
       const bytes = await platform.readFile(outputPath);
       console.log("[inference] Read predictions file: %d bytes from %s", bytes.byteLength, outputPath);
-      await loadAndMergePredictionBytes(bytes, outputPath, mode, trackOnly);
+      await loadAndMergePredictionBytes(bytes, outputPath, mode, trackOnly, videoTarget);
 
       set({ status: "completed" });
       // Keep the "Complete" banner (checkmark, progress bar, log) on screen
