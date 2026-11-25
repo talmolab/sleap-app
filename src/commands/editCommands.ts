@@ -23,6 +23,7 @@ import {
 import {
   placeInstance,
   findNearestPriorFrame,
+  clonePredictedPoints,
   fillMissingPredictedNodes,
   fillMissingUserNodes,
   centerInstanceAt,
@@ -288,25 +289,6 @@ function clonePoints(points: Instance["points"]): Instance["points"] {
   return points.map((p) => ({
     xy: [p.xy[0], p.xy[1]] as [number, number],
     visible: p.visible,
-    complete: p.complete,
-    name: p.name,
-    score: p.score,
-  }));
-}
-
-/**
- * Clone a predicted instance's points for conversion to a user Instance,
- * forcing `visible` to match sleap_io's canonical rule (`visible = !isNaN(x)`)
- * rather than trusting the model's `visible` flag as-is. A model can emit
- * `visible: true` for a keypoint it failed to place (`xy: [NaN, NaN]`); left
- * uncorrected, the renderer tries to draw a filled marker at NaN and nothing
- * appears at all, instead of the hollow "invisible node" marker it draws for
- * genuinely non-visible points.
- */
-export function clonePredictedPoints(points: Instance["points"]): Instance["points"] {
-  return points.map((p) => ({
-    xy: [p.xy[0], p.xy[1]] as [number, number],
-    visible: !Number.isNaN(p.xy[0]),
     complete: p.complete,
     name: p.name,
     score: p.score,

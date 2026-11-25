@@ -629,7 +629,8 @@ describe("tracking args per skeleton run (#99)", () => {
     const pellet = configForSkeletonRun(config, {
       skeletonName: "pellet", skeletonIndex: 1, modelPaths: ["/m/pellet"], pipeline: "centroid-only", nodeCount: 1,
     });
-    expect(valAfter(buildInferenceArgs(mouse, io()), "--scoring_method")).toBe("oks");
+    // OKS is sleap-nn's default for a multi-node skeleton, so the flag is left out.
+    expect(valAfter(buildInferenceArgs(mouse, io()), "--scoring_method")).toBeUndefined();
     expect(valAfter(buildInferenceArgs(pellet, io()), "--scoring_method")).toBe("euclidean_dist");
     expect(valAfter(buildInferenceArgs(pellet, io()), "--max_tracks")).toBe("2");
     // IoU (a box per instance) is swapped too; an explicit centroid/distance choice is kept.

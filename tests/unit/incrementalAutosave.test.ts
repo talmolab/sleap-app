@@ -212,8 +212,16 @@ describe("structuralSignature", () => {
       })),
     }) as unknown as Parameters<typeof structuralSignature>[0];
 
-  it("captures track / video / skeleton shape", () => {
-    expect(structuralSignature(L(2, 1, [[5, 4]]))).toBe("t2|v1|s5:4");
+  it("captures track / video / suggestion / skeleton shape", () => {
+    expect(structuralSignature(L(2, 1, [[5, 4]]))).toBe("t2|v1|g0|s5:4");
+  });
+  it("changes when suggestions are added", () => {
+    const withSuggestions = { ...L(2, 1, [[5, 4]]), suggestions: [{}] } as unknown as Parameters<
+      typeof structuralSignature
+    >[0];
+    expect(structuralSignature(withSuggestions)).not.toBe(
+      structuralSignature(L(2, 1, [[5, 4]])),
+    );
   });
   it("changes when a track is added", () => {
     expect(structuralSignature(L(1, 1, [[5, 4]]))).not.toBe(

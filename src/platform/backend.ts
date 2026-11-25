@@ -16,6 +16,7 @@ import {
   isPredictSupported,
   MAX_FRAMES_ARG_LENGTH,
   pickInferenceSubcommand,
+  randomSampleFrameCount,
 } from "./inferenceArgs";
 import type { UnlistenFn } from "@tauri-apps/api/event";
 import { formatRunTimestamp as formatPredictionsTimestamp } from "@/lib/timestamp";
@@ -611,9 +612,12 @@ export async function runInference(
   let sampledFrames: number[] | undefined;
   if (config.frameRange === "random_video") {
     const { useAppStore } = await import("@/stores/appStore");
-    const activeVideo = useAppStore.getState().video;
-    const nFrames = activeVideo?.shape?.[0] ?? 0;
-    if (nFrames === 0) throw new Error("Cannot sample: current video has no frames");
+    const { labels, video: activeVideo } = useAppStore.getState();
+    const nFrames = randomSampleFrameCount(config.videoIndex, labels?.videos, activeVideo);
+    if (nFrames === 0) {
+      const which = config.videoIndex === "all" ? "the current video" : `video ${config.videoIndex + 1}`;
+      throw new Error(`Cannot sample: ${which} has an unknown frame count`);
+    }
     sampledFrames = sampleRandomFrames(nFrames, config.sampleCount);
   }
 
