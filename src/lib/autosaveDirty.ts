@@ -105,6 +105,9 @@ const FRAME_LEVEL_COMMANDS: ReadonlySet<string> = new Set([
   "AddMaskPolygon",
   "EditMaskPolygon",
   "DeleteMask",
+  "SetMaskProps",
+  "AcceptMask",
+  // AddMaskTrack adds a track (a track-set change), so it's structural.
 ]);
 
 /**

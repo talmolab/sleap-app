@@ -324,6 +324,7 @@ export function VideoPlayer() {
   const selectedBboxIdx = useAppStore((s) => s.selectedBboxIdx);
   const maskPolygonMode = useAppStore((s) => s.maskPolygonMode);
   const selectedMaskIdx = useAppStore((s) => s.selectedMaskIdx);
+  const hoveredMaskIdx = useAppStore((s) => s.hoveredMaskIdx);
   const bboxPosePreviewPadding = useAppStore((s) => s.bboxPosePreviewPadding);
   const bboxPosePreviewIncludePredicted = useAppStore((s) => s.bboxPosePreviewIncludePredicted);
   const showCrosshair = useAppStore((s) => s.showCrosshair);
@@ -1624,6 +1625,7 @@ export function VideoPlayer() {
     const colorTarget = resolveColorTarget(distinctlyColor, projectHasTracks);
     return buildRenderedMasks(masks, {
       selected: selectedMaskIdx !== null ? masks[selectedMaskIdx] ?? null : null,
+      hovered: hoveredMaskIdx !== null ? masks[hoveredMaskIdx] ?? null : null,
       toImage: (x, y) => toImageCoords(video, x, y),
       colorFor: (mask, idx) =>
         maskColor({
@@ -1652,8 +1654,22 @@ export function VideoPlayer() {
     trackColorOverrides,
     overlayVersion,
     selectedMaskIdx,
+    hoveredMaskIdx,
   ]);
   renderedMasksRef.current = renderedMasks;
+
+  // Publish each mask's canvas color for the Masks list's swatches.
+  useEffect(() => {
+    const n = labeledFrame?.masks.length ?? 0;
+    const swatches: ([number, number, number] | null)[] = new Array(n).fill(null);
+    for (const m of renderedMasks) if (m.index < n) swatches[m.index] = m.color;
+    const st = useAppStore.getState();
+    const prev = st.maskSwatches;
+    const same =
+      prev.length === swatches.length &&
+      prev.every((c, i) => (c === null ? swatches[i] === null : !!swatches[i] && c.join() === swatches[i]!.join()));
+    if (!same) st.set("maskSwatches", swatches);
+  }, [renderedMasks, labeledFrame]);
 
   // A mask selection and an unfinished polygon belong to one frame.
   useEffect(() => {
