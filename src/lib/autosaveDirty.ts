@@ -101,6 +101,10 @@ const FRAME_LEVEL_COMMANDS: ReadonlySet<string> = new Set([
   // BboxesFromPoses on the current frame takes a single-frame snapshot; on
   // the whole project its all-frames snapshot is classified structural.
   "BboxesFromPoses",
+  // Mask edits (maskCommands.ts): one mask on the current frame.
+  "AddMaskPolygon",
+  "EditMaskPolygon",
+  "DeleteMask",
 ]);
 
 /**

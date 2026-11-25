@@ -311,3 +311,51 @@ export function renderMasks(
     }
   }
 }
+
+/**
+ * A polygon being drawn with the polygon tool: its edges, a rubber-band edge
+ * to the cursor, and vertex dots, with the first vertex drawn larger (a click
+ * there closes the polygon; it fills when the cursor is close enough). Red
+ * when the polygon will cut from the selected mask. Image coordinates; assumes
+ * the image transform is applied.
+ */
+export function renderPolygonPreview(
+  ctx: CanvasRenderingContext2D,
+  points: readonly [number, number][],
+  opts: { zoom: number; cursor?: [number, number] | null; cut?: boolean; canClose?: boolean },
+): void {
+  if (points.length === 0) return;
+  const px = 1 / Math.max(opts.zoom, 1e-6);
+  const color = opts.cut ? "rgba(248, 113, 113, 0.95)" : "rgba(255, 255, 255, 0.95)";
+  ctx.save();
+  ctx.lineJoin = "round";
+
+  ctx.beginPath();
+  ctx.moveTo(points[0][0], points[0][1]);
+  for (let i = 1; i < points.length; i++) ctx.lineTo(points[i][0], points[i][1]);
+  if (opts.cursor) ctx.lineTo(opts.cursor[0], opts.cursor[1]);
+  if (points.length >= 2) {
+    ctx.fillStyle = opts.cut ? "rgba(248, 113, 113, 0.12)" : "rgba(255, 255, 255, 0.1)";
+    ctx.fill();
+  }
+  ctx.lineWidth = 2 * px;
+  ctx.strokeStyle = color;
+  ctx.setLineDash([]);
+  ctx.stroke();
+  // Dark halo so the outline reads on light video too.
+  ctx.lineWidth = 0.75 * px;
+  ctx.strokeStyle = "rgba(0, 0, 0, 0.6)";
+  ctx.stroke();
+
+  points.forEach(([x, y], i) => {
+    const r = (i === 0 ? 5 : 3) * px;
+    ctx.beginPath();
+    ctx.arc(x, y, r, 0, Math.PI * 2);
+    ctx.fillStyle = i === 0 && opts.canClose ? color : "rgba(0, 0, 0, 0.7)";
+    ctx.fill();
+    ctx.lineWidth = 1.5 * px;
+    ctx.strokeStyle = color;
+    ctx.stroke();
+  });
+  ctx.restore();
+}

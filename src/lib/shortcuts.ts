@@ -75,6 +75,8 @@ export const DEFAULT_SHORTCUTS: Record<string, string> = {
   "toggle pan mode": "KeyP",
   // B: box tool — drag on the canvas to draw a bounding box (Esc leaves it).
   "box tool": "KeyB",
+  // L: mask polygon (lasso) tool — click to outline a mask (Enter / first point closes).
+  "polygon tool": "KeyL",
   "toggle place mode": "Shift+KeyN",
 
   // Tracks

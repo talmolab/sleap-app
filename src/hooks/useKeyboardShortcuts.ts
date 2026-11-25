@@ -322,6 +322,11 @@ export function useKeyboardShortcuts() {
         e.preventDefault();
         store().toggle("bboxDrawMode");
       },
+      "polygon tool": (e) => {
+        if (isTextInput(e)) return;
+        e.preventDefault();
+        store().toggle("maskPolygonMode");
+      },
 
       // Label QC review queue (F / Shift+F; 3 marks the selected flag OK).
       "goto next qc flag": (e) => {

@@ -59,6 +59,7 @@ export const MENU_SHORTCUT_ACTIONS: Record<string, string> = {
   "labels.deleteClip": "delete clip predictions",
   "labels.deleteArea": "delete area predictions",
   "labels.bboxes.tool": "box tool",
+  "labels.masks.polygon": "polygon tool",
   "tracks.transpose": "transpose",
   "tracks.new": "add track",
   "tracks.copy": "copy track",

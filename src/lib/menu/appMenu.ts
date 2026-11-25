@@ -20,6 +20,7 @@ import { confirmDialog } from "@/stores/confirmStore";
 import { confirmAndResetPreferences } from "@/lib/preferences";
 import { promptDialog } from "@/stores/promptStore";
 import { AcceptAllBboxes, DeletePredictedBboxes } from "@/commands/bboxCommands";
+import { DeleteMask } from "@/commands/maskCommands";
 import { AcceptAllCentroids, DeletePredictedCentroids } from "@/commands/centroidCommands";
 import {
   confirmDeleteInstanceAndTrack,
@@ -131,6 +132,9 @@ export interface MenuSnapshot {
   showPoseBboxes: boolean;
   showMasks: boolean;
   bboxDrawMode: boolean;
+  maskPolygonMode: boolean;
+  /** A mask on the current frame is selected. */
+  hasSelectedMask: boolean;
   showCrosshair: boolean;
   showInset: boolean;
   temporalLoupe: boolean;
@@ -796,6 +800,24 @@ function labelsMenu(s: MenuSnapshot): TopMenu {
         ],
       },
       // Centroids: a Centroid Only run on a multi-node skeleton predicts these.
+      {
+        kind: "submenu",
+        id: "labels.masks",
+        label: "Masks",
+        items: [
+          { kind: "check", id: "labels.masks.polygon", label: "Polygon Tool", shortcut: "KeyL", checked: s.maskPolygonMode, enabled: loaded, run: () => store().toggle("maskPolygonMode") },
+          {
+            kind: "item",
+            id: "labels.masks.delete",
+            label: "Delete Selected Mask",
+            enabled: s.hasSelectedMask,
+            run: () => {
+              const idx = store().selectedMaskIdx;
+              if (idx !== null) commandContext.execute(DeleteMask, { index: idx });
+            },
+          },
+        ],
+      },
       {
         kind: "submenu",
         id: "labels.centroids",
