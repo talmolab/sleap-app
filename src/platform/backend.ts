@@ -7,7 +7,7 @@
 
 import { isTauri } from "./index";
 import { sleapCmd } from "@/lib/sleapPlugin";
-import { saveSlpToBytes } from "@talmolab/sleap-io.js";
+import { saveSlpToBytes, type Labels } from "@talmolab/sleap-io.js";
 import type { InferenceConfig } from "@/stores/inferenceStore";
 import { buildInferenceArgs, pickInferenceSubcommand } from "./inferenceArgs";
 import type { UnlistenFn } from "@tauri-apps/api/event";
@@ -498,7 +498,17 @@ export async function runTraining(
 export async function runInference(
   config: InferenceConfig,
   projectPath: string | null,
-  onEvent: (event: ProcessEvent) => void
+  onEvent: (event: ProcessEvent) => void,
+  opts: {
+    /**
+     * Labels to give sleap-nn instead of the project file (written to a temp
+     * .slp) — a multi-skeleton run's per-skeleton copy (see
+     * `labelsForSkeleton`). Ignored when the run reads the video file directly.
+     */
+    inputLabels?: Labels;
+    /** Extra tag in the predictions filename (e.g. the skeleton's name). */
+    outputTag?: string;
+  } = {},
 ): Promise<{ success: boolean; outputPath: string | null; command: string }> {
   if (!isTauri) {
     console.warn("Inference is only available in Tauri desktop mode");
@@ -510,11 +520,13 @@ export async function runInference(
   const tmp = await tempDir();
   const ts = Date.now();
 
-  // Use original project file if available, otherwise serialize
+  // Use original project file if available, otherwise serialize. A
+  // per-skeleton input (opts.inputLabels) is written further down, only when
+  // the run doesn't read the video file directly.
   let dataPath: string;
-  if (projectPath) {
-    dataPath = projectPath;
-    console.log("[inference] Using project file:", dataPath);
+  if (projectPath || opts.inputLabels) {
+    dataPath = projectPath ?? "";
+    if (projectPath) console.log("[inference] Using project file:", dataPath);
   } else {
     const { writeFile } = await import("@tauri-apps/plugin-fs");
     // Lazy import to avoid pulling in saveSlpToBytes when not needed
@@ -553,6 +565,13 @@ export async function runInference(
   if (videoDataPath) {
     dataPath = videoDataPath;
     console.log("[inference] Video-scoped run targeting the video file directly:", dataPath);
+  } else if (opts.inputLabels) {
+    const { writeFile } = await import("@tauri-apps/plugin-fs");
+    const tag = opts.outputTag ? `_${opts.outputTag}` : "";
+    dataPath = await join(tmp, `sleap_inference_input_${ts}${tag}.slp`);
+    const bytes = await saveSlpToBytes(opts.inputLabels);
+    await writeFile(dataPath, bytes);
+    console.log("[inference] Wrote per-skeleton input (%d bytes) to %s", bytes.byteLength, dataPath);
   }
 
   // The current-frame index for frameRange === "frame" (needs the app store).
@@ -605,7 +624,7 @@ export async function runInference(
   }
   const outputPath = await join(
     predictionsDir,
-    `${videoPrefix}${sourceName}.${formatPredictionsTimestamp()}.predictions.slp`
+    `${videoPrefix}${sourceName}${opts.outputTag ? `.${opts.outputTag}` : ""}.${formatPredictionsTimestamp()}.predictions.slp`
   );
 
   // Pick the sleap-nn subcommand by installed version: the new `predict`

@@ -994,6 +994,42 @@ export const MergePredictions: Command = {
 
     const snapshot = ctx.takeAllFramesSnapshot("MergePredictions");
 
+    // Several skeletons (#99): the predictions belong to the project skeleton
+    // with the same node names, and the mode only touches THAT skeleton's
+    // predictions (re-running the mouse model keeps the pellet predictions).
+    // Such a project never takes the plain merge below: io's
+    // replace_predictions / the clear_all wipe would hit every skeleton.
+    const scopedMerge = await import("@/lib/skeletonScopedMerge");
+    const target =
+      (params?.skeleton as Skeleton | undefined) ??
+      scopedMerge.resolvePredictionsSkeleton(labels, predictions, ctx.state.skeleton);
+    if (!target && scopedMerge.needsSkeletonScopedMerge(labels)) {
+      toast.error("Couldn't merge predictions", {
+        description:
+          predictions.labeledFrames.some((lf) => lf.instances.length > 0)
+            ? "This project has several skeletons, and the predictions' node names don't match exactly one of them."
+            : "The predictions hold no instances, and this project has several skeletons — nothing was changed.",
+      });
+      return;
+    }
+    if (target) {
+      const problem = labels.skeletons.includes(target)
+        ? scopedMerge.predictionsSkeletonProblem(predictions, target)
+        : "The skeleton these predictions were run for is no longer in the project.";
+      if (problem) {
+        toast.error("Couldn't merge predictions", { description: problem });
+        return;
+      }
+      const scoped = await scopedMerge.mergePredictionsForSkeleton(labels, predictions, target, mode);
+      ctx.pushUndoSnapshot(snapshot);
+      ctx.state.markChanged();
+      ctx.state.bumpOverlayVersion();
+      toast.success(
+        `Merged ${scoped.instancesAdded} ${target.name ? `${target.name} ` : ""}prediction(s) across ${scoped.framesMerged} frame(s).`,
+      );
+      return;
+    }
+
     // clear_all: strip every existing PredictedInstance project-wide (keeping
     // user instances) BEFORE merging, so stale predictions on frames the new
     // run didn't cover are removed too — io's Labels.merge only visits frames

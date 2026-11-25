@@ -236,10 +236,19 @@ export function modelNameFromProvenance(provenance: Record<string, unknown> | nu
 /**
  * Predicted instances of `video`, grouped by frame, reordered to the project's
  * nodes, in a compact {@link PoseStore} (one flat array per model rather than
- * an array per pose; see poseStore.ts for why).
+ * an array per pose; see poseStore.ts for why). `nodeMap` is one index map
+ * for every instance, or — for a file with several skeletons, e.g. mice +
+ * pellets (#99) — a map per skeleton to keep; other skeletons' instances are
+ * skipped.
  */
-export function extractPoses(labels: Labels, video: Video, nodeMap: readonly number[]): PoseStore {
-  const n = nodeMap.length;
+export function extractPoses(
+  labels: Labels,
+  video: Video,
+  nodeMap: readonly number[] | ReadonlyMap<Skeleton, readonly number[]>,
+): PoseStore {
+  const perSkeleton = nodeMap instanceof Map ? (nodeMap as ReadonlyMap<Skeleton, readonly number[]>) : null;
+  const single = perSkeleton ? null : (nodeMap as readonly number[]);
+  const n = single ? single.length : (perSkeleton!.values().next().value?.length ?? 0);
   const lfs = labels.labeledFrames.filter((lf) => lf.video === video);
   let capacity = 0;
   for (const lf of lfs) capacity += lf.instances.length;
@@ -247,6 +256,8 @@ export function extractPoses(labels: Labels, video: Video, nodeMap: readonly num
   for (const lf of lfs) {
     for (const inst of lf.instances) {
       if (!(inst instanceof PredictedInstance)) continue;
+      const map = single ?? perSkeleton!.get(inst.skeleton);
+      if (!map) continue;
       // numpy() reads io's columnar storage directly (no per-point view objects);
       // hidden points come back as NaN.
       const pts = inst.numpy({ invisibleAsNaN: true });
@@ -254,7 +265,7 @@ export function extractPoses(labels: Labels, video: Video, nodeMap: readonly num
       const off = b.begin(lf.frameIdx, score, inst.track?.name ?? null);
       const xy = b.buffer;
       for (let i = 0; i < n; i++) {
-        const p = pts[nodeMap[i]];
+        const p = pts[map[i]];
         const ok = p && Number.isFinite(p[0]) && Number.isFinite(p[1]);
         xy[off + 2 * i] = ok ? p[0] : NaN;
         xy[off + 2 * i + 1] = ok ? p[1] : NaN;
@@ -274,6 +285,12 @@ export type CandidateAnalysis =
       frameCount: number;
       /** The file's video was found by path or only by file name. */
       matchedBy: "path" | "name" | "probable";
+      /**
+       * A file with several skeletons (mice + pellets, #99): how many of its
+       * other skeletons were left out, and the used skeleton's name.
+       */
+      ignoredSkeletons?: number;
+      skeletonName?: string | null;
     }
   | { ok: false; name: string; reason: string };
 
@@ -303,14 +320,34 @@ export function analyzePredictionFile(
     }
   }
   if (!anyPredicted) return { ok: false, name, reason: "No predictions for this video" };
-  if (used.length > 1) {
-    return { ok: false, name, reason: "Predictions use more than one skeleton" };
+  if (used.length === 1) {
+    const sk = checkSkeleton(projectNodeNames, used[0]);
+    if (!sk.ok) return { ok: false, name, reason: sk.reason };
+    const frames = extractPoses(labels, vm.video, sk.nodeMap);
+    return { ok: true, name, frames, frameCount: frames.size, matchedBy: vm.by };
   }
-  const sk = checkSkeleton(projectNodeNames, used[0]);
-  if (!sk.ok) return { ok: false, name, reason: sk.reason };
 
-  const frames = extractPoses(labels, vm.video, sk.nodeMap);
-  return { ok: true, name, frames, frameCount: frames.size, matchedBy: vm.by };
+  // Several skeletons (e.g. mice + pellets, #99): compare only the
+  // predictions whose skeleton has the project's node names.
+  const checks = used.map((skel) => checkSkeleton(projectNodeNames, skel));
+  const matching = checks.filter((c): c is Extract<SkeletonCheck, { ok: true }> => c.ok);
+  if (matching.length === 0) {
+    return {
+      ok: false,
+      name,
+      reason: `None of its ${used.length} skeletons has this skeleton's nodes (${projectNodeNames.join(", ")})`,
+    };
+  }
+  const frames = extractPoses(labels, vm.video, new Map(matching.map((c) => [c.skeleton, c.nodeMap])));
+  return {
+    ok: true,
+    name,
+    frames,
+    frameCount: frames.size,
+    matchedBy: vm.by,
+    ignoredSkeletons: used.length - matching.length,
+    skeletonName: matching[0].skeleton.name?.trim() || null,
+  };
 }
 
 /**
