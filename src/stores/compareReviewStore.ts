@@ -25,7 +25,15 @@ export const DEFAULT_REVIEW_THRESHOLD_PX = 25;
 
 interface CompareReviewState {
   open: boolean;
+  /** Opening the window also hides the project's instances in its cards again (see showProjectInstances). */
   setOpen: (open: boolean) => void;
+  /**
+   * Draw the project's own instances in the window's cards. Off each time the
+   * window opens, so the models are compared on their own; the eye in the
+   * "Project instances" line turns them on. Separate from H (the canvas).
+   */
+  showProjectInstances: boolean;
+  setShowProjectInstances: (show: boolean) => void;
   /**
    * A Claude proposal to show first when the window opens (its id), e.g. from
    * the "Claude suggested N changes" toast. The window clears it once shown.
@@ -48,7 +56,9 @@ const empty: ReviewDecision = { accepted: null, skipped: false, byHand: false };
 
 export const useCompareReviewStore = create<CompareReviewState>()((set) => ({
   open: false,
-  setOpen: (open) => set({ open }),
+  setOpen: (open) => set(open ? { open, showProjectInstances: false } : { open }),
+  showProjectInstances: false,
+  setShowProjectInstances: (show) => set({ showProjectInstances: show }),
   focusProposal: null,
   setFocusProposal: (id) => set({ focusProposal: id }),
   threshold: DEFAULT_REVIEW_THRESHOLD_PX,

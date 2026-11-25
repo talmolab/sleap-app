@@ -41,10 +41,6 @@ interface PaneProps {
   edges: readonly (readonly [number, number])[];
   width: number;
   height: number;
-  /** Enlarged card: the picture zooms and pans. */
-  interactive?: boolean;
-  /** Grid card: clicking the picture enlarges it. */
-  onEnlarge?: () => void;
 }
 
 /** Name tags on the nodes Claude changes, at `xy` (a hidden node at the prediction's spot, "(hidden)"). */
@@ -115,8 +111,6 @@ export function ClaudePane({
   edges,
   width,
   height,
-  interactive,
-  onEnlarge,
   onDecided,
 }: PaneProps & { onDecided: () => void }) {
   // Re-render on any proposal change and any edit (outdated / Revert depend on the labels).
@@ -145,8 +139,6 @@ export function ClaudePane({
         edges={edges}
         width={width}
         height={height}
-        interactive={interactive}
-        onClick={onEnlarge}
       />
       <div className="flex items-center gap-1 px-1 pt-1">
         <Sparkles className="h-3 w-3 shrink-0" style={{ color: rgbToCSS(CLAUDE_COLOR) }} aria-hidden />
@@ -215,8 +207,6 @@ export function PredictionPane({
   width,
   height,
   projectPoses,
-  interactive,
-  onEnlarge,
   onDecided,
 }: PaneProps & { entryKey: string; projectPoses?: readonly ProjectPose[]; onDecided: () => void }) {
   useProposalStore((s) => s.proposals);
@@ -255,8 +245,6 @@ export function PredictionPane({
         edges={edges}
         width={width}
         height={height}
-        interactive={interactive}
-        onClick={onEnlarge}
       />
       <div className="flex items-center gap-1 px-1 pt-1">
         <span className="inline-block h-2.5 w-2.5 shrink-0 rounded-full" style={{ backgroundColor: rgbToCSS(PREDICTION_COLOR) }} />

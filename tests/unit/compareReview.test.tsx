@@ -360,22 +360,26 @@ describe("hand-test fixes (real grayscale video, project instances)", () => {
     expect(projectPosesOnFrame(labels, video, 6, NODES)).toEqual([]);
   });
 
-  // Hand-test #525: with "Show project instances (H)" off the crops leave them out, and say so loudly.
-  it("follows the H toggle and shows when instances are hidden", () => {
+  // Hand-test #538: the cards open without the project's instances (the window's own eye, not H); the eye turns them on.
+  it("opens with project instances off, separate from H", () => {
     const skeleton = new Skeleton({ nodes: NODES, name: "s" });
     const video = makeVideo();
     const lf = new LabeledFrame({ video, frameIdx: 0 });
     lf.instances.push(makeUser(skeleton, poseAt(10, 20)));
     const labels = new Labels({ videos: [video], skeletons: [skeleton], labeledFrames: [lf] });
     useAppStore.setState({ ...useAppStore.getInitialState(), labels, video, skeleton, showInstances: true });
-    const shown = renderHook(() => useProjectPoses(0));
-    expect(shown.result.current).toHaveLength(1);
-    act(() => useAppStore.setState({ showInstances: false }));
-    expect(shown.result.current).toBeUndefined();
-    render(<ProjectInstancesKey count={null} />);
-    fireEvent.click(screen.getByTestId("review-project-hidden"));
+    useCompareReviewStore.getState().setShowProjectInstances(true);
+    useCompareReviewStore.getState().setOpen(true);
+    expect(useCompareReviewStore.getState().showProjectInstances).toBe(false);
+    // The poses are still found (for the "N here" count); the toggle decides whether they're drawn.
+    expect(renderHook(() => useProjectPoses(0)).result.current).toHaveLength(1);
+    render(<ProjectInstancesKey count={1} />);
+    expect(screen.getByTestId("review-project-key").textContent).toContain("hidden");
+    fireEvent.click(screen.getByTestId("review-project-toggle"));
+    expect(useCompareReviewStore.getState().showProjectInstances).toBe(true);
     expect(useAppStore.getState().showInstances).toBe(true);
-    expect(screen.getByTestId("review-project-key")).toBeTruthy();
+    expect(screen.getByTestId("review-project-key").textContent).not.toContain("hidden");
+    useCompareReviewStore.getState().setOpen(false);
   });
 });
 
@@ -566,8 +570,6 @@ describe("review window card layout (hand-test 2026-11-24)", () => {
     expect([five.cols, five.rows]).toEqual([4, 2]);
     expect(two.cardWidth).toBeGreaterThan(four.cardWidth);
     expect(five.cardHeight).toBeLessThan(four.cardHeight);
-    // The enlarged card fills the body.
-    expect(two.bigWidth).toBe(1190);
   });
 });
 

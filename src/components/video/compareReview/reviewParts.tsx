@@ -3,7 +3,6 @@ import { useMemo, useState } from "react";
 import { Eye, EyeOff } from "lucide-react";
 import { projectPosesOnFrame, reviewItemKey, type ProjectPose, type ReviewGroup } from "@/lib/modelOverlay/review";
 import { useAppStore } from "@/stores/appStore";
-import { toggleProjectInstances } from "@/lib/modelOverlay/canvasActions";
 import { rgbToCSS } from "@/lib/colorPalettes";
 import { PROJECT_POSE_COLOR } from "./ModelCropCanvas";
 import { isReviewed, useCompareReviewStore } from "@/stores/compareReviewStore";
@@ -130,49 +129,47 @@ export function ReviewThresholdInput() {
 }
 
 /**
- * The project's own instances on `frame` for the crops, or undefined while
- * "Show project instances (H)" is off (then the crops leave them out, like
- * the main view). Refreshes after an Accept changes the frame.
+ * The project's own instances on `frame` for the crops (undefined without a
+ * frame). Whether they are drawn is the window's own toggle
+ * (`showProjectInstances`), not H. Refreshes after an Accept changes the frame.
  */
 export function useProjectPoses(frame: number | null): ProjectPose[] | undefined {
   const labels = useAppStore((s) => s.labels);
   const video = useAppStore((s) => s.video);
   const skeleton = useAppStore((s) => s.skeleton);
-  const show = useAppStore((s) => s.showInstances);
   const version = useAppStore((s) => s.overlayVersion);
   return useMemo(() => {
     void version;
-    if (!show || frame === null) return undefined;
+    if (frame === null) return undefined;
     return projectPosesOnFrame(labels, video, frame, skeleton?.nodes.map((n) => n.name) ?? []);
-  }, [labels, video, skeleton, show, frame, version]);
+  }, [labels, video, skeleton, frame, version]);
 }
 
 /**
- * Says how the project's instances look in the crops, or — very visibly —
- * that they're hidden (H), with a button to show them.
+ * "Project instances (N here): solid = yours, dashed = predictions", with an
+ * eye that shows or hides them in the window's cards. Off each time the
+ * window opens; the canvas (H) is not affected.
  */
 export function ProjectInstancesKey({ count }: { count: number | null }) {
-  const show = useAppStore((s) => s.showInstances);
-  if (!show) {
-    return (
-      <button
-        type="button"
-        className="flex items-center gap-1 rounded bg-amber-500/25 px-1.5 py-0.5 font-medium text-amber-700 hover:bg-amber-500/40 dark:text-amber-300"
-        onClick={toggleProjectInstances}
-        data-testid="review-project-hidden"
-        title="Your labels and the project's predictions are hidden (H). Click to show them in the crops and the main view."
-      >
-        <EyeOff className="h-3 w-3" /> Project instances hidden (H) · show
-      </button>
-    );
-  }
+  const show = useCompareReviewStore((s) => s.showProjectInstances);
+  const setShow = useCompareReviewStore((s) => s.setShowProjectInstances);
   return (
     <span className="flex items-center gap-1 text-muted-foreground" data-testid="review-project-key">
-      <span className="inline-block h-0.5 w-4" style={{ backgroundColor: rgbToCSS(PROJECT_POSE_COLOR) }} />
-      Project instances{count !== null ? ` (${count} here)` : ""}: solid = yours, dashed = predictions
-      <button type="button" className="ml-1 rounded p-0.5 hover:bg-muted" onClick={toggleProjectInstances} title="Hide project instances (H)" aria-label="Hide project instances">
-        <Eye className="h-3 w-3" />
+      <button
+        type="button"
+        className={`rounded p-0.5 hover:bg-muted ${show ? "text-foreground" : ""}`}
+        onClick={() => setShow(!show)}
+        aria-pressed={show}
+        aria-label={show ? "Hide project instances in the cards" : "Show project instances in the cards"}
+        title={show ? "Hide your labels and the project's predictions in these cards" : "Show your labels and the project's predictions in these cards"}
+        data-testid="review-project-toggle"
+      >
+        {show ? <Eye className="h-3 w-3" /> : <EyeOff className="h-3 w-3" />}
       </button>
+      <span className={`inline-block h-0.5 w-4 ${show ? "" : "opacity-40"}`} style={{ backgroundColor: rgbToCSS(PROJECT_POSE_COLOR) }} />
+      <span className={show ? "" : "opacity-60"}>
+        Project instances{count !== null ? ` (${count} here)` : ""}: solid = yours, dashed = predictions{show ? "" : " · hidden"}
+      </span>
     </span>
   );
 }

@@ -9,9 +9,7 @@
  * "None are right" (go label it by hand in the main view), or "Skip" (either
  * is fine). ◀ ▶ or ← → step through; click the item number (or the frame)
  * in the header to jump. The window fills the screen like Label QC Review:
- * cards share the space, up to 4 per row (more wrap), and clicking a card's
- * picture enlarges it to fill the window, with scroll-zoom and drag-pan (Esc
- * or "All cards" goes back). Only disagreements above the window's own
+ * cards share the space, up to 4 per row (more wrap). Only disagreements above the window's own
  * threshold (default 25 px) are listed.
  *
  * Claude's corrections of predictions are reviewed here too (claudeEntries.ts):
@@ -50,7 +48,7 @@ export const CARD_FOOTER_PX = 76;
 /**
  * Card sizes for `n` cards in a body of `width` × `height` CSS px: at most 4
  * per row (the rest wrap to another row), pictures as large as fit, never
- * wider than tall. `big*` is the picture size of an enlarged card.
+ * wider than tall.
  */
 export function cardLayout(n: number, width: number, height: number) {
   const W = width > 0 ? width : 1000;
@@ -62,10 +60,7 @@ export function cardLayout(n: number, width: number, height: number) {
   const cardWidth = Math.max(120, Math.floor((W - gap * (cols - 1)) / cols) - 10);
   const perRow = (H - gap * (rows - 1)) / rows - CARD_FOOTER_PX;
   const cardHeight = Math.max(120, Math.floor(Math.min(cardWidth, perRow)));
-  // The enlarged card: the whole body, less the back bar and the card's own footer.
-  const bigWidth = Math.max(200, Math.floor(W) - 10);
-  const bigHeight = Math.max(200, Math.floor(H) - 36 - CARD_FOOTER_PX - 40);
-  return { cols, rows, cardWidth, cardHeight, bigWidth, bigHeight };
+  return { cols, rows, cardWidth, cardHeight };
 }
 
 /** The element's content size, kept up to date (0 × 0 until measured). */
@@ -106,8 +101,6 @@ export function ReviewWindow({ onClose }: { onClose: () => void }) {
   // The item on view, by key: Claude's items are listed before the models' have been found, so a position would move.
   const [posKey, setPosKey] = useState<string | null>(null);
   const [zoomed, setZoomed] = useState(true);
-  // The card shown enlarged (fills the window; zoom and pan), by card id.
-  const [big, setBig] = useState<string | null>(null);
   const bodyRef = useRef<HTMLDivElement>(null);
   const bodySize = useElementSize(bodyRef);
 
@@ -171,7 +164,10 @@ export function ReviewWindow({ onClose }: { onClose: () => void }) {
     () => new Map(item ? item.members.map((m) => [m.modelId, disputedNodeMarks(item, nodeNames, m.xy)]) : []),
     [item, nodeNames]
   );
-  const projectPoses = useProjectPoses(entry?.frame ?? null);
+  const framePoses = useProjectPoses(entry?.frame ?? null);
+  // Drawn in the cards only when the window's own eye toggle is on (off on open; H is the canvas's).
+  const showProject = useCompareReviewStore((s) => s.showProjectInstances);
+  const projectPoses = showProject ? framePoses : undefined;
   const allPoses = useMemo<CropPose[]>(
     () =>
       item
@@ -188,11 +184,7 @@ export function ReviewWindow({ onClose }: { onClose: () => void }) {
     const onKey = (e: KeyboardEvent) => {
       // Leave keys to "Replace your instance?" and other dialogs / text fields.
       if (keysBelongElsewhere(e)) return;
-      // Esc: an enlarged card goes back to the grid first.
-      if (e.key === "Escape") {
-        if (big) setBig(null);
-        else onClose();
-      }
+      if (e.key === "Escape") onClose();
       else if (e.key === "ArrowRight") go(1);
       else if (e.key === "ArrowLeft") go(-1);
       else return;
@@ -208,12 +200,11 @@ export function ReviewWindow({ onClose }: { onClose: () => void }) {
   const onlyClaude = shown.length < 2;
 
   // The cards for this item, in order. Each draws its picture at the size given.
-  const cards: { id: string; title: string; render: (w: number, h: number, big: boolean) => ReactNode }[] = [];
+  const cards: { id: string; render: (w: number, h: number) => ReactNode }[] = [];
   if (entry?.kind === "claude" && video) {
     cards.push({
       id: "prediction",
-      title: "Project prediction",
-      render: (w, h, big) => (
+      render: (w, h) => (
         <PredictionPane
           proposal={entry.claude}
           entryKey={entry.key}
@@ -225,8 +216,6 @@ export function ReviewWindow({ onClose }: { onClose: () => void }) {
           width={w}
           height={h}
           projectPoses={projectPoses}
-          interactive={big}
-          onEnlarge={big ? undefined : () => setBig("prediction")}
           onDecided={next}
         />
       ),
@@ -235,8 +224,7 @@ export function ReviewWindow({ onClose }: { onClose: () => void }) {
   if (item && video) {
     cards.push({
       id: "all",
-      title: "All models",
-      render: (w, h, big) => (
+      render: (w, h) => (
         <div className="flex flex-col rounded border border-border p-1">
           <ModelCropCanvas
             video={video}
@@ -250,8 +238,6 @@ export function ReviewWindow({ onClose }: { onClose: () => void }) {
             edges={edges}
             width={w}
             height={h}
-            interactive={big}
-            onClick={big ? undefined : () => setBig("all")}
           />
           <div className="whitespace-nowrap px-1 pt-1 font-medium">All models</div>
           <div className="flex items-center gap-1 px-1 pt-1">
@@ -288,8 +274,7 @@ export function ReviewWindow({ onClose }: { onClose: () => void }) {
       const accepted = d?.accepted === m.modelId;
       cards.push({
         id: m.modelId,
-        title: model.name,
-        render: (w, h, big) => (
+        render: (w, h) => (
           <div
             className={`flex flex-col rounded border p-1 ${accepted ? "border-green-500 bg-green-500/10" : "border-border"}`}
             data-testid="review-pane"
@@ -306,8 +291,6 @@ export function ReviewWindow({ onClose }: { onClose: () => void }) {
               edges={edges}
               width={w}
               height={h}
-              interactive={big}
-              onClick={big ? undefined : () => setBig(m.modelId)}
             />
             <div className="flex items-center gap-1 px-1 pt-1">
               <span className="inline-block h-2.5 w-2.5 shrink-0 rounded-full" style={{ backgroundColor: rgbToCSS(model.color) }} />
@@ -339,8 +322,7 @@ export function ReviewWindow({ onClose }: { onClose: () => void }) {
     const claude = entry.claude;
     cards.push({
       id: "claude",
-      title: "Claude's suggestion",
-      render: (w, h, big) => (
+      render: (w, h) => (
         <ClaudePane
           proposal={claude}
           video={video}
@@ -350,18 +332,12 @@ export function ReviewWindow({ onClose }: { onClose: () => void }) {
           edges={edges}
           width={w}
           height={h}
-          interactive={big}
-          onEnlarge={big ? undefined : () => setBig("claude")}
           onDecided={next}
         />
       ),
     });
   }
-  const bigCard = big ? cards.find((c) => c.id === big) : undefined;
-  // Stepping to an item without that card: back to the grid (and stay there).
-  useEffect(() => {
-    if (big && !bigCard) setBig(null);
-  }, [big, bigCard]);
+
   const layout = cardLayout(cards.length, bodySize.width, bodySize.height);
 
   return (
@@ -441,34 +417,19 @@ export function ReviewWindow({ onClose }: { onClose: () => void }) {
         )}
         {cards.length > 0 && (
           <div className="flex items-center gap-2 px-3 pb-1">
-            <ProjectInstancesKey count={projectPoses ? projectPoses.length : null} />
-            <span className="flex-1" />
-            {!bigCard && <span className="whitespace-nowrap text-muted-foreground">Click a picture to enlarge it</span>}
+            <ProjectInstancesKey count={framePoses ? framePoses.length : null} />
+
           </div>
         )}
         {/* The cards fill the rest of the window: up to 4 per row, the rest wrap. */}
         <div ref={bodyRef} className="min-h-0 flex-1 overflow-auto px-3 pb-2" data-testid="review-body">
-          {bigCard ? (
-            <div className="flex h-full flex-col" data-testid="review-enlarged">
-              <div className="flex items-center gap-2 pb-1">
-                <Button size="sm" variant="outline" className="h-7 whitespace-nowrap px-2 text-[11px]" onClick={() => setBig(null)} data-testid="review-enlarged-back">
-                  <ChevronLeft className="mr-1 h-3 w-3" /> All cards (Esc)
-                </Button>
-                <span className="truncate whitespace-nowrap font-medium">{bigCard.title}</span>
-                <span className="flex-1" />
-                <span className="whitespace-nowrap text-muted-foreground">Scroll to zoom · drag to pan · double-click to reset</span>
+          <div className="grid gap-2" style={{ gridTemplateColumns: `repeat(${layout.cols}, minmax(0, 1fr))` }}>
+            {cards.map((c) => (
+              <div key={c.id} className="min-w-0">
+                {c.render(layout.cardWidth, layout.cardHeight)}
               </div>
-              {bigCard.render(layout.bigWidth, layout.bigHeight, true)}
-            </div>
-          ) : (
-            <div className="grid gap-2" style={{ gridTemplateColumns: `repeat(${layout.cols}, minmax(0, 1fr))` }}>
-              {cards.map((c) => (
-                <div key={c.id} className="min-w-0">
-                  {c.render(layout.cardWidth, layout.cardHeight, false)}
-                </div>
-              ))}
-            </div>
-          )}
+            ))}
+          </div>
         </div>
         <ReviewSummary items={groups} entries={items} />
       </div>

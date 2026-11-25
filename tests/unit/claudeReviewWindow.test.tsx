@@ -202,7 +202,8 @@ describe("Claude's suggestions in Review disagreements", () => {
     expect(position()).toContain("1 / 2");
     expect(screen.getByTestId("review-claude-reason").textContent).toBe("tail was on the wall");
     expect(screen.queryByTestId("review-prediction-pane")).toBeNull();
-    expect(screen.getByTestId("review-project-hidden")).toBeTruthy();
+    // Project instances start hidden in the window's cards (its own toggle, off on open).
+    expect(screen.getByTestId("review-project-key").textContent).toContain("hidden");
     fireEvent.click(screen.getByLabelText("Next"));
     expect(screen.getByTestId("review-claude-reason").textContent).toBe("tail was on the floor");
     expect(screen.getByTestId("review-prediction-pane")).toBeTruthy();
@@ -284,26 +285,6 @@ describe("Review window readability (hand-test 2026-11-24)", () => {
     expect(reason.textContent).toBe(long);
     expect(reason.className).not.toContain("line-clamp");
     expect(reason.className).toContain("whitespace-pre-wrap");
-  });
-
-  // Hand-test: cards were too small; clicking one enlarges it inside the window, Esc goes back to the grid (not closing).
-  it("enlarges a card on click and goes back to the grid with Esc", async () => {
-    proposeA();
-    expect(openClaudeSuggestions()).toBe(true);
-    render(<CompareReviewWindow />);
-    await flush();
-    expect(screen.queryByTestId("review-enlarged")).toBeNull();
-    const canvas = screen.getByTestId("review-claude-pane").querySelector("canvas")!;
-    fireEvent.click(canvas);
-    expect(screen.getByTestId("review-enlarged")).toBeTruthy();
-    // The enlarged card keeps its own buttons.
-    expect(screen.getByTestId("review-claude-use")).toBeTruthy();
-    fireEvent.keyDown(window, { key: "Escape" });
-    expect(screen.queryByTestId("review-enlarged")).toBeNull();
-    expect(review().open).toBe(true);
-    fireEvent.click(screen.getByTestId("review-claude-pane").querySelector("canvas")!);
-    fireEvent.click(screen.getByTestId("review-enlarged-back"));
-    expect(screen.queryByTestId("review-enlarged")).toBeNull();
   });
 });
 

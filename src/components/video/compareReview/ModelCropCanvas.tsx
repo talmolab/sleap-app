@@ -7,7 +7,7 @@
  * frameDecodeCache.ts); a frame that can't be read says so instead of
  * leaving the pane black.
  */
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef } from "react";
 import type { Video } from "@/types";
 import type { RGB } from "@/lib/colorPalettes";
 import { rgbToCSS } from "@/lib/colorPalettes";
@@ -44,8 +44,6 @@ export function ModelCropCanvas({
   width,
   height,
   className,
-  interactive = false,
-  onClick,
 }: {
   video: Video;
   frame: number;
@@ -63,66 +61,8 @@ export function ModelCropCanvas({
   width: number;
   height: number;
   className?: string;
-  /** Enlarged card: scroll to zoom (about the pointer), drag to pan, double-click to reset. */
-  interactive?: boolean;
-  /** Click on the picture (a grid card: enlarge it). */
-  onClick?: () => void;
 }) {
   const ref = useRef<HTMLCanvasElement>(null);
-  // Zoom (k ≥ 1) and pan (px, py, CSS px) on top of fitting the crop; reset when the picture changes.
-  const viewKey = `${frame}|${crop ? `${crop.x},${crop.y},${crop.w},${crop.h}` : "all"}|${width}x${height}|${interactive}`;
-  const [view, setView] = useState({ key: viewKey, k: 1, px: 0, py: 0 });
-  const v = view.key === viewKey ? view : { key: viewKey, k: 1, px: 0, py: 0 };
-  // The fit of the last draw (for zooming about the pointer).
-  const fitRef = useRef({ ox0: 0, oy0: 0 });
-
-  useEffect(() => {
-    const canvas = ref.current;
-    if (!canvas || !interactive) return;
-    const onWheel = (e: WheelEvent) => {
-      e.preventDefault();
-      const rect = canvas.getBoundingClientRect();
-      const mx = e.clientX - rect.left;
-      const my = e.clientY - rect.top;
-      setView((prev) => {
-        const cur = prev.key === viewKey ? prev : { key: viewKey, k: 1, px: 0, py: 0 };
-        const k = Math.min(20, Math.max(1, cur.k * Math.exp(-e.deltaY * 0.0015)));
-        const f = k / cur.k;
-        const { ox0, oy0 } = fitRef.current;
-        // Keep the point under the pointer where it is: O' = m - (m - O)·f, O = ox0·k + px.
-        const ox = mx - (mx - (ox0 * cur.k + cur.px)) * f;
-        const oy = my - (my - (oy0 * cur.k + cur.py)) * f;
-        return k === 1 ? { key: viewKey, k: 1, px: 0, py: 0 } : { key: viewKey, k, px: ox - ox0 * k, py: oy - oy0 * k };
-      });
-    };
-    canvas.addEventListener("wheel", onWheel, { passive: false });
-    return () => canvas.removeEventListener("wheel", onWheel);
-  }, [interactive, viewKey]);
-
-  const drag = useRef<{ x: number; y: number } | null>(null);
-  const pointerHandlers = interactive
-    ? {
-        onPointerDown: (e: React.PointerEvent<HTMLCanvasElement>) => {
-          drag.current = { x: e.clientX, y: e.clientY };
-          e.currentTarget.setPointerCapture(e.pointerId);
-        },
-        onPointerMove: (e: React.PointerEvent<HTMLCanvasElement>) => {
-          const d = drag.current;
-          if (!d) return;
-          const dx = e.clientX - d.x;
-          const dy = e.clientY - d.y;
-          drag.current = { x: e.clientX, y: e.clientY };
-          setView((prev) => {
-            const cur = prev.key === viewKey ? prev : { key: viewKey, k: 1, px: 0, py: 0 };
-            return { ...cur, px: cur.px + dx, py: cur.py + dy };
-          });
-        },
-        onPointerUp: () => {
-          drag.current = null;
-        },
-        onDoubleClick: () => setView({ key: viewKey, k: 1, px: 0, py: 0 }),
-      }
-    : {};
 
   useEffect(() => {
     let cancelled = false;
@@ -138,14 +78,9 @@ export function ModelCropCanvas({
       const srcW = img?.width ?? shape?.[2] ?? 1024;
       const srcH = img?.height ?? shape?.[1] ?? 768;
       const r = crop ?? { x: 0, y: 0, w: srcW, h: srcH };
-      const base = Math.min(width / r.w, height / r.h);
-      const ox0 = (width - r.w * base) / 2;
-      const oy0 = (height - r.h * base) / 2;
-      fitRef.current = { ox0, oy0 };
-      // Zoomed and panned (interactive); scale is screen px per source px.
-      const scale = base * v.k;
-      const ox = ox0 * v.k + v.px;
-      const oy = oy0 * v.k + v.py;
+      const scale = Math.min(width / r.w, height / r.h);
+      const ox = (width - r.w * scale) / 2;
+      const oy = (height - r.h * scale) / 2;
       ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
       ctx.fillStyle = "#0a0a0a";
       ctx.fillRect(0, 0, width, height);
@@ -235,16 +170,7 @@ export function ModelCropCanvas({
     return () => {
       cancelled = true;
     };
-  }, [video, frame, crop, poses, consensus, rings, marks, projectPoses, edges, width, height, v.k, v.px, v.py]);
+  }, [video, frame, crop, poses, consensus, rings, marks, projectPoses, edges, width, height]);
 
-  return (
-    <canvas
-      ref={ref}
-      className={className}
-      style={{ width, height, cursor: interactive ? "grab" : onClick ? "zoom-in" : undefined, touchAction: interactive ? "none" : undefined }}
-      onClick={onClick}
-      title={onClick ? "Click to enlarge" : interactive ? "Scroll to zoom, drag to pan, double-click to reset" : undefined}
-      {...pointerHandlers}
-    />
-  );
+  return <canvas ref={ref} className={className} style={{ width, height }} />;
 }
