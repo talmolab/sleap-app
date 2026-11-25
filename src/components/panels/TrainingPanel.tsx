@@ -1946,6 +1946,17 @@ function TrainingPanelContent() {
           </Button>
         )}
 
+        {/* A run refused before any model started (a reuse check, an unsupported
+            remote pipeline...) has no progress block below to carry its error. */}
+        {status === "error" && error && models.length === 0 && (
+          <div
+            role="alert"
+            data-testid="training-start-error"
+            className="rounded-md bg-destructive/15 border border-destructive/30 px-2 py-1.5 text-[10px] text-destructive"
+          >
+            {error}
+          </div>
+        )}
         {(status === "error" || status === "stopped") && (
           <div className="flex gap-2">
             <Button
