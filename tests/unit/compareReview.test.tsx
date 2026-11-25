@@ -606,3 +606,38 @@ describe("Hide model predictions (M)", () => {
     expect(useModelOverlayStore.getState().models).toHaveLength(1);
   });
 });
+
+describe("Label QC Review hides the models", () => {
+  afterEach(async () => {
+    const { useQcStore } = await import("@/stores/qcStore");
+    useQcStore.setState({ reviewOpen: false });
+    useModelOverlayStore.getState().clear();
+  });
+
+  // Hand-test #538: QC Review is about your labels; the models start hidden there, M still shows them, and leaving restores M.
+  it("hides models while QC Review is open and restores the user's choice after", async () => {
+    const { useQcStore } = await import("@/stores/qcStore");
+    const { toggleModelPredictions } = await import("@/lib/modelOverlay/canvasActions");
+    const video = makeVideo();
+    const labels = new Labels({ videos: [video] });
+    useAppStore.setState({ ...useAppStore.getInitialState(), labels, video, frameIdx: 0 });
+    useModelOverlayStore.getState().addModels(labels, [
+      { name: "a", source: "/a.slp", video, frames: new Map([[0, [pose(poseAt(10, 10))]]]) },
+    ]);
+    const hidden = () => useModelOverlayStore.getState().hideModels;
+    expect(hidden()).toBe(false);
+    useQcStore.setState({ reviewOpen: true });
+    expect(hidden()).toBe(true);
+    toggleModelPredictions(); // M during Review shows them
+    expect(hidden()).toBe(false);
+    useQcStore.setState({ reviewOpen: false });
+    expect(hidden()).toBe(false); // back to what it was before Review
+
+    // Hidden before Review: still hidden after.
+    toggleModelPredictions();
+    useQcStore.setState({ reviewOpen: true });
+    toggleModelPredictions();
+    useQcStore.setState({ reviewOpen: false });
+    expect(hidden()).toBe(true);
+  });
+});

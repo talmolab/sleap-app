@@ -14,6 +14,7 @@ import { nextModelColor, uniqueModelName } from "@/lib/modelOverlay/core";
 import { trackNamesOf, type PoseFrames } from "@/lib/modelOverlay/poseStore";
 import type { TraceTarget } from "@/lib/modelOverlay/traces";
 import { useAppStore } from "@/stores/appStore";
+import { useQcStore } from "@/stores/qcStore";
 
 export interface OverlayModel {
   id: string;
@@ -160,5 +161,23 @@ useAppStore.subscribe((s, prev) => {
   const sel = useModelOverlayStore.getState().selected;
   if (sel && (s.frameIdx !== sel.frameIdx || s.video !== sel.video)) {
     useModelOverlayStore.getState().setSelected(null);
+  }
+});
+
+// Label QC Review is about the project's own labels: while it is open, the
+// models' poses start hidden (as if M were pressed), so they don't clutter the
+// review. M or the panel's button still shows them. Leaving Review puts back
+// whatever the user had before.
+let hideBeforeQcReview: boolean | null = null;
+useQcStore.subscribe((s, prev) => {
+  if (s.reviewOpen === prev.reviewOpen) return;
+  const overlay = useModelOverlayStore.getState();
+  if (s.reviewOpen) {
+    if (overlay.models.length === 0) return;
+    hideBeforeQcReview = overlay.hideModels;
+    if (!overlay.hideModels) useModelOverlayStore.setState({ hideModels: true, selected: null });
+  } else if (hideBeforeQcReview !== null) {
+    if (overlay.models.length > 0) useModelOverlayStore.setState({ hideModels: hideBeforeQcReview });
+    hideBeforeQcReview = null;
   }
 });
