@@ -1,4 +1,5 @@
 import { create } from "zustand";
+import { createJSONStorage, persist } from "zustand/middleware";
 import { loadSlp, readSlpStreaming } from "@/lib/slpRead";
 import type { JobResult } from "@/lib/sleapConnect";
 import type { ProcessEvent } from "@/platform/backend";
@@ -8,7 +9,11 @@ import { commandContext } from "@/commands";
 import { MergePredictions, MergeTracks, type ExistingPredictionsMode } from "@/commands/editCommands";
 import { useAppStore } from "@/stores/appStore";
 import { hasMultipleSkeletons } from "@/lib/multiSkeleton";
-import type { SkeletonRunSpec } from "@/lib/multiSkeletonInference";
+import {
+  resolveSkeletonInferenceSettings,
+  type SkeletonInferenceSettings,
+  type SkeletonRunSpec,
+} from "@/lib/multiSkeletonInference";
 import type { Labels, Skeleton } from "@talmolab/sleap-io.js";
 import { toast } from "@/lib/notify";
 import { appendLogLine, subprocessFailureMessage } from "@/lib/processLog";
@@ -366,6 +371,7 @@ async function runLocalSkeletonRuns(
 ): Promise<void> {
   const {
     configForSkeletonRun,
+    describeRunSettings,
     labelsForSkeleton,
     runNeedsSkeletonCopy,
     skeletonFileTag,
@@ -411,7 +417,7 @@ async function runLocalSkeletonRuns(
         stderrTail: [],
         log: [
           ...s.log,
-          `── ${run.skeletonName} (${SKELETON_PIPELINE_LABELS[run.pipeline]}, ${run.modelPaths.length} model${run.modelPaths.length === 1 ? "" : "s"}) — run ${i + 1} of ${runs.length} ──`,
+          `── ${run.skeletonName} (${SKELETON_PIPELINE_LABELS[run.pipeline]}, ${run.modelPaths.length} model${run.modelPaths.length === 1 ? "" : "s"}; ${describeRunSettings(runConfig)}) — run ${i + 1} of ${runs.length} ──`,
         ],
       }));
 
@@ -886,3 +892,57 @@ export const useInferenceStore = create<InferenceState>()((set) => ({
     }
   },
 }));
+
+// ── Per-skeleton inference settings (multi-skeleton projects, #99) ─────────
+
+/** localStorage key the per-skeleton inference settings are saved under. */
+export const SKELETON_INFERENCE_SETTINGS_STORAGE_KEY = "sleap-app-inference-skeleton-settings";
+
+interface SkeletonInferenceSettingsState {
+  /** Saved settings by `skeletonSettingsKey` (skeleton name + node set). */
+  bySkeleton: Record<string, Partial<SkeletonInferenceSettings>>;
+  /** Change some of one skeleton's settings (the rest keep their values). */
+  update: (key: string, patch: Partial<SkeletonInferenceSettings>) => void;
+  /** Back to defaults for one skeleton. */
+  resetSkeleton: (key: string) => void;
+}
+
+/**
+ * The Inference panel's per-skeleton tabs (several skeletons): each
+ * skeleton's Max instances, peak threshold and tracking settings, saved
+ * across sessions and projects by skeleton name + node set. Read them with
+ * {@link skeletonInferenceSettings}.
+ */
+export const useSkeletonInferenceSettingsStore = create<SkeletonInferenceSettingsState>()(
+  persist(
+    (set) => ({
+      bySkeleton: {},
+      update: (key, patch) =>
+        set((s) => ({
+          bySkeleton: {
+            ...s.bySkeleton,
+            [key]: { ...resolveSkeletonInferenceSettings(s.bySkeleton[key]), ...patch },
+          },
+        })),
+      resetSkeleton: (key) =>
+        set((s) => {
+          const next = { ...s.bySkeleton };
+          delete next[key];
+          return { bySkeleton: next };
+        }),
+    }),
+    {
+      name: SKELETON_INFERENCE_SETTINGS_STORAGE_KEY,
+      storage: createJSONStorage(() => localStorage),
+      partialize: (s) => ({ bySkeleton: s.bySkeleton }),
+    },
+  ),
+);
+
+/** One skeleton's settings (saved ones, filled out with defaults). */
+export function skeletonInferenceSettings(
+  bySkeleton: Record<string, Partial<SkeletonInferenceSettings>>,
+  key: string,
+): SkeletonInferenceSettings {
+  return resolveSkeletonInferenceSettings(bySkeleton[key]);
+}

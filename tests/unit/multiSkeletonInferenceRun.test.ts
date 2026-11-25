@@ -9,12 +9,13 @@ import { describe, it, expect, beforeEach, vi } from "../bun-test";
 import { LabeledFrame, Labels, PredictedInstance, Skeleton, Video } from "@talmolab/sleap-io.js";
 
 type RunOpts = { inputLabels?: Labels; outputTag?: string };
-const runCalls: Array<{ modelPaths: string[]; opts: RunOpts }> = [];
+type RunConfig = { modelPaths: string[]; maxInstances?: number | null; tracking?: boolean; peakThreshold?: number };
+const runCalls: Array<{ modelPaths: string[]; config: RunConfig; opts: RunOpts }> = [];
 const outputs = new Map<string, Labels>();
 
 const runInferenceMock = vi.fn(
-  async (config: { modelPaths: string[] }, _projectPath: unknown, _onEvent: unknown, opts: RunOpts = {}) => {
-    runCalls.push({ modelPaths: config.modelPaths, opts });
+  async (config: RunConfig, _projectPath: unknown, _onEvent: unknown, opts: RunOpts = {}) => {
+    runCalls.push({ modelPaths: config.modelPaths, config, opts });
     return { success: true, outputPath: `/out/${opts.outputTag}.predictions.slp`, command: "sleap-nn predict" };
   },
 );
@@ -44,6 +45,7 @@ vi.mock("@/lib/slpRead", () => ({
 }));
 
 import { mergeRemoteResults, useInferenceStore, type InferenceConfig } from "@/stores/inferenceStore";
+import { DEFAULT_SKELETON_RUN_SETTINGS, type SkeletonRunSettings } from "@/lib/multiSkeletonInference";
 import type { JobResult } from "@/lib/sleapConnect";
 import { useAppStore } from "@/stores/appStore";
 import { makeTwoSkeletonProject } from "./multiSkeletonFixture";
@@ -104,6 +106,36 @@ describe("running inference on a mice + pellet project", () => {
     const predicted = frame.instances.filter((i) => i instanceof PredictedInstance);
     expect(predicted.map((i) => i.skeleton)).toEqual([mouse, pellet]);
     expect(labels.skeletons).toHaveLength(2);
+  });
+
+  // Per-skeleton tabs: each sleap-nn run gets its own skeleton's settings.
+  it("runs each skeleton with its own tab's settings", async () => {
+    const { labels } = makeTwoSkeletonProject();
+    useAppStore.getState().setLabels(labels);
+    outputs.set("/out/mouse.predictions.slp", predictionsFile(["head", "body", "tail"], 40, [10, 10]));
+    outputs.set("/out/pellet.predictions.slp", predictionsFile(["centroid"], 40, [99, 99]));
+    const settings = (over: Partial<SkeletonRunSettings>) => ({ ...DEFAULT_SKELETON_RUN_SETTINGS, ...over });
+
+    await useInferenceStore.getState().startInference({
+      ...baseConfig,
+      maxInstances: 99,
+      tracking: false,
+      skeletonRuns: [
+        { skeletonName: "mouse", skeletonIndex: 0, modelPaths: ["/m/centroid", "/m/ci"], pipeline: "top-down",
+          settings: settings({ maxInstances: 2, tracking: true }) },
+        { skeletonName: "pellet", skeletonIndex: 1, modelPaths: ["/m/pellet"], pipeline: "centroid-only",
+          settings: settings({ maxInstances: 10, peakThreshold: 0.5 }) },
+      ],
+    });
+
+    expect(useInferenceStore.getState().status).toBe("completed");
+    expect(runCalls.map((c) => [c.config.maxInstances, c.config.tracking, c.config.peakThreshold])).toEqual([
+      [2, true, 0.2],
+      [10, false, 0.5],
+    ]);
+    const log = useInferenceStore.getState().log.join("\n");
+    expect(log).toContain("max 2 instances, peak threshold 0.2, tracking");
+    expect(log).toContain("max 10 instances, peak threshold 0.5, no tracking");
   });
 
   // Without matched runs (e.g. a stale config), nothing starts.

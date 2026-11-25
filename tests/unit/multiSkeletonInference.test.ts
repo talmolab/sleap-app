@@ -32,8 +32,16 @@ import {
   planMultiSkeletonInference,
   remoteMultiSkeletonTargetProblem,
   runSpecsFromPlan,
+  resolveSkeletonInferenceSettings,
+  skeletonRunSettings,
+  skeletonSettingsKey,
+  DEFAULT_SKELETON_INFERENCE_SETTINGS,
+  DEFAULT_SKELETON_RUN_SETTINGS,
+  SKELETON_RUN_SETTING_KEYS,
   type ModelInfo,
 } from "@/lib/multiSkeletonInference";
+import { buildInferenceArgs } from "@/platform/inferenceArgs";
+import { buildRemoteTrackSpecs } from "@/lib/remoteTrackSpec";
 import { needsSkeletonScopedMerge, resolvePredictionsSkeleton } from "@/lib/skeletonScopedMerge";
 import { CommandContext } from "@/commands/CommandContext";
 import { MergePredictions } from "@/commands/editCommands";
@@ -632,5 +640,89 @@ describe("review fixes: failed model reads are retried", () => {
     expect(Object.keys(forgetFailedModelReads(cache, [ok.path]))).toEqual([ok.path]);
     expect(Object.keys(forgetFailedModelReads(cache, [ok.path, failed.path], [failed.path]))).toEqual([ok.path]);
     expect(Object.keys(forgetFailedModelReads(cache, [], [ok.path]))).toEqual([ok.path]); // good reads stay
+  });
+});
+
+describe("per-skeleton settings (one tab per skeleton)", () => {
+  // The headline case: mice 2 instances + tracking, pellets 10 instances, no tracking.
+  it("gives each skeleton's run its own Max instances, peak threshold and tracking", () => {
+    const { labels } = makeTwoSkeletonProject();
+    const plan = planMultiSkeletonInference([mouseCentroid, mouseCi, pelletCentroid], labels.skeletons);
+    const mice = { ...DEFAULT_SKELETON_INFERENCE_SETTINGS, noMaxInstances: false, maxInstances: 2, tracking: true, noMaxTracks: false, maxTracks: 2 };
+    const pellets = { ...DEFAULT_SKELETON_INFERENCE_SETTINGS, noMaxInstances: false, maxInstances: 10, peakThreshold: 0.5 };
+    const specs = runSpecsFromPlan(plan, (r) => skeletonRunSettings(r.skeletonName === "mouse" ? mice : pellets));
+    const base = { ...DEFAULT_SKELETON_RUN_SETTINGS, modelPaths: [], pipeline: "top-down", kfNodeIndices: [], batchSize: 8 } as unknown as InferenceConfig;
+    const [mouseCfg, pelletCfg] = specs.map((s) => configForSkeletonRun(base, s));
+    expect([mouseCfg.maxInstances, mouseCfg.tracking, mouseCfg.maxTracks, mouseCfg.peakThreshold]).toEqual([2, true, 2, 0.2]);
+    expect([pelletCfg.maxInstances, pelletCfg.tracking, pelletCfg.maxTracks, pelletCfg.peakThreshold]).toEqual([10, false, null, 0.5]);
+    // Shared settings still come from the panel's config.
+    expect([mouseCfg.batchSize, pelletCfg.batchSize]).toEqual([8, 8]);
+  });
+
+  // Each run's settings reach the sleap-nn command line (local) and the Connect job spec.
+  it("maps each run's settings to its sleap-nn args and worker job", () => {
+    const base = {
+      ...DEFAULT_SKELETON_RUN_SETTINGS, pipeline: "top-down", trackOnly: false, modelPaths: [], videoIndex: 0,
+      frameRange: "video", sampleCount: 20, excludeUserLabeled: false, existingPredictions: "replace", batchSize: 4,
+      device: "auto", runtime: "auto", kfNodeIndices: [], ensureChannels: "auto", filterOverlapping: false,
+    } as unknown as InferenceConfig;
+    const mouse = configForSkeletonRun(base, {
+      skeletonName: "mouse", skeletonIndex: 0, modelPaths: ["/m/c", "/m/ci"], pipeline: "top-down",
+      settings: { ...DEFAULT_SKELETON_RUN_SETTINGS, maxInstances: 2, tracking: true, maxTracks: 2 },
+    });
+    const pellet = configForSkeletonRun(base, {
+      skeletonName: "pellet", skeletonIndex: 1, modelPaths: ["/m/p"], pipeline: "centroid-only",
+      settings: { ...DEFAULT_SKELETON_RUN_SETTINGS, maxInstances: 10, peakThreshold: 0.5 },
+    });
+    const mouseArgs = buildInferenceArgs(mouse, { dataPath: "/p.slp", outputPath: "/out.slp" }).join(" ");
+    const pelletArgs = buildInferenceArgs(pellet, { dataPath: "/p.slp", outputPath: "/out.slp" }).join(" ");
+    expect(mouseArgs).toContain("--max_instances 2");
+    expect(mouseArgs).toContain("--tracking");
+    expect(mouseArgs).toContain("--max_tracks 2");
+    expect(pelletArgs).toContain("--max_instances 10");
+    expect(pelletArgs).toContain("--peak_threshold 0.5");
+    expect(pelletArgs).not.toContain("--tracking");
+
+    const ctx = { dataPath: "/w/p.slp", pathMappings: {}, videoFrameCounts: [100], currentFrameIdx: 0, activeVideoFrameCount: 100 };
+    const [mouseJob] = buildRemoteTrackSpecs(mouse, ctx);
+    const [pelletJob] = buildRemoteTrackSpecs(pellet, ctx);
+    expect([mouseJob.tracker, mouseJob.max_tracks]).toEqual(["simple", 2]);
+    expect([pelletJob.tracker, pelletJob.peak_threshold]).toEqual([undefined, 0.5]);
+  });
+
+  // "No limit" ticked sends no limit, but keeps the number typed under it.
+  it("sends null for a ticked No limit box", () => {
+    const s = { ...DEFAULT_SKELETON_INFERENCE_SETTINGS, maxInstances: 4, noMaxInstances: true, maxTracks: 3, noMaxTracks: true };
+    const run = skeletonRunSettings(s);
+    expect([run.maxInstances, run.maxTracks]).toEqual([null, null]);
+    expect(Object.keys(run).sort()).toEqual([...SKELETON_RUN_SETTING_KEYS].sort());
+  });
+
+  // A box detector alone can't be tracked, whatever its tab says.
+  it("never tracks a box-detector run", () => {
+    const cfg = configForSkeletonRun({ kfNodeIndices: [] } as unknown as InferenceConfig, {
+      skeletonName: "mouse", skeletonIndex: 0, modelPaths: ["/m/bbox"], pipeline: "bbox",
+      settings: { ...DEFAULT_SKELETON_RUN_SETTINGS, tracking: true },
+    });
+    expect(cfg.tracking).toBe(false);
+  });
+
+  // Saved under name + node set: a renamed or re-noded skeleton starts fresh.
+  it("keys saved settings by skeleton name and node set", () => {
+    const a = skeletonSettingsKey({ name: "mouse", nodeNames: ["tail", "head"] });
+    expect(a).toBe(skeletonSettingsKey({ name: "mouse", nodeNames: ["head", "tail"] }));
+    expect(a).not.toBe(skeletonSettingsKey({ name: "mice", nodeNames: ["head", "tail"] }));
+    expect(a).not.toBe(skeletonSettingsKey({ name: "mouse", nodeNames: ["head", "tail", "nose"] }));
+  });
+
+  // Corrupt or older saved settings fall back to defaults field by field.
+  it("fills saved settings out with defaults", () => {
+    const s = resolveSkeletonInferenceSettings({ maxInstances: 3, tracking: "yes", maxTracks: null, robust: Number.NaN, extra: 1 });
+    expect(s.maxInstances).toBe(3);
+    expect(s.tracking).toBe(false);
+    expect(s.maxTracks).toBeNull();
+    expect(s.robust).toBe(DEFAULT_SKELETON_RUN_SETTINGS.robust);
+    expect("extra" in s).toBe(false);
+    expect(resolveSkeletonInferenceSettings("garbage")).toEqual(DEFAULT_SKELETON_INFERENCE_SETTINGS);
   });
 });

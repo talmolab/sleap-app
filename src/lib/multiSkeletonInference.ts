@@ -413,16 +413,152 @@ export function planMultiSkeletonInference(
   return { runs, models: verdicts, problem };
 }
 
+// ── Per-skeleton settings (one tab per skeleton in the Inference panel) ────
+
+/**
+ * The inference settings each skeleton's run sets for itself — e.g. mice: 2
+ * instances + tracking; pellets: 10 instances, no tracking. Everything else
+ * (target frames, existing predictions, device, post-processing…) is shared.
+ */
+export const SKELETON_RUN_SETTING_KEYS = [
+  "maxInstances",
+  "peakThreshold",
+  "tracking",
+  "trackerMethod",
+  "similarityMethod",
+  "matchingMethod",
+  "trackingWindowSize",
+  "maxTracks",
+  "connectSingleBreaks",
+  "robust",
+  "minMatchPoints",
+  "minNewTrackPoints",
+  "scoringReduction",
+  "trackingTargetInstanceCount",
+  "trackingPreCullToTarget",
+  "trackingPreCullIouThreshold",
+  "trackingCleanInstanceCount",
+  "trackingCleanIouThreshold",
+  "flowImgScale",
+  "flowWindowSize",
+  "flowMaxLevels",
+  "kfTrackFeatures",
+  "kfInitFrameCount",
+  "kfResetGapSize",
+] as const satisfies readonly (keyof InferenceConfig)[];
+
+export type SkeletonRunSettingKey = (typeof SKELETON_RUN_SETTING_KEYS)[number];
+
+/** What one skeleton's run sends sleap-nn for the keys above. */
+export type SkeletonRunSettings = Pick<InferenceConfig, SkeletonRunSettingKey>;
+
+/**
+ * A skeleton tab's state: the run settings plus the two "No limit" boxes,
+ * which keep the number typed under them (like the single-skeleton panel).
+ */
+export interface SkeletonInferenceSettings extends SkeletonRunSettings {
+  noMaxInstances: boolean;
+  noMaxTracks: boolean;
+}
+
+/** Defaults — the same values the single-skeleton panel starts from. */
+export const DEFAULT_SKELETON_RUN_SETTINGS: SkeletonRunSettings = {
+  maxInstances: null,
+  peakThreshold: 0.2,
+  tracking: false,
+  trackerMethod: "simple",
+  similarityMethod: "oks",
+  matchingMethod: "hungarian",
+  trackingWindowSize: 5,
+  maxTracks: null,
+  connectSingleBreaks: false,
+  robust: 0.95,
+  minMatchPoints: 0,
+  minNewTrackPoints: 0,
+  scoringReduction: "mean",
+  trackingTargetInstanceCount: null,
+  trackingPreCullToTarget: false,
+  trackingPreCullIouThreshold: 0,
+  trackingCleanInstanceCount: null,
+  trackingCleanIouThreshold: 0,
+  flowImgScale: 1.0,
+  flowWindowSize: 21,
+  flowMaxLevels: 3,
+  kfTrackFeatures: "centroid",
+  kfInitFrameCount: 10,
+  kfResetGapSize: 5,
+};
+
+export const DEFAULT_SKELETON_INFERENCE_SETTINGS: SkeletonInferenceSettings = {
+  ...DEFAULT_SKELETON_RUN_SETTINGS,
+  noMaxInstances: true,
+  noMaxTracks: true,
+};
+
+/** Settings where null means "off" / "no limit" / "auto". */
+const NULLABLE_SETTINGS = new Set<keyof SkeletonInferenceSettings>([
+  "maxInstances",
+  "maxTracks",
+  "trackingTargetInstanceCount",
+  "trackingCleanInstanceCount",
+]);
+
+/**
+ * A skeleton's saved settings filled out with defaults (a setting added in a
+ * later version, or a corrupt entry, falls back to its default).
+ */
+export function resolveSkeletonInferenceSettings(saved: unknown): SkeletonInferenceSettings {
+  const out: SkeletonInferenceSettings = { ...DEFAULT_SKELETON_INFERENCE_SETTINGS };
+  if (!saved || typeof saved !== "object") return out;
+  const rec = saved as Record<string, unknown>;
+  const target = out as unknown as Record<string, unknown>;
+  for (const key of Object.keys(out) as (keyof SkeletonInferenceSettings)[]) {
+    const v = rec[key];
+    const ok = NULLABLE_SETTINGS.has(key)
+      ? v === null || (typeof v === "number" && Number.isFinite(v))
+      : typeof v === typeof out[key] && (typeof v !== "number" || Number.isFinite(v));
+    if (ok) target[key] = v;
+  }
+  return out;
+}
+
+/** The settings a tab sends to its run ("No limit" ticked → null). */
+export function skeletonRunSettings(s: SkeletonInferenceSettings): SkeletonRunSettings {
+  const out = {} as Record<SkeletonRunSettingKey, unknown>;
+  for (const key of SKELETON_RUN_SETTING_KEYS) out[key] = s[key];
+  const run = out as SkeletonRunSettings;
+  run.maxInstances = s.noMaxInstances ? null : s.maxInstances;
+  run.maxTracks = s.noMaxTracks ? null : s.maxTracks;
+  return run;
+}
+
+/**
+ * The key a skeleton's settings are saved under: its name plus its node set
+ * (sorted), so a renamed or re-noded skeleton starts from defaults instead of
+ * inheriting another skeleton's settings.
+ */
+export function skeletonSettingsKey(skeleton: Pick<Skeleton, "name" | "nodeNames">): string {
+  return `${skeleton.name?.trim() ?? ""}|${[...skeleton.nodeNames].sort().join(",")}`;
+}
+
 /** What the inference store needs per run (serializable; no Skeleton objects). */
 export interface SkeletonRunSpec {
   skeletonName: string;
   skeletonIndex: number;
   modelPaths: string[];
   pipeline: SkeletonPipeline;
+  /** This skeleton's own settings (its tab); absent = the shared config's. */
+  settings?: SkeletonRunSettings;
 }
 
-/** The runnable part of a plan (only call when `plan.problem` is null). */
-export function runSpecsFromPlan(plan: MultiSkeletonPlan): SkeletonRunSpec[] {
+/**
+ * The runnable part of a plan (only call when `plan.problem` is null). With
+ * `settingsFor`, each run carries its skeleton's own settings.
+ */
+export function runSpecsFromPlan(
+  plan: MultiSkeletonPlan,
+  settingsFor?: (run: SkeletonRunPlan) => SkeletonRunSettings,
+): SkeletonRunSpec[] {
   return plan.runs
     .filter((r): r is SkeletonRunPlan & { pipeline: SkeletonPipeline } => r.pipeline !== null)
     .map((r) => ({
@@ -430,19 +566,34 @@ export function runSpecsFromPlan(plan: MultiSkeletonPlan): SkeletonRunSpec[] {
       skeletonIndex: r.skeletonIndex,
       modelPaths: r.modelPaths,
       pipeline: r.pipeline,
+      ...(settingsFor ? { settings: settingsFor(r) } : {}),
     }));
 }
 
 /** The config for one skeleton's run of a multi-skeleton inference. */
 export function configForSkeletonRun(config: InferenceConfig, run: SkeletonRunSpec): InferenceConfig {
-  return {
+  const cfg: InferenceConfig = {
     ...config,
+    ...run.settings,
     modelPaths: run.modelPaths,
     pipeline: configPipeline(run.pipeline),
     // Kalman node indices point into ONE skeleton's nodes; use all nodes.
     kfNodeIndices: [],
     skeletonRuns: undefined,
   };
+  // sleap-nn tracks poses, not a box detector's boxes.
+  if (run.pipeline === "bbox") cfg.tracking = false;
+  return cfg;
+}
+
+/** A one-line summary of a run's settings for the inference log. */
+export function describeRunSettings(cfg: Pick<InferenceConfig, "maxInstances" | "peakThreshold" | "tracking" | "maxTracks">): string {
+  const parts = [
+    cfg.maxInstances === null ? "no instance limit" : `max ${cfg.maxInstances} instance${cfg.maxInstances === 1 ? "" : "s"}`,
+    `peak threshold ${cfg.peakThreshold}`,
+    cfg.tracking ? `tracking${cfg.maxTracks === null ? "" : ` (max ${cfg.maxTracks} track${cfg.maxTracks === 1 ? "" : "s"})`}` : "no tracking",
+  ];
+  return parts.join(", ");
 }
 
 // ── Targets and input ───────────────────────────────────────────────────────
