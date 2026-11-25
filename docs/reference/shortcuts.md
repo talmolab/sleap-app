@@ -124,6 +124,7 @@ menus (including the macOS menu bar), and in **Help ▸ Search Menus**.
 | Node placement mode | ++shift+n++ |
 | Next / previous node, in node placement mode | ++tab++ / ++shift+tab++ |
 | Show / hide instances | ++h++ |
+| Show / hide model predictions (Compare Model Predictions; the Review window still shows them) | ++m++ |
 | Show / hide node names | ++t++, or SLEAP's ++ctrl+tab++ (the Control key on macOS too; desktop app only: browsers use it to switch tabs) |
 | Show / hide edges | ++cmd+shift+tab++ |
 | Flip the node under the pointer between visible and non-visible | ++v++ |

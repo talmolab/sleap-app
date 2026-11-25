@@ -63,6 +63,8 @@ export const DEFAULT_SHORTCUTS: Record<string, string> = {
   fit: "$mod+Equal",
   "reset view": "KeyR",
   "show instances": "KeyH",
+  // Compare Model Predictions: hide/show the models' poses on the canvas (the Review window still shows them).
+  "show model predictions": "KeyM",
   "show labels": "KeyT",
   "show edges": "$mod+Shift+Tab",
   // V marks the hovered/selected node(s) (non-)visible (handled in VideoPlayer);

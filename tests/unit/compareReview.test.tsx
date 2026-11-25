@@ -553,3 +553,54 @@ describe("review window: which node is which", () => {
     useModelOverlayStore.getState().clear();
   });
 });
+
+describe("review window card layout (hand-test 2026-11-24)", () => {
+  // Hand-test: at most 4 cards per row, the rest wrap; fewer cards share the row at a larger size.
+  it("puts up to 4 cards in a row and makes fewer cards bigger", async () => {
+    const { cardLayout } = await import("@/components/video/compareReview/CompareReviewWindow");
+    const two = cardLayout(2, 1200, 800);
+    const four = cardLayout(4, 1200, 800);
+    const five = cardLayout(5, 1200, 500);
+    expect([two.cols, two.rows]).toEqual([2, 1]);
+    expect([four.cols, four.rows]).toEqual([4, 1]);
+    expect([five.cols, five.rows]).toEqual([4, 2]);
+    expect(two.cardWidth).toBeGreaterThan(four.cardWidth);
+    expect(five.cardHeight).toBeLessThan(four.cardHeight);
+    // The enlarged card fills the body.
+    expect(two.bigWidth).toBe(1190);
+  });
+});
+
+describe("Hide model predictions (M)", () => {
+  afterEach(() => {
+    cleanup();
+    useModelOverlayStore.getState().clear();
+  });
+
+  // Hand-test: the models could not be hidden to look at the project's own instances; M (remappable) does it.
+  it("is bound to M, listed in the Shortcuts dialog, and hides the models on the canvas only", async () => {
+    const { DEFAULT_SHORTCUTS } = await import("@/lib/shortcuts");
+    const { SHORTCUT_CATEGORIES } = await import("@/lib/shortcutEditing");
+    const { useModelOverlayFrame } = await import("@/hooks/useModelOverlayFrame");
+    const { toggleModelPredictions } = await import("@/lib/modelOverlay/canvasActions");
+    expect(DEFAULT_SHORTCUTS["show model predictions"]).toBe("KeyM");
+    expect(Object.values(DEFAULT_SHORTCUTS).filter((k) => k === "KeyM")).toHaveLength(1);
+    expect(SHORTCUT_CATEGORIES.View).toContain("show model predictions");
+
+    const video = makeVideo();
+    const labels = new Labels({ videos: [video] });
+    useAppStore.setState({ ...useAppStore.getInitialState(), labels, video, frameIdx: 0 });
+    useModelOverlayStore.getState().addModels(labels, [
+      { name: "a", source: "/a.slp", video, frames: new Map([[0, [pose(poseAt(10, 10))]]]) },
+    ]);
+    const frame = renderHook(() => useModelOverlayFrame());
+    expect(frame.result.current.layers).toHaveLength(1);
+    render(<ModelOverlayLegend disagreementCount={0} />);
+    expect(screen.getByTestId("model-overlay-hide-models").textContent).toBe("Hide model predictions (M)");
+    act(() => toggleModelPredictions());
+    expect(frame.result.current.layers).toHaveLength(0);
+    expect(screen.getByTestId("model-overlay-hide-models").textContent).toBe("Show model predictions (M)");
+    // The models stay loaded (the Review window still shows them).
+    expect(useModelOverlayStore.getState().models).toHaveLength(1);
+  });
+});

@@ -21,7 +21,9 @@ import { toast } from "@/lib/notify";
 import { findDisagreementFrame } from "@/hooks/useModelOverlayFrame";
 import { useModelOverlayUiStore } from "@/stores/modelOverlayUiStore";
 import { DISAGREEMENT_COLOR } from "@/canvas/modelOverlayRenderer";
-import { toggleProjectInstances } from "@/lib/modelOverlay/canvasActions";
+import { toggleModelPredictions, toggleProjectInstances } from "@/lib/modelOverlay/canvasActions";
+import { formatShortcut } from "@/lib/formatShortcut";
+import { useShortcut } from "@/lib/shortcutPrefs";
 import { poseCountOn } from "@/lib/modelOverlay/poseStore";
 import { useCompareReviewStore } from "@/stores/compareReviewStore";
 
@@ -62,6 +64,8 @@ export function ModelOverlayLegend({ disagreementCount }: { disagreementCount: n
   const minimized = useModelOverlayStore((s) => s.legendMinimized);
   const setMinimized = useModelOverlayStore((s) => s.setLegendMinimized);
   const showInstances = useAppStore((s) => s.showInstances);
+  const hideModels = useModelOverlayStore((s) => s.hideModels);
+  const modelsKey = formatShortcut(useShortcut("show model predictions")) || "no key";
   const selectedModelId = useModelOverlayUiStore((s) => s.selectedModelId);
   const toggleSelectedModel = useModelOverlayUiStore((s) => s.toggleSelectedModel);
   const clearSelectedModel = useModelOverlayUiStore((s) => s.clearSelectedModel);
@@ -267,7 +271,7 @@ export function ModelOverlayLegend({ disagreementCount }: { disagreementCount: n
           );
         })}
         {forVideo.length > 0 && (
-          <div className="flex items-center gap-1 border-t border-white/15 pt-1">
+          <div className="flex flex-wrap items-center gap-1 border-t border-white/15 pt-1">
             <button
               type="button"
               className={`flex items-center gap-1 rounded px-1 py-0.5 hover:bg-white/10 hover:text-white disabled:opacity-40 ${reviewOpen ? "bg-white/20 text-white" : "text-white/70"}`}
@@ -289,6 +293,17 @@ export function ModelOverlayLegend({ disagreementCount }: { disagreementCount: n
             >
               {showInstances ? <EyeOff className="h-3 w-3" /> : <Eye className="h-3 w-3" />}
               {showInstances ? "Hide project instances (H)" : "Show project instances (H)"}
+            </button>
+            <button
+              type="button"
+              className={`flex items-center gap-1 whitespace-nowrap rounded px-1 py-0.5 hover:bg-white/10 hover:text-white ${hideModels ? "bg-white/20 text-white" : "text-white/70"}`}
+              onClick={toggleModelPredictions}
+              aria-pressed={hideModels}
+              data-testid="model-overlay-hide-models"
+              title={`Hide or show the models' poses on the video, so you see only the project's instances (${modelsKey}). The Review window still shows them.`}
+            >
+              {hideModels ? <Eye className="h-3 w-3" /> : <EyeOff className="h-3 w-3" />}
+              {hideModels ? `Show model predictions (${modelsKey})` : `Hide model predictions (${modelsKey})`}
             </button>
             <span className="flex-1" />
             <button

@@ -44,6 +44,16 @@ export function toggleProjectInstances(): void {
   useAppStore.getState().toggle("showInstances");
 }
 
+/**
+ * Hide or show the models' poses on the canvas (M, "show model predictions"),
+ * so the project's own instances can be seen alone. Does nothing when no
+ * model is loaded. The Review window always shows the models.
+ */
+export function toggleModelPredictions(): void {
+  const s = useModelOverlayStore.getState();
+  if (s.models.length > 0) s.toggleHideModels();
+}
+
 export function pickModelPose(layers: readonly ModelOverlayLayer[], layer: number, pose: number): void {
   const l = layers[layer];
   const { video, frameIdx } = useAppStore.getState();

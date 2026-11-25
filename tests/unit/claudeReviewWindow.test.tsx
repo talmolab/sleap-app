@@ -266,6 +266,47 @@ describe("Claude's suggestions in Review disagreements", () => {
   });
 });
 
+describe("Review window readability (hand-test 2026-11-24)", () => {
+  // Hand-test: the summary sat squeezed next to the title; it's its own line naming the nodes, and the reason is never cut off.
+  it("names the changed nodes under Claude's title and shows the whole reason", async () => {
+    const long = "the tail tip was placed on the cage floor near the wall; the real tail runs along the bedding to the left of the animal ".repeat(2).trim();
+    store().addCorrection(
+      { flagId: "v0:f30:p0:aaaaaa", videoIdx: 0, frameIdx: 30, instIdx: 0, reason: long },
+      { 2: [150, 125], 0: null },
+      { pose: poseOf(fx.a) },
+    );
+    expect(openClaudeSuggestions()).toBe(true);
+    render(<CompareReviewWindow />);
+    await flush();
+    const names = fx.a.skeleton.nodeNames;
+    expect(screen.getByTestId("review-claude-summary").textContent).toBe(`Moves ${names[2]} · hides ${names[0]}`);
+    const reason = screen.getByTestId("review-claude-reason");
+    expect(reason.textContent).toBe(long);
+    expect(reason.className).not.toContain("line-clamp");
+    expect(reason.className).toContain("whitespace-pre-wrap");
+  });
+
+  // Hand-test: cards were too small; clicking one enlarges it inside the window, Esc goes back to the grid (not closing).
+  it("enlarges a card on click and goes back to the grid with Esc", async () => {
+    proposeA();
+    expect(openClaudeSuggestions()).toBe(true);
+    render(<CompareReviewWindow />);
+    await flush();
+    expect(screen.queryByTestId("review-enlarged")).toBeNull();
+    const canvas = screen.getByTestId("review-claude-pane").querySelector("canvas")!;
+    fireEvent.click(canvas);
+    expect(screen.getByTestId("review-enlarged")).toBeTruthy();
+    // The enlarged card keeps its own buttons.
+    expect(screen.getByTestId("review-claude-use")).toBeTruthy();
+    fireEvent.keyDown(window, { key: "Escape" });
+    expect(screen.queryByTestId("review-enlarged")).toBeNull();
+    expect(review().open).toBe(true);
+    fireEvent.click(screen.getByTestId("review-claude-pane").querySelector("canvas")!);
+    fireEvent.click(screen.getByTestId("review-enlarged-back"));
+    expect(screen.queryByTestId("review-enlarged")).toBeNull();
+  });
+});
+
 describe("buildEntries", () => {
   // Why: only the newest correction per prediction is an item, so a re-proposal doesn't show twice.
   it("keeps the newest correction per prediction", () => {

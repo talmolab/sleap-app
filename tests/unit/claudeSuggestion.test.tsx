@@ -70,10 +70,23 @@ describe("Claude suggests row", () => {
     renderReview();
     const row = screen.getByTestId("claude-suggestion");
     expect(row.textContent).toContain("Claude suggests");
-    expect(row.textContent).toContain("move 1 node, hide 1 node");
-    expect(row.textContent).toContain("nose was on the ear");
+    const names = inst().skeleton.nodeNames;
+    // Hand-test: the summary names the nodes ("Moves head · hides tail_base"), not just counts.
+    expect(screen.getByTestId("claude-suggestion-summary").textContent).toBe(`Moves ${names[0]} · hides ${names[2]}`);
+    expect(screen.getByTestId("claude-suggestion-reason").textContent).toBe("nose was on the ear");
     expect(screen.getByRole("button", { name: "Accept" })).toBeTruthy();
     expect(screen.getByRole("button", { name: "Reject" })).toBeTruthy();
+  });
+
+  // Hand-test: a long reason is shown in full (wrapped), never cut off with "…".
+  it("shows a long reason in full, under the buttons' line", () => {
+    const long = "the nose was placed on the left ear tip, and the true nose is about 20 px further forward along the head, near the whiskers ".repeat(3).trim();
+    useProposalStore.getState().addFix({ ...target, reason: long }, { 0: [5, 6] });
+    renderReview();
+    const reason = screen.getByTestId("claude-suggestion-reason");
+    expect(reason.textContent).toBe(long);
+    expect(reason.className).not.toContain("truncate");
+    expect(reason.className).toContain("whitespace-pre-wrap");
   });
 
   // Why: no proposal, no row — the Review window looks as it did before.
@@ -139,7 +152,7 @@ describe("Claude suggests row", () => {
   it("an ignore proposal reads 'Ignore flag'", async () => {
     useProposalStore.getState().addIgnore({ ...target, reason: "real rearing pose" });
     renderReview();
-    expect(screen.getByTestId("claude-suggestion").textContent).toContain("ignore this flag");
+    expect(screen.getByTestId("claude-suggestion").textContent).toContain("Ignore this flag");
     await act(async () => {
       fireEvent.click(screen.getByRole("button", { name: "Ignore flag" }));
       await new Promise((r) => setTimeout(r, 0));
