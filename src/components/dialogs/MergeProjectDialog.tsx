@@ -32,6 +32,7 @@ import {
   type ResolvedConflict,
 } from "../../lib/mergeConflicts";
 import { loadLabelsFromSlpFile, loadLabelsFromSlpPath } from "../../lib/loadProject";
+import { handleSlpFormatError } from "@/lib/slpFormatRefusal";
 import { summarizeMatch, type MatchPreview } from "../../lib/mergeProject";
 import { getPlatform } from "../../platform/index";
 import { ConflictReview } from "./ConflictReview";
@@ -140,7 +141,15 @@ export function MergeProjectDialog() {
           setConflicts(found);
         }
       } catch (e) {
-        if (!stale()) setError(errMsg(e));
+        if (!stale()) {
+          if (handleSlpFormatError(e, sourceName(source))) {
+            setError(
+              `${sourceName(source)} uses an unsupported SLP format and cannot be merged in this version of SLEAP.`,
+            );
+          } else {
+            setError(errMsg(e));
+          }
+        }
       } finally {
         if (!stale()) setBusy(null);
       }

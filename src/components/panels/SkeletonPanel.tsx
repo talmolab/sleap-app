@@ -38,6 +38,7 @@ import {
 import { downloadFile } from "../../lib/exportUtils";
 import { getPlatform } from "../../platform/index";
 import { toast } from "@/lib/notify";
+import { handleSlpFormatError } from "@/lib/slpFormatRefusal";
 import type { Skeleton } from "@talmolab/sleap-io.js";
 import { ReplaceSkeletonDialog } from "./ReplaceSkeletonDialog";
 import { SkeletonPicker } from "./SkeletonPicker";
@@ -446,6 +447,7 @@ export function SkeletonPanel() {
   const handleLoadFromFile = async () => {
     if (!skeleton) return;
     let picked: string | string[] | File | File[] | null;
+    let filename: string | undefined;
     let newSkeleton: Skeleton;
     try {
       const platform = await getPlatform();
@@ -462,7 +464,6 @@ export function SkeletonPanel() {
       const one = Array.isArray(picked) ? picked[0] : picked;
       if (one == null) return; // empty selection
 
-      let filename: string;
       let data: string | ArrayBuffer | Uint8Array;
       if (typeof one === "string") {
         // Tauri: a path string → read bytes via the platform.
@@ -476,6 +477,9 @@ export function SkeletonPanel() {
       }
       newSkeleton = await parseSkeletonFile(filename, data);
     } catch (err) {
+      if (handleSlpFormatError(err, filename)) {
+        return;
+      }
       toast.error("Failed to load skeleton", {
         description: err instanceof Error ? err.message : String(err),
       });
