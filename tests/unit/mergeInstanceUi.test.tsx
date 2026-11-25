@@ -172,8 +172,8 @@ describe("Help ▸ Keyboard Shortcuts", () => {
     render(<ShortcutsDialog open={true} onOpenChange={() => {}} />);
 
     const row = (label: string) => screen.getByText(label).closest("tr")!;
-    expect(row("merge instance").textContent).toContain("Shift+M");
-    expect(row("select instance nodes").textContent).toContain("Shift+A");
+    expect(row("Merge Instance").textContent).toContain("Shift+M");
+    expect(row("Select Instance Nodes").textContent).toContain("Shift+A");
 
     expect(screen.getByText("Canvas gestures")).toBeInTheDocument();
     expect(row("Mark the whole instance complete").textContent).toContain("Shift");

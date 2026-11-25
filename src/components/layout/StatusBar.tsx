@@ -18,7 +18,7 @@ import {
 import { Crosshair, Minus, Pencil, Plus } from "lucide-react";
 import { isTauri } from "../../platform/index";
 import { computeStatusStats, formatLabeledCount, instancesToShowCount } from "@/lib/statusStats";
-import { DEFAULT_SHORTCUTS } from "@/lib/shortcuts";
+import { useShortcut } from "@/lib/shortcutPrefs";
 import { formatShortcut } from "@/lib/formatShortcut";
 
 export function StatusBar() {
@@ -67,10 +67,8 @@ export function StatusBar() {
   const isPredicted = instance instanceof PredictedInstance;
 
   // Display string for the "show instances" shortcut, e.g. "KeyH" -> "H".
-  const showInstancesKey = DEFAULT_SHORTCUTS["show instances"].replace(
-    /^Key/,
-    "",
-  );
+  const showInstancesKey = formatShortcut(useShortcut("show instances"));
+  const goToFrameKey = formatShortcut(useShortcut("goto frame"));
 
   const adjustScale = (delta: number) => {
     const newScale = Math.max(0.75, Math.min(1.5, uiScale + delta));
@@ -106,7 +104,7 @@ export function StatusBar() {
             <Separator orientation="vertical" className="h-3.5" />
             <button
               type="button"
-              title={`Go to frame (${formatShortcut(DEFAULT_SHORTCUTS["goto frame"])})`}
+              title={goToFrameKey ? `Go to frame (${goToFrameKey})` : "Go to frame"}
               onClick={() => useAppStore.getState().setGoToFrameDialogOpen(true)}
               className="tabular-nums whitespace-nowrap cursor-pointer select-none rounded-sm px-1 -mx-1 hover:text-foreground hover:bg-accent focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
             >
@@ -138,7 +136,9 @@ export function StatusBar() {
                 >
                   {instanceCount} instance{instanceCount !== 1 ? "s" : ""}
                   {hidden
-                    ? ` [Hidden] Press '${showInstancesKey}' to toggle.`
+                    ? showInstancesKey
+                      ? ` [Hidden] Press '${showInstancesKey}' to toggle.`
+                      : " [Hidden] View ▸ Show Instances to toggle."
                     : ""}
                 </span>
               </>

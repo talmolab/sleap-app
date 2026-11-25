@@ -44,6 +44,16 @@ export function toggleProjectInstances(): void {
   useAppStore.getState().toggle("showInstances");
 }
 
+/**
+ * Hide or show the models' poses on the canvas (M, "show model predictions"),
+ * so the project's own instances can be seen alone. Does nothing when no
+ * model is loaded. The Review window always shows the models.
+ */
+export function toggleModelPredictions(): void {
+  const s = useModelOverlayStore.getState();
+  if (s.models.length > 0) s.toggleHideModels();
+}
+
 export function pickModelPose(layers: readonly ModelOverlayLayer[], layer: number, pose: number): void {
   const l = layers[layer];
   const { video, frameIdx } = useAppStore.getState();
@@ -55,15 +65,16 @@ export function pickModelPose(layers: readonly ModelOverlayLayer[], layer: numbe
  * Accept a model's pose on the current frame. When no prediction matches it
  * but one of your user instances does, ask before replacing that instance
  * (never stack a second instance on a labeled animal); cancelling changes
- * nothing.
+ * nothing. Resolves true only when the project was changed (false on Cancel,
+ * or a frame or model that moved on).
  */
-export async function acceptModelPose(modelId: string, poseIdx: number): Promise<void> {
+export async function acceptModelPose(modelId: string, poseIdx: number): Promise<boolean> {
   const { models } = useModelOverlayStore.getState();
   const { video, frameIdx, labels, skeleton } = useAppStore.getState();
   const model = models.find((m) => m.id === modelId);
-  if (!model || model.video !== video || !labels || !video || !skeleton) return;
+  if (!model || model.video !== video || !labels || !video || !skeleton) return false;
   const poses = model.frames.get(frameIdx);
-  if (!poses?.[poseIdx]) return;
+  if (!poses?.[poseIdx]) return false;
 
   let replaceUser = false;
   const lf = labels.find({ video, frameIdx })[0];
@@ -79,14 +90,15 @@ export async function acceptModelPose(modelId: string, poseIdx: number): Promise
         confirmLabel: "Replace",
         destructive: true,
       });
-      if (!replaceUser) return;
+      if (!replaceUser) return false;
       // The frame may have moved while the dialog was open.
-      if (useAppStore.getState().frameIdx !== frameIdx || useAppStore.getState().video !== video) return;
+      if (useAppStore.getState().frameIdx !== frameIdx || useAppStore.getState().video !== video) return false;
     }
   }
   commandContext.execute(AcceptModelPose, { poses, poseIdx, modelName: model.name, replaceUser });
   useModelOverlayStore.getState().setSelected(null);
   useAppStore.getState().bumpOverlayVersion();
+  return true;
 }
 
 /** Accept the picked pose (Accept bar). */

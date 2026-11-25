@@ -44,10 +44,12 @@ vi.mock("@talmolab/sleap-io.js", () => ({
 
 import { loadProjectFromUrl } from "@/lib/loadProject";
 import { useAppStore } from "@/stores/appStore";
+import { useSlpFormatDialogStore } from "@/stores/slpFormatDialogStore";
 import { toast } from "@/lib/notify";
 
 function resetStore() {
   useAppStore.setState(useAppStore.getInitialState());
+  useSlpFormatDialogStore.setState({ refusal: null, welcomeEnvironmentRequestSeq: 0 });
 }
 
 describe("loadProjectFromUrl", () => {
@@ -112,7 +114,7 @@ describe("loadProjectFromUrl", () => {
     );
   });
 
-  it("shows an SlpFormatError's own message, with no class-name prefix", async () => {
+  it("opens the SLP format refusal modal for SlpFormatError instead of a raw error toast", async () => {
     const message =
       "The SLEAP labels file 'set.slp' is in SLP format 3.0, which this version of " +
       "sleap-io.js cannot read (it reads formats below 3.0).";
@@ -123,9 +125,28 @@ describe("loadProjectFromUrl", () => {
     expect(ok).toBe(false);
     expect(useAppStore.getState().labels).toBeFalsy();
     expect(useAppStore.getState().isLoading).toBe(false);
-    const call = (toast.error as unknown as { mock: { calls: unknown[][] } }).mock
-      .calls[0];
-    expect(call?.[0]).toBe("Failed to open dataset");
-    expect((call?.[1] as { description?: string })?.description).toBe(message);
+    expect(toast.error).not.toHaveBeenCalled();
+
+    const refusal = useSlpFormatDialogStore.getState().refusal;
+    expect(refusal).not.toBeNull();
+    expect(refusal?.fileName).toBe("set.slp");
+    expect(refusal?.formatId).toBe(3);
+    expect(refusal?.detail).toBe(message);
+  });
+
+  it("opens the refusal modal for a worker-serialized SlpFormatError (name only)", async () => {
+    const serialized = Object.assign(
+      new Error("The SLEAP labels file 'remote.slp' is in SLP format 3.0."),
+      { name: "SlpFormatError" },
+    );
+    readSlpStreamingMock.mockImplementation(async () => {
+      throw serialized;
+    });
+    const ok = await loadProjectFromUrl("https://share.sleap.ai/remote.slp?token=secret");
+    expect(ok).toBe(false);
+    expect(toast.error).not.toHaveBeenCalled();
+    const refusal = useSlpFormatDialogStore.getState().refusal;
+    expect(refusal?.fileName).toBe("remote.slp");
+    expect(refusal?.formatId).toBe(3);
   });
 });
