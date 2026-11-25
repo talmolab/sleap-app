@@ -826,10 +826,11 @@ export function getConfigSlots(modelType: ModelType): string[] {
 }
 
 /** Get display label for a config slot */
-export function getSlotLabel(slot: string): string {
+export function getSlotLabel(slot: string, modelType?: ModelType): string {
   switch (slot) {
     case "centroid": return "Centroid Config";
-    case "centered_instance": return "Centered Instance Config";
+    case "centered_instance":
+      return modelType === "top_down_id" ? "Multi-Class Top-Down Config" : "Centered Instance Config";
     case "bbox": return "Box Detector Config";
     default: return "Config";
   }
@@ -2204,13 +2205,13 @@ export const useTrainingStore = create<TrainingState>()((set, get) => ({
     const reusedLines = slots.flatMap((slot) => {
       const model = config.configs.find((c) => c.slot === slot)?.reuse?.model;
       return model
-        ? [`— Using trained model for ${getSlotLabel(slot).replace(" Config", "")} (not retraining): ${model.path}`]
+        ? [`— Using trained model for ${getSlotLabel(slot, config.modelType).replace(" Config", "")} (not retraining): ${model.path}`]
         : [];
     });
     const models: ModelProgress[] = trainSlots.map((slot) => {
       const cf = config.configs.find((c) => c.slot === slot);
       return {
-        ...emptyModelProgress(getSlotLabel(slot).replace(" Config", ""), cf?.hyperparams.maxEpochs ?? 100),
+        ...emptyModelProgress(getSlotLabel(slot, config.modelType).replace(" Config", ""), cf?.hyperparams.maxEpochs ?? 100),
         plateauPatience: cf?.hyperparams.earlyStoppingPatience ?? null,
         plateauMinDelta: cf?.hyperparams.plateauMinDelta ?? null,
       };
@@ -2240,7 +2241,7 @@ export const useTrainingStore = create<TrainingState>()((set, get) => ({
       return;
     }
 
-    const stageLabel = (slot: string) => getSlotLabel(slot).replace(" Config", "");
+    const stageLabel = (slot: string) => getSlotLabel(slot, config.modelType).replace(" Config", "");
     const reuseProblem = reuseStartProblem(slots, config.configs, stageLabel, {
       remote: !!remoteOpts?.remote,
       inferenceTarget: remoteOpts ? remoteOpts.inferenceTarget : localOpts?.inferenceTarget,
@@ -3138,6 +3139,7 @@ export const useTrainingStore = create<TrainingState>()((set, get) => ({
             if (inferenceTarget === "random") {
               // Per-video random sampling
               const videos = currentLabels?.videos ?? [];
+              let merged = 0;
               for (let vi = 0; vi < videos.length; vi++) {
                 const nFrames = videos[vi].shape?.[0] ?? 0;
                 if (nFrames === 0) continue;
@@ -3146,7 +3148,11 @@ export const useTrainingStore = create<TrainingState>()((set, get) => ({
                 const result = await runInferenceWithFallback(perVideoConfig);
                 if (cancelled()) break;
                 if (result.success && result.outputPath) {
-                  await mergeOutputSlp(result.outputPath);
+                  await mergeOutputSlp(
+                    result.outputPath,
+                    mergeModeForRun(inferenceConfig.existingPredictions, merged++),
+                    videoTargetOf(perVideoConfig.videoIndex),
+                  );
                 }
               }
             } else if (inferenceConfig.frameRange === "all_videos") {
@@ -3274,7 +3280,7 @@ export const useTrainingStore = create<TrainingState>()((set, get) => ({
         id,
         status: "running",
         models: slots.map((slot) => ({
-          label: getSlotLabel(slot).replace(" Config", ""),
+          label: getSlotLabel(slot, config.modelType).replace(" Config", ""),
           status: "pending",
           summary: null,
           error: null,

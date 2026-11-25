@@ -54,7 +54,7 @@ export function ReuseTrainedModelSection({
   const reuse = configFile.reuse ?? null;
   const checked = !!reuse;
   const picked = reuse?.model ?? null;
-  const stage = getSlotLabel(slot).replace(" Config", "");
+  const stage = getSlotLabel(slot, modelType).replace(" Config", "");
 
   // Scan when the box is checked (and again if the project moves). The
   // folders are where local training writes: next to the training labels

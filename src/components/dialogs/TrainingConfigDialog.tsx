@@ -575,9 +575,9 @@ function HeadTabContent({
           const text = reader.result as string;
           const parsed = parseYamlConfig(text, file.name, slot);
           if (parsed) {
-            if (parsed.modelType !== slot && parsed.modelType !== "unknown") {
+            if (parsed.modelType !== "unknown" && !headTypeMatches(headType, { headKey: parsed.modelType })) {
               toast.error("Wrong model type", {
-                description: `The file you selected was a training config for ${parsed.modelType} and cannot be used for ${slot}.`,
+                description: `The file you selected was a training config for ${parsed.modelType} and cannot be used for ${headType}.`,
               });
             }
             addConfigFile(parsed);
@@ -1440,7 +1440,7 @@ export function TrainingConfigDialog({
     const isPipeline = activeTab === "pipeline";
     const scope = isPipeline
       ? "all model configs"
-      : `the ${getSlotLabel(activeTab).replace(" Config", "")} config`;
+      : `the ${getSlotLabel(activeTab, modelType).replace(" Config", "")} config`;
     const ok = await confirmDialog({
       title: "Reset to profile defaults?",
       message: `This restores ${scope} to the values loaded from the baseline profile, discarding your edits.`,
@@ -1473,7 +1473,7 @@ export function TrainingConfigDialog({
                 <TabsTrigger value="pipeline" className="text-sm px-4 data-[state=active]:bg-primary data-[state=active]:text-primary-foreground dark:data-[state=active]:bg-primary dark:data-[state=active]:text-primary-foreground">Pipeline</TabsTrigger>
                 {sortedConfigs.map((cf) => (
                   <TabsTrigger key={cf.slot} value={cf.slot} className="text-sm px-4 data-[state=active]:bg-primary data-[state=active]:text-primary-foreground dark:data-[state=active]:bg-primary dark:data-[state=active]:text-primary-foreground">
-                    {getSlotLabel(cf.slot).replace(" Config", "")}
+                    {getSlotLabel(cf.slot, modelType).replace(" Config", "")}
                   </TabsTrigger>
                 ))}
               </TabsList>

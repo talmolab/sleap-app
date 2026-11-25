@@ -356,15 +356,19 @@ async function pendingMergeSkeleton(ref: PendingMergeSkeleton): Promise<Skeleton
 export async function mergeRemoteResults(pending: PendingRemoteMerge): Promise<void> {
   // "Clear all" is scoped to a skeleton on a multi-skeleton project, so it
   // applies to the first result of EACH skeleton (see mergeModeForRun).
-  const runsPerSkeleton = new Map<string, number>();
+  // The index counts merges that happened, so a result with no predictions
+  // doesn't use up the clear.
+  const mergedPerSkeleton = new Map<string, number>();
   for (let i = 0; i < pending.results.length; i++) {
     const ref = pending.skeletons?.[i];
     const key = ref ? `${ref.index}:${ref.name}` : "";
-    const runIndex = runsPerSkeleton.get(key) ?? 0;
-    runsPerSkeleton.set(key, runIndex + 1);
     const skeleton = ref ? await pendingMergeSkeleton(ref) : undefined;
-    await fetchAndMergeRemoteResult(
-      pending.results[i]!,
+    const predictions = await loadRemotePredictions(pending.results[i]!);
+    if (!predictions) continue;
+    const runIndex = mergedPerSkeleton.get(key) ?? 0;
+    mergedPerSkeleton.set(key, runIndex + 1);
+    await mergePredictionsIntoProject(
+      predictions,
       mergeModeForRun(pending.mode, runIndex),
       pending.trackOnly,
       pending.videoTargets?.[i],
@@ -820,6 +824,7 @@ export const useInferenceStore = create<InferenceState>()((set) => ({
             }
           };
 
+          let merged = 0;
           for (let vi = 0; vi < labels.videos.length; vi++) {
             const video = labels.videos[vi];
             const nFrames = video.shape?.[0] ?? 0;
@@ -841,7 +846,7 @@ export const useInferenceStore = create<InferenceState>()((set) => ({
               await loadAndMergePredictionBytes(
                 bytes,
                 result.outputPath,
-                config.existingPredictions,
+                mergeModeForRun(config.existingPredictions, merged++),
                 config.trackOnly,
               );
             }
