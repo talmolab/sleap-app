@@ -43,6 +43,7 @@ import {
 } from "../../canvas/SkeletonRenderer";
 import { instanceVisible, instanceShowsNonVisible } from "@/lib/instanceVisibility";
 import { formatShortcut } from "@/lib/formatShortcut";
+import { eventMatchesAction } from "@/lib/shortcutPrefs";
 import { useQcVisibility } from "@/hooks/useQcVisibility";
 import { useQcFrameFlags } from "@/hooks/useQcFrameFlags";
 import { useQcStore } from "@/stores/qcStore";
@@ -54,6 +55,7 @@ import { ModelPoseHoverLabel } from "./ModelPoseHoverLabel";
 import { ModelOverlayLegend } from "./ModelOverlayLegend";
 import { ModelPoseAcceptBar } from "./ModelPoseAcceptBar";
 import { ModelTracesStrip } from "./ModelTracesStrip";
+import { CompareReviewWindow } from "./compareReview/CompareReviewWindow";
 import { pickModelPose, acceptModelPose, modelClickRoute } from "@/lib/modelOverlay/canvasActions";
 import { useModelOverlayStore } from "@/stores/modelOverlayStore";
 import {
@@ -687,7 +689,7 @@ export function VideoPlayer() {
   // the selection matches what the canvas draws.
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
-      if (e.code !== "KeyA" || !e.shiftKey || e.ctrlKey || e.metaKey || e.altKey) return;
+      if (!eventMatchesAction(e, "select instance nodes")) return; // Shift+A unless changed
       const tag = (e.target as HTMLElement)?.tagName;
       if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") return;
       if ((e.target as HTMLElement)?.isContentEditable) return;
@@ -713,8 +715,8 @@ export function VideoPlayer() {
   // Toggle node visibility with 'v' key
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
-      // Plain V only: Shift+V is "show non-visible nodes" (useKeyboardShortcuts).
-      if (e.code !== "KeyV" || e.shiftKey || e.ctrlKey || e.metaKey || e.altKey) return;
+      // Plain V unless changed: Shift+V is "show non-visible nodes" (useKeyboardShortcuts).
+      if (!eventMatchesAction(e, "toggle node visibility")) return;
       const tag = (e.target as HTMLElement)?.tagName;
       if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") return;
 
@@ -4398,6 +4400,8 @@ export function VideoPlayer() {
         <ModelOverlayLegend disagreementCount={modelOverlay.disagreements.length} />
         {/* Accept bar for a model pose picked on the canvas (self-guards). */}
         <ModelPoseAcceptBar />
+        {/* Compare Models: Review disagreements window (self-guards to open). */}
+        <CompareReviewWindow />
         {/* Visual skeleton builder control bar (self-guards to build mode). */}
         <SkeletonBuildBar />
         {/* Anchor-part picker prompt (self-guards to pick mode). */}

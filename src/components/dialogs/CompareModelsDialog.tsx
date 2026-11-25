@@ -25,7 +25,8 @@ import { Button } from "@/components/ui/button";
 import { useAppStore } from "@/stores/appStore";
 import { useModelOverlayStore, type NewOverlayModel } from "@/stores/modelOverlayStore";
 import { getPlatform, isTauri } from "@/platform/index";
-import { targetFromVideo, normalizePath, isTrainingSplitFile, type OverlayPose } from "@/lib/modelOverlay/core";
+import { targetFromVideo, normalizePath, isTrainingSplitFile } from "@/lib/modelOverlay/core";
+import type { PoseFrames } from "@/lib/modelOverlay/poseStore";
 import {
   checkCacheKey,
   getCachedCheck,
@@ -37,7 +38,7 @@ import { scanPredictionFiles, MAX_SCAN_BYTES } from "@/lib/modelOverlay/scan";
 import { loadAndAnalyze, sourceKey, sourceFileName, type PredictionSource } from "@/lib/modelOverlay/load";
 
 /** What a row knows about its file: the check's verdict, plus the poses while they're kept. */
-type RowResult = CheckSummary & { frames?: Map<number, OverlayPose[]> };
+type RowResult = CheckSummary & { frames?: PoseFrames };
 
 interface Row {
   key: string;

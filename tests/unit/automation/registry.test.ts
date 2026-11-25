@@ -62,6 +62,7 @@ describe("tool registry", () => {
     expect(names.size).toBe(TOOLS.length);
     // Only the propose_ tools change anything (and only after the user accepts).
     expect(registry.list().filter((t) => !t.annotations.readOnlyHint).map((t) => t.name).sort()).toEqual([
+      "propose_correction",
       "propose_fix",
       "propose_ignore",
     ]);

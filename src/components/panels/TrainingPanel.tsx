@@ -10,6 +10,7 @@
 import { useState, useRef, useEffect, useMemo } from "react";
 import { createPortal } from "react-dom";
 import { useTrainingStore, getConfigSlots, getSlotLabel, countUserLabeledFrames, isBboxModelType, BBOX_REMOTE_UNSUPPORTED } from "@/stores/trainingStore";
+import { reusePinNote, reuseStartProblem } from "@/lib/reuseTrainedModel";
 import { useExportStore } from "@/stores/exportStore";
 import type { ModelType, ConfigFile, ConfigHyperparams } from "@/stores/trainingStore";
 import { useConnectStore } from "@/stores/connectStore";
@@ -637,6 +638,15 @@ function AnchorPartField({
   );
 }
 
+/** Shown above a reused stage's (locked) settings in the panel. */
+function ReusedStageNote() {
+  return (
+    <p className="text-[10px] text-sky-400 mb-1" data-testid="reused-stage-note">
+      This stage uses a trained model and won't be trained — its settings don't apply.
+    </p>
+  );
+}
+
 function HyperparamsFields({
   slot,
   hp,
@@ -748,6 +758,8 @@ function TrainingPanelContent() {
   const currentModelIndex = useTrainingStore((s) => s.currentModelIndex);
   const wandbUrl = useTrainingStore((s) => s.wandbUrl);
   const modelOutputDirs = useTrainingStore((s) => s.modelOutputDirs);
+  const pipelineModelDirs = useTrainingStore((s) => s.pipelineModelDirs);
+  const pipelineExportDir = useTrainingStore((s) => s.pipelineExportDir);
   const postTrainingInference = useTrainingStore((s) => s.postTrainingInference);
   // Training is over once post-training inference runs: Stop Early has
   // nothing to stop (it would just end the inference job), so only Cancel.
@@ -1086,7 +1098,8 @@ function TrainingPanelContent() {
   // collapsible section right above the Start Training button.
   const memoryEstimates = useMemo(
     () =>
-      config.configs.map((cf) => ({
+      // A stage reusing a trained model doesn't train, so it uses no training memory.
+      config.configs.filter((cf) => !cf.reuse).map((cf) => ({
         slot: cf.slot,
         gpu: estimateHeadGpuMemory(labels, cf.slot, cf.hyperparams),
         cache: estimateHeadCacheMemory(labels, cf.hyperparams),
@@ -1150,6 +1163,7 @@ function TrainingPanelContent() {
       }) ?? 0) > 0;
   const remoteUnsupported = remoteEnabled && isBboxModelType(config.modelType);
   const hasValidLossWeights = config.configs.every((cf) =>
+    !!cf.reuse ||
     cf.hyperparams.confmapsLossWeight > 0 &&
     cf.hyperparams.pafsLossWeight > 0 &&
     cf.hyperparams.classLossWeight > 0
@@ -1159,12 +1173,24 @@ function TrainingPanelContent() {
   // model_config.pretrained_*_weights vs trainer_config.resume_ckpt_path in
   // sleap-nn's lightning_modules.py / trainer_config.py.
   const hasValidCheckpointSelection = config.configs.every((cf) => {
+    // A stage reusing a trained model isn't trained: no checkpoint needed.
+    if (cf.reuse) return true;
     const mode = cf.hyperparams.trainingMode;
     if (mode === "reuse_config") return true;
     if (!cf.checkpointPath?.trim()) return false;
     if (mode === "resume") return cf.checkpointPath.toLowerCase().endsWith(".ckpt");
     return true;
   });
+  // "Use a trained model" checked with no model picked (or, on a worker,
+  // every stage reused): see reuseStartProblem.
+  const reuseProblem = reuseStartProblem(
+    requiredSlots,
+    config.configs,
+    (slot) => getSlotLabel(slot).replace(" Config", ""),
+    { remote: remoteEnabled, inferenceTarget },
+  );
+  // A reused model fixes the anchor part / box settings of the stage that trains.
+  const reusePin = reusePinNote(config.modelType, config.configs, (slot) => getSlotLabel(slot).replace(" Config", ""));
   const isModelTypeIncompatible = skeletonCompat.disabledTypes.has(config.modelType);
   // "window" + still-unknown visibility blocks Start: classifyVisibility(null
   // ?? []) would otherwise read as case "all" (same as "nothing hidden"),
@@ -1189,6 +1215,7 @@ function TrainingPanelContent() {
     hasLabeledFrames &&
     hasValidLossWeights &&
     hasValidCheckpointSelection &&
+    !reuseProblem &&
     !isModelTypeIncompatible &&
     !remoteUnsupported &&
     !visibilityPending &&
@@ -1395,6 +1422,13 @@ function TrainingPanelContent() {
                   onRemove={removeConfigFile}
                   disabled={isRunning}
                 />
+                {configFile?.reuse && (
+                  <p className="text-[10px] text-sky-400 break-all" data-testid={`training-reuse-${slot}`}>
+                    {configFile.reuse.model
+                      ? `Not retrained — uses ${configFile.reuse.model.runName || configFile.reuse.model.path}`
+                      : "Not retrained — pick a trained model in Full Configuration"}
+                  </p>
+                )}
               </div>
             );
           })}
@@ -1600,8 +1634,9 @@ function TrainingPanelContent() {
                     <AnchorPartField
                       hp={ciConfig.hyperparams}
                       onUpdate={(updates) => updateConfigHyperparams("centered_instance", updates)}
-                      disabled={isRunning}
+                      disabled={isRunning || !!reusePin}
                     />
+                    {reusePin && <p className="text-[10px] text-muted-foreground">{reusePin}</p>}
                     <Separator className="my-2" />
                   </>
                 );
@@ -1613,17 +1648,21 @@ function TrainingPanelContent() {
                     configs={config.configs}
                     onUpdateSlot={updateConfigHyperparams}
                     disabled={isRunning}
+                    boxSettingsLockedBy={reusePin}
                   />
                   <Separator className="my-2" />
                 </>
               )}
               {config.configs.length === 1 ? (
-                <HyperparamsFields
-                  slot={config.configs[0].slot}
-                  hp={config.configs[0].hyperparams}
-                  onUpdate={updateConfigHyperparams}
-                  disabled={isRunning}
-                />
+                <>
+                  {config.configs[0].reuse && <ReusedStageNote />}
+                  <HyperparamsFields
+                    slot={config.configs[0].slot}
+                    hp={config.configs[0].hyperparams}
+                    onUpdate={updateConfigHyperparams}
+                    disabled={isRunning || !!config.configs[0].reuse}
+                  />
+                </>
               ) : (
                 <Tabs defaultValue={config.configs[0]?.slot}>
                   <TabsList className="w-full h-7">
@@ -1635,11 +1674,12 @@ function TrainingPanelContent() {
                   </TabsList>
                   {config.configs.map((cf) => (
                     <TabsContent key={cf.slot} value={cf.slot} className="mt-2">
+                      {cf.reuse && <ReusedStageNote />}
                       <HyperparamsFields
                         slot={cf.slot}
                         hp={cf.hyperparams}
                         onUpdate={updateConfigHyperparams}
-                        disabled={isRunning}
+                        disabled={isRunning || !!cf.reuse}
                       />
                     </TabsContent>
                   ))}
@@ -1777,6 +1817,8 @@ function TrainingPanelContent() {
                       ? "Label at least one frame before training"
                       : !hasValidCheckpointSelection
                         ? "Select a checkpoint file for Resume/Fine-tune"
+                        : reuseProblem
+                        ? reuseProblem
                         : remoteEnabled && !selectedWorkerId
                           ? "Select a worker"
                           : visibilityPending
@@ -1883,11 +1925,16 @@ function TrainingPanelContent() {
             View Metrics
           </Button>
         )}
-        {status === "completed" && isTauri && modelOutputDirs.length > 0 && (
+        {status === "completed" && isTauri && (pipelineModelDirs.length > 0 || modelOutputDirs.length > 0) && (
           <Button
             variant="outline"
             className="w-full h-8 text-xs"
-            onClick={() => openExport(modelOutputDirs)}
+            // The whole pipeline (reused models included), into this project's models/exported.
+            onClick={() =>
+              pipelineModelDirs.length > 0
+                ? openExport(pipelineModelDirs, pipelineExportDir ? { outputDir: pipelineExportDir } : undefined)
+                : openExport(modelOutputDirs)
+            }
             title="Export the trained model to ONNX/TensorRT for faster inference"
           >
             Export Model…
@@ -1899,6 +1946,17 @@ function TrainingPanelContent() {
           </Button>
         )}
 
+        {/* A run refused before any model started (a reuse check, an unsupported
+            remote pipeline...) has no progress block below to carry its error. */}
+        {status === "error" && error && models.length === 0 && (
+          <div
+            role="alert"
+            data-testid="training-start-error"
+            className="rounded-md bg-destructive/15 border border-destructive/30 px-2 py-1.5 text-[10px] text-destructive"
+          >
+            {error}
+          </div>
+        )}
         {(status === "error" || status === "stopped") && (
           <div className="flex gap-2">
             <Button

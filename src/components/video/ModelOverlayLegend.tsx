@@ -4,14 +4,15 @@
  * Title; the disagreement threshold with ◀ ▶; a button that hides the
  * project's own instances (same as H) so the models can be compared alone;
  * and one row per loaded model (show/hide, colour, name, poses on this
- * frame, remove). Clicking a model's name selects it: its poses on this
+ * frame, remove). "Review" opens the Review disagreements window (side by
+ * side, worst first). Clicking a model's name selects it: its poses on this
  * frame get dashed boxes in its colour, or the row says it has none here;
  * clicking again or Esc deselects. "–" folds the whole panel into a small
  * pill in the same corner; the models stay drawn. Hidden when no model is
  * loaded.
  */
 import { useEffect, useState } from "react";
-import { ChevronLeft, ChevronRight, CircleHelp, Eye, EyeOff, LineChart, Minus, Plus, X } from "lucide-react";
+import { ChevronLeft, ChevronRight, CircleHelp, Eye, EyeOff, LineChart, ListChecks, Minus, Plus, X } from "lucide-react";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { useAppStore } from "@/stores/appStore";
 import { useModelOverlayStore } from "@/stores/modelOverlayStore";
@@ -20,7 +21,11 @@ import { toast } from "@/lib/notify";
 import { findDisagreementFrame } from "@/hooks/useModelOverlayFrame";
 import { useModelOverlayUiStore } from "@/stores/modelOverlayUiStore";
 import { DISAGREEMENT_COLOR } from "@/canvas/modelOverlayRenderer";
-import { toggleProjectInstances } from "@/lib/modelOverlay/canvasActions";
+import { toggleModelPredictions, toggleProjectInstances } from "@/lib/modelOverlay/canvasActions";
+import { formatShortcut } from "@/lib/formatShortcut";
+import { useShortcut } from "@/lib/shortcutPrefs";
+import { poseCountOn } from "@/lib/modelOverlay/poseStore";
+import { useCompareReviewStore } from "@/stores/compareReviewStore";
 
 /** Shown under a selected model's row when it has no pose on this frame. */
 export const NO_POSES_ON_FRAME = "No predicted instances on this frame";
@@ -59,9 +64,13 @@ export function ModelOverlayLegend({ disagreementCount }: { disagreementCount: n
   const minimized = useModelOverlayStore((s) => s.legendMinimized);
   const setMinimized = useModelOverlayStore((s) => s.setLegendMinimized);
   const showInstances = useAppStore((s) => s.showInstances);
+  const hideModels = useModelOverlayStore((s) => s.hideModels);
+  const modelsKey = formatShortcut(useShortcut("show model predictions")) || "no key";
   const selectedModelId = useModelOverlayUiStore((s) => s.selectedModelId);
   const toggleSelectedModel = useModelOverlayUiStore((s) => s.toggleSelectedModel);
   const clearSelectedModel = useModelOverlayUiStore((s) => s.clearSelectedModel);
+  const reviewOpen = useCompareReviewStore((s) => s.open);
+  const setReviewOpen = useCompareReviewStore((s) => s.setOpen);
 
   // Esc deselects the selected model row.
   useEffect(() => {
@@ -211,7 +220,7 @@ export function ModelOverlayLegend({ disagreementCount }: { disagreementCount: n
           </div>
         )}
         {forVideo.map((m) => {
-          const onFrame = m.frames.get(frameIdx)?.length ?? 0;
+          const onFrame = poseCountOn(m.frames, frameIdx);
           const selected = selectedModelId === m.id;
           return (
             <div key={m.id}>
@@ -262,7 +271,18 @@ export function ModelOverlayLegend({ disagreementCount }: { disagreementCount: n
           );
         })}
         {forVideo.length > 0 && (
-          <div className="flex items-center gap-1 border-t border-white/15 pt-1">
+          <div className="flex flex-wrap items-center gap-1 border-t border-white/15 pt-1">
+            <button
+              type="button"
+              className={`flex items-center gap-1 rounded px-1 py-0.5 hover:bg-white/10 hover:text-white disabled:opacity-40 ${reviewOpen ? "bg-white/20 text-white" : "text-white/70"}`}
+              onClick={() => setReviewOpen(!reviewOpen)}
+              disabled={shownCount < 2}
+              aria-pressed={reviewOpen}
+              data-testid="model-overlay-review"
+              title={shownCount < 2 ? "Show two or more models to review where they disagree" : "Review the biggest disagreements side by side and pick the best pose"}
+            >
+              <ListChecks className="h-3 w-3" /> Review
+            </button>
             <button
               type="button"
               className={`flex items-center gap-1 rounded px-1 py-0.5 hover:bg-white/10 hover:text-white ${showInstances ? "text-white/70" : "bg-white/20 text-white"}`}
@@ -273,6 +293,17 @@ export function ModelOverlayLegend({ disagreementCount }: { disagreementCount: n
             >
               {showInstances ? <EyeOff className="h-3 w-3" /> : <Eye className="h-3 w-3" />}
               {showInstances ? "Hide project instances (H)" : "Show project instances (H)"}
+            </button>
+            <button
+              type="button"
+              className={`flex items-center gap-1 whitespace-nowrap rounded px-1 py-0.5 hover:bg-white/10 hover:text-white ${hideModels ? "bg-white/20 text-white" : "text-white/70"}`}
+              onClick={toggleModelPredictions}
+              aria-pressed={hideModels}
+              data-testid="model-overlay-hide-models"
+              title={`Hide or show the models' poses on the video, so you see only the project's instances (${modelsKey}). The Review window still shows them.`}
+            >
+              {hideModels ? <Eye className="h-3 w-3" /> : <EyeOff className="h-3 w-3" />}
+              {hideModels ? `Show model predictions (${modelsKey})` : `Hide model predictions (${modelsKey})`}
             </button>
             <span className="flex-1" />
             <button

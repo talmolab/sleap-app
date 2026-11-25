@@ -18,6 +18,8 @@
  */
 import type { OverlayModel } from "@/stores/modelOverlayStore";
 import { groupAcrossModels, hungarian, meanNodeDistance, poseSize, type GroupMember, type MatchLayer } from "./matching";
+import type { OverlayPose } from "./core";
+import { PoseStore, type PoseFrames } from "./poseStore";
 
 export type TraceTarget = { kind: "track"; name: string } | { kind: "animal"; index: number };
 
@@ -39,12 +41,19 @@ export function traceTrackNames(models: readonly OverlayModel[], byTrack: boolea
 export const MAX_TRACE_ANIMALS = 20;
 
 /**
- * Animals linked across frames: `byFrame.get(f).get(animal)` = that animal's
- * poses (one per model) on frame f. Computed once per set of models — the
- * node shown doesn't change it.
+ * Animals linked across frames, computed once per set of models (the node
+ * shown doesn't change it). Kept compact — one small integer per pose rather
+ * than objects per frame — because a long video has millions of poses (see
+ * poseStore.ts).
  */
 export interface AnimalIndex {
-  byFrame: Map<number, Map<number, GroupMember[]>>;
+  /** Every frame where any model has a pose, ascending. */
+  frames: Int32Array;
+  /**
+   * `animalOf[m][j]` = the animal of model m's j-th pose, counting poses in
+   * frame order (frames ascending, then the order on the frame).
+   */
+  animalOf: Int32Array[];
   /** Animals found (numbered 0…count-1 in order of first appearance). */
   count: number;
 }
@@ -72,32 +81,109 @@ function linkGate(lastMean: Float64Array): number {
   return Math.max(50, poseSize(lastMean));
 }
 
-export function buildAnimalIndex(models: readonly OverlayModel[]): AnimalIndex {
-  const frameSet = new Set<number>();
-  for (const m of models) for (const f of m.frames.keys()) frameSet.add(f);
-  const frames = [...frameSet].sort((a, b) => a - b);
-  const byFrame = new Map<number, Map<number, GroupMember[]>>();
-  const last: Float64Array[] = []; // animal → its most recent mean pose
-  for (const f of frames) {
-    const layers: MatchLayer[] = models.map((m) => ({ poses: m.frames.get(f) ?? [] }));
-    const groups = models.length === 1 ? layers[0].poses.map((_, i) => [{ layer: 0, pose: i }]) : groupAcrossModels(layers, false);
-    const means = groups.map((g) => meanOf(layers, g));
-    const cost = means.map((m) => last.map((l) => meanNodeDistance(m, l)));
-    const assign = last.length > 0 ? hungarian(cost) : means.map(() => -1);
-    const here = new Map<number, GroupMember[]>();
-    groups.forEach((g, gi) => {
-      let animal = assign[gi];
-      if (animal < 0 || !(cost[gi][animal] <= linkGate(last[animal]))) {
-        animal = last.length;
-        last.push(means[gi]);
-      } else {
-        last[animal] = means[gi];
-      }
-      here.set(animal, g);
+/** Every frame where any of the models has a pose, ascending. */
+export function unionFrames(models: readonly OverlayModel[]): Int32Array {
+  let total = 0;
+  for (const m of models) total += m.frames.size;
+  const all = new Int32Array(total);
+  let i = 0;
+  for (const m of models) for (const f of m.frames.keys()) all[i++] = f;
+  all.sort();
+  let w = 0;
+  for (let r = 0; r < all.length; r++) if (r === 0 || all[r] !== all[r - 1]) all[w++] = all[r];
+  return all.slice(0, w);
+}
+
+/** A model's frames ascending (a PoseStore's already are). */
+function sortedFrames(frames: PoseFrames): Int32Array {
+  if (frames instanceof PoseStore) return frames.frameIdx;
+  return Int32Array.from(frames.keys()).sort();
+}
+
+/** Links animals frame by frame; {@link step} does a batch of frames. */
+class AnimalLinker {
+  readonly frames: Int32Array;
+  readonly animalOf: Int32Array[];
+  private poseCursor: number[];
+  private last: Float64Array[] = []; // animal → its most recent mean pose
+  row = 0;
+
+  constructor(private models: readonly OverlayModel[]) {
+    this.frames = unionFrames(models);
+    this.animalOf = models.map((m) => {
+      let n = 0;
+      if (m.frames instanceof PoseStore) n = m.frames.poseCount;
+      else for (const f of m.frames.keys()) n += m.frames.get(f)?.length ?? 0;
+      return new Int32Array(n).fill(-1);
     });
-    byFrame.set(f, here);
+    this.poseCursor = models.map(() => 0);
   }
-  return { byFrame, count: last.length };
+
+  get done(): boolean {
+    return this.row >= this.frames.length;
+  }
+
+  step(maxFrames: number): void {
+    const models = this.models;
+    const last = this.last;
+    const end = Math.min(this.frames.length, this.row + maxFrames);
+    for (; this.row < end; this.row++) {
+      const f = this.frames[this.row];
+      const layers: MatchLayer[] = models.map((m) => ({ poses: posesNoCache(m.frames, f) }));
+      const groups =
+        models.length === 1 ? layers[0].poses.map((_, i) => [{ layer: 0, pose: i }]) : groupAcrossModels(layers, false);
+      const means = groups.map((g) => meanOf(layers, g));
+      const cost = means.map((m) => last.map((l) => meanNodeDistance(m, l)));
+      const assign = last.length > 0 ? hungarian(cost) : means.map(() => -1);
+      groups.forEach((g, gi) => {
+        let animal = assign[gi];
+        if (animal < 0 || !(cost[gi][animal] <= linkGate(last[animal]))) {
+          animal = last.length;
+          last.push(means[gi]);
+        } else {
+          last[animal] = means[gi];
+        }
+        for (const mem of g) this.animalOf[mem.layer][this.poseCursor[mem.layer] + mem.pose] = animal;
+      });
+      layers.forEach((l, li) => (this.poseCursor[li] += l.poses.length));
+    }
+  }
+
+  result(): AnimalIndex {
+    return { frames: this.frames, animalOf: this.animalOf, count: this.last.length };
+  }
+}
+
+/** A frame's poses without filling a store's small cache (bulk passes over every frame). */
+function posesNoCache(frames: PoseFrames, f: number): OverlayPose[] {
+  return frames instanceof PoseStore ? frames.make(f) : (frames.get(f) ?? []);
+}
+
+export function buildAnimalIndex(models: readonly OverlayModel[]): AnimalIndex {
+  const linker = new AnimalLinker(models);
+  linker.step(Infinity);
+  return linker.result();
+}
+
+/**
+ * {@link buildAnimalIndex} in time slices, yielding to the UI between them
+ * (a 100k-frame video takes seconds). Resolves null when aborted.
+ */
+export async function buildAnimalIndexAsync(
+  models: readonly OverlayModel[],
+  opts: { signal?: AbortSignal; sliceMs?: number; onProgress?: (done: number, total: number) => void } = {}
+): Promise<AnimalIndex | null> {
+  const linker = new AnimalLinker(models);
+  const slice = opts.sliceMs ?? 12;
+  while (!linker.done) {
+    if (opts.signal?.aborted) return null;
+    const t0 = performance.now();
+    do linker.step(64);
+    while (!linker.done && performance.now() - t0 < slice);
+    opts.onProgress?.(linker.row, linker.frames.length);
+    if (!linker.done) await new Promise((r) => setTimeout(r, 0));
+  }
+  return opts.signal?.aborted ? null : linker.result();
 }
 
 /** How many "animal" choices to offer (at most {@link MAX_TRACE_ANIMALS}). */
@@ -107,6 +193,35 @@ export function traceAnimalCount(index: AnimalIndex): number {
 
 const fin = (v: number) => (Number.isFinite(v) ? v : null);
 
+/**
+ * Calls `fn(row, j, xy, off)` for each of a model's poses in frame order:
+ * `row` = the frame's row in `frames` (the union), `j` = the pose's number in
+ * frame order, its values at `xy[off …]`. No pose objects for a PoseStore.
+ */
+function forEachPose(
+  m: OverlayModel,
+  frames: Int32Array,
+  fn: (row: number, j: number, xy: Float64Array, off: number, trackName: string | null) => void
+): void {
+  const store = m.frames instanceof PoseStore ? m.frames : null;
+  const own = sortedFrames(m.frames);
+  let row = 0;
+  let j = 0;
+  for (let r = 0; r < own.length; r++) {
+    const f = own[r];
+    while (row < frames.length && frames[row] < f) row++;
+    if (store) {
+      const stride = store.nNodes * 2;
+      for (let p = store.poseStart[r]; p < store.poseStart[r + 1]; p++, j++) {
+        const t = store.trackIds[p];
+        fn(row, j, store.xy, p * stride, t >= 0 ? store.trackNameList[t] : null);
+      }
+    } else {
+      for (const pose of m.frames.get(f) ?? []) fn(row, j++, pose.xy, 0, pose.trackName);
+    }
+  }
+}
+
 /** `index` is required for an "animal" target (pass the cached {@link buildAnimalIndex}). */
 export function buildTraces(
   models: readonly OverlayModel[],
@@ -114,29 +229,24 @@ export function buildTraces(
   target: TraceTarget,
   index?: AnimalIndex
 ): TraceData {
-  const frameSet = new Set<number>();
-  for (const m of models) for (const f of m.frames.keys()) frameSet.add(f);
-  const frames = [...frameSet].sort((a, b) => a - b);
+  const animals = target.kind === "animal" ? (index ?? buildAnimalIndex(models)) : null;
+  const union = animals?.frames ?? unionFrames(models);
+  const frames = Array.from(union);
   const x: (number | null)[][] = models.map(() => new Array(frames.length).fill(null));
   const y: (number | null)[][] = models.map(() => new Array(frames.length).fill(null));
-
-  const animals = target.kind === "animal" ? (index ?? buildAnimalIndex(models)) : null;
-  frames.forEach((f, i) => {
-    if (target.kind === "track") {
-      models.forEach((m, mi) => {
-        const pose = m.frames.get(f)?.find((p) => p.trackName === target.name);
-        if (!pose) return;
-        x[mi][i] = fin(pose.xy[2 * node]);
-        y[mi][i] = fin(pose.xy[2 * node + 1]);
-      });
-      return;
-    }
-    const group = animals?.byFrame.get(f)?.get(target.index);
-    for (const mem of group ?? []) {
-      const pose = models[mem.layer].frames.get(f)![mem.pose];
-      x[mem.layer][i] = fin(pose.xy[2 * node]);
-      y[mem.layer][i] = fin(pose.xy[2 * node + 1]);
-    }
+  const wantAnimal = target.kind === "animal" ? target.index : -1;
+  const wantTrack = target.kind === "track" ? target.name : null;
+  models.forEach((m, mi) => {
+    const animalOf = animals?.animalOf[mi];
+    let lastRow = -1;
+    forEachPose(m, union, (row, j, xy, off, trackName) => {
+      if (animalOf ? animalOf[j] !== wantAnimal : trackName !== wantTrack) return;
+      // A track given to several poses on one frame: the first one, as before.
+      if (row === lastRow) return;
+      lastRow = row;
+      x[mi][row] = fin(xy[off + 2 * node]);
+      y[mi][row] = fin(xy[off + 2 * node + 1]);
+    });
   });
   return { frames, x, y };
 }

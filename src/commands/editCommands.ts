@@ -173,7 +173,8 @@ export const ToggleNegativeFrame: Command = {
     }
 
     // Turning OFF an otherwise-empty frame prunes it (it only held the flag).
-    if (!lf.isNegative && lf.instances.length === 0) {
+    // Drop the frame only when nothing else (a box, centroid, ...) is on it.
+    if (!frameHasContent(lf)) {
       const idx = labels.labeledFrames.indexOf(lf);
       if (idx !== -1) labels.labeledFrames.splice(idx, 1);
       ctx.state.setLabeledFrame(null);
@@ -301,7 +302,7 @@ function clonePoints(points: Instance["points"]): Instance["points"] {
  * appears at all, instead of the hollow "invisible node" marker it draws for
  * genuinely non-visible points.
  */
-function clonePredictedPoints(points: Instance["points"]): Instance["points"] {
+export function clonePredictedPoints(points: Instance["points"]): Instance["points"] {
   return points.map((p) => ({
     xy: [p.xy[0], p.xy[1]] as [number, number],
     visible: !Number.isNaN(p.xy[0]),
@@ -441,7 +442,7 @@ export const DeleteFramePredictions: Command = {
     if (instance instanceof PredictedInstance) {
       ctx.state.setInstance(null);
     }
-    ctx.state.setLabeledFrame(userInstances.length > 0 ? lf : null);
+    ctx.state.setLabeledFrame(frameHasContent(lf) ? lf : null);
     ctx.state.markChanged();
   },
 };

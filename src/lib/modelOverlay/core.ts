@@ -24,6 +24,7 @@
 import { PredictedInstance } from "@talmolab/sleap-io.js";
 import type { Labels, Skeleton, Video } from "@/types";
 import type { RGB } from "@/lib/colorPalettes";
+import { PoseStoreBuilder, type PoseFrames, type PoseStore } from "./poseStore";
 
 /** One model's pose on one frame, in the project's node order. */
 export interface OverlayPose {
@@ -234,39 +235,44 @@ export function modelNameFromProvenance(provenance: Record<string, unknown> | nu
 
 /**
  * Predicted instances of `video`, grouped by frame, reordered to the project's
- * nodes. With `only`, just that skeleton's instances (a file with several
- * skeletons, e.g. mice + pellets — #99), added to `into` when given.
+ * nodes, in a compact {@link PoseStore} (one flat array per model rather than
+ * an array per pose; see poseStore.ts for why). `nodeMap` is one index map
+ * for every instance, or — for a file with several skeletons, e.g. mice +
+ * pellets (#99) — a map per skeleton to keep; other skeletons' instances are
+ * skipped.
  */
 export function extractPoses(
   labels: Labels,
   video: Video,
-  nodeMap: readonly number[],
-  only?: Skeleton,
-  into: Map<number, OverlayPose[]> = new Map(),
-): Map<number, OverlayPose[]> {
-  const out = into;
-  const n = nodeMap.length;
-  for (const lf of labels.labeledFrames) {
-    if (lf.video !== video) continue;
+  nodeMap: readonly number[] | ReadonlyMap<Skeleton, readonly number[]>,
+): PoseStore {
+  const perSkeleton = nodeMap instanceof Map ? (nodeMap as ReadonlyMap<Skeleton, readonly number[]>) : null;
+  const single = perSkeleton ? null : (nodeMap as readonly number[]);
+  const n = single ? single.length : (perSkeleton!.values().next().value?.length ?? 0);
+  const lfs = labels.labeledFrames.filter((lf) => lf.video === video);
+  let capacity = 0;
+  for (const lf of lfs) capacity += lf.instances.length;
+  const b = new PoseStoreBuilder(n, capacity);
+  for (const lf of lfs) {
     for (const inst of lf.instances) {
       if (!(inst instanceof PredictedInstance)) continue;
-      if (only && inst.skeleton !== only) continue;
-      const pts = inst.points;
-      const xy = new Float64Array(n * 2);
-      for (let i = 0; i < n; i++) {
-        const p = pts[nodeMap[i]];
-        const ok = p && p.visible !== false && Number.isFinite(p.xy[0]) && Number.isFinite(p.xy[1]);
-        xy[2 * i] = ok ? p.xy[0] : NaN;
-        xy[2 * i + 1] = ok ? p.xy[1] : NaN;
-      }
+      const map = single ?? perSkeleton!.get(inst.skeleton);
+      if (!map) continue;
+      // numpy() reads io's columnar storage directly (no per-point view objects);
+      // hidden points come back as NaN.
+      const pts = inst.numpy({ invisibleAsNaN: true });
       const score = Number.isFinite(inst.score) ? inst.score : null;
-      const pose: OverlayPose = { xy, score, trackName: inst.track?.name ?? null };
-      const list = out.get(lf.frameIdx);
-      if (list) list.push(pose);
-      else out.set(lf.frameIdx, [pose]);
+      const off = b.begin(lf.frameIdx, score, inst.track?.name ?? null);
+      const xy = b.buffer;
+      for (let i = 0; i < n; i++) {
+        const p = pts[map[i]];
+        const ok = p && Number.isFinite(p[0]) && Number.isFinite(p[1]);
+        xy[off + 2 * i] = ok ? p[0] : NaN;
+        xy[off + 2 * i + 1] = ok ? p[1] : NaN;
+      }
     }
   }
-  return out;
+  return b.build();
 }
 
 /** A prediction file checked against the project: usable, with poses, or not, with the reason. */
@@ -274,7 +280,7 @@ export type CandidateAnalysis =
   | {
       ok: true;
       name: string;
-      frames: Map<number, OverlayPose[]>;
+      frames: PoseFrames;
       /** Frames that have at least one predicted pose. */
       frameCount: number;
       /** The file's video was found by path or only by file name. */
@@ -332,8 +338,7 @@ export function analyzePredictionFile(
       reason: `None of its ${used.length} skeletons has this skeleton's nodes (${projectNodeNames.join(", ")})`,
     };
   }
-  const frames = new Map<number, OverlayPose[]>();
-  for (const c of matching) extractPoses(labels, vm.video, c.nodeMap, c.skeleton, frames);
+  const frames = extractPoses(labels, vm.video, new Map(matching.map((c) => [c.skeleton, c.nodeMap])));
   return {
     ok: true,
     name,
@@ -362,3 +367,4 @@ export function uniqueModelName(name: string, taken: readonly string[]): string 
   while (taken.includes(`${name} (${i})`)) i++;
   return `${name} (${i})`;
 }
+
