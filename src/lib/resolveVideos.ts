@@ -64,6 +64,7 @@ import {
   releaseHdf5Containers,
   type Hdf5VideoHints,
 } from "./hdf5VideoSource";
+import { RawHdf5VideoBackend, type Hdf5InputFormat } from "./rawHdf5Video";
 
 /** Extract just the basename from a path or filename. */
 export function getBasename(filename: string | string[]): string {
@@ -1913,6 +1914,15 @@ function persistHdf5Dataset(video: Video): void {
   if (typeof dataset === "string" && dataset !== "") {
     (video.backendMetadata as Record<string, unknown>).dataset = dataset;
   }
+  // A raw rank-4 movie also records its pixel layout (PyQt's `input_format`),
+  // so Python SLEAP and the next open read the array the same way.
+  const backend = video.backend;
+  const inner =
+    backend instanceof GrayscaleVideoBackend ? backend.inner : backend;
+  if (inner instanceof RawHdf5VideoBackend) {
+    (video.backendMetadata as Record<string, unknown>).input_format =
+      inner.inputFormat;
+  }
 }
 
 /** Shared options for {@link assignVideoBackend} / {@link assignVideoBackendFromPath}. */
@@ -2271,7 +2281,8 @@ export function isSupportedVideoUrl(url: string): boolean {
 export async function buildStandaloneVideo(
   file: File,
   absPath?: string | null,
-  grayscale?: boolean
+  grayscale?: boolean | null,
+  hdf5?: Hdf5ImportOptions
 ): Promise<Video | null> {
   // `.pkg.slp`/`.h5` are video sources too (their frames are embedded-image
   // datasets, not a media stream), so they pass the gate even though they are
@@ -2288,6 +2299,13 @@ export async function buildStandaloneVideo(
   // Desktop opens by path (canonical filename = the path, so it resolves on
   // reload); browser opens from the File (filename = the bare name).
   const video = new Video({ filename: absPath ?? file.name, openBackend: false });
+  if (hdf5) {
+    // The Import Videos dialog's dataset + channels choice for a raw HDF5
+    // movie; the assign helpers read it back via hdf5HintsForVideo.
+    const meta = video.backendMetadata as Record<string, unknown>;
+    meta.dataset = hdf5.dataset;
+    meta.input_format = hdf5.inputFormat;
+  }
   const opts = { grayscale, pickHdf5Dataset: chooseHdf5Dataset };
   if (absPath) {
     await assignVideoBackendFromPath(video, absPath, opts);
@@ -2299,6 +2317,22 @@ export async function buildStandaloneVideo(
   if (!video.shape) return null;
   return video;
 }
+
+/**
+ * PyQt's HDF5 import parameters (`importvideos.py:140-157`): which rank-4
+ * dataset holds the movie, and whether it is stored channels-first or -last.
+ */
+export interface Hdf5ImportOptions {
+  dataset: string;
+  inputFormat: Hdf5InputFormat;
+}
+
+/**
+ * Raw HDF5 movie extensions the "Add Videos" picker offers (PyQt's "HDF5"
+ * filter). Not `.slp`: picking one from the import dialog still opens it as a
+ * project, and a SLEAP package holds no rank-4 movie for PyQt's dataset menu.
+ */
+export const HDF5_MOVIE_IMPORT_EXTS: readonly string[] = ["h5", "hdf5"];
 
 /** Options for {@link pickVideoFiles}. */
 export interface PickVideoFilesOptions {
@@ -2335,11 +2369,17 @@ export async function pickVideoFiles(
   const result = await platform.showOpenDialog({
     multiple: true,
     // Relinking an existing video (Replace Video) also offers the HDF5
-    // containers a `.slp` can reference; a plain import stays media-only so a
-    // picked `.slp` keeps meaning "open this project".
+    // containers a `.slp` can reference; a plain import adds only raw HDF5
+    // movies (`.h5`/`.hdf5`, PyQt's "HDF5" filter) so a picked `.slp` keeps
+    // meaning "open this project".
     filters: opts?.relinking
       ? locateVideoFilters(opts.relinking)
-      : [{ name: "Video files", extensions: [...SUPPORTED_VIDEO_EXTS] }],
+      : [
+          {
+            name: "Video files",
+            extensions: [...SUPPORTED_VIDEO_EXTS, ...HDF5_MOVIE_IMPORT_EXTS],
+          },
+        ],
   });
   if (!result) return []; // cancelled
 
@@ -2400,12 +2440,14 @@ export function pickedFromPaths(paths: string[]): PickedVideoFile[] {
 export async function addVideoFileToLabels(
   labels: Labels,
   picked: PickedVideoFile,
-  grayscale?: boolean
+  grayscale?: boolean | null,
+  hdf5?: Hdf5ImportOptions
 ): Promise<Video | null> {
   const video = await buildStandaloneVideo(
     picked.file,
     picked.absPath,
-    grayscale
+    grayscale,
+    hdf5
   );
   if (!video) return null;
   labels.addVideo(video);

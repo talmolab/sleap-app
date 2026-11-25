@@ -32,11 +32,13 @@ import {
   parseSkeletonFile,
   compareSkeletons,
   serializeSkeletonYaml,
+  serializeSkeletonJson,
   type SkeletonDiff,
 } from "../../lib/skeletonIO";
 import { downloadFile } from "../../lib/exportUtils";
 import { getPlatform } from "../../platform/index";
 import { toast } from "@/lib/notify";
+import { handleSlpFormatError } from "@/lib/slpFormatRefusal";
 import type { Skeleton } from "@talmolab/sleap-io.js";
 import { ReplaceSkeletonDialog } from "./ReplaceSkeletonDialog";
 import { SkeletonPicker } from "./SkeletonPicker";
@@ -438,19 +440,23 @@ export function SkeletonPanel() {
   };
 
   /**
-   * Load a skeleton from a .json/.yaml/.yml/.slp file. Seeds a 0-node skeleton
+   * Load a skeleton from a .json/.yaml/.yml/.slp/.h5/.hdf5 file. Seeds a 0-node skeleton
    * directly; on an existing skeleton, applies directly when the node sets match
    * (only edges/symmetries change) else opens the Replace dialog to link nodes.
    */
   const handleLoadFromFile = async () => {
     if (!skeleton) return;
     let picked: string | string[] | File | File[] | null;
+    let filename: string | undefined;
     let newSkeleton: Skeleton;
     try {
       const platform = await getPlatform();
       picked = await platform.showOpenDialog({
         filters: [
-          { name: "Skeleton", extensions: ["json", "yaml", "yml", "slp"] },
+          {
+            name: "Skeleton",
+            extensions: ["json", "yaml", "yml", "slp", "h5", "hdf5"],
+          },
         ],
       });
       if (picked == null) return; // cancelled
@@ -458,20 +464,22 @@ export function SkeletonPanel() {
       const one = Array.isArray(picked) ? picked[0] : picked;
       if (one == null) return; // empty selection
 
-      let filename: string;
       let data: string | ArrayBuffer | Uint8Array;
       if (typeof one === "string") {
         // Tauri: a path string → read bytes via the platform.
         filename = one;
         data = await platform.readFile(one);
       } else {
-        // Browser: a File → read text (or bytes for the binary .slp).
+        // Browser: a File → read text (or bytes for binary .slp/.h5/.hdf5).
         filename = one.name;
-        const isSlp = /\.slp$/i.test(one.name);
-        data = isSlp ? await one.arrayBuffer() : await one.text();
+        const isBinary = /\.(slp|h5|hdf5)$/i.test(one.name);
+        data = isBinary ? await one.arrayBuffer() : await one.text();
       }
       newSkeleton = await parseSkeletonFile(filename, data);
     } catch (err) {
+      if (handleSlpFormatError(err, filename)) {
+        return;
+      }
       toast.error("Failed to load skeleton", {
         description: err instanceof Error ? err.message : String(err),
       });
@@ -509,21 +517,34 @@ export function SkeletonPanel() {
     setReplaceDialogOpen(false);
   };
 
-  /** Serialize the current skeleton to YAML and save it (Save As…). */
+  /**
+   * Save As…: JSON first, like PyQt ("JSON skeleton (*.json)", default
+   * `skeleton.json`); YAML is still offered. The chosen extension decides the
+   * format. (PyQt also lists HDF5, but its save does nothing for it, so it is
+   * not offered here.)
+   */
   const handleSaveAs = async () => {
     if (!skeleton) return;
     try {
-      const yaml = serializeSkeletonYaml(skeleton);
-      const name = `${skeleton.name || "skeleton"}.yaml`;
+      const base = skeleton.name || "skeleton";
+      const name = `${base}.json`;
+      const textFor = (filename: string) =>
+        /\.ya?ml$/i.test(filename)
+          ? { text: serializeSkeletonYaml(skeleton), mime: "text/yaml" }
+          : { text: serializeSkeletonJson(skeleton), mime: "application/json" };
       const platform = await getPlatform();
 
       if (platform.isTauri) {
         const savePath = await platform.showSaveDialog({
-          filters: [{ name: "Skeleton YAML", extensions: ["yaml"] }],
+          filters: [
+            { name: "JSON skeleton", extensions: ["json"] },
+            { name: "Skeleton YAML", extensions: ["yaml"] },
+          ],
           defaultName: name,
         });
         if (!savePath) return; // cancelled
-        await platform.writeFile(savePath, new TextEncoder().encode(yaml));
+        const { text } = textFor(savePath);
+        await platform.writeFile(savePath, new TextEncoder().encode(text));
         toast.success("Saved skeleton", { description: savePath });
       } else if ("showSaveFilePicker" in window) {
         // Browser: File System Access API (native save dialog).
@@ -536,12 +557,17 @@ export function SkeletonPanel() {
             }
           ).showSaveFilePicker({
             types: [
+              {
+                description: "JSON skeleton",
+                accept: { "application/json": [".json"] },
+              },
               { description: "Skeleton YAML", accept: { "text/yaml": [".yaml"] } },
             ],
             suggestedName: name,
           });
+          const { text, mime } = textFor(handle.name);
           const writable = await handle.createWritable();
-          await writable.write(new Blob([yaml], { type: "text/yaml" }));
+          await writable.write(new Blob([text], { type: mime }));
           await writable.close();
           toast.success("Saved skeleton", { description: handle.name });
         } catch (err: unknown) {
@@ -549,8 +575,9 @@ export function SkeletonPanel() {
           throw err;
         }
       } else {
-        // Fallback: anchor download.
-        downloadFile(yaml, name, "text/yaml");
+        // Fallback: anchor download (JSON, PyQt's default).
+        const { text, mime } = textFor(name);
+        downloadFile(text, name, mime);
         toast.success("Saved skeleton", { description: name });
       }
     } catch (err) {

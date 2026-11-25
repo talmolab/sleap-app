@@ -44,17 +44,20 @@ export const BASELINE_PROFILES: BaselineProfile[] = [
 
 /**
  * Map a (modelType, slot) pair to the headType used for baseline profile lookup.
- * Slot "centroid" maps directly. Slot "centered_instance" is
- * "centered_instance_bbox" (box crops) in a top-down-box pipeline, else
- * "centered_instance"; slot "bbox" is the "bbox" detector family (see
- * lib/bboxModels.ts — match trained runs with `headTypeMatches`).
- * Slot "config" depends on the pipeline modelType.
+ * Slot "centroid" maps directly. Slot "centered_instance" is the crop-stage
+ * model of a two-stage pipeline: "centered_instance_bbox" (box crops) in a
+ * top-down-box pipeline, "multi_class_topdown" (poses + identity) in a
+ * top-down-ID pipeline, else "centered_instance"; slot "bbox" is the "bbox"
+ * detector family (see lib/bboxModels.ts — match trained runs with
+ * `headTypeMatches`). Slot "config" depends on the pipeline modelType.
  */
 export function slotToHeadType(modelType: ModelType, slot: string): string {
   if (slot === "centroid") return "centroid";
   if (slot === "bbox") return "bbox";
   if (slot === "centered_instance") {
-    return modelType === "top_down_bbox" ? "centered_instance_bbox" : "centered_instance";
+    if (modelType === "top_down_bbox") return "centered_instance_bbox";
+    if (modelType === "top_down_id") return "multi_class_topdown";
+    return "centered_instance";
   }
   // slot === "config" — map from the pipeline's model type
   switch (modelType) {
@@ -64,8 +67,6 @@ export function slotToHeadType(modelType: ModelType, slot: string): string {
       return "bottomup";
     case "bottom_up_id":
       return "multi_class_bottomup";
-    case "top_down_id":
-      return "multi_class_topdown";
     default:
       return slot;
   }

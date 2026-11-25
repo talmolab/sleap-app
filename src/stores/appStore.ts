@@ -54,7 +54,8 @@ import {
 } from "@/lib/panelLayout";
 import { buildTutorialSteps, type TutorialStep } from "@/lib/tutorial/steps";
 import { isTauri } from "@/platform/index";
-import { STEP_SIZES, isValidStepSize } from "@/lib/shortcuts";
+import { STEP_SIZES, isValidStepSize, type ShortcutOverrides } from "@/lib/shortcuts";
+import { sanitizeOverrides } from "@/lib/shortcutEditing";
 import type { SavedInferenceSettings } from "@/lib/inferenceSettings";
 
 // Required before immer can draft Set/Map fields (hiddenInstances /
@@ -284,6 +285,18 @@ export interface AppState {
   trailShade: string;
   /** Frames moved by Ctrl+Left/Right (PyQt pref "medium step size"). Persisted. */
   mediumStepSize: number;
+  /**
+   * The user's own keyboard shortcuts (Help ▸ Keyboard Shortcuts…), by action
+   * name; actions not listed keep their defaults (see lib/shortcuts.ts).
+   * PyQt keeps these in shortcuts.yaml. Persisted.
+   */
+  shortcutOverrides: ShortcutOverrides;
+  /**
+   * The Shortcuts dialog is waiting for a key: the menus drop their shortcuts
+   * meanwhile, so the macOS native menu doesn't take a ⌘ key (its accelerator)
+   * before the dialog sees it. Not persisted.
+   */
+  shortcutCaptureActive: boolean;
   /** Frames moved by Ctrl+Shift+Left/Right (PyQt pref "large step size"). Persisted. */
   largeStepSize: number;
   /** What the trail follows: `"centroid"` or a skeleton node name (PyQt `trail node`). Persisted. */
@@ -811,6 +824,9 @@ export interface AppState {
 /** View ▸ zoom modes that keep applying as you move around (see `setZoomMode`). */
 export type ZoomMode = "fit" | "followSelection" | "actualSize";
 
+/** The localStorage key the preferences are saved under. */
+export const PREFERENCES_STORAGE_KEY = "sleap-app-preferences";
+
 /** Keys persisted to localStorage for user preferences. */
 export const PERSISTED_KEYS: (keyof AppState)[] = [
   "palette",
@@ -834,6 +850,7 @@ export const PERSISTED_KEYS: (keyof AppState)[] = [
   "trailLength",
   "mediumStepSize",
   "largeStepSize",
+  "shortcutOverrides",
   "trailNode",
   "trailAlpha",
   "trailFade",
@@ -965,6 +982,8 @@ export const useAppStore = create<AppState>()(
       trailShade: "Normal",
       mediumStepSize: STEP_SIZES.medium,
       largeStepSize: STEP_SIZES.large,
+      shortcutOverrides: {},
+      shortcutCaptureActive: false,
       // PyQt prefs.py defaults.
       trailNode: "centroid",
       trailAlpha: 1,
@@ -2094,7 +2113,7 @@ export const useAppStore = create<AppState>()(
         }),
     })),
     {
-      name: "sleap-app-preferences",
+      name: PREFERENCES_STORAGE_KEY,
       partialize: (state) =>
         Object.fromEntries(
           PERSISTED_KEYS.map((key) => [key, state[key]])
@@ -2123,6 +2142,8 @@ export const useAppStore = create<AppState>()(
           // nowhere (or NaN frames): fall back to the default.
           mediumStepSize: isValidStepSize(p.mediumStepSize) ? p.mediumStepSize : current.mediumStepSize,
           largeStepSize: isValidStepSize(p.largeStepSize) ? p.largeStepSize : current.largeStepSize,
+          // Only well-formed keys for actions this build has.
+          shortcutOverrides: sanitizeOverrides(p.shortcutOverrides),
           panelOrder: reconcilePanelOrder(p.panelOrder),
           hiddenPanels: reconcileHiddenPanels(p.hiddenPanels),
           // Seed the open-panel stack: a stored set wins; a legacy single

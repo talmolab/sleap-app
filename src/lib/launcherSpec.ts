@@ -145,13 +145,13 @@ export function buildRunInferenceSpecs(
   );
 }
 
-/** Reverses `slotToHeadType`'s forward mapping (trainingProfiles.ts) for the head-type sets `getConfigSlots` can actually produce. A `top_down_id` run's two configs carry the exact same head types a `top_down` run's do (slotToHeadType special-cases "centroid"/"centered_instance" before ever consulting `modelType`), so that pair is irreducibly ambiguous — it resolves to the more common `top_down`. */
+/** Reverses `slotToHeadType`'s forward mapping (trainingProfiles.ts) for the head-type sets `getConfigSlots` can actually produce. */
 const HEAD_TYPES_TO_MODEL_TYPE: Array<{ headTypes: string[]; modelType: ModelType }> = [
   { headTypes: ["centroid", "centered_instance"], modelType: "top_down" },
   { headTypes: ["single_instance"], modelType: "single_animal" },
   { headTypes: ["bottomup"], modelType: "bottom_up" },
   { headTypes: ["multi_class_bottomup"], modelType: "bottom_up_id" },
-  { headTypes: ["multi_class_topdown"], modelType: "top_down_id" },
+  { headTypes: ["centroid", "multi_class_topdown"], modelType: "top_down_id" },
 ];
 
 /**
@@ -170,6 +170,16 @@ export function inferModelType(headTypes: string[]): ModelType | null {
 }
 
 /**
+ * Whether a train run's head types are one half of a top-down pipeline — what
+ * a top-down run that reused a trained model for the other stage submits
+ * (Training panel "Use a trained model"). "Run again" can't rebuild that
+ * pipeline (the wizard has no reuse option), so it says so instead.
+ */
+export function isPartialTopDownRun(headTypes: string[]): boolean {
+  return headTypes.length === 1 && (headTypes[0] === "centroid" || headTypes[0] === "centered_instance");
+}
+
+/**
  * Reconstructs `{modelType, configs}` from a train run's sibling job specs
  * for "Run again" (NewJobWizard row action, PR5b) — the caller gathers the
  * siblings (`listJobs` + `jobDetail`, grouped by `run.id`, ordered by
@@ -179,8 +189,8 @@ export function inferModelType(headTypes: string[]): ModelType | null {
  * `isMultiModelTrainSpec`'s splitting in `connectStore.ts`).
  *
  * `null` when `model_types` doesn't match any pipeline shape this app
- * recognizes (see {@link HEAD_TYPES_TO_MODEL_TYPE}'s doc on `top_down_id`'s
- * ambiguity), or when none of the YAMLs parse.
+ * recognizes (see {@link HEAD_TYPES_TO_MODEL_TYPE}), or when none of the
+ * YAMLs parse.
  */
 export function seedFromJobSpec(
   spec: Pick<TrainJobSpec, "config_contents" | "model_types">,

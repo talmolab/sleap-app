@@ -18,6 +18,8 @@ import type { Labels } from "@/types";
 import type { JobResult, TrainJobSpec } from "@/lib/sleapConnect";
 import { buildRemoteTrackSpecs } from "@/lib/remoteTrackSpec";
 import { resolvePostTrainingTarget } from "@/lib/postTrainingTarget";
+import { mergeModeForRun, type ExistingPredictionsMode } from "@/lib/predictionMergeMode";
+import { videoTargetOf, type PredictionVideoTarget } from "@/lib/predictionVideoMatch";
 import {
   LABELS_EMBED_WARN_BYTES,
   LABELS_EMBED_HARD_CAP_BYTES,
@@ -26,6 +28,15 @@ import type { VideoVisibility } from "@/lib/remoteVisibility";
 import type { JobTelemetry } from "@/lib/protocolV1/jobTelemetry";
 import type { InferenceConfig, PendingRemoteMerge } from "@/stores/inferenceStore";
 import { isBboxHeadKey } from "@/lib/bboxModels";
+import {
+  applyReusePins,
+  pipelineModelPaths,
+  readModelFolder,
+  reusedModelsStartProblem,
+  reuseStartProblem,
+  slotsToTrain,
+  type ReuseSelection,
+} from "@/lib/reuseTrainedModel";
 
 const MAX_BATCH_SAMPLES = 20000; // bound batchSamples; drop oldest beyond this
 const MAX_LOG_LINES = 1000; // bound the training log so it doesn't grow unbounded during long runs
@@ -551,6 +562,13 @@ export interface ConfigFile {
   hasTrainedModel: boolean; // true if config has a non-empty run_name (trained model exists)
   /** Absolute path to this config's source run's checkpoint file, for Resume/Fine-tune. `null` for a baseline profile or a manually-browsed file (no known run directory). */
   checkpointPath: string | null;
+  /**
+   * "Use a trained model (don't retrain)" for this stage — PyQt's per-tab
+   * "Reuse model" option. Present = checked; the stage is skipped in
+   * training and `reuse.model` goes into post-training inference instead.
+   * See lib/reuseTrainedModel.ts.
+   */
+  reuse?: ReuseSelection | null;
 }
 
 export interface RemoteTrainingOptions {
@@ -760,6 +778,10 @@ interface TrainingState {
   currentModelIndex: number;
   wandbUrl: string | null;
   modelOutputDirs: string[];
+  /** The whole pipeline a local run ended with — newly trained models plus any reused ones, in pipeline order (what Export Model… exports). */
+  pipelineModelDirs: string[];
+  /** Where Export Model… writes that pipeline: this project's `models/exported` (a reused model may live in another project's folder). */
+  pipelineExportDir: string | null;
   log: string[]; // single shared log for all models
   /** Remote runs only; `null` when not requested / not reached. */
   postTrainingInference: PostTrainingInference | null;
@@ -782,6 +804,8 @@ interface TrainingState {
   /** Restore ALL of a config's hyperparameters to its as-loaded baseline. */
   resetConfigHyperparams: (slot: string) => void;
   updateConfigCheckpointPath: (slot: string, path: string | null) => void;
+  /** Check/uncheck "Use a trained model" for a slot (`null` = train it), or pick its model. */
+  setConfigReuse: (slot: string, reuse: ReuseSelection | null) => void;
   addConfigFile: (file: ConfigFile) => void;
   removeConfigFile: (slot: string) => void;
   parseYamlConfig: (yamlText: string, filename: string, slot: string, checkpointPath?: string | null) => ConfigFile | null;
@@ -798,6 +822,8 @@ interface TrainingState {
   cancelDryRun: () => Promise<void>;
   clearDryRun: () => void;
   recordEpoch: (modelIndex: number, sample: EpochSample) => void;
+  /** Replace the train loss already recorded for `epoch` of model `modelIndex`. */
+  setEpochTrainLoss: (modelIndex: number, epoch: number, trainLoss: number) => void;
   recordBatch: (modelIndex: number, sample: BatchInput) => void;
   recordBatches: (modelIndex: number, samples: BatchInput[]) => void;
   markEpochBegin: (modelIndex: number, epoch: number) => void;
@@ -825,10 +851,11 @@ export function getConfigSlots(modelType: ModelType): string[] {
 }
 
 /** Get display label for a config slot */
-export function getSlotLabel(slot: string): string {
+export function getSlotLabel(slot: string, modelType?: ModelType): string {
   switch (slot) {
     case "centroid": return "Centroid Config";
-    case "centered_instance": return "Centered Instance Config";
+    case "centered_instance":
+      return modelType === "top_down_id" ? "Multi-Class Top-Down Config" : "Centered Instance Config";
     case "bbox": return "Box Detector Config";
     default: return "Config";
   }
@@ -1619,6 +1646,27 @@ async function pathExists(path: string): Promise<boolean> {
 }
 
 /**
+ * The run folder name sleap-nn will really train into. When
+ * `<ckptDir>/<runName>/best.ckpt` already exists, sleap-nn silently switches
+ * to the first free `<runName>-<i>` (`_setup_ckpt_path` in model_trainer.py)
+ * and never reports it, so the app kept pointing post-training inference,
+ * metrics and Cancel cleanup at the earlier run. Applying the same rule here
+ * and passing the result as the run name makes the app's name the one used.
+ */
+export async function resolveLocalRunName(
+  ckptDir: string,
+  runName: string,
+  exists: (path: string) => Promise<boolean> = pathExists,
+): Promise<string> {
+  if (!(await exists(`${ckptDir}/${runName}/best.ckpt`))) return runName;
+  for (let i = 1; i < 10000; i++) {
+    const candidate = `${runName}-${i}`;
+    if (!(await exists(`${ckptDir}/${candidate}`))) return candidate;
+  }
+  return runName;
+}
+
+/**
  * Delete a cancelled run's folder, recursively. Returns true when deleted,
  * false when it couldn't be, null when there was nothing to delete (sleap-nn
  * was killed before it created the folder).
@@ -1633,6 +1681,15 @@ async function removeRunFolder(path: string): Promise<boolean | null> {
     console.warn("[training] Couldn't delete the cancelled run's folder:", path, e);
     return false;
   }
+}
+
+/** Re-read a reused model's folder from disk (desktop), for the Start-time check. */
+async function readLocalModelFolder(path: string) {
+  const fs = await import("@tauri-apps/plugin-fs");
+  return readModelFolder(path, {
+    readTextFile: (p) => fs.readTextFile(p),
+    readDir: async (p) => (await fs.readDir(p)).map((e) => ({ name: e.name, isDirectory: e.isDirectory })),
+  });
 }
 
 async function localTrainingLabelsPath(config: TrainingConfig): Promise<string> {
@@ -1694,6 +1751,8 @@ const initialState = {
   currentModelIndex: 0,
   wandbUrl: null as string | null,
   modelOutputDirs: [] as string[],
+  pipelineModelDirs: [] as string[],
+  pipelineExportDir: null as string | null,
   log: [] as string[],
   postTrainingInference: null as PostTrainingInference | null,
   resetSeq: 0,
@@ -1709,7 +1768,9 @@ export const useTrainingStore = create<TrainingState>()((set, get) => ({
     set((state) => ({
       config: {
         ...state.config,
-        [key]: key === "configs" ? syncTopDownAnchor(value as ConfigFile[]) : value,
+        [key]: key === "configs"
+          ? applyReusePins(state.config.modelType, syncTopDownAnchor(value as ConfigFile[]))
+          : value,
       },
     })),
 
@@ -1726,7 +1787,8 @@ export const useTrainingStore = create<TrainingState>()((set, get) => ({
       return {
         config: {
           ...state.config,
-          configs: syncTopDownAnchor(
+          // A reused model's anchor / box settings win over an edit (see applyReusePins).
+          configs: applyReusePins(state.config.modelType, syncTopDownAnchor(
             state.config.configs.map((c) =>
               c.slot === slot
                 ? { ...c, hyperparams: { ...c.hyperparams, ...updates } }
@@ -1735,7 +1797,7 @@ export const useTrainingStore = create<TrainingState>()((set, get) => ({
                   : c,
             ),
             "anchorPart" in updates ? slot : undefined,
-          ),
+          )),
         },
       };
     }),
@@ -1744,13 +1806,13 @@ export const useTrainingStore = create<TrainingState>()((set, get) => ({
     set((state) => ({
       config: {
         ...state.config,
-        configs: syncTopDownAnchor(
+        configs: applyReusePins(state.config.modelType, syncTopDownAnchor(
           state.config.configs.map((c) =>
             c.slot === slot
               ? { ...c, hyperparams: { ...c.originalHyperparams } }
               : c,
           ),
-        ),
+        )),
       },
     })),
 
@@ -1764,18 +1826,37 @@ export const useTrainingStore = create<TrainingState>()((set, get) => ({
       },
     })),
 
-  addConfigFile: (file) =>
+  setConfigReuse: (slot, reuse) =>
     set((state) => ({
       config: {
         ...state.config,
-        configs: syncTopDownAnchor(
-          [...state.config.configs.filter((c) => c.slot !== file.slot), file],
-          // A newly loaded config that names an anchor sets it for the pair;
-          // one without (a stock profile) adopts the partner's.
-          file.hyperparams.anchorPart !== null ? file.slot : undefined,
+        // Picking a reused model pins its anchor / box settings on the pair.
+        configs: applyReusePins(
+          state.config.modelType,
+          state.config.configs.map((c) => (c.slot === slot ? { ...c, reuse } : c)),
         ),
       },
     })),
+
+  addConfigFile: (file) =>
+    set((state) => {
+      // Swapping a stage's config (profile, trained run, browsed or dropped
+      // file) keeps its "Use a trained model" choice unless the new file
+      // says otherwise — the box must never untick silently.
+      const prevReuse = state.config.configs.find((c) => c.slot === file.slot)?.reuse;
+      const incoming = file.reuse === undefined && prevReuse ? { ...file, reuse: prevReuse } : file;
+      return {
+        config: {
+          ...state.config,
+          configs: applyReusePins(state.config.modelType, syncTopDownAnchor(
+            [...state.config.configs.filter((c) => c.slot !== file.slot), incoming],
+            // A newly loaded config that names an anchor sets it for the pair;
+            // one without (a stock profile) adopts the partner's.
+            file.hyperparams.anchorPart !== null ? file.slot : undefined,
+          )),
+        },
+      };
+    }),
 
   removeConfigFile: (slot) =>
     set((state) => ({
@@ -2176,7 +2257,7 @@ export const useTrainingStore = create<TrainingState>()((set, get) => ({
     // really uses several different skeletons (a worker-side file is its own).
     if (remoteOpts?.labelsSource !== "worker-file" && (await blockedByMultiSkeleton("Training"))) return;
     const localOpts = opts && !("remote" in opts) ? opts as LocalTrainingOptions : undefined;
-    const { config } = get();
+    let { config } = get();
 
     // Local sleap-nn reads the labels file from disk; don't let it silently
     // train on a stale project file while the window holds unsaved labels.
@@ -2185,12 +2266,21 @@ export const useTrainingStore = create<TrainingState>()((set, get) => ({
       if (!(await confirmSaveBeforeRun(await localTrainingLabelsPath(config), "training"))) return;
     }
 
-    // Build model progress entries from per-config hyperparams
+    // Build model progress entries from per-config hyperparams. A stage set
+    // to "Use a trained model" isn't trained (PyQt's `dont_retrain`): it gets
+    // no progress entry, and its model joins post-training inference below.
     const slots = getConfigSlots(config.modelType);
-    const models: ModelProgress[] = slots.map((slot) => {
+    const trainSlots = slotsToTrain(slots, config.configs);
+    const reusedLines = slots.flatMap((slot) => {
+      const model = config.configs.find((c) => c.slot === slot)?.reuse?.model;
+      return model
+        ? [`— Using trained model for ${getSlotLabel(slot, config.modelType).replace(" Config", "")} (not retraining): ${model.path}`]
+        : [];
+    });
+    const models: ModelProgress[] = trainSlots.map((slot) => {
       const cf = config.configs.find((c) => c.slot === slot);
       return {
-        ...emptyModelProgress(getSlotLabel(slot).replace(" Config", ""), cf?.hyperparams.maxEpochs ?? 100),
+        ...emptyModelProgress(getSlotLabel(slot, config.modelType).replace(" Config", ""), cf?.hyperparams.maxEpochs ?? 100),
         plateauPatience: cf?.hyperparams.earlyStoppingPatience ?? null,
         plateauMinDelta: cf?.hyperparams.plateauMinDelta ?? null,
       };
@@ -2208,7 +2298,9 @@ export const useTrainingStore = create<TrainingState>()((set, get) => ({
       currentModelIndex: 0,
       wandbUrl: null,
       modelOutputDirs: [],
-      log: [],
+      pipelineModelDirs: [],
+      pipelineExportDir: null,
+      log: reusedLines,
       postTrainingInference: null,
       dryRun: null,
     });
@@ -2216,6 +2308,41 @@ export const useTrainingStore = create<TrainingState>()((set, get) => ({
     if (remoteOpts?.remote && isBboxModelType(config.modelType)) {
       set({ status: "error", error: BBOX_REMOTE_UNSUPPORTED });
       return;
+    }
+
+    const stageLabel = (slot: string) => getSlotLabel(slot, config.modelType).replace(" Config", "");
+    const reuseProblem = reuseStartProblem(slots, config.configs, stageLabel, {
+      remote: !!remoteOpts?.remote,
+      inferenceTarget: remoteOpts ? remoteOpts.inferenceTarget : localOpts?.inferenceTarget,
+    });
+    if (reuseProblem) {
+      set({ status: "error", error: reuseProblem });
+      return;
+    }
+    if (slots.length !== slotsToTrain(slots, config.configs).length) {
+      // The stages that train must match the reused model's anchor part /
+      // box settings, whatever was edited since it was picked.
+      const pinned = applyReusePins(config.modelType, config.configs);
+      if (pinned !== config.configs) {
+        set((s) => ({ config: { ...s.config, configs: pinned } }));
+        config = get().config;
+      }
+      // Re-check the picks now: a folder may have moved since, or the pick
+      // may come from another project. Locally the folder is re-read; the
+      // skeleton is checked unless the labels are a worker-side file.
+      const { useAppStore } = await import("@/stores/appStore");
+      const projectNodes =
+        remoteOpts?.labelsSource === "worker-file"
+          ? null
+          : (useAppStore.getState().skeleton?.nodes.map((n) => n.name) ?? null);
+      const startProblem = await reusedModelsStartProblem(slots, config.configs, config.modelType, stageLabel, {
+        projectNodes,
+        readFolder: remoteOpts ? undefined : readLocalModelFolder,
+      });
+      if (startProblem) {
+        set({ status: "error", error: startProblem });
+        return;
+      }
     }
 
     if (remoteOpts?.remote) {
@@ -2226,6 +2353,35 @@ export const useTrainingStore = create<TrainingState>()((set, get) => ({
       const workerLabel = () =>
         (useConnectStore.getState().pairedWorkers ?? []).find((w) => w.nodeId === remoteOpts.workerId)?.label ??
         remoteOpts.workerId;
+
+      // A reused stage's model must be readable on the worker for the
+      // post-training track job: translate its local folder with the same
+      // shared-folder / path-rule logic videos use, and refuse up front
+      // (before anything is uploaded or trained) if the worker can't see it.
+      const reusedWorkerPaths = new Map<string, string>();
+      const remoteInferenceTarget = remoteOpts.inferenceTarget;
+      const reusedLocalPaths = config.configs
+        .filter((c) => slots.includes(c.slot) && c.reuse?.model)
+        .map((c) => c.reuse!.model!.path);
+      if (remoteInferenceTarget && remoteInferenceTarget !== "nothing" && reusedLocalPaths.length > 0) {
+        const { checkVideoVisibility } = await import("@/lib/remoteVisibility");
+        const seen = await checkVideoVisibility(reusedLocalPaths, {
+          rules: pathRulesFor(remoteOpts.workerId),
+          mounts: mounts.map((m) => m.path),
+          stat: (p) => statWorkerPath(p),
+        });
+        const hidden = seen.filter((v) => !v.visible || !v.worker);
+        if (hidden.length > 0) {
+          set({
+            status: "error",
+            error:
+              `The worker can't see the trained model you chose to reuse (${hidden.map((v) => v.local).join(", ")}). ` +
+              `Put it in a folder the worker shares, add a path rule for it, or uncheck "Use a trained model" to train that stage on the worker.`,
+          });
+          return;
+        }
+        for (const v of seen) reusedWorkerPaths.set(v.local, v.worker as string);
+      }
 
       const { useAppStore } = await import("@/stores/appStore");
       const { labels, projectPath, filename } = useAppStore.getState();
@@ -2362,7 +2518,7 @@ export const useTrainingStore = create<TrainingState>()((set, get) => ({
       // trains model i (`models[i]`), and its worker-side model dir lands at
       // position i of the post-training track job's `model_paths` — the
       // pipeline order sleap-nn expects (centroid before centered_instance).
-      const orderedConfigs = slots
+      const orderedConfigs = trainSlots
         .map((slot) => config.configs.find((c) => c.slot === slot))
         .filter((c): c is ConfigFile => !!c);
 
@@ -2480,9 +2636,16 @@ export const useTrainingStore = create<TrainingState>()((set, get) => ({
               log: appendLog(s.log, `— ${message}`),
             }));
           } else {
-          const modelDirs = trainResults.map((r) => r.modelDir);
+          const trainedDirs = trainResults.map((r) => r.modelDir);
+          // Reused stages slot in at their pipeline position, by worker path.
+          const modelDirs = pipelineModelPaths(
+            slots,
+            config.configs,
+            trainedDirs,
+            (m) => reusedWorkerPaths.get(m.path) ?? m.path,
+          );
           const dataPath = trainResults.find((r) => r.labelsPath)?.labelsPath;
-          if (modelDirs.some((d) => !d) || !dataPath) {
+          if (trainedDirs.some((d) => !d) || !dataPath) {
             const message =
               "Post-training inference skipped: the worker didn't report the trained model " +
               "location (it may need updating). Run inference from the Inference panel instead.";
@@ -2505,7 +2668,7 @@ export const useTrainingStore = create<TrainingState>()((set, get) => ({
             } else {
             const inferenceConfig = buildPostTrainingInferenceConfig({
               modelType: config.modelType,
-              modelPaths: modelDirs as string[],
+              modelPaths: modelDirs,
               inferenceTarget: resolvedTarget.frameRange,
               videoIndex: resolvedTarget.videoIndex,
               sampleCount: remoteOpts.sampleCount,
@@ -2579,6 +2742,7 @@ export const useTrainingStore = create<TrainingState>()((set, get) => ({
                     results: inferResults,
                     mode: inferenceConfig.existingPredictions,
                     trackOnly: false,
+                    videoTargets: trackSpecs.map((t) => videoTargetOf(t.video_index)),
                   },
                   merged: false,
                 },
@@ -2644,6 +2808,9 @@ export const useTrainingStore = create<TrainingState>()((set, get) => ({
       // Save models next to the labels file
       const modelDir = labelsPath.replace(/[/\\][^/\\]+$/, "") + "/models";
       const trainedModelPaths: string[] = [];
+      // One entry per trained stage (null when it reported no path), so the
+      // reused stages can be slotted back in at their pipeline positions.
+      const trainedBySlot: (string | null)[] = [];
 
       // Ensure sleap-nn's [export] support is installed BEFORE training when the
       // user picked an export format, so a long run isn't wasted on a missing
@@ -2682,6 +2849,10 @@ export const useTrainingStore = create<TrainingState>()((set, get) => ({
       // Holder for the ZMQ progress-relay subscription; cleaned up in finally.
       let unlistenProgress: (() => void) | null = null;
       const batchBuffer: { epoch: number; batch: number; loss: number }[] = [];
+      // Running mean of the current epoch's batch losses: sleap-nn sends
+      // epoch_end before its LightningModule logs that epoch's `train/loss`,
+      // so the `train/loss` in epoch_end N is epoch N-1's (none in epoch 0).
+      const epochBatchLoss = { sum: 0, count: 0 };
       let batchFlushTimer: ReturnType<typeof setInterval> | null = null;
 
       // sleap-nn's tqdm progress bar repaints via carriage return many times/sec, and
@@ -2709,6 +2880,8 @@ export const useTrainingStore = create<TrainingState>()((set, get) => ({
           const i = get().currentModelIndex;
           const ev = data.event;
           if (ev === "epoch_begin") {
+            epochBatchLoss.sum = 0;
+            epochBatchLoss.count = 0;
             if (typeof data.epoch === "number") get().markEpochBegin(i, data.epoch);
           } else if (ev === "epoch_end") {
             // Flush buffered batches first so epochSize (from lastBatchNumber) is fresh.
@@ -2716,10 +2889,18 @@ export const useTrainingStore = create<TrainingState>()((set, get) => ({
               get().recordBatches(get().currentModelIndex, batchBuffer.splice(0, batchBuffer.length));
             }
             const logs = data.logs ?? {};
-            const trainLoss = logs["train/loss"] ?? logs["loss"] ?? null;
+            // sleap-nn's own `train/loss` is the mean of the same batch
+            // losses, so this matches it; it replaces it below an epoch later.
+            const trainLoss = epochBatchLoss.count > 0 ? epochBatchLoss.sum / epochBatchLoss.count : null;
+            epochBatchLoss.sum = 0;
+            epochBatchLoss.count = 0;
             const valLoss = logs["val/loss"] ?? null;
             if (typeof data.epoch === "number") {
               get().recordEpoch(i, { epoch: data.epoch, trainLoss, valLoss });
+              const previousTrainLoss = logs["train/loss"];
+              if (data.epoch > 0 && typeof previousTrainLoss === "number") {
+                get().setEpochTrainLoss(i, data.epoch - 1, previousTrainLoss);
+              }
             }
           } else if (ev === "train_begin") {
             if (data.wandb_url) set({ wandbUrl: data.wandb_url });
@@ -2733,6 +2914,11 @@ export const useTrainingStore = create<TrainingState>()((set, get) => ({
               typeof loss === "number"
             ) {
               batchBuffer.push({ epoch: data.epoch, batch: data.batch, loss });
+            }
+            // Only the step loss: `train/loss` here is still the previous epoch's.
+            if (typeof logs["loss"] === "number") {
+              epochBatchLoss.sum += logs["loss"];
+              epochBatchLoss.count += 1;
             }
           }
         });
@@ -2763,12 +2949,15 @@ export const useTrainingStore = create<TrainingState>()((set, get) => ({
       const cancelled = () => get().error === TRAINING_CANCELLED;
 
       try {
-        for (let i = 0; i < slots.length; i++) {
+        for (let i = 0; i < trainSlots.length; i++) {
           // A Cancel that lands between two models (top-down) has no process
           // to kill — don't start the next one.
           if (cancelled()) return;
-          const cf = config.configs.find((c) => c.slot === slots[i]);
-          if (!cf) continue;
+          const cf = config.configs.find((c) => c.slot === trainSlots[i]);
+          if (!cf) {
+            trainedBySlot.push(null);
+            continue;
+          }
 
           set((s) => ({
             currentModelIndex: i,
@@ -2778,11 +2967,17 @@ export const useTrainingStore = create<TrainingState>()((set, get) => ({
             log: i > 0 ? appendLog(s.log, `— Starting ${s.models[i]?.label}...`) : s.log,
           }));
 
-          const { configYaml, runName } = prepareLocalRun(cf, localLabels, localSizeStats);
+          const prepared = prepareLocalRun(cf, localLabels, localSizeStats);
+          const { configYaml } = prepared;
+          const runName = await resolveLocalRunName(modelDir, prepared.runName);
+          if (runName !== prepared.runName) {
+            set((s) => ({
+              log: appendLog(s.log, `— models/${prepared.runName} already holds a trained model; this run is saved as models/${runName}.`),
+            }));
+          }
           const runDir = `${modelDir}/${runName}`;
           // Whether this run's folder is ours to delete on Cancel: only if it
-          // didn't exist yet. (A reused custom run name can point at an earlier,
-          // finished run; sleap-nn then writes to "<name>-1" instead.)
+          // didn't exist yet (sleap-nn reuses a folder that has no best.ckpt).
           const runDirExisted = await pathExists(runDir);
 
           set((s) => ({
@@ -2842,6 +3037,7 @@ export const useTrainingStore = create<TrainingState>()((set, get) => ({
           }, modelDir);
 
           if (result.modelPath) trainedModelPaths.push(result.modelPath);
+          trainedBySlot.push(result.modelPath || null);
 
           // Cancel kills sleap-nn, so the run exits non-zero; that's the
           // user's Cancel landing, not a failure (no error output to show).
@@ -2882,7 +3078,7 @@ export const useTrainingStore = create<TrainingState>()((set, get) => ({
                 ? appendLog(s.log, `— ${s.models[i]?.label} stopped early, moving to next model...`)
                 : s.log,
             }));
-            console.log("[training] Continuing to next model (i=%d, total=%d)", i, slots.length);
+            console.log("[training] Continuing to next model (i=%d, total=%d)", i, trainSlots.length);
           } else {
             console.log("[training] Model failed, aborting training loop");
             const cause = lastErrorLine(stderrTail);
@@ -2903,19 +3099,26 @@ export const useTrainingStore = create<TrainingState>()((set, get) => ({
         set({ modelOutputDirs: trainedModelPaths });
         if (cancelled()) return;
 
+        // The whole pipeline for export + inference: newly trained models
+        // plus any reused ones, in pipeline order (PyQt's run_gui_training
+        // returns the reused config path for a `dont_retrain` head).
+        const pipelinePaths = pipelineModelPaths(slots, config.configs, trainedBySlot);
+        set({ pipelineModelDirs: pipelinePaths, pipelineExportDir: `${modelDir}/exported` });
+
         // ── Post-training model export (ONNX / TensorRT) ──────
         // Auto-export the trained model to a portable runtime when the user picked a
         // format in the Training config Output section. On failure we keep going with
         // the PyTorch checkpoint (exportDir stays null → inference falls back to it).
         const exportFormat = localOpts?.exportFormat;
         let exportDir: string | null = null;
-        if (exportFormat && exportFormat !== "none" && trainedModelPaths.length > 0) {
+        if (exportFormat && exportFormat !== "none" && pipelinePaths.length > 0) {
           const { runExport } = await import("@/platform/backend");
-          const { defaultExportOutputDir } = await import("@/stores/exportStore");
-          const outputDir = defaultExportOutputDir(trainedModelPaths);
+          // This project's models/exported — not next to the first model,
+          // which may be a reused one from another project's folder.
+          const outputDir = `${modelDir}/exported`;
           // List the run dirs being bundled so a top-down export reads clearly as
           // both heads (e.g. "centroid.n=1 + centered_instance.n=1"), not centroid-only.
-          const exportRunNames = trainedModelPaths
+          const exportRunNames = pipelinePaths
             .map((d) => d.replace(/[/\\]+$/, "").split(/[/\\]/).pop())
             .join(" + ");
           set((s) => ({ log: appendLog(s.log, `— Exporting trained model to ${exportFormat.toUpperCase()} (${exportRunNames}) → ${outputDir}...`) }));
@@ -2926,7 +3129,7 @@ export const useTrainingStore = create<TrainingState>()((set, get) => ({
             }
           };
           const exportResult = await runExport(
-            { modelPaths: trainedModelPaths, outputDir, format: exportFormat, precision: "fp16" },
+            { modelPaths: pipelinePaths, outputDir, format: exportFormat, precision: "fp16" },
             exportLogEvent,
           );
           if (exportResult.success) {
@@ -2957,7 +3160,7 @@ export const useTrainingStore = create<TrainingState>()((set, get) => ({
         // them when it builds the job. A target that can't run — "Selected
         // clip" with nothing selected — is logged and skipped, never an error.
         const resolvedTarget =
-          inferenceTarget && inferenceTarget !== "nothing" && trainedModelPaths.length > 0
+          inferenceTarget && inferenceTarget !== "nothing" && pipelinePaths.length > 0
             ? resolvePostTrainingTarget(inferenceTarget, useAppStore.getState())
             : null;
         if (resolvedTarget && "skip" in resolvedTarget) {
@@ -2965,7 +3168,7 @@ export const useTrainingStore = create<TrainingState>()((set, get) => ({
         }
         if (inferenceTarget && resolvedTarget && !("skip" in resolvedTarget)) {
           set((s) => ({
-            log: appendLog(s.log, `— Running inference (${inferenceTarget}) with ${useExported ? `exported model: ${exportDir}` : `models: ${trainedModelPaths.join(", ")}`}...`),
+            log: appendLog(s.log, `— Running inference (${inferenceTarget}) with ${useExported ? `exported model: ${exportDir}` : `models: ${pipelinePaths.join(", ")}`}...`),
           }));
 
           const { runInference } = await import("@/platform/backend");
@@ -2977,7 +3180,7 @@ export const useTrainingStore = create<TrainingState>()((set, get) => ({
 
           const inferenceConfig = buildPostTrainingInferenceConfig({
             modelType: config.modelType,
-            modelPaths: useExported ? [exportDir!] : trainedModelPaths,
+            modelPaths: useExported ? [exportDir!] : pipelinePaths,
             inferenceTarget: resolvedTarget.frameRange,
             videoIndex: resolvedTarget.videoIndex,
             sampleCount: localOpts?.sampleCount,
@@ -3001,7 +3204,11 @@ export const useTrainingStore = create<TrainingState>()((set, get) => ({
               }
             };
 
-            const mergeOutputSlp = async (outputPath: string) => {
+            const mergeOutputSlp = async (
+              outputPath: string,
+              mode: ExistingPredictionsMode = localOpts?.existingPredictions ?? "replace",
+              videoTarget?: PredictionVideoTarget,
+            ) => {
               const platform = await getPlatform();
               const bytes = await platform.readFile(outputPath);
               console.log("[training] Read predictions file: %d bytes", bytes.byteLength);
@@ -3014,10 +3221,7 @@ export const useTrainingStore = create<TrainingState>()((set, get) => ({
                 predictions.labeledFrames?.length ?? 0,
                 predictions.tracks?.length ?? 0,
               );
-              await commandContext.execute(MergePredictions, {
-                predictions,
-                mode: localOpts?.existingPredictions ?? "replace",
-              });
+              await commandContext.execute(MergePredictions, { predictions, mode, videoTarget });
             };
 
             // Run inference; if it targeted the exported model and failed, retry
@@ -3026,7 +3230,7 @@ export const useTrainingStore = create<TrainingState>()((set, get) => ({
               let result = await runInference(cfg, projectPath, logEvent);
               if (!result.success && useExported) {
                 set((s) => ({ log: appendLog(s.log, "— Exported-model inference failed; retrying with the PyTorch checkpoint...") }));
-                result = await runInference({ ...cfg, modelPaths: trainedModelPaths, runtime: "auto", device: "auto" }, projectPath, logEvent);
+                result = await runInference({ ...cfg, modelPaths: pipelinePaths, runtime: "auto", device: "auto" }, projectPath, logEvent);
               }
               return result;
             };
@@ -3034,6 +3238,7 @@ export const useTrainingStore = create<TrainingState>()((set, get) => ({
             if (inferenceTarget === "random") {
               // Per-video random sampling
               const videos = currentLabels?.videos ?? [];
+              let merged = 0;
               for (let vi = 0; vi < videos.length; vi++) {
                 const nFrames = videos[vi].shape?.[0] ?? 0;
                 if (nFrames === 0) continue;
@@ -3042,15 +3247,39 @@ export const useTrainingStore = create<TrainingState>()((set, get) => ({
                 const result = await runInferenceWithFallback(perVideoConfig);
                 if (cancelled()) break;
                 if (result.success && result.outputPath) {
-                  await mergeOutputSlp(result.outputPath);
+                  await mergeOutputSlp(
+                    result.outputPath,
+                    mergeModeForRun(inferenceConfig.existingPredictions, merged++),
+                    videoTargetOf(perVideoConfig.videoIndex),
+                  );
+                }
+              }
+            } else if (inferenceConfig.frameRange === "all_videos") {
+              // One "Entire video" run per video: a run on the project .slp alone
+              // would predict only its already-labeled frames.
+              const videos = currentLabels?.videos ?? [];
+              let runIndex = 0;
+              for (let vi = 0; vi < videos.length; vi++) {
+                set((s) => ({ log: appendLog(s.log, `— Inference: video ${vi + 1}/${videos.length}...`) }));
+                const result = await runInferenceWithFallback({ ...inferenceConfig, videoIndex: vi, frameRange: "video" });
+                if (cancelled()) break;
+                if (result.nothingToPredict) {
+                  set((s) => ({ log: appendLog(s.log, `— Video ${vi + 1}: every frame is user-labeled; skipped.`) }));
+                } else if (result.success && result.outputPath) {
+                  const mode = mergeModeForRun(inferenceConfig.existingPredictions, runIndex++);
+                  await mergeOutputSlp(result.outputPath, mode, vi);
+                } else if (!result.success) {
+                  set((s) => ({ log: appendLog(s.log, `— Inference on video ${vi + 1} failed (non-zero exit).`) }));
                 }
               }
             } else {
               const result = await runInferenceWithFallback(inferenceConfig);
               if (cancelled()) {
                 // Cancel killed the inference run: nothing to merge, not a failure.
+              } else if (result.nothingToPredict) {
+                set((s) => ({ log: appendLog(s.log, "— Every target frame is user-labeled; nothing to predict.") }));
               } else if (result.success && result.outputPath) {
-                await mergeOutputSlp(result.outputPath);
+                await mergeOutputSlp(result.outputPath, undefined, videoTargetOf(inferenceConfig.videoIndex));
               } else if (!result.success) {
                 set((s) => ({ log: appendLog(s.log, "— Post-training inference failed (non-zero exit).") }));
               }
@@ -3141,14 +3370,16 @@ export const useTrainingStore = create<TrainingState>()((set, get) => ({
     if (!isTauri || get().status !== "idle" || get().dryRun?.status === "running") return;
     if (await blockedByMultiSkeleton("Training")) return;
     const { config } = get();
-    const slots = getConfigSlots(config.modelType);
+    // A stage reusing a trained model isn't trained, so there's nothing to dry-run.
+    const slots = slotsToTrain(getConfigSlots(config.modelType), config.configs);
+    if (slots.length === 0) return;
     const id = ++dryRunSeq;
     set({
       dryRun: {
         id,
         status: "running",
         models: slots.map((slot) => ({
-          label: getSlotLabel(slot).replace(" Config", ""),
+          label: getSlotLabel(slot, config.modelType).replace(" Config", ""),
           status: "pending",
           summary: null,
           error: null,
@@ -3316,6 +3547,19 @@ export const useTrainingStore = create<TrainingState>()((set, get) => ({
                 : m.bestValLoss,
             metrics,
           };
+        }),
+      };
+    }),
+
+  setEpochTrainLoss: (modelIndex, epoch, trainLoss) =>
+    set((state) => {
+      if (modelIndex < 0 || modelIndex >= state.models.length) return state;
+      return {
+        models: state.models.map((m, i) => {
+          if (i !== modelIndex) return m;
+          const epochSamples = m.epochSamples.map((s) => (s.epoch === epoch ? { ...s, trainLoss } : s));
+          const last = epochSamples[epochSamples.length - 1];
+          return { ...m, epochSamples, loss: last?.epoch === epoch ? trainLoss : m.loss };
         }),
       };
     }),

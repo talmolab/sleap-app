@@ -27,8 +27,14 @@ function makeCtx(overrides: Partial<RemoteTrackSpecContext> = {}): RemoteTrackSp
 }
 
 describe("buildRemoteTrackSpecs — unrestricted (allowedVideoIndices omitted, existing behavior)", () => {
-  it("'all_videos' (an implicit all-scope target): one spec, no video_index", () => {
+  it("'all_videos': one spec per video, pinned by video_index with no frames, so each predicts every frame", () => {
     const specs = buildRemoteTrackSpecs(makeConfig("all_videos"), makeCtx());
+    expect(specs.map((s) => s.video_index)).toEqual([0, 1, 2]);
+    expect(specs.every((s) => s.frames === undefined && s.frame_filter === undefined)).toBe(true);
+  });
+
+  it("'all_videos' track-only keeps one bare spec: retracking needs only the existing instances", () => {
+    const specs = buildRemoteTrackSpecs({ ...makeConfig("all_videos"), trackOnly: true }, makeCtx());
     expect(specs).toHaveLength(1);
     expect(specs[0].video_index).toBeUndefined();
   });

@@ -43,6 +43,8 @@ import { cropSizeWarnings, isCropHead, negativeFramesWarning, usesNegativeFrames
 import { confirmDialog } from "@/stores/confirmStore";
 import { headTypeMatches } from "@/lib/bboxModels";
 import { BboxTrainingFields } from "@/components/panels/BboxTrainingFields";
+import { ReuseTrainedModelSection } from "@/components/dialogs/ReuseTrainedModelSection";
+import { reusePinNote } from "@/lib/reuseTrainedModel";
 
 /** Tailwind text color per visibility tier, matching the Training panel's log coloring. */
 const VISIBILITY_COLOR: Record<ReturnType<typeof visibilityTier>, string> = {
@@ -385,11 +387,14 @@ function PipelineAnchorPartField({
   onUpdate,
   skeletonNodes,
   nodeVisibility,
+  lockedReason = null,
 }: {
   hp: ConfigHyperparams;
   onUpdate: (updates: Partial<ConfigHyperparams>) => void;
   skeletonNodes: string[];
   nodeVisibility: Map<string, NodeVisibility>;
+  /** A reused stage's model fixes the anchor part (lib/reuseTrainedModel.ts): locked, with this note. */
+  lockedReason?: string | null;
 }) {
   return (
     <div id={PIPELINE_FIELD_DEFS.anchorPart.id} data-search-field="" className="flex items-center gap-2 scroll-mt-4">
@@ -397,8 +402,8 @@ function PipelineAnchorPartField({
         {PIPELINE_FIELD_DEFS.anchorPart.label}
         <HintBubble text="The body part used to center the crop around each animal. Choose one that is consistently visible and near the center of the animal." />
       </span>
-      <Select value={hp.anchorPart ?? "__auto__"} onValueChange={(v) => onUpdate({ anchorPart: v === "__auto__" ? null : v })}>
-        <SelectTrigger className="h-8 text-sm w-40"><SelectValue placeholder="Auto" /></SelectTrigger>
+      <Select value={hp.anchorPart ?? "__auto__"} onValueChange={(v) => onUpdate({ anchorPart: v === "__auto__" ? null : v })} disabled={!!lockedReason}>
+        <SelectTrigger className="h-8 text-sm w-40" aria-label={PIPELINE_FIELD_DEFS.anchorPart.label}><SelectValue placeholder="Auto" /></SelectTrigger>
         <SelectContent>
           <SelectItem value="__auto__">Auto (bbox center)</SelectItem>
           {skeletonNodes.map((n) => {
@@ -418,6 +423,7 @@ function PipelineAnchorPartField({
           })}
         </SelectContent>
       </Select>
+      {lockedReason && <span className="text-xs text-muted-foreground" data-testid="anchor-part-locked">{lockedReason}</span>}
     </div>
   );
 }
@@ -443,6 +449,7 @@ function HeadTabContent({
   remoteFrame,
   configActions,
   mode = "project",
+  skeletonNodes = [],
 }: {
   slot: string;
   modelType: ModelType;
@@ -454,6 +461,7 @@ function HeadTabContent({
   remoteFrame?: (videoIndex: number, frameIdx: number) => Promise<PreviewFrame>;
   configActions?: Pick<TrainingConfigActions, "addConfigFile" | "updateConfigCheckpointPath">;
   mode?: "project" | "worker-file";
+  skeletonNodes?: string[];
 }) {
   const headType = slotToHeadType(modelType, slot);
   const baselineProfiles = getBaselineProfilesForHead(headType);
@@ -500,8 +508,13 @@ function HeadTabContent({
     [showNegativeFrames, hp.useNegativeFrames, labels],
   );
   const trainingMode = hp.trainingMode ?? "reuse_config";
-  const modelLocked = trainingMode === "resume" || trainingMode === "finetune";
-  const allLocked = trainingMode === "resume";
+  // "Use a trained model": this stage isn't trained, so none of its training
+  // settings apply (PyQt disables every form in that mode).
+  const reused = !!configFile?.reuse;
+  // Lists/browses local model folders, so desktop project mode only.
+  const canReuse = isTauri && mode !== "worker-file";
+  const modelLocked = trainingMode === "resume" || trainingMode === "finetune" || reused;
+  const allLocked = trainingMode === "resume" || reused;
   const {
     parseYamlConfig,
     addConfigFile: storeAddConfigFile,
@@ -568,9 +581,9 @@ function HeadTabContent({
           const text = reader.result as string;
           const parsed = parseYamlConfig(text, file.name, slot);
           if (parsed) {
-            if (parsed.modelType !== slot && parsed.modelType !== "unknown") {
+            if (parsed.modelType !== "unknown" && !headTypeMatches(headType, { headKey: parsed.modelType })) {
               toast.error("Wrong model type", {
-                description: `The file you selected was a training config for ${parsed.modelType} and cannot be used for ${slot}.`,
+                description: `The file you selected was a training config for ${parsed.modelType} and cannot be used for ${headType}.`,
               });
             }
             addConfigFile(parsed);
@@ -643,8 +656,18 @@ function HeadTabContent({
         })()}
       </div>
 
+      {/* ── Use a trained model (PyQt's per-tab "Reuse model") ── */}
+      {configFile && canReuse && (
+        <ReuseTrainedModelSection
+          slot={slot}
+          modelType={modelType}
+          configFile={configFile}
+          skeletonNodes={skeletonNodes}
+        />
+      )}
+
       {/* ── Training mode ── */}
-      {configFile && (
+      {configFile && !reused && (
         <div className="mb-5 pb-4 border-b">
           <div className="flex items-center gap-5">
             {([
@@ -1429,7 +1452,7 @@ export function TrainingConfigDialog({
     const isPipeline = activeTab === "pipeline";
     const scope = isPipeline
       ? "all model configs"
-      : `the ${getSlotLabel(activeTab).replace(" Config", "")} config`;
+      : `the ${getSlotLabel(activeTab, modelType).replace(" Config", "")} config`;
     const ok = await confirmDialog({
       title: "Reset to profile defaults?",
       message: `This restores ${scope} to the values loaded from the baseline profile, discarding your edits.`,
@@ -1462,7 +1485,7 @@ export function TrainingConfigDialog({
                 <TabsTrigger value="pipeline" className="text-sm px-4 data-[state=active]:bg-primary data-[state=active]:text-primary-foreground dark:data-[state=active]:bg-primary dark:data-[state=active]:text-primary-foreground">Pipeline</TabsTrigger>
                 {sortedConfigs.map((cf) => (
                   <TabsTrigger key={cf.slot} value={cf.slot} className="text-sm px-4 data-[state=active]:bg-primary data-[state=active]:text-primary-foreground dark:data-[state=active]:bg-primary dark:data-[state=active]:text-primary-foreground">
-                    {getSlotLabel(cf.slot).replace(" Config", "")}
+                    {getSlotLabel(cf.slot, modelType).replace(" Config", "")}
                   </TabsTrigger>
                 ))}
               </TabsList>
@@ -1538,6 +1561,7 @@ export function TrainingConfigDialog({
                             onUpdate={(updates) => onUpdateSlot("centered_instance", updates)}
                             skeletonNodes={skeletonNodes}
                             nodeVisibility={nodeVisibility}
+                            lockedReason={reusePinNote(modelType, configs, (s) => getSlotLabel(s).replace(" Config", ""))}
                           />
                         ) : null;
                       })()}
@@ -1574,6 +1598,7 @@ export function TrainingConfigDialog({
                         configs={configs}
                         onUpdateSlot={onUpdateSlot}
                         size="md"
+                        boxSettingsLockedBy={reusePinNote(modelType, configs, (s) => getSlotLabel(s).replace(" Config", ""))}
                       />
                     </div>
                   )}
@@ -2209,6 +2234,7 @@ export function TrainingConfigDialog({
                   remoteFrame={remoteFrame}
                   configActions={configActions}
                   mode={mode}
+                  skeletonNodes={skeletonNodes}
                 />
               </TabsContent>
             ))}

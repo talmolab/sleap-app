@@ -22,6 +22,8 @@ import {
   LabeledFrame,
   Skeleton,
   Video,
+  loadSlp,
+  saveSlpToBytes,
 } from "@talmolab/sleap-io.js";
 
 /** Reset the store between tests. */
@@ -200,6 +202,33 @@ describe("Skeleton commands", () => {
 
       await ctx.execute(DeleteNodeCommand, {});
       expect(project.skeleton.nodes.length).toBe(before);
+    });
+
+    it("keeps the surviving points' node names", async () => {
+      const project = setupProject({ numNodes: 3, numFrames: 1 });
+
+      await ctx.execute(DeleteNodeCommand, { nodeIdx: 1 });
+
+      const inst = project.labels.labeledFrames[0].instances[0];
+      expect(inst.points.map((p) => p.name)).toEqual(["node_0", "node_2"]);
+      expect(inst.points.map((p) => p.xy[0])).toEqual([0, 20]);
+    });
+
+    it("drops symmetries involving the deleted node, so Save doesn't write a wrong pair", async () => {
+      const project = setupProject({ numNodes: 4, numFrames: 1 });
+      const sk = project.skeleton;
+      sk.addSymmetry(sk.nodes[1], sk.nodes[2]);
+      sk.addSymmetry(sk.nodes[0], sk.nodes[3]);
+
+      await ctx.execute(DeleteNodeCommand, { nodeIdx: 1 });
+
+      expect(sk.symmetryNames).toEqual([["node_0", "node_3"]]);
+      const bytes = await saveSlpToBytes(project.labels);
+      const reloaded = await loadSlp(
+        bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer,
+        { openVideos: false },
+      );
+      expect(reloaded.skeletons[0].symmetryNames).toEqual([["node_0", "node_3"]]);
     });
   });
 
@@ -598,6 +627,43 @@ describe("Skeleton commands", () => {
       ctx.undo();
 
       expect(project.skeleton.nodes.length).toBe(beforeNodeCount);
+    });
+
+    it("undo restores the symmetry DeleteNode dropped, and redo drops it again", async () => {
+      const project = setupProject({ numNodes: 4, numFrames: 1 });
+      installSkeletonUndoInterceptor(ctx);
+      const sk = project.skeleton;
+      sk.addSymmetry(sk.nodes[1], sk.nodes[2]);
+
+      await ctx.execute(DeleteNodeCommand, { nodeIdx: 1 });
+      expect(sk.symmetries.length).toBe(0);
+
+      ctx.undo();
+      expect(sk.nodeNames).toEqual(["node_0", "node_1", "node_2", "node_3"]);
+      expect(sk.symmetryNames).toEqual([["node_1", "node_2"]]);
+
+      ctx.redo();
+      expect(sk.nodeNames).toEqual(["node_0", "node_2", "node_3"]);
+      expect(sk.symmetries.length).toBe(0);
+    });
+
+    it("undo restores a renamed node's name, and redo renames it again", async () => {
+      const project = setupProject({ numNodes: 3, numFrames: 1 });
+      installSkeletonUndoInterceptor(ctx);
+      const sk = project.skeleton;
+
+      await ctx.execute(RenameNodeCommand, { nodeIdx: 0, newName: "head" });
+      expect(sk.nodeNames[0]).toBe("head");
+
+      ctx.undo();
+      expect(sk.nodes[0].name).toBe("node_0");
+      expect(sk.nodeNames).toEqual(["node_0", "node_1", "node_2"]);
+      expect(sk.node("node_0")).toBe(sk.nodes[0]);
+      expect(project.labels.labeledFrames[0].instances[0].points[0].name).toBe("node_0");
+
+      ctx.redo();
+      expect(sk.nodeNames).toEqual(["head", "node_1", "node_2"]);
+      expect(project.labels.labeledFrames[0].instances[0].points[0].name).toBe("head");
     });
 
     it("undo restores skeleton edges after DeleteEdge", async () => {
