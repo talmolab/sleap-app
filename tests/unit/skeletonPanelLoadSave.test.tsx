@@ -210,7 +210,8 @@ describe("SkeletonPanel — Load From File… / Save As… (#163)", () => {
     ).toEqual(["a", "b"]);
   });
 
-  it("Save As… (browser, no File-System-Access) routes to downloadFile with YAML + .yaml name", async () => {
+  // PyQt's Save As defaults to JSON (skeleton.json), so the fallback download is JSON.
+  it("Save As… (browser, no File-System-Access) routes to downloadFile with JSON + .json name", async () => {
     setupProject(["head", "tail"]);
 
     const downloadFileSpy = vi.fn(
@@ -235,6 +236,7 @@ describe("SkeletonPanel — Load From File… / Save As… (#163)", () => {
         addNodes: [],
       })),
       serializeSkeletonYaml: vi.fn(() => "name: current\nnodes:\n  - head\n  - tail\n"),
+      serializeSkeletonJson: vi.fn(() => '[{"nodes": [{"id": "head"}, {"id": "tail"}]}]'),
     }));
     vi.mock("@/lib/exportUtils", () => ({
       downloadFile: downloadFileSpy,
@@ -259,7 +261,7 @@ describe("SkeletonPanel — Load From File… / Save As… (#163)", () => {
     const [content, filename] = downloadFileSpy.mock.calls[0];
     expect(String(content)).toContain("head");
     expect(String(content)).toContain("tail");
-    expect(String(filename)).toMatch(/\.yaml$/);
+    expect(String(filename)).toMatch(/\.json$/);
 
     if (hadFSA) {
       // (cannot restore the original; not needed — isolate gives a fresh global)

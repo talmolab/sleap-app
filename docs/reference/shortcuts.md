@@ -5,8 +5,36 @@ over from the legacy GUI.
 
 ++cmd++ is shown for macOS; on Windows and Linux it is ++ctrl++.
 
-**Help ▸ Keyboard Shortcuts…** shows the most common of these inside the app;
-this page is the full list.
+**Help ▸ Keyboard Shortcuts…** shows these inside the app, and lets you
+change them; this page lists the defaults.
+
+## Changing shortcuts
+
+In **Help ▸ Keyboard Shortcuts…**, click an action's key, then press the new
+key (++esc++ cancels). If another action already uses that key, the app asks
+whether to move it; if you say yes, the other action is left without a key.
+The ✕ next to a key removes it, and ↺ puts an action back on its default.
+Changes apply when you click **Save**, everywhere: on the canvas, in the
+menus (including the macOS menu bar), and in **Help ▸ Search Menus**.
+
+- Your shortcuts are saved on this computer with your other preferences.
+  **File ▸ Reset Preferences to Defaults…** (or **Reset to Defaults** in the
+  dialog) puts them all back.
+- **Export…** saves them as a `shortcuts.yaml` file, and **Import…** loads
+  one, for example to use the same keys on another computer. The file uses
+  the same format as SLEAP's own `shortcuts.yaml`, so you can import your
+  shortcuts from the legacy SLEAP GUI too (there, `Ctrl` means ++cmd++ on
+  macOS). Entries you never changed in SLEAP keep this app's keys (for
+  example ++t++ for node names and ++shift+m++ for Merge Instance).
+- Some keys can't be assigned: Undo/Redo, the text-size keys,
+  ++cmd+1++–++cmd+9++ (set track), ++backspace++/++delete++ (delete selected
+  nodes) and ++space++ (hold to pan; only the suggestion keys may use it).
+  Nor can keys the system or browser keep: ++cmd+tab++ and ++cmd+space++ on
+  macOS; ++cmd+q++, ++cmd+h++, ++cmd+m++ and ++cmd+w++ in the macOS desktop
+  app; and in a browser, its tab and window keys such as ++cmd+w++,
+  ++cmd+t++ and ++cmd+n++.
+- Shortcuts without ++cmd++/++ctrl++ (a letter, an arrow) do nothing while
+  you're typing in a text field.
 
 ## File
 
@@ -96,6 +124,7 @@ this page is the full list.
 | Node placement mode | ++shift+n++ |
 | Next / previous node, in node placement mode | ++tab++ / ++shift+tab++ |
 | Show / hide instances | ++h++ |
+| Show / hide model predictions (Compare Model Predictions; the Review window still shows them) | ++m++ |
 | Show / hide node names | ++t++, or SLEAP's ++ctrl+tab++ (the Control key on macOS too; desktop app only: browsers use it to switch tabs) |
 | Show / hide edges | ++cmd+shift+tab++ |
 | Flip the node under the pointer between visible and non-visible | ++v++ |

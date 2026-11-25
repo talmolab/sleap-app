@@ -13,6 +13,7 @@
  */
 
 import { describe, it, expect } from "../bun-test";
+import { GrayscaleVideoBackend, type VideoBackend } from "@talmolab/sleap-io.js";
 import {
   runBackgroundProxySwap,
   type BackgroundProxyDeps,
@@ -63,6 +64,26 @@ function setup(overrides: Partial<BackgroundProxyDeps> = {}) {
 }
 
 describe("runBackgroundProxySwap", () => {
+  // A grayscale video must stay grayscale on the proxy (it used to swap to a
+  // bare colour proxy while its metadata still said grayscale).
+  it("keeps a grayscale video's grayscale layer on the proxy", async () => {
+    const { original, proxy, video, deps } = setup();
+    const wrapped = GrayscaleVideoBackend.wrap({
+      inner: original as unknown as VideoBackend,
+      grayscale: true,
+    });
+    (video as { backend: unknown }).backend = wrapped;
+
+    const outcome = await runBackgroundProxySwap(video as never, "src.mp4", new AbortController(), deps);
+
+    expect(outcome).toBe("swapped");
+    const now = (video as { backend: unknown }).backend as GrayscaleVideoBackend;
+    expect(now).toBeInstanceOf(GrayscaleVideoBackend);
+    expect(now.inner as unknown).toBe(proxy);
+    expect(now.grayscale).toBe(true);
+    expect(original.closed).toBe(1);
+  });
+
   it("swaps to the proxy and closes the original when the build succeeds and the video is active", async () => {
     const { original, proxy, video, calls, deps } = setup();
 

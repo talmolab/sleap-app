@@ -7,7 +7,7 @@
 import { useEffect } from "react";
 import { sleapCmd } from "@/lib/sleapPlugin";
 import { subscribeAppMenu } from "./useAppMenu";
-import { runNativeMenuItem, toAccelerator, toNativeSpec } from "./nativeMenu";
+import { isOmittedFromNativeMenu, runNativeMenuItem, toAccelerator, toNativeSpec } from "./nativeMenu";
 import { setNativeMenuShortcuts } from "./nativeMenuOwnership";
 import type { AppMenu, MenuNode } from "./types";
 import { NATIVE_MENU_BAR } from "./nativeMenuBar";
@@ -21,12 +21,16 @@ const SLOW_UPDATE_MS = 50;
 /** Coalesce bursts of changes (e.g. a frame change) into one rebuild. */
 const REBUILD_DELAY_MS = 50;
 
-/** The shortcuts the native menu owns, for the app's key handler to skip. */
-function ownedShortcuts(menu: AppMenu): string[] {
+/**
+ * The shortcuts the native menu owns, for the app's key handler to skip.
+ * Items left out of the native menu own nothing: File ▸ Quit's key, if the
+ * user moved it off ⌘Q, must still reach the app's handler.
+ */
+export function ownedShortcuts(menu: AppMenu): string[] {
   const out = ["$mod+KeyQ"]; // SLEAP ▸ Quit, in the application menu
   const walk = (nodes: MenuNode[]) => {
     for (const n of nodes) {
-      if ((n.kind === "item" || n.kind === "check") && toAccelerator(n.shortcut)) {
+      if ((n.kind === "item" || n.kind === "check") && !isOmittedFromNativeMenu(n.id) && toAccelerator(n.shortcut)) {
         out.push(n.shortcut!);
       }
       if (n.kind === "submenu") walk(n.items);

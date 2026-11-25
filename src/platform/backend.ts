@@ -7,7 +7,7 @@
 
 import { isTauri } from "./index";
 import { sleapCmd } from "@/lib/sleapPlugin";
-import { saveSlpToBytes } from "@talmolab/sleap-io.js";
+import { saveSlpToBytes, type Labels, type Skeleton } from "@talmolab/sleap-io.js";
 import type { InferenceConfig } from "@/stores/inferenceStore";
 import {
   buildInferenceArgs,
@@ -505,7 +505,23 @@ export async function runTraining(
 export async function runInference(
   config: InferenceConfig,
   projectPath: string | null,
-  onEvent: (event: ProcessEvent) => void
+  onEvent: (event: ProcessEvent) => void,
+  opts: {
+    /**
+     * Labels to give sleap-nn instead of the project file (written to a temp
+     * .slp) — a multi-skeleton run's per-skeleton copy (see
+     * `labelsForSkeleton`). Ignored when the run reads the video file directly.
+     */
+    inputLabels?: Labels;
+    /** Extra tag in the predictions filename (e.g. the skeleton's name). */
+    outputTag?: string;
+    /**
+     * Multi-skeleton run: the skeleton it predicts. "Exclude user-labeled
+     * frames" then skips only frames with a user instance of THIS skeleton,
+     * as sleap-nn does on the per-skeleton copy.
+     */
+    skeleton?: Skeleton;
+  } = {},
 ): Promise<{
   success: boolean;
   outputPath: string | null;
@@ -523,11 +539,13 @@ export async function runInference(
   const tmp = await tempDir();
   const ts = Date.now();
 
-  // Use original project file if available, otherwise serialize
+  // Use original project file if available, otherwise serialize. A
+  // per-skeleton input (opts.inputLabels) is written further down, only when
+  // the run doesn't read the video file directly.
   let dataPath: string;
-  if (projectPath) {
-    dataPath = projectPath;
-    console.log("[inference] Using project file:", dataPath);
+  if (projectPath || opts.inputLabels) {
+    dataPath = projectPath ?? "";
+    if (projectPath) console.log("[inference] Using project file:", dataPath);
   } else {
     const { writeFile } = await import("@tauri-apps/plugin-fs");
     // Lazy import to avoid pulling in saveSlpToBytes when not needed
@@ -612,7 +630,12 @@ export async function runInference(
     const nFrames = video?.shape?.[0] ?? 0;
     const userLabeledFrames = new Set(
       (labels?.labeledFrames ?? [])
-        .filter((lf) => lf.video === video && lf.hasUserInstances)
+        .filter((lf) =>
+          lf.video === video &&
+          (opts.skeleton
+            ? lf.userInstances.some((inst) => inst.skeleton === opts.skeleton)
+            : lf.hasUserInstances),
+        )
         .map((lf) => lf.frameIdx),
     );
     const listed =
@@ -642,6 +665,13 @@ export async function runInference(
   if (videoDataPath) {
     dataPath = videoDataPath;
     console.log("[inference] Video-scoped run targeting the video file directly:", dataPath);
+  } else if (opts.inputLabels) {
+    const { writeFile } = await import("@tauri-apps/plugin-fs");
+    const tag = opts.outputTag ? `_${opts.outputTag}` : "";
+    dataPath = await join(tmp, `sleap_inference_input_${ts}${tag}.slp`);
+    const bytes = await saveSlpToBytes(opts.inputLabels);
+    await writeFile(dataPath, bytes);
+    console.log("[inference] Wrote per-skeleton input (%d bytes) to %s", bytes.byteLength, dataPath);
   }
 
   // Resolve where to write the predictions file, matching legacy SLEAP GUI
@@ -687,7 +717,7 @@ export async function runInference(
   }
   const outputPath = await join(
     predictionsDir,
-    `${videoPrefix}${sourceName}.${formatPredictionsTimestamp()}.predictions.slp`
+    `${videoPrefix}${sourceName}${opts.outputTag ? `.${opts.outputTag}` : ""}.${formatPredictionsTimestamp()}.predictions.slp`
   );
 
   const args = buildInferenceArgs(config, {

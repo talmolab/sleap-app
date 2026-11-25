@@ -18,6 +18,9 @@ import { addVideoFileToLabels } from "../../lib/resolveVideos";
 import {
   VideoImportList,
   toVideoImportEntries,
+  prepareVideoImportEntries,
+  hdf5ImportOptions,
+  importGrayscale,
   type VideoImportEntry,
 } from "./VideoImportList";
 import { SKELETON_TEMPLATES, TEMPLATE_ORDER } from "../../lib/skeletonTemplates";
@@ -85,7 +88,12 @@ export function NewProjectDialog() {
 
       let addedAny = false;
       for (const pv of videos) {
-        const v = await addVideoFileToLabels(labels, pv, pv.grayscale);
+        const v = await addVideoFileToLabels(
+          labels,
+          pv,
+          importGrayscale(pv),
+          hdf5ImportOptions(pv)
+        );
         if (v) addedAny = true;
       }
       if (addedAny) labels.reindex();
@@ -190,7 +198,9 @@ export function NewProjectDialog() {
             </div>
             <VideoDropzone
               onFiles={(picked) =>
-                setVideos((v) => [...v, ...toVideoImportEntries(picked)])
+                void prepareVideoImportEntries(picked).then((staged) =>
+                  setVideos((v) => [...v, ...staged])
+                )
               }
               data-tutorial="new-project-add-video-button"
             />
