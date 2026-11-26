@@ -71,6 +71,10 @@ interface InferenceConfigDialogProps {
   skeletonNodes: string[];
   /** When provided, shows a "Reset to defaults…" footer action. */
   onResetDefaults?: () => void;
+  /** A line under the title (several skeletons: which skeleton's settings are edited). */
+  subtitle?: string;
+  /** Several skeletons: the skeleton whose tab is being edited, shown as a green text by the title. */
+  skeletonName?: string;
 }
 
 const CATEGORIES = [
@@ -277,6 +281,8 @@ export function InferenceConfigDialog({
   onTrackingChange,
   skeletonNodes,
   onResetDefaults,
+  subtitle,
+  skeletonName,
 }: InferenceConfigDialogProps) {
   const scrollRef = useRef<HTMLDivElement>(null);
   const [searchQuery, setSearchQuery] = useState("");
@@ -320,7 +326,23 @@ export function InferenceConfigDialog({
       <DialogContent showCloseButton={false} className="w-[92vw] h-[90vh] min-w-[640px] min-h-[480px] max-w-[96vw] sm:max-w-[96vw] max-h-[94vh] resize overflow-hidden p-0 inset-0 translate-x-0 translate-y-0 m-auto flex flex-col" onKeyDown={(e) => e.stopPropagation()}>
         {/* Compact header: title (left) · saved indicator (right) */}
         <div className="relative flex items-center justify-between gap-4 px-6 py-2.5 border-b shrink-0">
-          <DialogTitle className="text-base font-semibold shrink-0">Inference Configuration</DialogTitle>
+          <div className="min-w-0">
+            <div className="flex items-center gap-2 min-w-0">
+              <DialogTitle className="text-base font-semibold">Inference Configuration</DialogTitle>
+              {skeletonName && (
+                <span
+                  className="truncate text-sm font-semibold text-green-600 dark:text-green-400"
+                  data-testid="inference-config-skeleton"
+                  title={`Editing the ${skeletonName} skeleton's settings`}
+                >
+                  Skeleton: {skeletonName}
+                </span>
+              )}
+            </div>
+            {subtitle && (
+              <p className="text-xs text-muted-foreground truncate" data-testid="inference-config-subtitle">{subtitle}</p>
+            )}
+          </div>
           <span
             className="flex items-center gap-1.5 text-xs text-muted-foreground shrink-0"
             title="Edits are saved automatically as you type"

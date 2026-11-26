@@ -12,6 +12,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { useFileIO } from "../../hooks/useFileIO";
 import { useAppStore } from "../../stores/appStore";
+import { useSlpFormatStore } from "../../stores/slpFormatStore";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Plus, FolderOpen, Cpu, Globe, ChevronDown } from "lucide-react";
@@ -35,6 +36,14 @@ export function WelcomeScreen() {
   const { openProject, openFromDrop, loading, error } = useFileIO();
   const [drafts, setDrafts] = useState<RecoverableDraft[]>([]);
   const [showEnvironments, setShowEnvironments] = useState(false);
+  const welcomeEnvironmentRequestSeq = useSlpFormatStore(
+    (s) => s.welcomeEnvironmentRequestSeq,
+  );
+  useEffect(() => {
+    if (welcomeEnvironmentRequestSeq > 0) {
+      setShowEnvironments(true);
+    }
+  }, [welcomeEnvironmentRequestSeq]);
   const openConnect = useCallback(() => useAppStore.getState().setConnectWindowOpen(true), []);
   // The tutorial's environment check runs before any project (and so any
   // sidebar) exists — this is the only Environment panel there is to point at.

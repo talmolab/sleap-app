@@ -7,11 +7,19 @@
  *  - Progress / log (when running or done, at bottom)
  */
 
-import { useState, useRef, useEffect } from "react";
+import { useState, useRef, useEffect, useMemo } from "react";
 import { useAppStore } from "../../stores/appStore";
 import { useEnvironmentStore } from "../../stores/environmentStore";
-import { useInferenceStore } from "../../stores/inferenceStore";
-import type { InferenceConfig, PipelineType } from "@/stores/inferenceStore";
+import {
+  skeletonInferenceSettings,
+  useInferenceStore,
+  useSkeletonInferenceSettingsStore,
+} from "../../stores/inferenceStore";
+import { centroidOutputFor, type InferenceConfig, type PipelineType } from "@/stores/inferenceStore";
+import { centroidOnlyProblem } from "@/lib/centroidOnly";
+import { INFERENCE_DEFAULTS as DEFAULTS } from "@/lib/inferenceDefaults";
+import { describeClip, normalizeClip } from "@/lib/postTrainingTarget";
+import { sanitizeSavedInferenceSettings, settingsToSave, type SavedInferenceSettings } from "@/lib/inferenceSettings";
 import { useConnectStore } from "@/stores/connectStore";
 import { BackendPicker } from "@/components/common/BackendPicker";
 import { RemoteFileBrowser } from "@/components/dialogs/RemoteFileBrowser";
@@ -24,6 +32,7 @@ import { NumberInput } from "@/components/NumberInput";
 import { Separator } from "@/components/ui/separator";
 import { HintBubble } from "@/components/HintBubble";
 import { RUN_INFERENCE_STEP } from "@/lib/tutorial/steps";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import {
   Select,
   SelectContent,
@@ -49,11 +58,33 @@ import {
 } from "lucide-react";
 import { InferenceConfigDialog } from "@/components/dialogs/InferenceConfigDialog";
 import { LogTerminalDialog } from "@/components/monitors/LogTerminalDialog";
-import { SingleSkeletonGate } from "./SingleSkeletonGate";
+import { hasMultipleSkeletons } from "@/lib/multiSkeleton";
+import {
+  forgetFailedModelReads,
+  localRunScope,
+  planMultiSkeletonInference,
+  readModelInfo,
+  remoteIgnoredRunSettings,
+  remoteMixedFramesProblem,
+  remoteMultiSkeletonTargetProblem,
+  runSpecsFromPlan,
+  skeletonRunSettings,
+  skeletonSettingsKey,
+  skeletonsInUse,
+  similarityAllowed,
+  similarityForNodeCount,
+  SINGLE_POINT_SIMILARITY_NOTE,
+  SKELETON_PIPELINE_LABELS,
+  SKELETON_RUN_SETTING_KEYS,
+  type ModelInfo,
+  type SkeletonInferenceSettings,
+  type SkeletonRunPlan,
+  type SkeletonRunSettingKey,
+} from "@/lib/multiSkeletonInference";
 
 // ── Types & Constants ─────────────────────────────────────────────────────────
 
-type FrameRange = "all_videos" | "video" | "suggestions" | "user_labeled" | "predicted" | "random_video" | "random" | "frame" | "custom";
+type FrameRange = "all_videos" | "video" | "suggestions" | "user_labeled" | "predicted" | "random_video" | "random" | "frame" | "custom" | "clip";
 
 const PIPELINE_OPTIONS: { value: PipelineType; label: string; desc: string }[] =
   [
@@ -64,6 +95,7 @@ const PIPELINE_OPTIONS: { value: PipelineType; label: string; desc: string }[] =
     { value: "bottom-up-id", label: "Bottom-Up + ID", desc: "Bottom-up with identity classification." },
     { value: "bbox", label: "Box Detector", desc: "One box-detector model: a box around each animal, no poses. Needs sleap-nn 0.3.5+." },
     { value: "top-down-bbox", label: "Top-Down (Box Crops)", desc: "Two models: box detector + centered instance. Needs sleap-nn 0.3.5+." },
+    { value: "centroid", label: "Centroid Only", desc: "One centroid model: one point per animal. On a 1-node skeleton that's the whole pose; on a larger skeleton the points are shown as centroids. Needs sleap-nn 0.3.5+." },
   ];
 
 const DEVICE_OPTIONS = [
@@ -300,14 +332,16 @@ function NodeCheckboxList({
   selected,
   onChange,
   disabled,
+  emptyText = "No skeleton loaded — all nodes used.",
 }: {
   nodes: string[];
   selected: number[];
   onChange: (indices: number[]) => void;
   disabled?: boolean;
+  emptyText?: string;
 }) {
   if (nodes.length === 0) {
-    return <p className="text-[10px] text-muted-foreground">No skeleton loaded — all nodes used.</p>;
+    return <p className="text-[10px] text-muted-foreground">{emptyText}</p>;
   }
   const toggle = (i: number) => {
     onChange(
@@ -332,77 +366,245 @@ function NodeCheckboxList({
   );
 }
 
-// ── Defaults ──────────────────────────────────────────────────────────────────
+// ── Tracking fields (single-skeleton Tracking section, and each skeleton tab) ─
 
-const DEFAULTS: Omit<InferenceConfig, "modelPaths" | "videoIndex" | "frameRange"> = {
-  pipeline: "top-down",
-  trackOnly: false,
-  sampleCount: 20,
-  excludeUserLabeled: false,
-  existingPredictions: "replace",
-  batchSize: 4,
-  device: "auto",
-  runtime: "auto",
-  maxInstances: null,
-  peakThreshold: 0.2,
-  integralRefinement: true,
-  integralPatchSize: 5,
-  nPoints: 10,
-  maxEdgeLengthRatio: 0.25,
-  distPenaltyWeight: 1.0,
-  minLineScores: 0.25,
-  tracking: false,
-  trackerMethod: "simple",
-  similarityMethod: "oks",
-  matchingMethod: "hungarian",
-  trackingWindowSize: 5,
-  maxTracks: null,
-  connectSingleBreaks: false,
-  robust: 0.95,
-  minMatchPoints: 0,
-  minNewTrackPoints: 0,
-  scoringReduction: "mean",
-  trackingTargetInstanceCount: null,
-  trackingPreCullToTarget: false,
-  trackingPreCullIouThreshold: 0,
-  trackingCleanInstanceCount: null,
-  trackingCleanIouThreshold: 0,
-  flowImgScale: 1.0,
-  flowWindowSize: 21,
-  flowMaxLevels: 3,
-  kfTrackFeatures: "centroid",
-  kfInitFrameCount: 10,
-  kfNodeIndices: [],
-  kfResetGapSize: 5,
-  ensureChannels: "auto",
-  filterOverlapping: false,
-  filterMethod: "iou",
-  filterThreshold: 0.8,
-  filterMinVisibleNodes: null,
-  filterMinVisibleNodeFraction: null,
-  filterMinMeanNodeScore: null,
-  filterMinInstanceScore: null,
-  filterMinCentroidDistance: null,
-};
+type TrackingKey = Exclude<SkeletonRunSettingKey, "maxInstances" | "peakThreshold">;
+/** The tracking settings one run uses, plus the Max tracks "No limit" box. */
+type TrackingValues = Pick<SkeletonInferenceSettings, TrackingKey | "noMaxTracks">;
+
+function TrackingFields({
+  v,
+  set,
+  disabled,
+  trackOnly = false,
+  trackingUnavailable = false,
+  unavailableHint,
+  nodeCount,
+  kalmanNodes,
+}: {
+  v: TrackingValues;
+  set: (patch: Partial<TrackingValues>) => void;
+  disabled: boolean;
+  trackOnly?: boolean;
+  /** A box detector alone: sleap-nn tracks poses, not boxes. */
+  trackingUnavailable?: boolean;
+  /** Why tracking is unavailable, when it isn't a box detector. */
+  unavailableHint?: string;
+  /** The skeleton's node count, when known (1 = matched by point distance only). */
+  nodeCount?: number;
+  /** The Kalman "Tracked nodes" control. */
+  kalmanNodes: React.ReactNode;
+}) {
+  return (
+    <>
+      <Check label="Enable tracking"
+        hint={trackOnly
+          ? "Always on in track-only mode."
+          : trackingUnavailable
+            ? (unavailableHint ?? "Not available for a box detector alone: sleap-nn tracks poses, not boxes. Use Top-Down (Box Crops) to track.")
+            : "Connect predicted instances across frames to maintain identity over time."}
+        checked={trackOnly || (v.tracking && !trackingUnavailable)} onChange={(x) => set({ tracking: x })} disabled={disabled || trackOnly || trackingUnavailable} />
+      {(trackOnly || (v.tracking && !trackingUnavailable)) && (
+        <>
+          <div className="flex items-center justify-between gap-2">
+            <FieldLabel label="Method" hint="Simple matches instances by similarity alone. Optical Flow predicts motion from pixel displacement — best for fast-moving animals. Kalman Filter predicts motion from a per-track velocity model — best for a known, fixed number of animals whose motion helps disambiguate crossings or occlusions." />
+            <Select value={v.trackerMethod} onValueChange={(x) => set({ trackerMethod: x as TrackingValues["trackerMethod"] })} disabled={disabled}>
+              <SelectTrigger className="h-6 text-[10px] w-28"><SelectValue /></SelectTrigger>
+              <SelectContent>
+                <SelectItem value="simple">Simple</SelectItem>
+                <SelectItem value="flow">Optical Flow</SelectItem>
+                <SelectItem value="kalman">Kalman Filter</SelectItem>
+              </SelectContent>
+            </Select>
+          </div>
+          <div className="flex items-center justify-between gap-2">
+            <FieldLabel label="Similarity" hint="Metric for comparing instances across frames. OKS uses keypoint positions, IoU uses bounding boxes, Centroids uses center distance." />
+            <Select value={similarityForNodeCount(v.similarityMethod, nodeCount)} onValueChange={(x) => set({ similarityMethod: x as TrackingValues["similarityMethod"] })} disabled={disabled}>
+              <SelectTrigger className="h-6 text-[10px] w-28" data-testid="tracking-similarity"><SelectValue /></SelectTrigger>
+              <SelectContent>
+                <SelectItem value="oks" disabled={!similarityAllowed("oks", nodeCount)}>OKS</SelectItem>
+                <SelectItem value="iou" disabled={!similarityAllowed("iou", nodeCount)}>IoU</SelectItem>
+                <SelectItem value="centroids">Centroid dist.</SelectItem>
+                <SelectItem value="euclidean_dist">Euclidean dist.</SelectItem>
+              </SelectContent>
+            </Select>
+          </div>
+          {nodeCount === 1 && (
+            <p className="text-[10px] text-muted-foreground" data-testid="single-point-similarity-note">
+              {SINGLE_POINT_SIMILARITY_NOTE}
+            </p>
+          )}
+          <div className="flex items-center justify-between gap-2">
+            <FieldLabel label="Matching" hint="Algorithm for assigning detections to tracks. Hungarian finds the globally optimal assignment; Greedy is faster but may be suboptimal." />
+            <Select value={v.matchingMethod} onValueChange={(x) => set({ matchingMethod: x as TrackingValues["matchingMethod"] })} disabled={disabled}>
+              <SelectTrigger className="h-6 text-[10px] w-28"><SelectValue /></SelectTrigger>
+              <SelectContent>
+                <SelectItem value="hungarian">Hungarian</SelectItem>
+                <SelectItem value="greedy">Greedy</SelectItem>
+              </SelectContent>
+            </Select>
+          </div>
+          <NumField label="Window size" value={v.trackingWindowSize} onChange={(x) => set({ trackingWindowSize: x })}
+            hint="Number of past frames used as matching candidates. Fixed Window (default) uses the last N frames; Local Queues (used automatically when Max Tracks is set) keeps the last N instances per track ID instead — more robust to track breaks and occlusions."
+            min={1} max={100} disabled={disabled} />
+          <div className="space-y-1">
+            <NumField label="Max tracks" value={v.maxTracks ?? 0}
+              hint="Maximum number of simultaneous tracks. Leave empty for no limit; set to the number of animals if known. Setting this automatically switches matching to Local Queues, since Fixed Window ignores this cap."
+              onChange={(x) => set({ maxTracks: x })} min={1} max={100} disabled={disabled || v.noMaxTracks} />
+            <Check label="No limit" checked={v.noMaxTracks}
+              onChange={(x) => set(!x && v.maxTracks === null ? { noMaxTracks: x, maxTracks: 2 } : { noMaxTracks: x })}
+              disabled={disabled} />
+          </div>
+          <Section title="Advanced">
+            <NumField label="Robust (quantile)" value={v.robust} onChange={(x) => set({ robust: x })}
+              hint="If between 0 and 1 (exclusive), uses a robust quantile similarity score instead of the plain max across matched keypoints — 0.95 is a good starting value. Leave at 1 to use max similarity (non-robust)."
+              min={0} max={1} step={0.05} disabled={disabled} />
+            <Check label="Connect single-frame breaks" checked={v.connectSingleBreaks}
+              hint="When Max Tracks is set (Local Queues matching), reconnects a track break where exactly one track is lost and exactly one new track is spawned in the same frame — fixes brief detection dropouts without merging unrelated tracks."
+              onChange={(x) => set({ connectSingleBreaks: x })} disabled={disabled} />
+            <NumField label="Min match points" value={v.minMatchPoints} onChange={(x) => set({ minMatchPoints: x })}
+              hint="Minimum number of non-missing keypoints an instance needs to be considered a valid match candidate."
+              min={0} disabled={disabled} />
+            <NumField label="Min new-track points" value={v.minNewTrackPoints} onChange={(x) => set({ minNewTrackPoints: x })}
+              hint="Minimum number of non-missing keypoints required before an unmatched instance is allowed to spawn a new track."
+              min={0} disabled={disabled} />
+            <div className="flex items-center justify-between gap-2">
+              <FieldLabel label="Scoring reduction" hint="How to combine multiple similarity scores when several detections could match the same track: Mean averages them, Max takes the best score, Robust quantile is tolerant of outlier scores." />
+              <Select value={v.scoringReduction} onValueChange={(x) => set({ scoringReduction: x as TrackingValues["scoringReduction"] })} disabled={disabled}>
+                <SelectTrigger className="h-6 text-[10px] w-28"><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="mean">Mean</SelectItem>
+                  <SelectItem value="max">Max</SelectItem>
+                  <SelectItem value="robust_quantile">Robust quantile</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+            <NullableNumField label="Target instance count" value={v.trackingTargetInstanceCount}
+              hint="Target number of instances to track per frame. Required by Kalman filtering and Pre-cull; auto-derived from Max Tracks/Max Instances if left empty."
+              onChange={(x) => set({ trackingTargetInstanceCount: x })} min={1} max={100} placeholder="Auto" disabled={disabled} />
+            <Check label="Pre-cull to target" checked={v.trackingPreCullToTarget}
+              hint="Before tracking, discard detections above the target instance count for that frame."
+              onChange={(x) => set({ trackingPreCullToTarget: x })} disabled={disabled} />
+            {v.trackingPreCullToTarget && (
+              <NumField label="Pre-cull IoU threshold" value={v.trackingPreCullIouThreshold} onChange={(x) => set({ trackingPreCullIouThreshold: x })}
+                hint="IoU threshold used to remove overlapping instances above the target count before tracking."
+                min={0} max={1} step={0.05} disabled={disabled} />
+            )}
+            <NullableNumField label="Clean-up instance count" value={v.trackingCleanInstanceCount}
+              hint="After tracking, cull instances above this target count per frame — unlike Pre-cull (which trims before tracking), this trims the tracked output. Leave empty to disable."
+              onChange={(x) => set({ trackingCleanInstanceCount: x })} min={1} max={100} placeholder="Disabled" disabled={disabled} />
+            {v.trackingCleanInstanceCount != null && (
+              <NumField label="Clean-up IoU threshold" value={v.trackingCleanIouThreshold} onChange={(x) => set({ trackingCleanIouThreshold: x })}
+                hint="IoU threshold used when culling instances above the clean-up target count after tracking."
+                min={0} max={1} step={0.05} disabled={disabled} />
+            )}
+          </Section>
+
+          {v.trackerMethod === "flow" && (
+            <>
+              <div className="pt-1 text-[10px] font-medium text-muted-foreground">Optical Flow</div>
+              <NumField label="Image scale" value={v.flowImgScale} onChange={(x) => set({ flowImgScale: x })}
+                hint="Scale factor for images before computing optical flow. Lower values are faster but less precise."
+                min={0.1} max={2} step={0.1} disabled={disabled} />
+              <NumField label="Flow window size" value={v.flowWindowSize} onChange={(x) => set({ flowWindowSize: x })}
+                hint="Size of the search window for optical flow computation. Larger windows handle faster motion but are slower."
+                min={3} max={99} step={2} disabled={disabled} />
+              <NumField label="Pyramid levels" value={v.flowMaxLevels} onChange={(x) => set({ flowMaxLevels: x })}
+                hint="Number of image pyramid levels for multi-scale optical flow. More levels handle larger displacements."
+                min={1} max={10} disabled={disabled} />
+            </>
+          )}
+
+          {v.trackerMethod === "kalman" && (
+            <>
+              <div className="pt-1 text-[10px] font-medium text-muted-foreground">Kalman Filter</div>
+              <div className="flex items-center justify-between gap-2">
+                <FieldLabel label="Track features" hint="What the motion model tracks. Centroid (default) rigidly translates the last pose using a single filter per track — stable and recommended. Keypoints runs one filter per node for noisier but sometimes more distinctive per-node motion; pair it with a permissive similarity setting." />
+                <Select value={v.kfTrackFeatures} onValueChange={(x) => set({ kfTrackFeatures: x as TrackingValues["kfTrackFeatures"] })} disabled={disabled}>
+                  <SelectTrigger className="h-6 text-[10px] w-28"><SelectValue /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="centroid">Centroid</SelectItem>
+                    <SelectItem value="keypoints">Keypoints</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+              <NumField label="Init frame count" value={v.kfInitFrameCount} onChange={(x) => set({ kfInitFrameCount: x })}
+                hint="Number of warm-up frames tracked with the base tracker before the Kalman filters are fit via EM."
+                min={1} disabled={disabled} />
+              <NumField label="Reset gap size" value={v.kfResetGapSize} onChange={(x) => set({ kfResetGapSize: x })}
+                hint="Number of consecutive missed frames after which a stale track's Kalman filter is reset."
+                min={1} disabled={disabled} />
+              <FieldLabel label="Tracked nodes (all if none checked)" hint="Skeleton nodes to track with the motion model. Useful for restricting to a stable subset, e.g. spine nodes. Leave all unchecked to use every node." />
+              {kalmanNodes}
+            </>
+          )}
+        </>
+      )}
+    </>
+  );
+}
+
 
 // ── Panel ─────────────────────────────────────────────────────────────────────
 
-/** Gated: needs a single-skeleton project (see SingleSkeletonGate). */
+/**
+ * Not gated on several skeletons (#99): on such a project every model is
+ * matched to the project skeleton with the same node names, and each
+ * skeleton's models run (and merge) separately — see multiSkeletonInference.ts.
+ */
 export function InferencePanel() {
-  // A job that's running (or finished and showing results) stays visible.
-  const busy = useInferenceStore((s) => s.status !== "idle");
-  return (
-    <SingleSkeletonGate feature="Running inference" configRequest="inference" busy={busy}>
-      <InferencePanelContent />
-    </SingleSkeletonGate>
-  );
+  return <InferencePanelContent />;
+}
+
+/** Reads a small worker-side text file over Connect (`fs.read`, paged). */
+async function readWorkerText(path: string): Promise<string> {
+  const client = useConnectStore.getState()._client;
+  if (!client) throw new Error("Not connected to a worker");
+  const chunks: Uint8Array[] = [];
+  let offset = 0;
+  for (;;) {
+    const { content, eof } = await client.fsRead(path, offset);
+    chunks.push(content);
+    offset += content.length;
+    if (eof || content.length === 0) break;
+  }
+  const all = new Uint8Array(offset);
+  let pos = 0;
+  for (const c of chunks) {
+    all.set(c, pos);
+    pos += c.length;
+  }
+  return new TextDecoder().decode(all);
+}
+
+/** Reads a local text file (desktop). */
+async function readLocalText(path: string): Promise<string> {
+  const { readTextFile } = await import("@tauri-apps/plugin-fs");
+  return readTextFile(path);
 }
 
 function InferencePanelContent() {
   const video = useAppStore((s) => s.video);
   const projectPath = useAppStore((s) => s.projectPath);
+  // The seekbar selection: the "Selected clip" target, and the starting
+  // values of a custom range.
+  const seekbarSelection = useAppStore((s) => s.frameRange);
+  const selectedClip = normalizeClip(seekbarSelection);
   const skeleton = useAppStore((s) => s.skeleton);
-  const skeletonNodeNames = skeleton?.nodes?.map((n) => n.name) ?? [];
+  const labels = useAppStore((s) => s.labels);
+  // Instances' skeletons change on edits (editSeq) and undo (overlayVersion);
+  // the skeleton list on Add/undo. Recount only then.
+  const editSeq = useAppStore((s) => s.editSeq);
+  const overlayVersion = useAppStore((s) => s.overlayVersion);
+  const skeletonObjects = useAppStore((s) => s.labels?.skeletons.length ?? 0);
+  const multiSkeleton = useMemo(
+    () => hasMultipleSkeletons(labels, skeleton),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [labels, skeleton, editSeq, overlayVersion, skeletonObjects]
+  );
+  // Several skeletons: node-based options (Kalman nodes) can't name one
+  // skeleton's nodes for every run, so they use all nodes.
+  const skeletonNodeNames = multiSkeleton ? [] : (skeleton?.nodes?.map((n) => n.name) ?? []);
   const tools = useEnvironmentStore((s) => s.tools);
   const detectionStatus = useEnvironmentStore((s) => s.detectionStatus);
   const refresh = useEnvironmentStore((s) => s.refresh);
@@ -488,6 +690,40 @@ function InferencePanelContent() {
   const [filterMinCentroidDistance, setFilterMinCentroidDistance] = useState<number | null>(DEFAULTS.filterMinCentroidDistance);
   const [merging, setMerging] = useState(false);
   const [configDialogOpen, setConfigDialogOpen] = useState(false);
+
+  // The single-skeleton Tracking section's values, for TrackingFields.
+  const singleTracking: TrackingValues = {
+    tracking, trackerMethod, similarityMethod, matchingMethod, trackingWindowSize,
+    maxTracks, noMaxTracks, connectSingleBreaks, robust, minMatchPoints, minNewTrackPoints,
+    scoringReduction, trackingTargetInstanceCount, trackingPreCullToTarget,
+    trackingPreCullIouThreshold, trackingCleanInstanceCount, trackingCleanIouThreshold,
+    flowImgScale, flowWindowSize, flowMaxLevels, kfTrackFeatures, kfInitFrameCount, kfResetGapSize,
+  };
+  const singleTrackingSetters: { [K in keyof TrackingValues]: (v: TrackingValues[K]) => void } = {
+    tracking: setTracking, trackerMethod: setTrackerMethod, similarityMethod: setSimilarityMethod,
+    matchingMethod: setMatchingMethod, trackingWindowSize: setTrackingWindowSize,
+    maxTracks: setMaxTracks, noMaxTracks: setNoMaxTracks, connectSingleBreaks: setConnectSingleBreaks,
+    robust: setRobust, minMatchPoints: setMinMatchPoints, minNewTrackPoints: setMinNewTrackPoints,
+    scoringReduction: setScoringReduction, trackingTargetInstanceCount: setTrackingTargetInstanceCount,
+    trackingPreCullToTarget: setTrackingPreCullToTarget, trackingPreCullIouThreshold: setTrackingPreCullIouThreshold,
+    trackingCleanInstanceCount: setTrackingCleanInstanceCount, trackingCleanIouThreshold: setTrackingCleanIouThreshold,
+    flowImgScale: setFlowImgScale, flowWindowSize: setFlowWindowSize, flowMaxLevels: setFlowMaxLevels,
+    kfTrackFeatures: setKfTrackFeatures, kfInitFrameCount: setKfInitFrameCount, kfResetGapSize: setKfResetGapSize,
+  };
+  const setSingleTracking = (patch: Partial<TrackingValues>) => {
+    for (const k of Object.keys(patch) as (keyof TrackingValues)[]) {
+      (singleTrackingSetters[k] as (v: unknown) => void)(patch[k]);
+    }
+  };
+
+  // Several skeletons: each skeleton's own Max instances / peak threshold /
+  // tracking (one tab per skeleton with models), saved by name + node set.
+  const savedSkeletonSettings = useSkeletonInferenceSettingsStore((s) => s.bySkeleton);
+  const updateSkeletonSettings = useSkeletonInferenceSettingsStore((s) => s.update);
+  const resetSkeletonSettings = useSkeletonInferenceSettingsStore((s) => s.resetSkeleton);
+  const settingsForRun = (run: Pick<SkeletonRunPlan, "skeleton">): SkeletonInferenceSettings =>
+    skeletonInferenceSettings(savedSkeletonSettings, skeletonSettingsKey(run.skeleton));
+  const [activeSkeletonTab, setActiveSkeletonTab] = useState<string | null>(null);
   const logRef = useRef<HTMLPreElement>(null);
 
   // Remote inference state
@@ -500,6 +736,26 @@ function InferencePanelContent() {
 
   const connectionStatus = useConnectStore((s) => s.connectionStatus);
   const selectedWorkerId = useConnectStore((s) => s.selectedWorkerId);
+  const clientFor = useConnectStore((s) => s.clientFor);
+  // What the selected worker supports (`worker.info.features`), to say which
+  // settings it won't apply (see remoteInferenceSupport.ts).
+  const [workerFeatures, setWorkerFeatures] = useState<string[]>([]);
+  useEffect(() => {
+    setWorkerFeatures([]);
+    if (!remoteEnabled || !selectedWorkerId || connectionStatus !== "connected") return;
+    let cancelled = false;
+    void (async () => {
+      try {
+        const info = await (await clientFor(selectedWorkerId)).workerInfo();
+        if (!cancelled) setWorkerFeatures(info.features);
+      } catch {
+        /* unknown: treat as a worker without extra features */
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [remoteEnabled, selectedWorkerId, connectionStatus, clientFor]);
   const connectedMounts = useConnectStore((s) => s.workerMounts);
 
   // Empty (not ["/"]) while disconnected: RemoteFileBrowser treats a single
@@ -525,7 +781,7 @@ function InferencePanelContent() {
   // back to a contiguous target instead of leaving an option selected that's
   // no longer even shown in the dropdown.
   useEffect(() => {
-    if (trackOnly && !["video", "all_videos", "custom"].includes(frameRange)) {
+    if (trackOnly && !["video", "all_videos", "custom", "clip"].includes(frameRange)) {
       setFrameRange("video");
     }
   }, [trackOnly, frameRange]);
@@ -561,14 +817,28 @@ function InferencePanelContent() {
       const projectDir = await dirname(projectPath);
       const models = await findTrainedModels(projectDir);
       if (cancelled) return;
-      const picked = pickModelsForPipeline(models, pipeline);
+      const projectLabels = useAppStore.getState().labels;
+      let picked: string[];
+      if (multiSkeleton && projectLabels) {
+        // One model set per project skeleton, matched by node names.
+        const { pickModelsForSkeletons } = await import("@/lib/multiSkeletonInference");
+        const infos = await Promise.all(models.map((m) => readModelInfo(m.path, readLocalText)));
+        if (cancelled) return;
+        picked = pickModelsForSkeletons(
+          infos,
+          projectLabels.skeletons,
+          skeletonsInUse(projectLabels, useAppStore.getState().skeleton),
+        );
+      } else {
+        picked = pickModelsForPipeline(models, pipeline);
+      }
       if (picked.length === 0) return;
       setModelPaths((prev) => (prev.length === 0 ? picked : prev));
     })();
     return () => {
       cancelled = true;
     };
-  }, [remoteEnabled, projectPath, pipeline]);
+  }, [remoteEnabled, projectPath, pipeline, multiSkeleton]);
 
   // Head of each local model directory, so Run can require one per head the
   // pipeline needs. Worker paths can't be read from here.
@@ -585,6 +855,46 @@ function InferencePanelContent() {
       cancelled = true;
     };
   }, [modelPaths, modelHeads, remoteEnabled]);
+
+  // Several skeletons: each model's head + node names (local file, or the
+  // worker's copy over Connect), to match it to a project skeleton.
+  const [modelInfos, setModelInfos] = useState<Record<string, ModelInfo>>({});
+  const activePaths = remoteEnabled ? remoteModelPaths : modelPaths;
+  // Local and worker paths are different files: re-read on switching.
+  useEffect(() => {
+    setModelInfos({});
+  }, [remoteEnabled, selectedWorkerId]);
+  // A model whose config couldn't be read is retried when it's added again
+  // (or via its Retry link): forget failed reads once the path is removed.
+  useEffect(() => {
+    setModelInfos((prev) => forgetFailedModelReads(prev, activePaths));
+  }, [activePaths]);
+  const retryModelInfo = (path: string) => setModelInfos((prev) => forgetFailedModelReads(prev, [], [path]));
+  useEffect(() => {
+    if (!multiSkeleton) return;
+    const unread = activePaths.filter((p) => !(p in modelInfos));
+    if (unread.length === 0) return;
+    let cancelled = false;
+    const readText = remoteEnabled ? readWorkerText : readLocalText;
+    Promise.all(unread.map((p) => readModelInfo(p, readText))).then((infos) => {
+      if (!cancelled) setModelInfos((prev) => ({ ...prev, ...Object.fromEntries(infos.map((i) => [i.path, i])) }));
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [multiSkeleton, activePaths, modelInfos, remoteEnabled]);
+
+  const multiPlan = useMemo(() => {
+    if (!multiSkeleton || !labels) return null;
+    const pending = activePaths.some((p) => !(p in modelInfos));
+    const plan = planMultiSkeletonInference(
+      activePaths.filter((p) => p in modelInfos).map((p) => modelInfos[p]),
+      labels.skeletons,
+      skeletonsInUse(labels, skeleton),
+    );
+    return { plan, pending };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [multiSkeleton, labels, skeleton, activePaths, modelInfos, skeletonObjects, editSeq, overlayVersion]);
 
   const sleapNnAvailable = tools.some(
     (t) => t.name === "sleap-nn" || t.commands?.includes("sleap-nn")
@@ -604,6 +914,7 @@ function InferencePanelContent() {
 
   // Custom range validation: check against current video's frame count
   const currentVideoFrameCount = video?.shape?.[0] ?? Infinity;
+  const clipMissing = frameRange === "clip" && !selectedClip;
   const customRangeInvalid = frameRange === "custom" && (
     Number(frameStart) < 0 ||
     Number(frameEnd) < 0 ||
@@ -614,13 +925,197 @@ function InferencePanelContent() {
     isNaN(Number(frameEnd))
   );
 
-  const modelsProblem = trackOnly
-    ? null
-    : pipelineModelsProblem(pipeline, activeModelPaths.map((p) => (remoteEnabled ? null : (modelHeads[p] ?? null))));
-  const canRun = (remoteEnabled ? (!!selectedWorkerId && connectionStatus === "connected" && !!remoteDataPath) : sleapNnAvailable) && !isRunning && !isDone && (trackOnly || (activeModelPaths.length > 0 && !modelsProblem)) && !customRangeInvalid;
+  const sleapNnVersion = tools.find((t) => t.name === "sleap-nn")?.version ?? null;
+  // Shown under the pipeline as soon as it's picked, before any model is added.
+  // (Several skeletons pick a pipeline per skeleton instead.)
+  const pipelineProblem =
+    !multiSkeleton && !trackOnly && pipeline === "centroid"
+      ? centroidOnlyProblem({ remote: remoteEnabled, sleapNnVersion })
+      : null;
+  // A worker reads its own copy of the project, and sleap-nn (≤ 0.3.5) crashes
+  // on frames mixing skeletons: refuse targets that read such frames. Random
+  // samples are checked on submit (their frames are drawn then).
+  const remoteMixedTarget = multiSkeleton && remoteEnabled && ["frame", "video", "custom", "clip"].includes(frameRange);
+  const watchedFrameIdx = useAppStore((s) => (remoteMixedTarget && frameRange === "frame" ? s.frameIdx : -1));
+  const remoteMixedProblem = useMemo(() => {
+    if (!remoteMixedTarget || !labels || !video) return null;
+    const vi = labels.videos.indexOf(video);
+    if (vi < 0) return null;
+    const range = (frameRange === "custom"
+      ? { start: Number(frameStart), end: Number(frameEnd) }
+      : frameRange === "clip"
+        ? (selectedClip ?? { start: 0, end: 0 })
+        : frameRange) as InferenceConfig["frameRange"];
+    return remoteMixedFramesProblem(labels, localRunScope({ frameRange: range, videoIndex: vi }, watchedFrameIdx));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [remoteMixedTarget, labels, video, frameRange, frameStart, frameEnd, selectedClip?.start, selectedClip?.end, watchedFrameIdx, editSeq, overlayVersion]);
+  const multiTargetProblem =
+    multiSkeleton && remoteEnabled ? (remoteMultiSkeletonTargetProblem(frameRange) ?? remoteMixedProblem) : null;
+  const modelsProblem = multiSkeleton
+    ? trackOnly
+      ? "Track only with several skeletons isn't supported yet."
+      : multiPlan?.pending
+        ? "Reading the models' skeletons…"
+        : (multiPlan?.plan.problem ?? null)
+    : trackOnly
+      ? null
+      : pipelineModelsProblem(pipeline, activeModelPaths.map((p) => (remoteEnabled ? null : (modelHeads[p] ?? null))));
+  const canRun = (remoteEnabled ? (!!selectedWorkerId && connectionStatus === "connected" && !!remoteDataPath) : sleapNnAvailable) && !isRunning && !isDone && (multiSkeleton ? !modelsProblem && !multiTargetProblem : (trackOnly || (activeModelPaths.length > 0 && !modelsProblem && !pipelineProblem))) && !customRangeInvalid && !clipMissing;
   const isTopDown = pipeline === "top-down" || pipeline === "top-down-id" || pipeline === "top-down-bbox";
   // sleap-nn tracks poses and masks only, not a detector's boxes.
-  const trackingUnavailable = !trackOnly && pipeline === "bbox";
+  // A Centroid Only run on a multi-node skeleton writes centroids, which
+  // sleap-nn doesn't track (on a 1-node skeleton it writes instances).
+  // The skeleton's own node count: skeletonNodeNames is empty with several skeletons.
+  const centroidOutput = centroidOutputFor(skeleton?.nodes?.length ?? 0);
+  const trackingUnavailable =
+    !trackOnly && (pipeline === "bbox" || (pipeline === "centroid" && centroidOutput === "centroid"));
+
+  // ── Remembered settings (lib/inferenceSettings.ts) ─────────────
+  // Restored once on mount, then saved whenever they change. `restored` keeps
+  // the first render's defaults from overwriting what was saved: it turns true
+  // in the same update as the restored values, so the first save has them.
+  const [restored, setRestored] = useState(false);
+  useEffect(() => {
+    const saved = sanitizeSavedInferenceSettings(useAppStore.getState().inferenceSettings);
+    const apply: { [K in keyof SavedInferenceSettings]-?: (v: NonNullable<SavedInferenceSettings[K]> | null) => void } = {
+      pipeline: (v) => v && setPipeline(v),
+      sampleCount: (v) => v != null && setSampleCount(v),
+      excludeUserLabeled: (v) => v != null && setExcludeUserLabeled(v),
+      existingPredictions: (v) => v && setExistingPredictions(v),
+      batchSize: (v) => v != null && setBatchSize(v),
+      device: (v) => v && setDevice(v),
+      runtime: (v) => v && setRuntime(v),
+      maxInstances: (v) => {
+        setNoMaxInstances(v == null);
+        if (v != null) setMaxInstances(v);
+      },
+      peakThreshold: (v) => v != null && setPeakThreshold(v),
+      integralRefinement: (v) => v != null && setIntegralRefinement(v),
+      integralPatchSize: (v) => v != null && setIntegralPatchSize(v),
+      nPoints: (v) => v != null && setNPoints(v),
+      maxEdgeLengthRatio: (v) => v != null && setMaxEdgeLengthRatio(v),
+      distPenaltyWeight: (v) => v != null && setDistPenaltyWeight(v),
+      minLineScores: (v) => v != null && setMinLineScores(v),
+      tracking: (v) => v != null && setTracking(v),
+      trackerMethod: (v) => v && setTrackerMethod(v),
+      similarityMethod: (v) => v && setSimilarityMethod(v),
+      matchingMethod: (v) => v && setMatchingMethod(v),
+      trackingWindowSize: (v) => v != null && setTrackingWindowSize(v),
+      maxTracks: (v) => {
+        setNoMaxTracks(v == null);
+        if (v != null) setMaxTracks(v);
+      },
+      connectSingleBreaks: (v) => v != null && setConnectSingleBreaks(v),
+      robust: (v) => v != null && setRobust(v),
+      minMatchPoints: (v) => v != null && setMinMatchPoints(v),
+      minNewTrackPoints: (v) => v != null && setMinNewTrackPoints(v),
+      scoringReduction: (v) => v && setScoringReduction(v),
+      trackingTargetInstanceCount: (v) => setTrackingTargetInstanceCount(v ?? null),
+      trackingPreCullToTarget: (v) => v != null && setTrackingPreCullToTarget(v),
+      trackingPreCullIouThreshold: (v) => v != null && setTrackingPreCullIouThreshold(v),
+      trackingCleanInstanceCount: (v) => setTrackingCleanInstanceCount(v ?? null),
+      trackingCleanIouThreshold: (v) => v != null && setTrackingCleanIouThreshold(v),
+      flowImgScale: (v) => v != null && setFlowImgScale(v),
+      flowWindowSize: (v) => v != null && setFlowWindowSize(v),
+      flowMaxLevels: (v) => v != null && setFlowMaxLevels(v),
+      kfTrackFeatures: (v) => v && setKfTrackFeatures(v),
+      kfInitFrameCount: (v) => v != null && setKfInitFrameCount(v),
+      kfNodeIndices: (v) => v && setKfNodeIndices(v),
+      kfResetGapSize: (v) => v != null && setKfResetGapSize(v),
+      ensureChannels: (v) => v && setEnsureChannels(v),
+      filterOverlapping: (v) => v != null && setFilterOverlapping(v),
+      filterMethod: (v) => v && setFilterMethod(v),
+      filterThreshold: (v) => v != null && setFilterThreshold(v),
+      filterMinVisibleNodes: (v) => setFilterMinVisibleNodes(v ?? null),
+      filterMinVisibleNodeFraction: (v) => setFilterMinVisibleNodeFraction(v ?? null),
+      filterMinMeanNodeScore: (v) => setFilterMinMeanNodeScore(v ?? null),
+      filterMinInstanceScore: (v) => setFilterMinInstanceScore(v ?? null),
+      filterMinCentroidDistance: (v) => setFilterMinCentroidDistance(v ?? null),
+      target: (v) => v && setFrameRange(v as FrameRange),
+      customStart: (v) => v != null && setFrameStart(v),
+      customEnd: (v) => v != null && setFrameEnd(v),
+    };
+    for (const [k, v] of Object.entries(saved)) {
+      (apply as Record<string, (v: unknown) => void>)[k]?.(v);
+    }
+    setRestored(true);
+  }, []);
+
+  // Several skeletons: one settings tab per skeleton that has models.
+  const skeletonRuns = multiSkeleton ? (multiPlan?.plan.runs ?? []) : [];
+  const activeRun =
+    skeletonRuns.find((r) => String(r.skeletonIndex) === activeSkeletonTab) ?? skeletonRuns[0] ?? null;
+  const activeRunKey = activeRun ? skeletonSettingsKey(activeRun.skeleton) : null;
+  const activeRunSettings = activeRun ? settingsForRun(activeRun) : null;
+  const matchedModelPaths = new Set(skeletonRuns.flatMap((r) => r.modelPaths));
+
+  /** The run's settings as they stand in the panel. */
+  const buildInferenceConfig = (): InferenceConfig => {
+    // Derive video index from inference target: "current video" targets use the
+    // active video from appStore, "all videos" targets use "all"
+    const currentVideoTargets = ["frame", "video", "random_video", "custom", "clip"];
+    const currentVideoIdx = (() => {
+      const { labels, video: activeVideo } = useAppStore.getState();
+      if (!labels || !activeVideo) return 0;
+      const idx = labels.videos.indexOf(activeVideo);
+      return idx >= 0 ? idx : 0;
+    })();
+    const videoIndex = currentVideoTargets.includes(frameRange as string)
+      ? currentVideoIdx
+      : ("all" as const);
+
+    return {
+      pipeline, trackOnly,
+      // Track-only never sends a model: sleap-nn's predict CLI detects
+      // "--tracking with no --model_paths" and takes its dedicated
+      // retrack-only path (see InferenceConfig.trackOnly's doc).
+      modelPaths: trackOnly ? [] : (remoteEnabled ? remoteModelPaths : modelPaths),
+      videoIndex,
+      frameRange:
+        frameRange === "custom"
+          ? { start: Number(frameStart), end: Number(frameEnd) }
+          : frameRange === "clip"
+            ? (selectedClip ?? { start: 0, end: 0 })
+            : frameRange,
+      sampleCount,
+      excludeUserLabeled: trackOnly ? false : excludeUserLabeled,
+      existingPredictions, batchSize, device, runtime,
+      maxInstances: noMaxInstances ? null : maxInstances,
+      peakThreshold,
+      integralRefinement, integralPatchSize,
+      nPoints, maxEdgeLengthRatio, distPenaltyWeight, minLineScores,
+      // Track-only implies tracking is always on, regardless of the
+      // (hidden, in this mode) "Enable tracking" checkbox's own state.
+      tracking: trackOnly || tracking, trackerMethod, similarityMethod, matchingMethod,
+      trackingWindowSize,
+      maxTracks: noMaxTracks ? null : maxTracks,
+      connectSingleBreaks, robust,
+      minMatchPoints, minNewTrackPoints, scoringReduction,
+      trackingTargetInstanceCount, trackingPreCullToTarget, trackingPreCullIouThreshold,
+      trackingCleanInstanceCount, trackingCleanIouThreshold,
+      flowImgScale, flowWindowSize, flowMaxLevels,
+      kfTrackFeatures, kfInitFrameCount, kfNodeIndices, kfResetGapSize,
+      ensureChannels, filterOverlapping, filterMethod, filterThreshold,
+      filterMinVisibleNodes, filterMinVisibleNodeFraction, filterMinMeanNodeScore,
+      filterMinInstanceScore, filterMinCentroidDistance,
+      ...(pipeline === "centroid" ? { centroidOutput } : {}),
+      // Several skeletons: one run per skeleton, models matched by node names.
+      // Each run uses its own tab's settings (Max instances, peak threshold, tracking).
+      skeletonRuns: multiSkeleton && multiPlan
+        ? runSpecsFromPlan(multiPlan.plan, (r) => skeletonRunSettings(settingsForRun(r)))
+        : undefined,
+    };
+  };
+
+
+  // Save on every change (after the restore above has run).
+  const settingsJson = JSON.stringify(
+    settingsToSave(buildInferenceConfig(), { target: frameRange, customStart: frameStart, customEnd: frameEnd }),
+  );
+  useEffect(() => {
+    if (!restored) return;
+    useAppStore.getState().set("inferenceSettings", JSON.parse(settingsJson));
+  }, [settingsJson, restored]);
 
   if (!isTauri && connectionStatus !== "connected") {
     return (
@@ -643,50 +1138,7 @@ function InferencePanelContent() {
   };
 
   const handleRunInference = async () => {
-    // Derive video index from inference target: "current video" targets use the
-    // active video from appStore, "all videos" targets use "all"
-    const currentVideoTargets = ["frame", "video", "random_video", "custom"];
-    const currentVideoIdx = (() => {
-      const { labels, video: activeVideo } = useAppStore.getState();
-      if (!labels || !activeVideo) return 0;
-      const idx = labels.videos.indexOf(activeVideo);
-      return idx >= 0 ? idx : 0;
-    })();
-    const videoIndex = currentVideoTargets.includes(frameRange as string)
-      ? currentVideoIdx
-      : ("all" as const);
-
-    const config: InferenceConfig = {
-      pipeline, trackOnly,
-      // Track-only never sends a model: sleap-nn's predict CLI detects
-      // "--tracking with no --model_paths" and takes its dedicated
-      // retrack-only path (see InferenceConfig.trackOnly's doc).
-      modelPaths: trackOnly ? [] : (remoteEnabled ? remoteModelPaths : modelPaths),
-      videoIndex,
-      frameRange: frameRange === "custom" ? { start: Number(frameStart), end: Number(frameEnd) } : frameRange,
-      sampleCount,
-      excludeUserLabeled: trackOnly ? false : excludeUserLabeled,
-      existingPredictions, batchSize, device, runtime,
-      maxInstances: noMaxInstances ? null : maxInstances,
-      peakThreshold,
-      integralRefinement, integralPatchSize,
-      nPoints, maxEdgeLengthRatio, distPenaltyWeight, minLineScores,
-      // Track-only implies tracking is always on, regardless of the
-      // (hidden, in this mode) "Enable tracking" checkbox's own state.
-      tracking: trackOnly || tracking, trackerMethod, similarityMethod, matchingMethod,
-      trackingWindowSize,
-      maxTracks: noMaxTracks ? null : maxTracks,
-      connectSingleBreaks, robust,
-      minMatchPoints, minNewTrackPoints, scoringReduction,
-      trackingTargetInstanceCount, trackingPreCullToTarget, trackingPreCullIouThreshold,
-      trackingCleanInstanceCount, trackingCleanIouThreshold,
-      flowImgScale, flowWindowSize, flowMaxLevels,
-      kfTrackFeatures, kfInitFrameCount, kfNodeIndices, kfResetGapSize,
-      ensureChannels, filterOverlapping, filterMethod, filterThreshold,
-      filterMinVisibleNodes, filterMinVisibleNodeFraction, filterMinMeanNodeScore,
-      filterMinInstanceScore, filterMinCentroidDistance,
-    };
-
+    const config = buildInferenceConfig();
     if (remoteEnabled) {
       await startInference(config, {
         remote: true,
@@ -699,6 +1151,83 @@ function InferencePanelContent() {
   };
 
   const pct = progress && progress.nTotal > 0 ? (progress.nProcessed / progress.nTotal) * 100 : 0;
+
+  const removeModel = (path: string) => {
+    const i = activeModelPaths.indexOf(path);
+    if (i < 0) return;
+    if (remoteEnabled) setRemoteModelPaths((prev) => prev.filter((_, j) => j !== i));
+    else setModelPaths((prev) => prev.filter((_, j) => j !== i));
+  };
+
+  /** One model directory in the Models list (or a skeleton tab). */
+  const renderModelRow = (p: string) => {
+    const verdict = multiPlan?.plan.models.find((m) => m.path === p) ?? null;
+    const refused = !!verdict?.reason;
+    return (
+      <div key={p} className="space-y-0.5">
+        <div className={`flex items-center gap-1 rounded border px-2 py-1 ${refused ? "border-red-500/50 bg-red-500/5" : "border-green-500/50 bg-green-500/5"}`}>
+          <Folder className={`h-3.5 w-3.5 flex-shrink-0 ${refused ? "text-red-400" : "text-green-500"}`} />
+          <span className="text-[10px] truncate flex-1 font-medium" title={p}>{remoteEnabled ? p : p.split(/[\\/]/).pop()}</span>
+          <button className="text-muted-foreground hover:text-destructive shrink-0"
+            onClick={() => removeModel(p)}
+            disabled={isRunning} title="Remove">
+            <X className="h-3 w-3" />
+          </button>
+        </div>
+        {verdict?.reason && (
+          <p className="text-[10px] text-red-400 pl-1" data-testid="model-skeleton-refused">
+            {verdict.reason}
+            {modelInfos[p]?.nodeNames === null && (
+              <>
+                {" "}
+                <button type="button" className="underline hover:text-red-300" data-testid="model-skeleton-retry"
+                  onClick={() => retryModelInfo(p)}>Retry</button>
+              </>
+            )}
+          </p>
+        )}
+      </div>
+    );
+  };
+
+  /** A skeleton's tab: its models and its own run settings (several skeletons). */
+  const renderSkeletonTab = (r: SkeletonRunPlan) => {
+    const key = skeletonSettingsKey(r.skeleton);
+    const st = settingsForRun(r);
+    const set = (patch: Partial<SkeletonInferenceSettings>) => updateSkeletonSettings(key, patch);
+    return (
+      <TabsContent key={r.skeletonIndex} value={String(r.skeletonIndex)} className="space-y-2 pt-1"
+        data-testid={`skeleton-tab-content-${r.skeletonName}`}>
+        <p className="text-[10px] text-muted-foreground">
+          {r.pipeline ? SKELETON_PIPELINE_LABELS[r.pipeline] : "No pipeline"}
+          {` · ${r.modelPaths.length} model${r.modelPaths.length === 1 ? "" : "s"}`}
+        </p>
+        <div className="space-y-1">{r.modelPaths.map(renderModelRow)}</div>
+        <NumField label="Peak threshold" value={st.peakThreshold} onChange={(x) => set({ peakThreshold: x })}
+          min={0} max={1} step={0.05} disabled={isRunning} />
+        <div className="space-y-1">
+          <NumField label="Max instances" value={st.maxInstances ?? 0}
+            onChange={(x) => set({ maxInstances: x })} min={1} max={100} disabled={isRunning || st.noMaxInstances} />
+          <Check label="No limit" checked={st.noMaxInstances}
+            onChange={(x) => set(!x && st.maxInstances === null ? { noMaxInstances: x, maxInstances: 2 } : { noMaxInstances: x })}
+            disabled={isRunning} />
+        </div>
+        <Separator />
+        <TrackingFields
+          v={st}
+          set={set}
+          disabled={isRunning}
+          trackingUnavailable={r.pipeline === "bbox"}
+          nodeCount={r.skeleton.nodeNames.length}
+          kalmanNodes={<NodeCheckboxList nodes={[]} selected={[]} onChange={() => {}} emptyText="Several skeletons — all of this skeleton's nodes are used." />}
+        />
+        <button type="button" className="text-[10px] text-muted-foreground underline hover:text-foreground disabled:opacity-50"
+          onClick={() => resetSkeletonSettings(key)} disabled={isRunning} data-testid="skeleton-tab-reset">
+          Reset {r.skeletonName} to defaults
+        </button>
+      </TabsContent>
+    );
+  };
 
   return (
     <div className="flex flex-col gap-0 -m-2">
@@ -717,8 +1246,11 @@ function InferencePanelContent() {
           hint="Run tracking on the instances already in this project (labeled or predicted) without running pose estimation. No model needed — hides pipeline/model selection below."
           checked={trackOnly}
           onChange={setTrackOnly}
-          disabled={isRunning}
+          disabled={isRunning || (multiSkeleton && !trackOnly)}
         />
+        {multiSkeleton && trackOnly && (
+          <p className="text-[10px] text-red-400">Track only with several skeletons isn&apos;t supported yet — untick it to run models.</p>
+        )}
 
         <Separator />
 
@@ -726,6 +1258,14 @@ function InferencePanelContent() {
         {!trackOnly && (
           <>
             <Section title="Pipeline" defaultOpen={true}>
+              {multiSkeleton ? (
+                <p className="text-[10px] text-muted-foreground" data-testid="multi-skeleton-pipeline-note">
+                  This project has several skeletons. Each model is matched to the
+                  skeleton with the same node names, and each skeleton&apos;s models run
+                  separately with the settings in its tab below (the pipeline follows
+                  from their types). Predictions are merged under their own skeleton.
+                </p>
+              ) : (<>
               <Select value={pipeline} onValueChange={(v) => setPipeline(v as PipelineType)} disabled={isRunning}>
                 <SelectTrigger className="h-7 text-xs"><SelectValue /></SelectTrigger>
                 <SelectContent>
@@ -737,6 +1277,10 @@ function InferencePanelContent() {
               <p className="text-[10px] text-muted-foreground">
                 {PIPELINE_OPTIONS.find((o) => o.value === pipeline)?.desc}
               </p>
+              {pipelineProblem && (
+                <p className="text-[10px] text-red-400" data-testid="inference-pipeline-problem">{pipelineProblem}</p>
+              )}
+              </>)}
             </Section>
 
             <Separator />
@@ -761,33 +1305,33 @@ function InferencePanelContent() {
               </div>
               {activeModelPaths.length === 0 ? (
                 <p className="text-[10px] text-muted-foreground">
-                  {pipeline === "top-down-bbox"
+                  {multiSkeleton
+                    ? "Add model directories — at least one per skeleton you want to predict."
+                    : pipeline === "top-down-bbox"
                     ? "Add two directories (box detector + centered-instance)."
                     : isTopDown ? "Add two directories (centroid + centered-instance)." : "Add a model directory."}
                 </p>
               ) : (
                 <div className="space-y-1">
-                  {activeModelPaths.map((p, i) => (
-                    <div key={i} className="flex items-center gap-1 rounded border border-green-500/50 bg-green-500/5 px-2 py-1">
-                      <Folder className="h-3.5 w-3.5 text-green-500 flex-shrink-0" />
-                      <span className="text-[10px] truncate flex-1 font-medium" title={p}>{remoteEnabled ? p : p.split(/[\\/]/).pop()}</span>
-                      <button className="text-muted-foreground hover:text-destructive shrink-0"
-                        onClick={() => {
-                          if (remoteEnabled) {
-                            setRemoteModelPaths((prev) => prev.filter((_, j) => j !== i));
-                          } else {
-                            setModelPaths((prev) => prev.filter((_, j) => j !== i));
-                          }
-                        }}
-                        disabled={isRunning} title="Remove">
-                        <X className="h-3 w-3" />
-                      </button>
-                    </div>
-                  ))}
+                  {/* Several skeletons: matched models are listed in their skeleton's tab. */}
+                  {activeModelPaths.filter((p) => !matchedModelPaths.has(p)).map(renderModelRow)}
                   {modelsProblem && (
                     <p className="text-[10px] text-red-400" data-testid="inference-models-problem">{modelsProblem}</p>
                   )}
                 </div>
+              )}
+              {skeletonRuns.length > 0 && activeRun && (
+                <Tabs value={String(activeRun.skeletonIndex)} onValueChange={setActiveSkeletonTab} data-testid="skeleton-tabs">
+                  <TabsList className="w-full h-7">
+                    {skeletonRuns.map((r) => (
+                      <TabsTrigger key={r.skeletonIndex} value={String(r.skeletonIndex)} className="flex-1 text-[10px] h-6"
+                        data-testid={`skeleton-tab-${r.skeletonName}`}>
+                        {r.skeletonName}
+                      </TabsTrigger>
+                    ))}
+                  </TabsList>
+                  {skeletonRuns.map((r) => renderSkeletonTab(r))}
+                </Tabs>
               )}
             </Section>
 
@@ -799,9 +1343,21 @@ function InferencePanelContent() {
         <Section title="Data" defaultOpen={true}>
           <div className="space-y-1">
             <span className="text-[10px] text-muted-foreground">Inference Target</span>
-            <Select value={frameRange} onValueChange={(v) => setFrameRange(v as FrameRange)} disabled={isRunning}>
+            <Select
+              value={frameRange}
+              onValueChange={(v) => {
+                // A custom range starts from the seekbar selection, if any.
+                if (v === "custom" && selectedClip) {
+                  setFrameStart(String(selectedClip.start));
+                  setFrameEnd(String(selectedClip.end));
+                }
+                setFrameRange(v as FrameRange);
+              }}
+              disabled={isRunning}
+            >
               <SelectTrigger className="h-7 text-xs" data-tutorial="inference-target-select"><SelectValue /></SelectTrigger>
               <SelectContent>
+                <SelectItem value="clip">Selected clip</SelectItem>
                 <SelectItem value="custom">Custom range</SelectItem>
                 <SelectItem value="video">Entire current video</SelectItem>
                 <SelectItem value="all_videos">All videos</SelectItem>
@@ -824,6 +1380,11 @@ function InferencePanelContent() {
                   onCommit={(n) => setSampleCount(n)}
                   className="h-6 text-[10px] w-20" disabled={isRunning} />
               </div>
+            )}
+            {frameRange === "clip" && (
+              <p className={`text-[10px] mt-1 ${selectedClip ? "text-muted-foreground" : "text-red-400"}`} data-testid="inference-clip-description">
+                {describeClip(seekbarSelection) ?? "Select a clip first: shift-drag on the seekbar."}
+              </p>
             )}
             {frameRange === "custom" && (
               <div className="space-y-1 mt-1">
@@ -850,6 +1411,9 @@ function InferencePanelContent() {
               </div>
             )}
           </div>
+          {multiTargetProblem && (
+            <p className="text-[10px] text-red-400" data-testid="multi-skeleton-target-problem">{multiTargetProblem}</p>
+          )}
           <Check
             label="Exclude user-labeled frames"
             hint={trackOnly
@@ -953,16 +1517,21 @@ function InferencePanelContent() {
                 </div>
               )}
 
-              <NumField label="Peak threshold" value={peakThreshold} onChange={setPeakThreshold}
-                min={0} max={1} step={0.05} disabled={isRunning} />
+              {/* Several skeletons: set per skeleton, in the Models tabs. */}
+              {!multiSkeleton && (
+                <>
+                  <NumField label="Peak threshold" value={peakThreshold} onChange={setPeakThreshold}
+                    min={0} max={1} step={0.05} disabled={isRunning} />
 
-              <div className="space-y-1">
-                <NumField label="Max instances" value={maxInstances ?? 0}
-                  onChange={(v) => setMaxInstances(v)} min={1} max={100} disabled={isRunning || noMaxInstances} />
-                <Check label="No limit" checked={noMaxInstances}
-                  onChange={(v) => { setNoMaxInstances(v); if (!v && maxInstances === null) setMaxInstances(2); }}
-                  disabled={isRunning} />
-              </div>
+                  <div className="space-y-1">
+                    <NumField label="Max instances" value={maxInstances ?? 0}
+                      onChange={(v) => setMaxInstances(v)} min={1} max={100} disabled={isRunning || noMaxInstances} />
+                    <Check label="No limit" checked={noMaxInstances}
+                      onChange={(v) => { setNoMaxInstances(v); if (!v && maxInstances === null) setMaxInstances(2); }}
+                      disabled={isRunning} />
+                  </div>
+                </>
+              )}
 
             </Section>
 
@@ -970,149 +1539,26 @@ function InferencePanelContent() {
           </>
         )}
 
-        {/* ── Tracking ────────────────────────────────────────────── */}
-        <Section title="Tracking" defaultOpen={false}>
-          <Check label="Enable tracking"
-            hint={trackOnly
-              ? "Always on in track-only mode."
-              : trackingUnavailable
-                ? "Not available for a box detector alone: sleap-nn tracks poses, not boxes. Use Top-Down (Box Crops) to track."
-                : "Connect predicted instances across frames to maintain identity over time."}
-            checked={trackOnly || (tracking && !trackingUnavailable)} onChange={setTracking} disabled={isRunning || trackOnly || trackingUnavailable} />
-          {(trackOnly || (tracking && !trackingUnavailable)) && (
-            <>
-              <div className="flex items-center justify-between gap-2">
-                <FieldLabel label="Method" hint="Simple matches instances by similarity alone. Optical Flow predicts motion from pixel displacement — best for fast-moving animals. Kalman Filter predicts motion from a per-track velocity model — best for a known, fixed number of animals whose motion helps disambiguate crossings or occlusions." />
-                <Select value={trackerMethod} onValueChange={(v) => setTrackerMethod(v as typeof trackerMethod)} disabled={isRunning}>
-                  <SelectTrigger className="h-6 text-[10px] w-28"><SelectValue /></SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="simple">Simple</SelectItem>
-                    <SelectItem value="flow">Optical Flow</SelectItem>
-                    <SelectItem value="kalman">Kalman Filter</SelectItem>
-                  </SelectContent>
-                </Select>
-              </div>
-              <div className="flex items-center justify-between gap-2">
-                <FieldLabel label="Similarity" hint="Metric for comparing instances across frames. OKS uses keypoint positions, IoU uses bounding boxes, Centroids uses center distance." />
-                <Select value={similarityMethod} onValueChange={(v) => setSimilarityMethod(v as typeof similarityMethod)} disabled={isRunning}>
-                  <SelectTrigger className="h-6 text-[10px] w-28"><SelectValue /></SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="oks">OKS</SelectItem>
-                    <SelectItem value="iou">IoU</SelectItem>
-                    <SelectItem value="centroids">Centroid dist.</SelectItem>
-                    <SelectItem value="euclidean_dist">Euclidean dist.</SelectItem>
-                  </SelectContent>
-                </Select>
-              </div>
-              <div className="flex items-center justify-between gap-2">
-                <FieldLabel label="Matching" hint="Algorithm for assigning detections to tracks. Hungarian finds the globally optimal assignment; Greedy is faster but may be suboptimal." />
-                <Select value={matchingMethod} onValueChange={(v) => setMatchingMethod(v as typeof matchingMethod)} disabled={isRunning}>
-                  <SelectTrigger className="h-6 text-[10px] w-28"><SelectValue /></SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="hungarian">Hungarian</SelectItem>
-                    <SelectItem value="greedy">Greedy</SelectItem>
-                  </SelectContent>
-                </Select>
-              </div>
-              <NumField label="Window size" value={trackingWindowSize} onChange={setTrackingWindowSize}
-                hint="Number of past frames used as matching candidates. Fixed Window (default) uses the last N frames; Local Queues (used automatically when Max Tracks is set) keeps the last N instances per track ID instead — more robust to track breaks and occlusions."
-                min={1} max={100} disabled={isRunning} />
-              <div className="space-y-1">
-                <NumField label="Max tracks" value={maxTracks ?? 0}
-                  hint="Maximum number of simultaneous tracks. Leave empty for no limit; set to the number of animals if known. Setting this automatically switches matching to Local Queues, since Fixed Window ignores this cap."
-                  onChange={(v) => setMaxTracks(v)} min={1} max={100} disabled={isRunning || noMaxTracks} />
-                <Check label="No limit" checked={noMaxTracks}
-                  onChange={(v) => { setNoMaxTracks(v); if (!v && maxTracks === null) setMaxTracks(2); }}
-                  disabled={isRunning} />
-              </div>
-              <Section title="Advanced">
-                <NumField label="Robust (quantile)" value={robust} onChange={setRobust}
-                  hint="If between 0 and 1 (exclusive), uses a robust quantile similarity score instead of the plain max across matched keypoints — 0.95 is a good starting value. Leave at 1 to use max similarity (non-robust)."
-                  min={0} max={1} step={0.05} disabled={isRunning} />
-                <Check label="Connect single-frame breaks" checked={connectSingleBreaks}
-                  hint="When Max Tracks is set (Local Queues matching), reconnects a track break where exactly one track is lost and exactly one new track is spawned in the same frame — fixes brief detection dropouts without merging unrelated tracks."
-                  onChange={setConnectSingleBreaks} disabled={isRunning} />
-                <NumField label="Min match points" value={minMatchPoints} onChange={setMinMatchPoints}
-                  hint="Minimum number of non-missing keypoints an instance needs to be considered a valid match candidate."
-                  min={0} disabled={isRunning} />
-                <NumField label="Min new-track points" value={minNewTrackPoints} onChange={setMinNewTrackPoints}
-                  hint="Minimum number of non-missing keypoints required before an unmatched instance is allowed to spawn a new track."
-                  min={0} disabled={isRunning} />
-                <div className="flex items-center justify-between gap-2">
-                  <FieldLabel label="Scoring reduction" hint="How to combine multiple similarity scores when several detections could match the same track: Mean averages them, Max takes the best score, Robust quantile is tolerant of outlier scores." />
-                  <Select value={scoringReduction} onValueChange={(v) => setScoringReduction(v as typeof scoringReduction)} disabled={isRunning}>
-                    <SelectTrigger className="h-6 text-[10px] w-28"><SelectValue /></SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="mean">Mean</SelectItem>
-                      <SelectItem value="max">Max</SelectItem>
-                      <SelectItem value="robust_quantile">Robust quantile</SelectItem>
-                    </SelectContent>
-                  </Select>
-                </div>
-                <NullableNumField label="Target instance count" value={trackingTargetInstanceCount}
-                  hint="Target number of instances to track per frame. Required by Kalman filtering and Pre-cull; auto-derived from Max Tracks/Max Instances if left empty."
-                  onChange={setTrackingTargetInstanceCount} min={1} max={100} placeholder="Auto" disabled={isRunning} />
-                <Check label="Pre-cull to target" checked={trackingPreCullToTarget}
-                  hint="Before tracking, discard detections above the target instance count for that frame."
-                  onChange={setTrackingPreCullToTarget} disabled={isRunning} />
-                {trackingPreCullToTarget && (
-                  <NumField label="Pre-cull IoU threshold" value={trackingPreCullIouThreshold} onChange={setTrackingPreCullIouThreshold}
-                    hint="IoU threshold used to remove overlapping instances above the target count before tracking."
-                    min={0} max={1} step={0.05} disabled={isRunning} />
-                )}
-                <NullableNumField label="Clean-up instance count" value={trackingCleanInstanceCount}
-                  hint="After tracking, cull instances above this target count per frame — unlike Pre-cull (which trims before tracking), this trims the tracked output. Leave empty to disable."
-                  onChange={setTrackingCleanInstanceCount} min={1} max={100} placeholder="Disabled" disabled={isRunning} />
-                {trackingCleanInstanceCount != null && (
-                  <NumField label="Clean-up IoU threshold" value={trackingCleanIouThreshold} onChange={setTrackingCleanIouThreshold}
-                    hint="IoU threshold used when culling instances above the clean-up target count after tracking."
-                    min={0} max={1} step={0.05} disabled={isRunning} />
-                )}
-              </Section>
+        {/* ── Tracking (several skeletons: per skeleton, in the tabs) ── */}
+        {!multiSkeleton && (
+          <>
+            <Section title="Tracking" defaultOpen={false}>
+              <TrackingFields
+                v={singleTracking}
+                set={setSingleTracking}
+                disabled={isRunning}
+                trackOnly={trackOnly}
+                trackingUnavailable={trackingUnavailable}
+                unavailableHint={pipeline === "centroid"
+                  ? "Not available for Centroid Only on a skeleton with more than one node: sleap-nn tracks instances, not centroids."
+                  : undefined}
+                kalmanNodes={<NodeCheckboxList nodes={skeletonNodeNames} selected={kfNodeIndices} onChange={setKfNodeIndices} disabled={isRunning} />}
+              />
+            </Section>
 
-              {trackerMethod === "flow" && (
-                <>
-                  <div className="pt-1 text-[10px] font-medium text-muted-foreground">Optical Flow</div>
-                  <NumField label="Image scale" value={flowImgScale} onChange={setFlowImgScale}
-                    hint="Scale factor for images before computing optical flow. Lower values are faster but less precise."
-                    min={0.1} max={2} step={0.1} disabled={isRunning} />
-                  <NumField label="Flow window size" value={flowWindowSize} onChange={setFlowWindowSize}
-                    hint="Size of the search window for optical flow computation. Larger windows handle faster motion but are slower."
-                    min={3} max={99} step={2} disabled={isRunning} />
-                  <NumField label="Pyramid levels" value={flowMaxLevels} onChange={setFlowMaxLevels}
-                    hint="Number of image pyramid levels for multi-scale optical flow. More levels handle larger displacements."
-                    min={1} max={10} disabled={isRunning} />
-                </>
-              )}
-
-              {trackerMethod === "kalman" && (
-                <>
-                  <div className="pt-1 text-[10px] font-medium text-muted-foreground">Kalman Filter</div>
-                  <div className="flex items-center justify-between gap-2">
-                    <FieldLabel label="Track features" hint="What the motion model tracks. Centroid (default) rigidly translates the last pose using a single filter per track — stable and recommended. Keypoints runs one filter per node for noisier but sometimes more distinctive per-node motion; pair it with a permissive similarity setting." />
-                    <Select value={kfTrackFeatures} onValueChange={(v) => setKfTrackFeatures(v as typeof kfTrackFeatures)} disabled={isRunning}>
-                      <SelectTrigger className="h-6 text-[10px] w-28"><SelectValue /></SelectTrigger>
-                      <SelectContent>
-                        <SelectItem value="centroid">Centroid</SelectItem>
-                        <SelectItem value="keypoints">Keypoints</SelectItem>
-                      </SelectContent>
-                    </Select>
-                  </div>
-                  <NumField label="Init frame count" value={kfInitFrameCount} onChange={setKfInitFrameCount}
-                    hint="Number of warm-up frames tracked with the base tracker before the Kalman filters are fit via EM."
-                    min={1} disabled={isRunning} />
-                  <NumField label="Reset gap size" value={kfResetGapSize} onChange={setKfResetGapSize}
-                    hint="Number of consecutive missed frames after which a stale track's Kalman filter is reset."
-                    min={1} disabled={isRunning} />
-                  <FieldLabel label="Tracked nodes (all if none checked)" hint="Skeleton nodes to track with the motion model. Useful for restricting to a stable subset, e.g. spine nodes. Leave all unchecked to use every node." />
-                  <NodeCheckboxList nodes={skeletonNodeNames} selected={kfNodeIndices} onChange={setKfNodeIndices} disabled={isRunning} />
-                </>
-              )}
-            </>
-          )}
-        </Section>
-
-        <Separator />
+            <Separator />
+          </>
+        )}
 
         {/* ── Post-processing ─────────────────────────────────────── */}
         <Section title="Post-processing" defaultOpen={false}>
@@ -1181,6 +1627,16 @@ function InferencePanelContent() {
           <Settings2 className="h-3 w-3 mr-1.5" />
           Full Configuration...
         </Button>
+        {remoteEnabled && (() => {
+          const ignored = remoteIgnoredRunSettings(buildInferenceConfig(), workerFeatures);
+          return ignored.length > 0 ? (
+            <div className="rounded-md border border-yellow-500/40 bg-yellow-500/10 p-2 text-[10px] text-yellow-700 dark:text-yellow-400" data-testid="remote-ignored-settings">
+              <p className="font-medium">This worker won&apos;t apply these settings:</p>
+              <p className="mt-0.5">{ignored.join("; ")}.</p>
+              <p className="mt-0.5">It runs sleap-nn&apos;s defaults for them. Run on this computer to use them.</p>
+            </div>
+          ) : null;
+        })()}
         <Button
           className="w-full h-8 text-xs"
           onClick={handleRunInference}
@@ -1355,11 +1811,20 @@ function InferencePanelContent() {
       <InferenceConfigDialog
         open={configDialogOpen}
         onClose={() => setConfigDialogOpen(false)}
-        pipeline={pipeline}
-        tracking={tracking}
-        onTrackingChange={setTracking}
+        pipeline={multiSkeleton
+          // Bottom-up options are shared: show them when any skeleton runs bottom-up.
+          ? (skeletonRuns.find((r) => r.pipeline === "bottom-up" || r.pipeline === "bottom-up-id")?.pipeline
+            ?? activeRun?.pipeline ?? pipeline)
+          : pipeline}
+        tracking={activeRunSettings ? activeRunSettings.tracking : tracking}
+        onTrackingChange={activeRunKey ? (t) => updateSkeletonSettings(activeRunKey, { tracking: t }) : setTracking}
         skeletonNodes={skeletonNodeNames}
+        skeletonName={activeRun?.skeletonName}
+        subtitle={activeRun
+          ? `Peak threshold, Max instances and Tracking apply to ${activeRun.skeletonName} only (its tab in the panel). Other settings apply to every skeleton.`
+          : undefined}
         onResetDefaults={() => {
+          if (activeRunKey) resetSkeletonSettings(activeRunKey);
           setPeakThreshold(DEFAULTS.peakThreshold);
           setMaxInstances(DEFAULTS.maxInstances); setNoMaxInstances(DEFAULTS.maxInstances === null);
           setIntegralRefinement(DEFAULTS.integralRefinement);
@@ -1402,11 +1867,11 @@ function InferencePanelContent() {
           setFilterMinCentroidDistance(DEFAULTS.filterMinCentroidDistance);
         }}
         values={{
-          peakThreshold, maxInstances,
+          peakThreshold, maxInstances: noMaxInstances ? null : maxInstances,
           integralRefinement, integralPatchSize,
           nPoints, maxEdgeLengthRatio, distPenaltyWeight, minLineScores,
           trackerMethod, similarityMethod, matchingMethod,
-          trackingWindowSize, maxTracks, connectSingleBreaks, robust,
+          trackingWindowSize, maxTracks: noMaxTracks ? null : maxTracks, connectSingleBreaks, robust,
           minMatchPoints, minNewTrackPoints, scoringReduction,
           trackingTargetInstanceCount, trackingPreCullToTarget, trackingPreCullIouThreshold,
           trackingCleanInstanceCount, trackingCleanIouThreshold,
@@ -1415,10 +1880,35 @@ function InferencePanelContent() {
           ensureChannels, filterOverlapping, filterMethod, filterThreshold,
           filterMinVisibleNodes, filterMinVisibleNodeFraction, filterMinMeanNodeScore,
           filterMinInstanceScore, filterMinCentroidDistance,
+          // Several skeletons: the open tab's own settings.
+          ...(activeRunSettings && activeRun
+            ? {
+                ...skeletonRunSettings(activeRunSettings),
+                // What the run will use (a 1-node skeleton can't use OKS/IoU).
+                similarityMethod: similarityForNodeCount(activeRunSettings.similarityMethod, activeRun.skeleton.nodeNames.length),
+              }
+            : {}),
         }}
-        onUpdate={(updates) => {
+        onUpdate={(allUpdates) => {
+          let updates = allUpdates;
+          if (activeRunKey) {
+            // Several skeletons: per-run settings go to the open tab.
+            const perRun: Partial<SkeletonInferenceSettings> = {};
+            const shared: typeof allUpdates = {};
+            for (const [k, val] of Object.entries(allUpdates)) {
+              if ((SKELETON_RUN_SETTING_KEYS as readonly string[]).includes(k)) {
+                (perRun as Record<string, unknown>)[k] = val;
+                if (k === "maxInstances") perRun.noMaxInstances = val === null;
+                if (k === "maxTracks") perRun.noMaxTracks = val === null;
+              } else {
+                (shared as Record<string, unknown>)[k] = val;
+              }
+            }
+            if (Object.keys(perRun).length > 0) updateSkeletonSettings(activeRunKey, perRun);
+            updates = shared;
+          }
           if ("peakThreshold" in updates) setPeakThreshold(updates.peakThreshold!);
-          if ("maxInstances" in updates) setMaxInstances(updates.maxInstances!);
+          if ("maxInstances" in updates) { setMaxInstances(updates.maxInstances!); setNoMaxInstances(updates.maxInstances === null); }
           if ("integralRefinement" in updates) setIntegralRefinement(updates.integralRefinement!);
           if ("integralPatchSize" in updates) setIntegralPatchSize(updates.integralPatchSize!);
           if ("nPoints" in updates) setNPoints(updates.nPoints!);

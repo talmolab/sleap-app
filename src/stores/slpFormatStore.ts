@@ -49,14 +49,22 @@ export type SlpFormatAnswer = "view" | "edit" | "ok" | null;
 
 interface SlpFormatStore {
   prompt: SlpFormatPrompt | null;
+  /**
+   * Incremented when Desktop `[Upgrade]` is clicked on the Welcome screen
+   * (where the sidebar is not mounted yet) so WelcomeScreen opens its
+   * Environment section.
+   */
+  welcomeEnvironmentRequestSeq: number;
   ask: (prompt: SlpFormatPrompt) => Promise<SlpFormatAnswer>;
   respond: (answer: SlpFormatAnswer) => void;
+  requestWelcomeEnvironment: () => void;
 }
 
 let resolver: ((answer: SlpFormatAnswer) => void) | null = null;
 
 export const useSlpFormatStore = create<SlpFormatStore>((set) => ({
   prompt: null,
+  welcomeEnvironmentRequestSeq: 0,
   ask: (prompt) =>
     new Promise<SlpFormatAnswer>((resolve) => {
       resolver?.(null);
@@ -69,6 +77,10 @@ export const useSlpFormatStore = create<SlpFormatStore>((set) => ({
     set({ prompt: null });
     r?.(answer);
   },
+  requestWelcomeEnvironment: () =>
+    set((s) => ({
+      welcomeEnvironmentRequestSeq: s.welcomeEnvironmentRequestSeq + 1,
+    })),
 }));
 
 /** Show an SLP format prompt; resolves the answer, or null on Cancel / dismiss. */

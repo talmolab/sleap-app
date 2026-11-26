@@ -63,6 +63,8 @@ export const DEFAULT_SHORTCUTS: Record<string, string> = {
   fit: "$mod+Equal",
   "reset view": "KeyR",
   "show instances": "KeyH",
+  // Compare Model Predictions: hide/show the models' poses on the canvas (the Review window still shows them).
+  "show model predictions": "KeyM",
   "show labels": "KeyT",
   "show edges": "$mod+Shift+Tab",
   // V marks the hovered/selected node(s) (non-)visible (handled in VideoPlayer);
@@ -131,22 +133,46 @@ export const EXTRA_SHORTCUTS: Record<string, string[]> = {
   "show labels": ["Control+Tab"],
 };
 
-/** Every key bound to an action: its main key first, then any extras. */
-export function shortcutBindings(action: string): string[] {
+/**
+ * The user's own keys (Help ▸ Keyboard Shortcuts…), by action: each listed
+ * action's keys replace all of its default keys (main and extras); `[]`
+ * leaves it unbound. Actions not listed keep their defaults. Saved per
+ * computer with the other preferences (appStore `shortcutOverrides`).
+ */
+export type ShortcutOverrides = Record<string, string[]>;
+
+/** The default keys of an action: its main key first, then any extras. */
+export function defaultShortcutBindings(action: string): string[] {
   const main = DEFAULT_SHORTCUTS[action];
   return [...(main ? [main] : []), ...(EXTRA_SHORTCUTS[action] ?? [])];
 }
 
 /**
- * A tinykeys binding map with each action's extra keys added, running the
- * same handler as the action's main key.
+ * Every key bound to an action: the user's keys if they changed it, else
+ * its defaults (main key first, then any extras).
  */
-export function withExtraShortcuts<T>(bindings: Record<string, T>): Record<string, T> {
-  const out = { ...bindings };
-  for (const [action, extras] of Object.entries(EXTRA_SHORTCUTS)) {
-    const handler = bindings[DEFAULT_SHORTCUTS[action]];
-    if (!handler) continue;
-    for (const extra of extras) out[extra] = handler;
+export function shortcutBindings(action: string, overrides: ShortcutOverrides = {}): string[] {
+  const own = Object.hasOwn(overrides, action) ? overrides[action] : undefined;
+  return own ? [...own] : defaultShortcutBindings(action);
+}
+
+/** The key an action's menu item and hints show: its first key, if any. */
+export function mainShortcut(action: string, overrides: ShortcutOverrides = {}): string | undefined {
+  return shortcutBindings(action, overrides)[0];
+}
+
+/**
+ * A tinykeys binding map from handlers keyed by action name: each action's
+ * handler runs on every key bound to it (the user's keys, if they changed
+ * them). Unbound actions are left out.
+ */
+export function bindActions<T>(
+  handlers: Record<string, T>,
+  overrides: ShortcutOverrides = {},
+): Record<string, T> {
+  const out: Record<string, T> = {};
+  for (const [action, handler] of Object.entries(handlers)) {
+    for (const key of shortcutBindings(action, overrides)) out[key] = handler;
   }
   return out;
 }

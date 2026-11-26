@@ -24,6 +24,9 @@ vi.mock("@/lib/resolveVideos", () => ({
 }));
 
 class RemoteIOError extends Error {}
+// Only the class matters here (an instanceof check); the real constructor takes
+// an options object.
+class SlpFormatError extends Error {}
 const readSlpStreamingMock = vi.fn(async (_source: unknown, _options: unknown) => ({
   videos: [],
   skeletons: [],
@@ -34,16 +37,19 @@ vi.mock("@talmolab/sleap-io.js", () => ({
   readSlpStreaming: readSlpStreamingMock,
   setImageBytesReader: vi.fn(),
   RemoteIOError,
+  SlpFormatError,
   redactUrl: (u: string) => u,
   redactedCauseSummary: (e: unknown) => String(e),
 }));
 
 import { loadProjectFromUrl } from "@/lib/loadProject";
 import { useAppStore } from "@/stores/appStore";
+import { useSlpFormatStore } from "@/stores/slpFormatStore";
 import { toast } from "@/lib/notify";
 
 function resetStore() {
   useAppStore.setState(useAppStore.getInitialState());
+  useSlpFormatStore.setState({ prompt: null, welcomeEnvironmentRequestSeq: 0 });
 }
 
 describe("loadProjectFromUrl", () => {
@@ -106,5 +112,47 @@ describe("loadProjectFromUrl", () => {
     expect(String((call?.[1] as { description?: string })?.description)).toContain(
       "corrupt or non-SLP file"
     );
+  });
+
+  it("opens the SLP format refusal modal for SlpFormatError instead of a raw error toast", async () => {
+    const message =
+      "The SLEAP labels file 'set.slp' is in SLP format 3.0, which this version of " +
+      "sleap-io.js cannot read (it reads formats below 3.0).";
+    readSlpStreamingMock.mockImplementation(async () => {
+      throw new SlpFormatError(message);
+    });
+    const ok = await loadProjectFromUrl("https://share.sleap.ai/set.slp?token=abc");
+    expect(ok).toBe(false);
+    expect(useAppStore.getState().labels).toBeFalsy();
+    expect(useAppStore.getState().isLoading).toBe(false);
+    expect(toast.error).not.toHaveBeenCalled();
+
+    const prompt = useSlpFormatStore.getState().prompt;
+    expect(prompt).not.toBeNull();
+    expect(prompt?.kind).toBe("refused");
+    if (prompt?.kind === "refused") {
+      expect(prompt.fileName).toBe("set.slp");
+      expect(prompt.formatId).toBe(3);
+      expect(prompt.detail).toBe(message);
+    }
+  });
+
+  it("opens the refusal modal for a worker-serialized SlpFormatError (name only)", async () => {
+    const serialized = Object.assign(
+      new Error("The SLEAP labels file 'remote.slp' is in SLP format 3.0."),
+      { name: "SlpFormatError" },
+    );
+    readSlpStreamingMock.mockImplementation(async () => {
+      throw serialized;
+    });
+    const ok = await loadProjectFromUrl("https://share.sleap.ai/remote.slp?token=secret");
+    expect(ok).toBe(false);
+    expect(toast.error).not.toHaveBeenCalled();
+    const prompt = useSlpFormatStore.getState().prompt;
+    expect(prompt?.kind).toBe("refused");
+    if (prompt?.kind === "refused") {
+      expect(prompt.fileName).toBe("remote.slp");
+      expect(prompt.formatId).toBe(3);
+    }
   });
 });

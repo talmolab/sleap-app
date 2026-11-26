@@ -10,7 +10,10 @@
  *   animal (`preprocessing.crop_mode`, `crop_bbox_aspect`, `crop_bbox_padding`).
  */
 import type { ConfigFile, ConfigHyperparams, ModelType, BboxSource, CropBboxAspect } from "@/stores/trainingStore";
+import { useMemo } from "react";
 import { NumberInput } from "@/components/NumberInput";
+import { useAppStore } from "@/stores/appStore";
+import { drawnBoxCoverage } from "@/lib/poseBboxes";
 import { HintBubble } from "@/components/HintBubble";
 import {
   Select,
@@ -33,12 +36,39 @@ const CROP_ASPECT_OPTIONS: { value: CropBboxAspect; label: string }[] = [
   { value: "stretch", label: "Stretch" },
 ];
 
+/**
+ * With drawn boxes in the project, sleap-nn's `auto` (and `bboxes`) source
+ * trains the detector on drawn boxes only. Say which labeled frames that
+ * leaves out, or turns into background for some animals.
+ */
+function DrawnBoxCoverageWarning({ className }: { className: string }) {
+  const labels = useAppStore((s) => s.labels);
+  const overlayVersion = useAppStore((s) => s.overlayVersion);
+  const coverage = useMemo(() => {
+    void overlayVersion;
+    return labels ? drawnBoxCoverage(labels) : null;
+  }, [labels, overlayVersion]);
+  if (!coverage?.hasDrawnBoxes || (coverage.posesWithoutBoxes === 0 && coverage.partlyBoxed === 0)) {
+    return null;
+  }
+  const { posesWithoutBoxes: n, partlyBoxed: m } = coverage;
+  return (
+    <p className={`${className} text-yellow-400`}>
+      This project has drawn boxes, so the detector trains on drawn boxes only.
+      {n > 0 && ` ${n} labeled frame${n === 1 ? " has" : "s have"} poses but no box and will be left out.`}
+      {m > 0 && ` On ${m} frame${m === 1 ? "" : "s"}, some animals have no box and will count as background.`}
+      {" "}Pick Boxes around poses to use every labeled frame, or add the missing boxes.
+    </p>
+  );
+}
+
 export function BboxTrainingFields({
   modelType,
   configs,
   onUpdateSlot,
   disabled = false,
   size = "sm",
+  boxSettingsLockedBy = null,
 }: {
   modelType: ModelType;
   configs: ConfigFile[];
@@ -46,6 +76,8 @@ export function BboxTrainingFields({
   disabled?: boolean;
   /** "sm" for the Training panel, "md" for the Full Configuration window. */
   size?: "sm" | "md";
+  /** Set when a reused model fixes Box source / padding (lib/reuseTrainedModel.ts): those two are locked, with this as the reason. */
+  boxSettingsLockedBy?: string | null;
 }) {
   if (modelType !== "bbox" && modelType !== "top_down_bbox") return null;
   const detector = configs.find((c) => c.slot === "bbox");
@@ -78,7 +110,7 @@ export function BboxTrainingFields({
         <Select
           value={hp.bboxSource}
           onValueChange={(v) => updateShared({ bboxSource: v as BboxSource })}
-          disabled={disabled}
+          disabled={disabled || !!boxSettingsLockedBy}
         >
           <SelectTrigger className={`${control} w-40`}><SelectValue /></SelectTrigger>
           <SelectContent>
@@ -101,9 +133,15 @@ export function BboxTrainingFields({
           value={hp.bboxPadding}
           onCommit={(n) => updateShared({ bboxPadding: n })}
           className={`${control} w-20`}
-          disabled={disabled}
+          disabled={disabled || !!boxSettingsLockedBy}
         />
       </div>
+      {(hp.bboxSource === "auto" || hp.bboxSource === "bboxes") && (
+        <DrawnBoxCoverageWarning className={text} />
+      )}
+      {boxSettingsLockedBy && (
+        <p className={`${text} text-muted-foreground`} data-testid="bbox-settings-locked">{boxSettingsLockedBy}</p>
+      )}
       {mismatch && (
         <p className={`${text} text-yellow-400`}>
           The detector and the instance model were set up with different box settings; changing one here

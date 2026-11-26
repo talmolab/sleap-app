@@ -21,6 +21,7 @@ import { Input } from "@/components/ui/input";
 import { toast } from "@/lib/notify";
 import { projectTag } from "@/lib/projectTag";
 import { timeAgo, modelRunTimestamp } from "@/lib/timestamp";
+import { isPartialTopDownRun } from "@/lib/launcherSpec";
 import type { JobSummary, JobStatus } from "@/lib/protocolV1/client";
 import { useAppStore } from "@/stores/appStore";
 import { useConnectStore } from "@/stores/connectStore";
@@ -540,7 +541,16 @@ export function WorkerJobs({
         ids,
       );
       if (!seeded) {
-        toast.error("Couldn't read that job's configuration.");
+        const headTypes = jobs.filter((j) => ids.includes(j.jobId) && j.kind !== "track").flatMap((j) => j.modelTypes);
+        toast.error(
+          "Couldn't read that job's configuration.",
+          isPartialTopDownRun(headTypes)
+            ? {
+                description:
+                  "That run trained only one stage of a top-down pipeline (the other reused a trained model), which Run again can't repeat. Start it from the Training panel instead.",
+              }
+            : undefined,
+        );
         return;
       }
       setWizardSeed(seeded);

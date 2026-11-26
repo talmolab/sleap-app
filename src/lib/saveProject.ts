@@ -27,7 +27,11 @@ import {
   isOpfsSaveSupported,
   pickSlpSaveDestination,
 } from "@/lib/saveEmbeddedPkgOpfs";
-import { newDraftPath, removeLabelsDraft } from "@/lib/labelsDraft";
+import {
+  newDraftPath,
+  removeLabelsDraft,
+  makeOpfsJournalStore,
+} from "@/lib/labelsDraft";
 import { recordDraftSave, deleteDraftEntry } from "@/lib/draftManifest";
 import { removeTauriDraft } from "@/lib/tauriDraft";
 import { isSameSaveTarget } from "@/lib/saveTargetGuard";
@@ -409,6 +413,9 @@ export async function saveProjectAsSlp(
           sourceSize: store.projectFile?.size,
           sourceLastModified: store.projectFile?.lastModified,
         });
+        // The new base holds every edit; journal records from before it would
+        // replay over it on recovery and revert newer edits.
+        await makeOpfsJournalStore(draftPath).truncate();
         store.set("pendingExport", true);
         store.set("filename", saveName);
         store.clearChanges();

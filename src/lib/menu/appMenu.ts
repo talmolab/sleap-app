@@ -20,6 +20,7 @@ import { confirmDialog } from "@/stores/confirmStore";
 import { confirmAndResetPreferences } from "@/lib/preferences";
 import { promptDialog } from "@/stores/promptStore";
 import { AcceptAllBboxes, DeletePredictedBboxes } from "@/commands/bboxCommands";
+import { AcceptAllCentroids, DeletePredictedCentroids } from "@/commands/centroidCommands";
 import {
   confirmDeleteInstanceAndTrack,
   confirmDeleteUnusedTracks,
@@ -99,6 +100,7 @@ import type { AppMenu, MenuNode, MenuRadioNode, TopAction, TopMenu } from "./typ
 import { countMenu } from "@/lib/analytics";
 import { usageDataEnabled } from "@/lib/analytics/consent";
 import { useModelOverlayStore } from "@/stores/modelOverlayStore";
+import { useCustomDeleteDialog } from "@/stores/customDeleteDialogStore";
 
 /** Everything that changes what the menus show. */
 export interface MenuSnapshot {
@@ -129,6 +131,8 @@ export interface MenuSnapshot {
   showLabels: boolean;
   showEdges: boolean;
   showBboxes: boolean;
+  showCentroids: boolean;
+  showPoseBboxes: boolean;
   bboxDrawMode: boolean;
   showCrosshair: boolean;
   showInset: boolean;
@@ -460,6 +464,8 @@ function viewMenu(s: MenuSnapshot): TopMenu {
       { kind: "check", id: "view.showEdges", label: "Show Edges", checked: s.showEdges, run: toggle("showEdges") },
       { kind: "check", id: "view.showMeanNodeScore", label: "Show Mean Node Score", checked: s.showMeanNodeScore, run: toggle("showMeanNodeScore") },
       { kind: "check", id: "view.showBboxes", label: "Show Bounding Boxes", checked: s.showBboxes, run: toggle("showBboxes") },
+      { kind: "check", id: "view.showCentroids", label: "Show Centroids", checked: s.showCentroids, run: toggle("showCentroids") },
+      { kind: "check", id: "view.showPoseBboxes", label: "Show Boxes Around Poses", checked: s.showPoseBboxes, run: toggle("showPoseBboxes") },
       { kind: "check", id: "view.crosshair", label: "Crosshair When Zoomed", checked: s.showCrosshair, run: toggle("showCrosshair") },
       { kind: "check", id: "view.magnifier", label: "Magnifier When Moving Nodes", checked: s.showInset, run: toggle("showInset") },
       { kind: "check", id: "view.temporalLoupe", label: "Play Neighboring Frames in Magnifier", checked: s.temporalLoupe, run: toggle("temporalLoupe") },
@@ -669,6 +675,8 @@ function labelsMenu(s: MenuSnapshot): TopMenu {
         enabled: s.hasInstance,
         run: exec(MergeInstance),
       },
+      // PyQt's place for it: right after Merge Instance (app.py:911).
+      { kind: "item", id: "labels.customDelete", label: "Custom Instance Delete...", enabled: loaded, run: () => useCustomDeleteDialog.getState().setOpen(true) },
       ...clipboardItems(s),
       {
         kind: "check",
@@ -785,6 +793,51 @@ function labelsMenu(s: MenuSnapshot): TopMenu {
               const maxScore = t === "" ? undefined : Number(t);
               if (maxScore !== undefined && !Number.isFinite(maxScore)) return void toast.error("Enter a number, or leave it empty");
               commandContext.execute(DeletePredictedBboxes, { maxScore });
+            },
+          },
+        ],
+      },
+      // Centroids: a Centroid Only run on a multi-node skeleton predicts these.
+      {
+        kind: "submenu",
+        id: "labels.centroids",
+        label: "Centroids",
+        items: [
+          {
+            kind: "item",
+            id: "labels.centroids.acceptAll",
+            label: "Accept Predicted Centroids...",
+            enabled: loaded,
+            run: async () => {
+              const v = await promptDialog({
+                title: "Accept predicted centroids",
+                message: "Turn every predicted centroid scoring at least this much into a user centroid, across all frames.",
+                defaultValue: "0.5",
+                confirmLabel: "Accept",
+              });
+              if (v === null) return;
+              const minScore = Number(v);
+              if (!Number.isFinite(minScore)) return void toast.error("Enter a number, e.g. 0.5");
+              commandContext.execute(AcceptAllCentroids, { minScore });
+            },
+          },
+          {
+            kind: "item",
+            id: "labels.centroids.deletePredicted",
+            label: "Delete Predicted Centroids...",
+            enabled: loaded,
+            run: async () => {
+              const v = await promptDialog({
+                title: "Delete predicted centroids",
+                message: "Delete predicted centroids scoring below this, across all frames. Leave it empty to delete every predicted centroid.",
+                defaultValue: "0.3",
+                confirmLabel: "Delete",
+              });
+              if (v === null) return;
+              const t = v.trim();
+              const maxScore = t === "" ? undefined : Number(t);
+              if (maxScore !== undefined && !Number.isFinite(maxScore)) return void toast.error("Enter a number, or leave it empty");
+              commandContext.execute(DeletePredictedCentroids, { maxScore });
             },
           },
         ],

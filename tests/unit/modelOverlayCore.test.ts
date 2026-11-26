@@ -3,7 +3,7 @@
  * (video match, skeleton check, model name) and pulling out its poses.
  */
 import { describe, it, expect } from "../bun-test";
-import { Skeleton } from "@talmolab/sleap-io.js";
+import { LabeledFrame, Labels, Skeleton } from "@talmolab/sleap-io.js";
 import {
   analyzePredictionFile,
   checkSkeleton,
@@ -16,7 +16,8 @@ import {
   targetFromVideo,
   uniqueModelName,
 } from "@/lib/modelOverlay/core";
-import { NODES, makePredictionLabels, makeVideo, poseAt } from "./modelOverlayTestData";
+import { NODES, makePred, makePredictionLabels, makeVideo, poseAt } from "./modelOverlayTestData";
+import { rowNote } from "@/components/dialogs/CompareModelsDialog";
 
 const target = targetFromVideo(makeVideo());
 
@@ -157,5 +158,47 @@ describe("colours and names", () => {
   // Two files with the same provenance (same model, two runs) stay tell-apart-able in the legend.
   it("numbers repeated names", () => {
     expect(uniqueModelName("m", ["m", "m (2)"])).toBe("m (3)");
+  });
+});
+
+describe("prediction files with several skeletons (#99)", () => {
+  /** A mice + pellets output: a 3-node mouse and a 1-node pellet on frame 0. */
+  function micePelletFile(): Labels {
+    const video = makeVideo();
+    const mouse = new Skeleton({ nodes: ["abdomen", "head", "thorax"], name: "mouse" });
+    const pellet = new Skeleton({ nodes: ["centroid"], name: "pellet" });
+    const lf = new LabeledFrame({
+      video,
+      frameIdx: 0,
+      instances: [makePred(pellet, [[5, 5]]), makePred(mouse, [[1, 30], [1, 10], [1, 20]])],
+    });
+    return new Labels({ videos: [video], skeletons: [mouse, pellet], labeledFrames: [lf] });
+  }
+
+  // Multi-skeleton inference writes mice + pellets in one project: compare the
+  // active skeleton's predictions and ignore the other skeleton, with a note.
+  it("compares only the predictions with the project's node names", () => {
+    const a = analyzePredictionFile(micePelletFile(), "p.slp", target, NODES);
+    expect(a.ok).toBe(true);
+    if (!a.ok) return;
+    const poses = a.frames.get(0)!;
+    expect(poses).toHaveLength(1);
+    expect(Array.from(poses[0].xy)).toEqual([1, 10, 1, 20, 1, 30]);
+    expect(a.ignoredSkeletons).toBe(1);
+    expect(rowNote("/p/p.slp", { ok: true, name: a.name, frameCount: 1, matchedBy: "path", ignoredSkeletons: 1, skeletonName: "mouse" }))
+      .toBe("Using mouse predictions only (1 other skeleton ignored)");
+  });
+
+  // With the pellet skeleton active, the same file compares its pellets.
+  it("compares the other skeleton's part when that one is active", () => {
+    const a = analyzePredictionFile(micePelletFile(), "p.slp", target, ["centroid"]);
+    expect(a.ok && a.frames.get(0)?.length).toBe(1);
+    expect(a.ok && a.skeletonName).toBe("pellet");
+  });
+
+  // No skeleton in the file matches: still refused, with a reason.
+  it("refuses when none of its skeletons matches", () => {
+    const a = analyzePredictionFile(micePelletFile(), "p.slp", target, ["wingL", "wingR"]);
+    expect(a.ok ? "" : a.reason).toContain("None of its 2 skeletons");
   });
 });

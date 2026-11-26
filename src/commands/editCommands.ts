@@ -7,6 +7,8 @@
  */
 
 import { frameHasContent } from "@/lib/frameLabeling";
+import { repairAllBboxLinks, repairBboxLinks } from "@/lib/bboxLinks";
+import { predictionVideoMatcher, type PredictionVideoTarget } from "@/lib/predictionVideoMatch";
 import { Instance, LabeledFrame, PredictedInstance } from "@talmolab/sleap-io.js";
 import type { Labels, Skeleton } from "@talmolab/sleap-io.js";
 import { UpdateTopic } from "../types";
@@ -29,6 +31,7 @@ import {
 import {
   placeInstance,
   findNearestPriorFrame,
+  clonePredictedPoints,
   fillMissingPredictedNodes,
   fillMissingUserNodes,
   centerInstanceAt,
@@ -180,7 +183,8 @@ export const ToggleNegativeFrame: Command = {
     }
 
     // Turning OFF an otherwise-empty frame prunes it (it only held the flag).
-    if (!lf.isNegative && lf.instances.length === 0) {
+    // Drop the frame only when nothing else (a box, centroid, ...) is on it.
+    if (!frameHasContent(lf)) {
       const idx = labels.labeledFrames.indexOf(lf);
       if (idx !== -1) labels.labeledFrames.splice(idx, 1);
       ctx.state.setLabeledFrame(null);
@@ -209,6 +213,7 @@ export const DeleteSelectedInstance: Command = {
     if (idx === -1) return;
 
     lf.instances.splice(idx, 1);
+    repairBboxLinks(lf);
 
     // Clear selection
     ctx.state.setInstance(null);
@@ -298,22 +303,6 @@ export const SetNodes: Command = {
  */
 function clonePoints(points: Instance["points"]): Instance["points"] {
   return points.map((p) => copyPoint(p));
-}
-
-/**
- * Clone a predicted instance's points for conversion to a user Instance,
- * forcing `visible` to match sleap_io's canonical rule (`visible = !isNaN(x)`)
- * rather than trusting the model's `visible` flag as-is. A model can emit
- * `visible: true` for a keypoint it failed to place (`xy: [NaN, NaN]`); left
- * uncorrected, the renderer tries to draw a filled marker at NaN and nothing
- * appears at all, instead of the hollow "invisible node" marker it draws for
- * genuinely non-visible points.
- */
-function clonePredictedPoints(points: Instance["points"]): Instance["points"] {
-  // A predicted node not labelled stays so (and hidden) in the user instance.
-  return points.map((p) =>
-    copyPoint(p, { visible: isUnlabeledPoint(p) ? false : !Number.isNaN(p.xy[0]) }),
-  );
 }
 
 /** Copy the selected instance's point data to the clipboard. */
@@ -445,14 +434,21 @@ export const DeleteFramePredictions: Command = {
     if (frames.length === 0) return;
 
     const lf = frames[0];
-    const userInstances = lf.instances.filter((inst) => !(inst instanceof PredictedInstance));
-    lf.instances = userInstances;
+    lf.instances = lf.instances.filter((inst) => !(inst instanceof PredictedInstance));
+    // A box detector's predictions are boxes, a Centroid Only run's can be
+    // centroids: they go too.
+    lf.bboxes = lf.bboxes.filter((b) => !b.isPredicted);
+    lf.centroids = lf.centroids.filter((c) => !c.isPredicted);
+    repairBboxLinks(lf);
 
     // If selected instance was predicted, deselect
     if (instance instanceof PredictedInstance) {
       ctx.state.setInstance(null);
     }
-    ctx.state.setLabeledFrame(userInstances.length > 0 ? lf : null);
+    ctx.state.set("selectedBboxIdx", null);
+    // Keep showing the frame while it still has user boxes (or other annotations).
+    ctx.state.setLabeledFrame(frameHasContent(lf) ? lf : null);
+    ctx.state.bumpOverlayVersion();
     ctx.state.markChanged();
   },
 };
@@ -508,8 +504,10 @@ export const ConvertPredictionToInstance: Command = {
     }
     fillMissingPredictedNodes(userInstance);
 
-    // Replace the predicted instance with the user instance
+    // Replace the predicted instance with the user instance. A box linked to
+    // the prediction now belongs to the user instance.
     lf.instances.splice(instanceIdx, 1, userInstance);
+    repairBboxLinks(lf);
 
     ctx.state.setLabeledFrame(lf);
     ctx.state.setInstance(userInstance);
@@ -615,6 +613,7 @@ export const MergeInstance: Command = {
     // Remove the donor by identity (never by pose: after the merge the two
     // can be identical).
     lf.instances = lf.instances.filter((inst) => inst !== donor);
+    repairBboxLinks(lf);
 
     ctx.state.setLabeledFrame(lf);
     ctx.state.setInstance(survivor);
@@ -644,7 +643,7 @@ export const AddMissingInstanceNodes: Command = {
     const { labels, video, frameIdx } = ctx.state;
     const instance = (params?.instance as Instance | undefined) ?? ctx.state.instance;
     if (!labels || !video || !instance || !isUserInstance(instance)) return;
-    if (instance.points.every(hasPoint)) return;
+    if (instance.points.every((p) => hasPoint(p) || isUnlabeledPoint(p))) return;
 
     ctx.pushUndoSnapshot(ctx.takeSnapshot("AddMissingInstanceNodes"));
 
@@ -748,6 +747,7 @@ export const AddInstancesFromAllPredictions: Command = {
       if (!firstConverted) firstConverted = userInstance;
       return userInstance;
     });
+    repairBboxLinks(lf);
 
     ctx.state.setLabeledFrame(lf);
     if (firstConverted) ctx.state.setInstance(firstConverted);
@@ -807,6 +807,7 @@ export const AddInstancesFromAllPredictionsInProject: Command = {
         totalAccepted++;
         return userInstance;
       });
+      repairBboxLinks(lf);
     }
 
     ctx.pushUndoSnapshot(snapshot);
@@ -956,9 +957,14 @@ export const DeleteAllPredictions: Command = {
 
     let removed = 0;
     for (const lf of labels.labeledFrames) {
-      const before = lf.instances.length;
+      const before = lf.instances.length + lf.bboxes.length + lf.centroids.length;
       lf.instances = lf.instances.filter((inst) => !(inst instanceof PredictedInstance));
-      removed += before - lf.instances.length;
+      // A box detector's predictions are boxes, a Centroid Only run's can be
+      // centroids: they go too.
+      lf.bboxes = lf.bboxes.filter((b) => !b.isPredicted);
+      lf.centroids = lf.centroids.filter((c) => !c.isPredicted);
+      removed += before - lf.instances.length - lf.bboxes.length - lf.centroids.length;
+      repairBboxLinks(lf);
     }
 
     // Remove empty labeled frames
@@ -973,9 +979,25 @@ export const DeleteAllPredictions: Command = {
     if (instance instanceof PredictedInstance) {
       ctx.state.setInstance(null);
     }
+    ctx.state.set("selectedBboxIdx", null);
+    const { video, frameIdx } = ctx.state;
+    const cur = video ? labels.find({ video, frameIdx })[0] ?? null : null;
+    ctx.state.setLabeledFrame(cur);
+    ctx.state.bumpOverlayVersion();
     ctx.state.markChanged();
   },
 };
+
+/**
+ * Remove the skeletons no instance in `labels` uses, so merging `labels` into
+ * a project adds no skeleton the merged data doesn't need.
+ */
+export function dropUnusedSkeletons(labels: Labels): void {
+  const used = new Set<unknown>();
+  for (const lf of labels.labeledFrames) for (const inst of lf.instances) used.add(inst.skeleton);
+  if (labels.skeletons.every((s) => used.has(s))) return;
+  labels.skeletons = labels.skeletons.filter((s) => used.has(s));
+}
 
 /**
  * How inference output combines with the project's EXISTING predictions.
@@ -996,6 +1018,8 @@ export type ExistingPredictionsMode = "clear_all" | "replace" | "keep";
 /**
  * Merge predictions from inference output into the current labels, honoring the
  * "Existing predictions" mode (clear_all / replace / keep — default replace).
+ * Pass `videoTarget` (the run's video, or "project") when the run is known, so
+ * predictions land on the video they were made on; see predictionVideoMatcher.
  */
 export const MergePredictions: Command = {
   name: "MergePredictions",
@@ -1009,11 +1033,56 @@ export const MergePredictions: Command = {
     if (!predictions) return;
 
     const mode = (params?.mode as ExistingPredictionsMode) ?? "replace";
+    const videoTarget = params?.videoTarget as PredictionVideoTarget | undefined;
     // `replace` swaps predictions only on frames present in the new output;
     // `keep`/`clear_all` append (the project-wide wipe below handles clear_all).
     const frame = mode === "replace" ? "replace_predictions" : "keep_both";
 
     const snapshot = ctx.takeAllFramesSnapshot("MergePredictions");
+
+    // Several skeletons (#99): the predictions belong to the project skeleton
+    // with the same node names, and the mode only touches THAT skeleton's
+    // predictions (re-running the mouse model keeps the pellet predictions).
+    // Such a project never takes the plain merge below: io's
+    // replace_predictions / the clear_all wipe would hit every skeleton.
+    const scopedMerge = await import("@/lib/skeletonScopedMerge");
+    const target =
+      (params?.skeleton as Skeleton | undefined) ??
+      scopedMerge.resolvePredictionsSkeleton(labels, predictions, ctx.state.skeleton);
+    if (!target && scopedMerge.needsSkeletonScopedMerge(labels)) {
+      toast.error("Couldn't merge predictions", {
+        description:
+          predictions.labeledFrames.some((lf) => lf.instances.length > 0)
+            ? "This project has several skeletons, and the predictions' node names don't match exactly one of them."
+            : "The predictions hold no instances, and this project has several skeletons — nothing was changed.",
+      });
+      return;
+    }
+    if (target) {
+      const problem = labels.skeletons.includes(target)
+        ? scopedMerge.predictionsSkeletonProblem(predictions, target)
+        : "The skeleton these predictions were run for is no longer in the project.";
+      if (problem) {
+        toast.error("Couldn't merge predictions", { description: problem });
+        return;
+      }
+      const scoped = await scopedMerge.mergePredictionsForSkeleton(
+        labels,
+        predictions,
+        target,
+        mode,
+        predictionVideoMatcher(predictions, labels, videoTarget),
+      );
+      // Replaced or cleared predictions may have had boxes linked to them.
+      repairAllBboxLinks(labels);
+      ctx.pushUndoSnapshot(snapshot);
+      ctx.state.markChanged();
+      ctx.state.bumpOverlayVersion();
+      toast.success(
+        `Merged ${scoped.instancesAdded} ${target.name ? `${target.name} ` : ""}prediction(s) across ${scoped.framesMerged} frame(s).`,
+      );
+      return;
+    }
 
     // clear_all: strip every existing PredictedInstance project-wide (keeping
     // user instances) BEFORE merging, so stale predictions on frames the new
@@ -1024,8 +1093,10 @@ export const MergePredictions: Command = {
         lf.instances = lf.instances.filter(
           (inst) => !(inst instanceof PredictedInstance)
         );
-        // A box detector's predictions are boxes: clear those too.
+        // A box detector's predictions are boxes, a centroid model's can be
+        // centroids: clear those too.
         lf.bboxes = lf.bboxes.filter((b) => !b.isPredicted);
+        lf.centroids = lf.centroids.filter((c) => !c.isPredicted);
       }
       labels.labeledFrames = labels.labeledFrames.filter(frameHasContent);
     }
@@ -1033,16 +1104,25 @@ export const MergePredictions: Command = {
     // Route through sleap-io.js's Labels.merge (issue #226). Match tracks by
     // NAME — io's default is object IDENTITY, which would duplicate every track
     // because the predictions are loaded from a separate file and never share
-    // Track objects with the project. Match videos by BASENAME — the predictions
-    // reference the same video under a possibly-different (compute-node) path.
+    // Track objects with the project. Videos go to the run's own video when
+    // known, else by BASENAME — the predictions reference the same video under a
+    // possibly-different (compute-node) path.
     // Unlike the retired hand-rolled merge, io carries centroids/bboxes/masks/
     // rois + fromPredicted provenance, so the active-learning locator's
     // centroid-only output now survives the merge.
+    // A skeleton no predicted instance uses would still be added to the
+    // project by the merge: a Centroid Only run on a multi-node skeleton lists
+    // sleap-nn's 1-node "centroid" skeleton but writes only centroids, and that
+    // extra skeleton would make this a multi-skeleton project.
+    dropUnusedSkeletons(predictions);
+
     const result = await labels.merge(predictions, {
       track: "name",
-      video: "basename",
+      video: predictionVideoMatcher(predictions, labels, videoTarget),
       frame,
     });
+    // Replaced or cleared predictions may have had boxes linked to them.
+    repairAllBboxLinks(labels);
     ctx.pushUndoSnapshot(snapshot);
     ctx.state.markChanged();
     // Merge mutates `labels` in place, so overlayVersion-gated consumers (the
@@ -1058,9 +1138,15 @@ export const MergePredictions: Command = {
       (n, lf) => n + lf.bboxes.filter((b) => b.isPredicted).length,
       0,
     );
+    // A Centroid Only run on a multi-node skeleton predicts centroids.
+    const centroids = predictions.labeledFrames.reduce(
+      (n, lf) => n + lf.centroids.filter((c) => c.isPredicted).length,
+      0,
+    );
     toast.success(
       `Merged ${result.instancesAdded} prediction(s)` +
         (boxes > 0 ? ` and ${boxes} box(es)` : "") +
+        (centroids > 0 ? ` and ${centroids} centroid(s)` : "") +
         ` across ${result.framesMerged} frame(s)` +
         (conflicts > 0 ? `, ${conflicts} conflict(s)` : "") +
         "."
@@ -1093,16 +1179,17 @@ export const MergeTracks: Command = {
 
     const retracked = params?.retracked as Labels;
     if (!retracked) return;
+    const videoTarget = params?.videoTarget as PredictionVideoTarget | undefined;
 
     const snapshot = ctx.takeAllFramesSnapshot("MergeTracks");
 
     // Match tracks by NAME (retracked.tracks are freshly deserialized from a
     // temp file, so they never share object identity with the project's own
-    // Track objects) and videos by BASENAME (same reasoning as
-    // MergePredictions) — see sleap-io.js's Labels.merge().
+    // Track objects) and videos as MergePredictions does — see sleap-io.js's
+    // Labels.merge().
     const result = await labels.merge(retracked, {
       track: "name",
-      video: "basename",
+      video: predictionVideoMatcher(retracked, labels, videoTarget),
       frame: "update_tracks",
     });
     ctx.pushUndoSnapshot(snapshot);

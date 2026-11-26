@@ -168,6 +168,7 @@ export const PIPELINE_HEADS: Record<PipelineType, string[]> = {
   "bottom-up-id": ["multi_class_bottomup"],
   bbox: ["bbox"],
   "top-down-bbox": ["bbox", "centered_instance_bbox"],
+  centroid: ["centroid"],
 };
 
 
@@ -230,6 +231,7 @@ const PIPELINE_LABELS: Record<PipelineType, string> = {
   "bottom-up-id": "Bottom-Up + ID",
   bbox: "Box Detector",
   "top-down-bbox": "Top-Down (Box Crops)",
+  centroid: "Centroid Only",
 };
 
 /** Names for the head families box pipelines use (see lib/bboxModels.ts). */

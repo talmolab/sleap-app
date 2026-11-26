@@ -60,6 +60,19 @@ function trackOptionFields(config: InferenceConfig) {
     model_paths: config.modelPaths,
     batch_size: config.batchSize,
     peak_threshold: config.peakThreshold,
+    max_instances: config.maxInstances ?? undefined,
+    integral_refinement: config.integralRefinement ? ("integral" as const) : ("none" as const),
+    integral_patch_size: config.integralRefinement ? config.integralPatchSize : undefined,
+    ...(config.pipeline === "bottom-up" || config.pipeline === "bottom-up-id"
+      ? {
+          n_points: config.nPoints,
+          max_edge_length_ratio: config.maxEdgeLengthRatio,
+          dist_penalty_weight: config.distPenaltyWeight,
+          min_line_scores: config.minLineScores,
+        }
+      : {}),
+    device: config.device !== "auto" ? config.device : undefined,
+    runtime: config.runtime && config.runtime !== "auto" ? config.runtime : undefined,
     exclude_user_labeled: config.excludeUserLabeled || undefined,
     robust: config.tracking ? config.robust : undefined,
     ensure_channels: config.ensureChannels !== "auto" ? config.ensureChannels : undefined,
@@ -120,7 +133,8 @@ function trackOptionFields(config: InferenceConfig) {
 /**
  * One spec for every target except "random" (random sample across all
  * videos), which a single track job can't express — that returns one spec
- * per non-empty video, each with its own sampled `frames`.
+ * per non-empty video, each with its own sampled `frames` — and "all_videos",
+ * which returns one spec per video pinned via `video_index`.
  */
 export function buildRemoteTrackSpecs(
   config: InferenceConfig,
@@ -177,6 +191,13 @@ export function buildRemoteTrackSpecs(
     frames,
     path_mappings: pathMappings,
   });
+
+  // A bare .slp data_path predicts only its already-labeled frames, so "All
+  // videos" asks for each video by index, as the local runner does. Track-only
+  // retracks the existing instances, which the bare .slp already covers.
+  if (target === "all_videos" && !config.trackOnly && ctx.videoFrameCounts.length > 0) {
+    return ctx.videoFrameCounts.flatMap((_n, i) => (isAllowed(i) ? [buildSpec(i)] : []));
+  }
 
   // A target that already names one specific video: unchanged if it's
   // allowed, dropped entirely otherwise (never widened to other videos).

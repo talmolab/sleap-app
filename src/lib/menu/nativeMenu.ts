@@ -34,6 +34,11 @@ const OMIT = new Set([
   "file.quit",
 ]);
 
+/** Whether an item is left out of the native menu (so it owns no key there). */
+export function isOmittedFromNativeMenu(id: string): boolean {
+  return OMIT.has(id);
+}
+
 /** Text-editing combos a text field needs: never menu-owned. */
 const TEXT_EDITING = new Set([
   "$mod+KeyZ",
