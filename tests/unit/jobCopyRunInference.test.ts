@@ -72,8 +72,9 @@ vi.mock("@/lib/notify", () => ({
 }));
 
 const { runInference } = await import("@/platform/backend");
-const { createJobLabelsCopy } = await import("@/lib/jobLabelsFile");
+const { createJobLabelsCopy, jobLabelsPath } = await import("@/lib/jobLabelsFile");
 const { useAppStore } = await import("@/stores/appStore");
+const { useEnvironmentStore } = await import("@/stores/environmentStore");
 
 /** A small project opened for editing from a format 3.0 file at /data/flies.slp. */
 function project(embedded = false): sio.Labels {
@@ -136,6 +137,7 @@ const COPY = /^\/cache\/job-copies\/sleap-job-inference-main-\d+-\d+\.slp$/;
 
 beforeEach(() => {
   useAppStore.setState(useAppStore.getInitialState());
+  useEnvironmentStore.setState({ tools: [], pythonCheck: null });
   files.clear();
   removed.length = 0;
   commands.length = 0;
@@ -182,6 +184,28 @@ describe("runInference on a project whose file is in format 3.0", () => {
     await runInference(config(), "/data/flies.slp", () => {});
     expect(dataPath()).toBe("/data/flies.slp");
     expect(files.size).toBe(0);
+  });
+
+  it("bypasses the 2.x downgrade copy when local sleap-nn >= 0.4.0a0 is installed", async () => {
+    useEnvironmentStore.setState({
+      tools: [
+        {
+          name: "sleap-nn",
+          version: "0.4.0a0",
+          commands: ["sleap-nn"],
+          updateAvailable: false,
+          latestVersion: "0.4.0a0",
+        },
+      ],
+    });
+    useAppStore.getState().setLabels(project(), "flies.slp", "/data/flies.slp");
+    const copy = createJobLabelsCopy("training");
+    expect(await jobLabelsPath("/data/flies.slp", copy)).toBe("/data/flies.slp");
+    const res = await runInference(config(), "/data/flies.slp", () => {});
+    expect(res.success).toBe(true);
+    expect(dataPath()).toBe("/data/flies.slp");
+    expect(files.size).toBe(0);
+    expect(removed).toEqual([]);
   });
 });
 

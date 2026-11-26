@@ -20,13 +20,13 @@
  */
 
 /** sleap-nn head keys of the box-detector family. */
-export const BBOX_HEAD_KEYS = ["bbox_centernet", "bbox_ssd"] as const;
+export const BBOX_HEAD_KEYS = ["bbox_centernet", "bbox_ssd", "bbox_detr"] as const;
 
 export type BboxHeadKey = (typeof BBOX_HEAD_KEYS)[number];
 
 /** Whether a sleap-nn head key is a box detector. */
 export function isBboxHeadKey(key: string | null | undefined): key is BboxHeadKey {
-  return key === "bbox_centernet" || key === "bbox_ssd";
+  return key === "bbox_centernet" || key === "bbox_ssd" || key === "bbox_detr";
 }
 
 /** How a centered-instance model cuts its crops (`preprocessing.crop_mode`). */

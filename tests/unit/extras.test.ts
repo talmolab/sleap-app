@@ -118,4 +118,13 @@ describe("toggleExtra", () => {
       }
     }
   });
+
+  it("toggles backbones independently without affecting ONNX or TensorRT", () => {
+    expect(
+      toggleExtra({ onnx: true, tensorrt: true, backbones: false }, "backbones", true)
+    ).toEqual({ onnx: true, tensorrt: true, backbones: true });
+    expect(
+      toggleExtra({ onnx: true, tensorrt: true, backbones: true }, "onnx", false)
+    ).toEqual({ onnx: false, tensorrt: false, backbones: true });
+  });
 });

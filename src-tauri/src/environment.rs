@@ -747,6 +747,10 @@ pub struct SleapNnExtras {
     pub onnx: bool,
     /// sleap-nn's `[tensorrt]` extra: `tensorrt` + `torch_tensorrt`.
     pub tensorrt: bool,
+    /// sleap-nn's `[backbones]` extra: `timm` + `transformers` (DETR & pretrained ViT backbones).
+    pub backbones: bool,
+    /// Python `major.minor.micro` version of the installed sleap-nn venv.
+    pub python_version: Option<String>,
     /// Whether TensorRT is installable on this platform at all. sleap-nn marks
     /// both tensorrt deps `sys_platform == 'linux' or sys_platform == 'win32'`,
     /// so on macOS the extra resolves to NOTHING and asking for it would
@@ -761,7 +765,7 @@ pub struct SleapNnExtras {
 /// no onnxruntime init) and can refresh on its own while the much slower
 /// accelerator probe is still running.
 const EXTRAS_PROBE_SCRIPT: &str = "\
-import json, importlib.util as u
+import json, sys, importlib.util as u
 def has(m):
     try:
         return u.find_spec(m) is not None
@@ -770,6 +774,8 @@ def has(m):
 print(json.dumps({
     'onnx': has('onnx') and has('onnxruntime'),
     'tensorrt': has('tensorrt') and has('torch_tensorrt'),
+    'backbones': has('timm') and has('transformers'),
+    'python_version': f'{sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}',
 }))
 ";
 
@@ -809,6 +815,13 @@ fn parse_extras_json(stdout: &str) -> SleapNnExtras {
     // would be someone else's install; report what's actually importable and
     // let the UI decide what to offer.
     extras.tensorrt = v.get("tensorrt").and_then(|b| b.as_bool()).unwrap_or(false);
+    extras.backbones = v.get("backbones").and_then(|b| b.as_bool()).unwrap_or(false);
+    extras.python_version = v
+        .get("python_version")
+        .and_then(|s| s.as_str())
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(String::from);
     extras
 }
 
@@ -2244,17 +2257,23 @@ mod tests {
 
     #[test]
     fn test_parse_extras_both_present() {
-        let e = parse_extras_json(r#"{"onnx":true,"tensorrt":true}"#);
+        let e = parse_extras_json(
+            r#"{"onnx":true,"tensorrt":true,"backbones":true,"python_version":"3.12.7"}"#,
+        );
         assert!(e.onnx);
         assert!(e.tensorrt);
+        assert!(e.backbones);
+        assert_eq!(e.python_version.as_deref(), Some("3.12.7"));
         assert!(e.error.is_none());
     }
 
     #[test]
     fn test_parse_extras_none_present() {
-        let e = parse_extras_json(r#"{"onnx":false,"tensorrt":false}"#);
+        let e = parse_extras_json(r#"{"onnx":false,"tensorrt":false,"backbones":false}"#);
         assert!(!e.onnx);
         assert!(!e.tensorrt);
+        assert!(!e.backbones);
+        assert_eq!(e.python_version, None);
         assert!(e.error.is_none());
     }
 

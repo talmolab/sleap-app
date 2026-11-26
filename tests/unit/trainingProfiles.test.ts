@@ -10,9 +10,9 @@ import {
 import { getConfigSlots } from "@/stores/trainingStore";
 
 describe("trainingProfiles", () => {
-  it("has 14 baseline profiles", () => {
-    // 10 pose presets + 2 box detectors (CenterNet, SSD) + 2 box-crop centered instance.
-    expect(BASELINE_PROFILES).toHaveLength(14);
+  it("has 15 baseline profiles", () => {
+    // 10 pose presets + 3 box detectors (CenterNet, SSD, DETR) + 2 box-crop centered instance.
+    expect(BASELINE_PROFILES).toHaveLength(15);
   });
 
   it("returns correct profiles for centroid", () => {

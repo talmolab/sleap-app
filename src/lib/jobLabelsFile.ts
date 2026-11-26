@@ -29,10 +29,25 @@
 import { saveSlpToBytes, type Labels } from "@talmolab/sleap-io.js";
 import { useAppStore } from "@/stores/appStore";
 import { sourceFormatOf, withLegacyLayout } from "@/lib/slpFormatCompat";
+import { installedSleapNnVersion, sleapNnSupportsSlp3 } from "@/lib/sleapNnVersion";
 
 /** Whether the project file the labels were opened from is still in format 3.0 on disk. */
 export function projectFileIsFormat3(labels: Labels | null | undefined): boolean {
   return sourceFormatOf(labels) !== null;
+}
+
+/**
+ * Whether the locally installed `sleap-nn` supports SLP 3.0 natively (`>= 0.4.0a0`),
+ * so local training/inference can read format 3.0 project files directly without
+ * writing a 2.x downgrade copy (preserving unlabeled points for `node_loss_mask`).
+ */
+export async function localSleapNnSupportsSlp3(): Promise<boolean> {
+  try {
+    const { useEnvironmentStore } = await import("@/stores/environmentStore");
+    return sleapNnSupportsSlp3(installedSleapNnVersion(useEnvironmentStore.getState()));
+  } catch {
+    return false;
+  }
 }
 
 /**
@@ -206,12 +221,21 @@ export function createJobLabelsCopy(
 
 /**
  * The file a local job should read for `labelsPath`: the path itself, or the
- * job's 2.x copy of the open project when `labelsPath` is the project file and
- * that file is still in format 3.0.
+ * job's 2.x copy of the open project when `labelsPath` is the project file,
+ * that file is still in format 3.0, and the installed `sleap-nn` is `< 0.4.0a0`
+ * (or unknown). When local `sleap-nn >= 0.4.0a0` is installed, the format 3.0
+ * project file is read directly so unlabeled points train natively with
+ * `node_loss_mask: true`.
  */
 export async function jobLabelsPath(labelsPath: string, copy: JobLabelsCopy): Promise<string> {
   const { labels, projectPath } = useAppStore.getState();
-  if (!labels || !labelsPath || labelsPath !== projectPath || !projectFileIsFormat3(labels)) {
+  if (
+    !labels ||
+    !labelsPath ||
+    labelsPath !== projectPath ||
+    !projectFileIsFormat3(labels) ||
+    (await localSleapNnSupportsSlp3())
+  ) {
     return labelsPath;
   }
   return copy.path();

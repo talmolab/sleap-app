@@ -34,11 +34,14 @@ import { isTauri } from "../platform/index";
 import { toast } from "@/lib/notify";
 import { openExternal } from "@/lib/openExternal";
 import {
+  SLEAP_NN_PYTHON_SPEC,
   SLEAP_NN_VERSION_SPECIFIER,
   capSleapNnUpdate,
   exportExtras,
+  isPythonVersionCompatible,
   isSleapNnVersionBelowCap,
   sleapNnInstallSpec,
+  sleapNnUvExtraArgs,
 } from "@/lib/sleapNnVersion";
 
 const SLEAP_NN_RELEASES_URL = "https://github.com/talmolab/sleap-nn/releases/tag";
@@ -112,7 +115,11 @@ export interface EnvironmentState {
    * `uv tool install` REPLACES the tool env, this is the only way to change
    * extras — and it means UNCHECKING one removes it on the next apply.
    */
-  installExtras: (want: { onnx: boolean; tensorrt: boolean }) => Promise<void>;
+  installExtras: (want: {
+    onnx: boolean;
+    tensorrt: boolean;
+    backbones?: boolean;
+  }) => Promise<void>;
   doUpgradeTool: (pkg: string) => Promise<void>;
   doReinstallTool: (pkg: string) => Promise<void>;
   /**
@@ -285,6 +292,8 @@ export const useEnvironmentStore = create<EnvironmentState>()(
             extras: {
               onnx: false,
               tensorrt: false,
+              backbones: false,
+              pythonVersion: null,
               tensorrtSupported: false,
               error: msg,
             },
@@ -342,7 +351,7 @@ export const useEnvironmentStore = create<EnvironmentState>()(
       },
 
       doInstallTool: async (pkg: string) => {
-        const { selectedPythonPath } = get();
+        const { selectedPythonPath, interpreters, pythonCheck } = get();
         set({
           installStatus: "installing",
           installTarget: pkg,
@@ -364,6 +373,7 @@ export const useEnvironmentStore = create<EnvironmentState>()(
         try {
           let installPkg = pkg;
           let extraArgs: string[] | undefined;
+          let pythonArg: string | null = selectedPythonPath;
 
           // For sleap-nn, detect GPU and install with appropriate torch extra
           if (pkg === "sleap-nn") {
@@ -371,7 +381,23 @@ export const useEnvironmentStore = create<EnvironmentState>()(
             console.log("[env] Detected GPU type:", gpu);
             const torchExtra = gpu === "cuda" ? "torch-cuda130" : "torch-cpu";
             installPkg = sleapNnInstallSpec([torchExtra]);
-            extraArgs = ["--torch-backend=auto"];
+            extraArgs = sleapNnUvExtraArgs();
+            const selectedVersion = selectedPythonPath
+              ? (interpreters.find((i) => i.path === selectedPythonPath)?.version ??
+                pythonCheck?.version ??
+                null)
+              : null;
+            if (!selectedPythonPath) {
+              pythonArg = SLEAP_NN_PYTHON_SPEC;
+            } else if (selectedVersion && !isPythonVersionCompatible(selectedVersion)) {
+              pythonArg = SLEAP_NN_PYTHON_SPEC;
+              set((state) => ({
+                installLog: [
+                  ...state.installLog,
+                  `[env] Selected Python ${selectedVersion} is outside ${SLEAP_NN_PYTHON_SPEC} required by sleap-nn 0.4 → using ${SLEAP_NN_PYTHON_SPEC}`,
+                ],
+              }));
+            }
             set((state) => ({
               installLog: [
                 ...state.installLog,
@@ -382,7 +408,7 @@ export const useEnvironmentStore = create<EnvironmentState>()(
 
           await installUvToolCmd(
             installPkg,
-            selectedPythonPath,
+            pythonArg,
             false,
             onEvent,
             extraArgs
@@ -400,26 +426,34 @@ export const useEnvironmentStore = create<EnvironmentState>()(
       installExportExtra: async (withTensorrt: boolean) => {
         // Kept as the name the export dialog + post-training export path call;
         // "export support" has always meant ONNX, plus TensorRT on request.
-        await get().installExtras({ onnx: true, tensorrt: withTensorrt });
+        // Preserve already-installed backbones extra so enabling export never wipes it.
+        const currentBackbones = Boolean(get().extras?.backbones);
+        await get().installExtras({
+          onnx: true,
+          tensorrt: withTensorrt,
+          backbones: currentBackbones,
+        });
       },
 
-      installExtras: async ({ onnx, tensorrt }) => {
-        const { selectedPythonPath } = get();
+      installExtras: async ({ onnx, tensorrt, backbones }) => {
+        const { selectedPythonPath, interpreters, pythonCheck, extras: currentExtras } = get();
         // TensorRT export is built on top of the ONNX toolchain, so `tensorrt`
         // always brings `export` with it — selecting TensorRT alone would
         // produce an env that can't export at all.
-        const wantOnnx = onnx || tensorrt;
-        const extras = [
-          wantOnnx ? "export" : null,
-          tensorrt ? "tensorrt" : null,
+        // Callers that omit `backbones` keep whatever is currently installed.
+        const wantBackbones =
+          backbones !== undefined ? backbones : Boolean(currentExtras?.backbones);
+        const extras = exportExtras({ onnx, tensorrt, backbones: wantBackbones });
+        const labels = [
+          onnx || tensorrt ? (tensorrt ? "ONNX + TensorRT" : "ONNX") : null,
+          wantBackbones ? "pretrained backbones" : null,
         ].filter(Boolean);
         set({
           installStatus: "installing",
-          installTarget: tensorrt
-            ? "sleap-nn ONNX + TensorRT support"
-            : wantOnnx
-              ? "sleap-nn ONNX support"
-              : "sleap-nn without export extras",
+          installTarget:
+            labels.length > 0
+              ? `sleap-nn ${labels.join(" + ")} support`
+              : "sleap-nn without optional extras",
           installLog: [],
         });
 
@@ -441,10 +475,22 @@ export const useEnvironmentStore = create<EnvironmentState>()(
           // forces a reinstall. That's also what makes unchecking work: the
           // omitted extra simply isn't in the new env. The torch backend has
           // to be restated for the same reason, or it would be dropped.
-          const installPkg = sleapNnInstallSpec([
-            torchExtra,
-            ...(extras as string[]),
-          ]);
+          const installPkg = sleapNnInstallSpec([torchExtra, ...extras]);
+          let pythonArg: string | null = selectedPythonPath ?? SLEAP_NN_PYTHON_SPEC;
+          const selectedVersion = selectedPythonPath
+            ? (interpreters.find((i) => i.path === selectedPythonPath)?.version ??
+              pythonCheck?.version ??
+              null)
+            : null;
+          if (selectedVersion && !isPythonVersionCompatible(selectedVersion)) {
+            pythonArg = SLEAP_NN_PYTHON_SPEC;
+            set((state) => ({
+              installLog: [
+                ...state.installLog,
+                `[env] Selected Python ${selectedVersion} is outside ${SLEAP_NN_PYTHON_SPEC} required by sleap-nn 0.4 → using ${SLEAP_NN_PYTHON_SPEC}`,
+              ],
+            }));
+          }
           set((state) => ({
             installLog: [
               ...state.installLog,
@@ -453,10 +499,10 @@ export const useEnvironmentStore = create<EnvironmentState>()(
           }));
           await installUvToolCmd(
             installPkg,
-            selectedPythonPath,
+            pythonArg,
             true,
             onEvent,
-            ["--torch-backend=auto"]
+            sleapNnUvExtraArgs()
           );
           await get().refresh();
         } catch (err) {
@@ -492,8 +538,8 @@ export const useEnvironmentStore = create<EnvironmentState>()(
             // `uv tool upgrade` follows the version range recorded when the
             // tool was installed, and installs made before the cap recorded
             // none, so it would move them past the cap. Re-run the install
-            // with the capped requirement and `--upgrade` instead: it moves to
-            // the newest version below the cap and records the cap.
+            // with the bounded requirement and `--upgrade` instead: it moves to
+            // the newest version in range and records the constraint.
             const current = get().tools.find((t) => t.name === "sleap-nn");
             if (current?.version && !isSleapNnVersionBelowCap(current.version)) {
               // The capped install would move this env DOWN. Never do that
@@ -523,7 +569,7 @@ export const useEnvironmentStore = create<EnvironmentState>()(
               throw new Error(
                 `Could not tell which optional extras sleap-nn has (${probed.error}), ` +
                   "so the update was not started. Reinstall installs sleap-nn " +
-                  "without the ONNX and TensorRT extras; add them again afterwards."
+                  "without optional extras; add them again afterwards."
               );
             }
             const torchExtra = gpu === "cuda" ? "torch-cuda130" : "torch-cpu";
@@ -531,6 +577,23 @@ export const useEnvironmentStore = create<EnvironmentState>()(
               torchExtra,
               ...exportExtras(installed),
             ]);
+            // Keep the interpreter the env already has when it satisfies
+            // sleap-nn 0.4's Python requirement (`>=3.11,<3.14`). If upgrading
+            // an older venv on Python 3.10 (or 3.14+), switch to `>=3.11,<3.14`
+            // so the upgrade does not fail with a Python-version mismatch.
+            let upgradePython: string | null = null;
+            if (
+              installed.pythonVersion &&
+              !isPythonVersionCompatible(installed.pythonVersion)
+            ) {
+              upgradePython = SLEAP_NN_PYTHON_SPEC;
+              set((state) => ({
+                installLog: [
+                  ...state.installLog,
+                  `[env] Current sleap-nn Python ${installed.pythonVersion} is outside ${SLEAP_NN_PYTHON_SPEC} → switching to ${SLEAP_NN_PYTHON_SPEC}`,
+                ],
+              }));
+            }
             set((state) => ({
               installLog: [
                 ...state.installLog,
@@ -538,12 +601,13 @@ export const useEnvironmentStore = create<EnvironmentState>()(
                 "[env] Extras or install options added outside the app are not kept.",
               ],
             }));
-            // No `--python`: keep the interpreter the env already has, as
-            // `uv tool upgrade` does.
-            await installUvToolCmd(installPkg, null, false, onEvent, [
-              "--upgrade",
-              "--torch-backend=auto",
-            ]);
+            await installUvToolCmd(
+              installPkg,
+              upgradePython,
+              false,
+              onEvent,
+              sleapNnUvExtraArgs(["--upgrade"])
+            );
           } else {
             await upgradeUvToolCmd(pkg, onEvent);
           }
@@ -558,7 +622,7 @@ export const useEnvironmentStore = create<EnvironmentState>()(
       },
 
       doReinstallTool: async (pkg: string) => {
-        const { selectedPythonPath } = get();
+        const { selectedPythonPath, interpreters, pythonCheck, extras: lastGood } = get();
         set({
           installStatus: "installing",
           installTarget: `${pkg} (reinstall)`,
@@ -580,12 +644,39 @@ export const useEnvironmentStore = create<EnvironmentState>()(
         try {
           let installPkg = pkg;
           let extraArgs: string[] | undefined;
+          let pythonArg: string | null = selectedPythonPath;
 
           if (pkg === "sleap-nn") {
-            const gpu = await detectGpu();
+            const [gpu, probed] = await Promise.all([
+              detectGpu(),
+              detectSleapNnExtras().catch(() => null),
+            ]);
+            const installed =
+              probed && !probed.error
+                ? probed
+                : lastGood && !lastGood.error
+                  ? lastGood
+                  : null;
             const torchExtra = gpu === "cuda" ? "torch-cuda130" : "torch-cpu";
-            installPkg = sleapNnInstallSpec([torchExtra]);
-            extraArgs = ["--torch-backend=auto"];
+            const preserved = installed ? exportExtras(installed) : [];
+            installPkg = sleapNnInstallSpec([torchExtra, ...preserved]);
+            extraArgs = sleapNnUvExtraArgs();
+            const selectedVersion = selectedPythonPath
+              ? (interpreters.find((i) => i.path === selectedPythonPath)?.version ??
+                pythonCheck?.version ??
+                null)
+              : null;
+            if (!selectedPythonPath) {
+              pythonArg = SLEAP_NN_PYTHON_SPEC;
+            } else if (selectedVersion && !isPythonVersionCompatible(selectedVersion)) {
+              pythonArg = SLEAP_NN_PYTHON_SPEC;
+              set((state) => ({
+                installLog: [
+                  ...state.installLog,
+                  `[env] Selected Python ${selectedVersion} is outside ${SLEAP_NN_PYTHON_SPEC} required by sleap-nn 0.4 → using ${SLEAP_NN_PYTHON_SPEC}`,
+                ],
+              }));
+            }
             set((state) => ({
               installLog: [
                 ...state.installLog,
@@ -596,7 +687,7 @@ export const useEnvironmentStore = create<EnvironmentState>()(
 
           await installUvToolCmd(
             installPkg,
-            selectedPythonPath,
+            pythonArg,
             true,
             onEvent,
             extraArgs

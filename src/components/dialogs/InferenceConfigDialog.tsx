@@ -17,12 +17,24 @@ import {
 import { Search, ChevronDown, ChevronRight, Check, RotateCcw } from "lucide-react";
 import { HintBubble } from "@/components/HintBubble";
 import { confirmDialog } from "@/stores/confirmStore";
+import {
+  normalizeIntegralRefinement,
+  type InferencePrecision,
+  type InferenceSlpVersion,
+  type IntegralRefinementMethod,
+} from "@/stores/inferenceStore";
 
 export interface InferenceConfigValues {
   peakThreshold: number;
   maxInstances: number | null;
-  integralRefinement: boolean;
+  integralRefinement: IntegralRefinementMethod;
   integralPatchSize: number;
+  precision: InferencePrecision;
+  uploadBatches: boolean;
+  flipTest: boolean;
+  rescore: boolean;
+  bboxNmsIou: number | null;
+  slpVersion: InferenceSlpVersion;
   nPoints: number;
   maxEdgeLengthRatio: number;
   distPenaltyWeight: number;
@@ -114,6 +126,12 @@ const SEARCHABLE_FIELDS = [
   { label: "Kalman Tracked Nodes", section: "kalman", fieldId: "field-kfnodeindices" },
   { label: "Integral Refinement", section: "advanced", fieldId: "field-integralrefinement" },
   { label: "Integral Patch Size", section: "advanced", fieldId: "field-integralpatch" },
+  { label: "Precision", section: "advanced", fieldId: "field-precision" },
+  { label: "Upload Batches to GPU", section: "advanced", fieldId: "field-uploadbatches" },
+  { label: "Flip Test", section: "advanced", fieldId: "field-fliptest" },
+  { label: "Rescore Instances", section: "advanced", fieldId: "field-rescore" },
+  { label: "BBox NMS IoU", section: "advanced", fieldId: "field-bboxnmsi" },
+  { label: "Output SLP Format", section: "advanced", fieldId: "field-slpversion" },
   { label: "Sample Points", section: "advanced", fieldId: "field-npoints" },
   { label: "Max Edge Ratio", section: "advanced", fieldId: "field-maxedgeratio" },
   { label: "Distance Penalty", section: "advanced", fieldId: "field-distpenalty" },
@@ -730,14 +748,29 @@ export function InferenceConfigDialog({
             {/* ── Advanced ── */}
             <SectionHeading id="advanced" label="Advanced" />
             <div className="space-y-2">
-              <Toggle
+              <Field
                 label="Integral Refinement"
                 id="field-integralrefinement"
-                hint="Use integral regression to refine keypoint locations to sub-pixel accuracy. Recommended for most pipelines."
-                checked={v.integralRefinement}
-                onChange={(val) => onUpdate({ integralRefinement: val })}
-              />
-              {v.integralRefinement && (
+                hint="Sub-pixel peak refinement method (sleap-nn 0.4). Auto uses DARK for top-down keypoints and integral regression for other models; None returns grid-aligned peaks."
+              >
+                <Select
+                  value={normalizeIntegralRefinement(v.integralRefinement)}
+                  onValueChange={(val) => onUpdate({ integralRefinement: val as IntegralRefinementMethod })}
+                >
+                  <SelectTrigger className="h-9 text-sm">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="auto">Auto (DARK for top-down)</SelectItem>
+                    <SelectItem value="dark">DARK</SelectItem>
+                    <SelectItem value="integral">Integral</SelectItem>
+                    <SelectItem value="local">Local</SelectItem>
+                    <SelectItem value="none">None (grid-aligned)</SelectItem>
+                  </SelectContent>
+                </Select>
+              </Field>
+              {(normalizeIntegralRefinement(v.integralRefinement) === "integral" ||
+                normalizeIntegralRefinement(v.integralRefinement) === "auto") && (
                 <Field label="Patch Size" id="field-integralpatch" hint="Size of the local patch around each peak used for integral regression refinement. Larger patches are more robust but slower.">
                   <NumberInput integer
                     value={v.integralPatchSize}
@@ -749,6 +782,82 @@ export function InferenceConfigDialog({
                   />
                 </Field>
               )}
+              <Field
+                label="Precision"
+                id="field-precision"
+                hint="Forward-pass autocast precision on CUDA GPUs (sleap-nn 0.4 checkpoints). bf16-encoder runs the encoder in bf16 while keeping decoders/heads in fp32."
+              >
+                <Select
+                  value={v.precision}
+                  onValueChange={(val) => onUpdate({ precision: val as InferencePrecision })}
+                >
+                  <SelectTrigger className="h-9 text-sm">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="32">32 (fp32)</SelectItem>
+                    <SelectItem value="bf16-encoder">bf16-encoder</SelectItem>
+                    <SelectItem value="bf16">bf16</SelectItem>
+                    <SelectItem value="fp16">fp16</SelectItem>
+                  </SelectContent>
+                </Select>
+              </Field>
+              <Toggle
+                label="Upload Batches to GPU"
+                id="field-uploadbatches"
+                hint="Copy each batch of frames to CUDA before resizing and cropping (--upload_batches). Faster on NVIDIA GPUs; ignored on CPU/MPS."
+                checked={v.uploadBatches}
+                onChange={(val) => onUpdate({ uploadBatches: val })}
+              />
+              <Toggle
+                label="Flip Test"
+                id="field-fliptest"
+                hint="Top-down centered-instance test-time augmentation: average predictions on horizontally mirrored crops using skeleton symmetries (--flip_test)."
+                checked={v.flipTest}
+                onChange={(val) => onUpdate({ flipTest: val })}
+              />
+              <Toggle
+                label="Rescore Instances"
+                id="field-rescore"
+                hint="COCO/mmpose instance rescoring: multiply stage-1 score by mean visible keypoint score (--rescore)."
+                checked={v.rescore}
+                onChange={(val) => onUpdate({ rescore: val })}
+              />
+              <Field
+                label="BBox NMS IoU"
+                id="field-bboxnmsi"
+                hint="Class-wise IoU NMS threshold for bounding-box detectors (--bbox_nms_iou). Leave empty to use the model's default (0.45 for SSD, off for CenterNet/DETR)."
+              >
+                <NumberInput
+                  nullable
+                  value={v.bboxNmsIou}
+                  onCommit={(n) => onUpdate({ bboxNmsIou: n })}
+                  min={0}
+                  max={1}
+                  step={0.05}
+                  placeholder="Model default"
+                  className="h-9 text-sm"
+                />
+              </Field>
+              <Field
+                label="Output SLP Format"
+                id="field-slpversion"
+                hint="Output .slp file layout written by sleap-nn (--slp_version). Auto uses 2.x when content fits and 3.0 when needed."
+              >
+                <Select
+                  value={v.slpVersion}
+                  onValueChange={(val) => onUpdate({ slpVersion: val as InferenceSlpVersion })}
+                >
+                  <SelectTrigger className="h-9 text-sm">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="auto">Auto</SelectItem>
+                    <SelectItem value="v2">SLP 2.x (v2)</SelectItem>
+                    <SelectItem value="v3">SLP 3.0 (v3)</SelectItem>
+                  </SelectContent>
+                </Select>
+              </Field>
               {isBottomUp && (
                 <>
                   <Separator className="my-4" />

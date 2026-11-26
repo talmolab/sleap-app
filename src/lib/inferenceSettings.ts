@@ -41,6 +41,10 @@ function sameKind(def: unknown, value: unknown): boolean {
   return typeof value === typeof def;
 }
 
+const REFINEMENT_VALUES = new Set(["auto", "dark", "integral", "local", "none"]);
+const PRECISION_VALUES = new Set(["32", "bf16-encoder", "bf16", "fp16"]);
+const SLP_VERSION_VALUES = new Set(["auto", "v2", "v3"]);
+
 /**
  * The usable part of stored settings: known keys with the right kind of value.
  * Anything else (an older app's keys, a hand-edited file) is dropped.
@@ -53,6 +57,14 @@ export function sanitizeSavedInferenceSettings(raw: unknown): SavedInferenceSett
       if (typeof v === "string" && TARGETS.has(v)) out.target = v;
     } else if (k === "customStart" || k === "customEnd") {
       if (typeof v === "string") out[k] = v;
+    } else if (k === "integralRefinement") {
+      // Migrate pre-0.2 boolean persistence (true -> "auto", false -> "none").
+      if (typeof v === "boolean") out.integralRefinement = v ? "auto" : "none";
+      else if (typeof v === "string" && REFINEMENT_VALUES.has(v)) out.integralRefinement = v;
+    } else if (k === "precision") {
+      if (typeof v === "string" && PRECISION_VALUES.has(v)) out.precision = v;
+    } else if (k === "slpVersion") {
+      if (typeof v === "string" && SLP_VERSION_VALUES.has(v)) out.slpVersion = v;
     } else if (k in SETTING_DEFAULTS && sameKind(SETTING_DEFAULTS[k], v)) {
       out[k] = v;
     }

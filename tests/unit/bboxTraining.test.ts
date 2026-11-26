@@ -20,6 +20,7 @@ import {
   getSlotLabel,
   applyHyperparamsToYaml,
   buildPostTrainingInferenceConfig,
+  planPostTrainingExports,
   isBboxModelType,
   BBOX_REMOTE_UNSUPPORTED,
   type ConfigFile,
@@ -91,7 +92,11 @@ describe("box model types: slots and presets", () => {
     expect(slotToHeadType("top_down", "centered_instance")).toBe("centered_instance");
 
     const detectors = getBaselineProfilesForHead("bbox");
-    expect(detectors.map((p) => p.filename)).toEqual(["baseline.bbox_centernet.yaml", "baseline.bbox_ssd.yaml"]);
+    expect(detectors.map((p) => p.filename)).toEqual([
+      "baseline.bbox_centernet.yaml",
+      "baseline.bbox_ssd.yaml",
+      "baseline.bbox_detr.yaml",
+    ]);
     // The detector style is picked by preset; CenterNet is the default whatever the RF tier.
     expect(getRecommendedProfileForHead("bbox", { tier: "large" } as never)?.filename).toBe("baseline.bbox_centernet.yaml");
 
@@ -426,5 +431,99 @@ describe("box model types: merging predicted boxes", () => {
     expect(current.find({ video: baseVideo, frameIdx: 7 })).toHaveLength(0);
     expect(String(spy.mock.calls.at(-1)?.[0])).toContain("1 box(es)");
     spy.mockRestore();
+  });
+});
+
+describe("sleap-nn 0.4: bbox_detr, pretrained backbones, and per-stage export", () => {
+  beforeEach(() => useTrainingStore.getState().reset());
+
+  it("recognizes bbox_detr in BBOX_HEAD_KEYS, headTypeMatches, and preset parsing without clobbering dinov2_windowed or detr stride", () => {
+    expect(isBboxHeadKey("bbox_detr")).toBe(true);
+    expect(headTypeMatches("bbox", { headKey: "bbox_detr" })).toBe(true);
+
+    const cf = loadPreset("baseline.bbox_detr.yaml", "bbox");
+    expect(cf.modelType).toBe("bbox_detr");
+    expect(cf.hyperparams.backbone).toBe("dinov2_windowed");
+    expect(cf.hyperparams.colorMode).toBe("rgb");
+
+    const doc = written({ ...cf, hyperparams: { ...cf.hyperparams, bboxSource: "bboxes", bboxPadding: 4 } });
+    expect(activeHeads(doc)).toEqual(["bbox_detr"]);
+    expect(doc.model_config.head_configs.bbox_detr.detr.output_stride).toBe(16);
+    expect(doc.data_config.bbox_source).toBe("bboxes");
+    expect(doc.data_config.bbox_padding).toBe(4);
+    // Only dinov2_windowed is non-null (never clobbered into unet).
+    const activeBackbones = Object.entries(doc.model_config.backbone_config as Doc)
+      .filter(([, v]) => v != null)
+      .map(([k]) => k);
+    expect(activeBackbones).toEqual(["dinov2_windowed"]);
+    expect(doc.model_config.backbone_config.dinov2_windowed.weights).toBe("facebook/dinov2-small");
+  });
+
+  it("preserves backbone_config.pretrained verbatim and nulls it when switching back to UNet/ConvNeXt", () => {
+    const pretrainedYaml = yaml.dump({
+      data_config: { preprocessing: { ensure_rgb: true, scale: 1.0 } },
+      model_config: {
+        backbone_config: {
+          unet: null,
+          convnext: null,
+          swint: null,
+          pretrained: {
+            model_name: "facebook/dinov2-small",
+            vit_decoder: "vit_decoder",
+            in_channels: 3,
+            max_stride: 16,
+          },
+        },
+        head_configs: {
+          centered_instance: { confmaps: { output_stride: 4, sigma: 2.5 } },
+        },
+      },
+      trainer_config: { max_epochs: 50, train_data_loader: { batch_size: 4 } },
+    });
+
+    const cf = useTrainingStore.getState().parseYamlConfig(pretrainedYaml, "pretrained.yaml", "centered_instance")!;
+    expect(cf.hyperparams.backbone).toBe("pretrained");
+
+    // Keeping pretrained preserves all fields and leaves all other backbones null.
+    const kept = written(cf);
+    const activeKept = Object.entries(kept.model_config.backbone_config as Doc)
+      .filter(([, v]) => v != null)
+      .map(([k]) => k);
+    expect(activeKept).toEqual(["pretrained"]);
+    expect(kept.model_config.backbone_config.pretrained.model_name).toBe("facebook/dinov2-small");
+    expect(kept.model_config.backbone_config.pretrained.vit_decoder).toBe("vit_decoder");
+
+    // Switching to unet nulls out pretrained so @oneof never sees two active backbones.
+    const switched = written({ ...cf, hyperparams: { ...cf.hyperparams, backbone: "unet" } });
+    const activeSwitched = Object.entries(switched.model_config.backbone_config as Doc)
+      .filter(([, v]) => v != null)
+      .map(([k]) => k);
+    expect(activeSwitched).toEqual(["unet"]);
+    expect(switched.model_config.backbone_config.pretrained).toBeNull();
+  });
+
+  it("plans per-stage exports (with --network-only on pose) for top_down_bbox, single bundle for classic top_down", () => {
+    const bboxJobs = planPostTrainingExports(
+      "top_down_bbox",
+      ["/m/det", "/m/pose"],
+      "/m/exported",
+      "onnx",
+      "fp16",
+    );
+    expect(bboxJobs).toEqual([
+      { modelPaths: ["/m/det"], outputDir: "/m/exported/detector", format: "onnx", precision: "fp16" },
+      { modelPaths: ["/m/pose"], outputDir: "/m/exported/pose", format: "onnx", precision: "fp16", networkOnly: true },
+    ]);
+
+    const classicJobs = planPostTrainingExports(
+      "top_down",
+      ["/m/centroid", "/m/ci"],
+      "/m/exported",
+      "tensorrt",
+      "bf16",
+    );
+    expect(classicJobs).toEqual([
+      { modelPaths: ["/m/centroid", "/m/ci"], outputDir: "/m/exported", format: "tensorrt", precision: "bf16" },
+    ]);
   });
 });

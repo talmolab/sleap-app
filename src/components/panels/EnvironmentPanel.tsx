@@ -66,6 +66,10 @@ import {
   toggleExtra,
   type ExtrasSelection,
 } from "@/lib/extras";
+import {
+  isPythonVersionCompatible,
+  SLEAP_NN_PYTHON_SPEC,
+} from "@/lib/sleapNnVersion";
 import { openExternal } from "@/lib/openExternal";
 import { cn } from "@/lib/utils";
 import { sleapCmd } from "@/lib/sleapPlugin";
@@ -337,14 +341,24 @@ function ExtrasField({
   status: DetectionStatus;
   accelerator: AcceleratorInfo | null;
   installing: boolean;
-  onApply: (want: { onnx: boolean; tensorrt: boolean }) => void;
+  onApply: (want: {
+    onnx: boolean;
+    tensorrt: boolean;
+    backbones?: boolean;
+  }) => void;
 }) {
   const [sel, setSel] = useState<ExtrasSelection | null>(null);
 
   // Re-seed from every probe result, so after an Apply (which refreshes) the
   // boxes show what actually landed rather than what was asked for.
   useEffect(() => {
-    if (extras) setSel({ onnx: extras.onnx, tensorrt: extras.tensorrt });
+    if (extras) {
+      setSel({
+        onnx: extras.onnx,
+        tensorrt: extras.tensorrt,
+        backbones: Boolean(extras.backbones),
+      });
+    }
   }, [extras]);
 
   if (status === "checking" && !extras) {
@@ -360,7 +374,12 @@ function ExtrasField({
   if (!extras || !sel) return null;
 
   const trt = tensorrtAvailability(extras, accelerator);
-  const dirty = sel.onnx !== extras.onnx || sel.tensorrt !== extras.tensorrt;
+  const installedBackbones = Boolean(extras.backbones);
+  const selectedBackbones = Boolean(sel.backbones);
+  const dirty =
+    sel.onnx !== extras.onnx ||
+    sel.tensorrt !== extras.tensorrt ||
+    selectedBackbones !== installedBackbones;
 
   const box = (
     checked: boolean,
@@ -396,13 +415,20 @@ function ExtrasField({
             setSel(toggleExtra(sel, "onnx", v))
           )}
           <Hint>
-            Optional sleap-nn dependencies for exporting a trained model to a
-            faster runtime. Applying reinstalls sleap-nn, because a uv tool
-            install replaces the whole environment.
+            Optional sleap-nn dependencies for model export (ONNX / TensorRT)
+            and pretrained backbones (DETR / ViT). Applying reinstalls sleap-nn,
+            because a uv tool install replaces the whole environment.
           </Hint>
         </div>
         {box(sel.tensorrt, trt.enabled, "TensorRT", trt.note, (v) =>
           setSel(toggleExtra(sel, "tensorrt", v))
+        )}
+        {box(
+          selectedBackbones,
+          true,
+          "Pretrained backbones",
+          "timm, transformers",
+          (v) => setSel(toggleExtra(sel, "backbones", v))
         )}
         {extras.error ? (
           <Detail title={extras.error}>
@@ -421,8 +447,8 @@ function ExtrasField({
             Apply
           </Button>
         ) : (
-          !extras.onnx && (
-            <Detail>Needed to export a trained model.</Detail>
+          !extras.onnx && !installedBackbones && (
+            <Detail>Optional: ONNX/TensorRT export and DETR/ViT backbones.</Detail>
           )
         )}
       </div>
@@ -1272,6 +1298,9 @@ export function EnvironmentPanel() {
                                     className="text-xs"
                                   >
                                     Python {i.version}
+                                    {!isPythonVersionCompatible(i.version)
+                                      ? " (unsupported by sleap-nn 0.4)"
+                                      : ""}
                                   </SelectItem>
                                 ))}
                               </SelectGroup>
@@ -1288,6 +1317,9 @@ export function EnvironmentPanel() {
                                     className="text-xs"
                                   >
                                     Python {i.version}
+                                    {!isPythonVersionCompatible(i.version)
+                                      ? " (unsupported by sleap-nn 0.4)"
+                                      : ""}
                                   </SelectItem>
                                 ))}
                               </SelectGroup>
@@ -1302,6 +1334,23 @@ export function EnvironmentPanel() {
                           {selectedPythonPath}
                         </Detail>
                       )}
+                      {selectedPythonPath &&
+                        (() => {
+                          const selectedVersion =
+                            interpreters.find((i) => i.path === selectedPythonPath)
+                              ?.version ?? pythonCheck?.version;
+                          return selectedVersion &&
+                            !isPythonVersionCompatible(selectedVersion) ? (
+                            <Detail>
+                              <span className="text-amber-500">
+                                Python {selectedVersion} is outside{" "}
+                                {SLEAP_NN_PYTHON_SPEC} required by sleap-nn 0.4;
+                                installs will pick a compatible 3.11–3.13 Python
+                                automatically.
+                              </span>
+                            </Detail>
+                          ) : null;
+                        })()}
                     </Field>
 
                     {/* sleap-nn in the SELECTED interpreter. Training runs the
@@ -1322,7 +1371,7 @@ export function EnvironmentPanel() {
                       </Field>
                     )}
 
-                    {downloadable.length > 0 && (
+                    {downloadable.some((d) => isPythonVersionCompatible(d.version)) && (
                       <Field label="Install">
                         <Select
                           onValueChange={(version) => doInstallPython(version)}
@@ -1332,15 +1381,17 @@ export function EnvironmentPanel() {
                             <SelectValue placeholder="Add a Python version..." />
                           </SelectTrigger>
                           <SelectContent>
-                            {downloadable.map((d) => (
-                              <SelectItem
-                                key={d.key}
-                                value={d.version}
-                                className="text-xs"
-                              >
-                                Python {d.version}
-                              </SelectItem>
-                            ))}
+                            {downloadable
+                              .filter((d) => isPythonVersionCompatible(d.version))
+                              .map((d) => (
+                                <SelectItem
+                                  key={d.key}
+                                  value={d.version}
+                                  className="text-xs"
+                                >
+                                  Python {d.version}
+                                </SelectItem>
+                              ))}
                           </SelectContent>
                         </Select>
                       </Field>

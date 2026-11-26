@@ -14,6 +14,20 @@
  */
 
 import type { InferenceConfig } from "@/stores/inferenceStore";
+import { comparePep440Versions } from "@/lib/sleapNnVersion";
+
+export type IntegralRefinementMethod = "auto" | "dark" | "integral" | "local" | "none";
+export type InferencePrecision = "32" | "bf16-encoder" | "bf16" | "fp16";
+export type InferenceSlpVersion = "auto" | "v2" | "v3";
+
+/** Normalize legacy boolean or string integralRefinement to a canonical method. */
+export function normalizeIntegralRefinement(
+  value: IntegralRefinementMethod | boolean | undefined,
+): IntegralRefinementMethod {
+  if (value === true || value === undefined) return "auto";
+  if (value === false) return "none";
+  return value;
+}
 
 /**
  * Minimum `sleap-nn` version the app targets with the `predict` subcommand.
@@ -248,14 +262,53 @@ export function buildInferenceArgs(
   }
   args.push("--peak_threshold", String(config.peakThreshold));
 
-  // Peak refinement. sleap-nn refines by default ("integral"), so turning it off
-  // has to be said: only the value "none" disables it (every version; 0.2.x only
-  // refines when the value is "integral").
-  if (config.integralRefinement) {
-    args.push("--integral_refinement", "integral");
-    args.push("--integral_patch_size", String(config.integralPatchSize));
+  // Peak refinement. sleap-nn >= 0.4 defaults `predict` to `auto` (DARK for
+  // top-down, integral for other models), so leaving `--integral_refinement`
+  // unset for `auto` lets 0.4 use DARK while remaining compatible with 0.3.x.
+  // Explicit choices (`dark`/`integral`/`local`/`none`) are passed verbatim on
+  // `predict`; legacy `track` only understands `integral` or `none`.
+  const refinement = normalizeIntegralRefinement(config.integralRefinement);
+  if (subcommand === "track") {
+    if (refinement === "none") {
+      args.push("--integral_refinement", "none");
+    } else {
+      args.push("--integral_refinement", "integral");
+      args.push("--integral_patch_size", String(config.integralPatchSize));
+    }
   } else {
-    args.push("--integral_refinement", "none");
+    if (refinement !== "auto") {
+      args.push("--integral_refinement", refinement);
+    }
+    if (
+      config.integralPatchSize != null &&
+      (refinement === "integral" ||
+        (refinement === "auto" && config.integralPatchSize !== 5))
+    ) {
+      args.push("--integral_patch_size", String(config.integralPatchSize));
+    }
+  }
+
+  // sleap-nn 0.4 predict options — only emitted when non-default so 0.3.x
+  // installs never see unknown flags when defaults are kept.
+  if (subcommand === "predict") {
+    if (config.precision && config.precision !== "32") {
+      args.push("--precision", config.precision);
+    }
+    if (config.uploadBatches) {
+      args.push("--upload_batches");
+    }
+    if (config.flipTest) {
+      args.push("--flip_test");
+    }
+    if (config.rescore) {
+      args.push("--rescore");
+    }
+    if (config.bboxNmsIou != null) {
+      args.push("--bbox_nms_iou", String(config.bboxNmsIou));
+    }
+  }
+  if (config.slpVersion && config.slpVersion !== "auto") {
+    args.push("--slp_version", config.slpVersion);
   }
   if (config.pipeline === "bottom-up" || config.pipeline === "bottom-up-id") {
     args.push("--n_points", String(config.nPoints));
@@ -366,8 +419,10 @@ export function buildInferenceArgs(
   return args;
 }
 
-/** Compare dotted numeric version cores (e.g. "0.2.0"). Returns -1 | 0 | 1. */
+/** Compare PEP 440 / dotted numeric versions (e.g. "0.4.0a0" vs "0.3.4"). Returns -1 | 0 | 1. */
 export function compareVersions(a: string, b: string): number {
+  const pep = comparePep440Versions(a, b);
+  if (pep !== null) return pep;
   const pa = a.split(".").map((n) => parseInt(n, 10));
   const pb = b.split(".").map((n) => parseInt(n, 10));
   const len = Math.max(pa.length, pb.length);
@@ -383,7 +438,8 @@ export function compareVersions(a: string, b: string): number {
 /**
  * Whether the installed sleap-nn supports the `predict` subcommand. An
  * unknown/unparseable version returns `true` (don't block on uncertainty — a
- * doomed run will still surface a clear CLI error). A parseable version below
+ * doomed run will still surface a clear CLI error). A parseable PEP 440
+ * version (including pre-releases like `0.4.0a0` or `0.3.0a0`) below
  * {@link MIN_SLEAP_NN_PREDICT_VERSION} returns `false`.
  */
 export function isPredictSupported(
@@ -391,9 +447,9 @@ export function isPredictSupported(
   min: string = MIN_SLEAP_NN_PREDICT_VERSION
 ): boolean {
   if (!version) return true;
-  const core = version.trim().split(/[-+ ]/)[0];
-  if (!/^\d+(\.\d+)*$/.test(core)) return true;
-  return compareVersions(core, min) >= 0;
+  const cmp = comparePep440Versions(version, min);
+  if (cmp === null) return true;
+  return cmp >= 0;
 }
 
 /**
