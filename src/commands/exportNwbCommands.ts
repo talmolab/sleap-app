@@ -35,7 +35,7 @@ import { exportNwb as invokeExportNwb } from "../platform/backend";
 import { isImageSequenceVideo } from "@/lib/resolveVideos";
 import { useAppStore } from "@/stores/appStore";
 import { toast } from "@/lib/notify";
-import { withLegacyLayout } from "@/lib/slpFormatCompat";
+import { legacyV2WriteOptions } from "@/lib/slpFormat";
 import { ensureWritable } from "@/lib/slpAccess";
 
 /**
@@ -137,7 +137,7 @@ export const ExportNwbCommand: Command = {
       // Serialize the CURRENT labels (incl. unsaved edits) to a plain .slp (no
       // embed — NWB references the video by path, no pixels). Written next to the
       // chosen output; the Rust command removes it after converting.
-      const bytes = await saveSlpToBytes(labels, withLegacyLayout());
+      const bytes = await saveSlpToBytes(labels, legacyV2WriteOptions());
       await platform.writeFile(tmpSlp, bytes);
       await invokeExportNwb(tmpSlp, nwbPath);
       toast.success("NWB exported", { description: nwbPath });

@@ -29,14 +29,12 @@
  * verified (happy-dom has no Tauri fs), like the browser {@link
  * import("@/lib/draftRestore")}.
  */
-import {
-  type Labels,
-} from "@talmolab/sleap-io.js";
+import type { Format3Access, Labels } from "@talmolab/sleap-io.js";
 import { loadSlp, readSlpStreaming } from "@/lib/slpRead";
 import { useAppStore } from "@/stores/appStore";
 import { toast } from "@/lib/notify";
 import { toastLoadError } from "@/lib/slpAccess";
-import { restoreSourceFormat } from "@/lib/slpFormatCompat";
+import { restoreSourceFormat } from "@/lib/slpFormat";
 import {
   reportParseProgress,
   installTauriImageReader,
@@ -70,7 +68,7 @@ async function readLabelsFromPath(
   readFile: (p: string) => Promise<Uint8Array>,
   // Used to re-open an original only for its video backends (never edited or
   // written back), so an SLP format 3.0 file opens View only by default.
-  opts?: { lazyVideoMetadata?: boolean; format3?: "view" | "edit" },
+  opts?: { lazyVideoMetadata?: boolean; format3?: Format3Access },
 ): Promise<Labels> {
   const lazyMeta = opts?.lazyVideoMetadata ?? LAZY_VIDEO_METADATA;
   let bytes = 0;
@@ -210,9 +208,10 @@ export async function restoreTauriDraft(
     // an intact journal, which together reconstruct the current state on replay.
     const loadBase = (bytes: Uint8Array): Promise<Labels> =>
       loadSlp(bytes, {
-        // The app writes drafts itself, in the 2.x layout, so no format 3.0
-        // question applies; "edit" keeps a restored draft editable regardless.
-        format3: "edit",
+        // The app writes drafts itself (preserving format 3.0 natively), so no
+        // format 3.0 question applies; `"keep"` keeps a restored format 3.0
+        // draft editable in native format 3.0.
+        format3: "keep",
         // Embedded pkg: skip opening (imageless) — we graft the original's backends.
         openVideos: !entry.embedded,
         h5: {

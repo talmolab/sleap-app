@@ -235,6 +235,7 @@ describe("loadWorkerLabels", () => {
     expect(options).toMatchObject({
       openVideos: false,
       userInstancesOnly: true,
+      format3: "view",
       filenameHint: "/data/x.slp",
     });
   });

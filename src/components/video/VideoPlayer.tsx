@@ -154,7 +154,7 @@ import { Film, Frame, Hand, ImageOff, MousePointer2, SquareDashed, Tag, ZoomIn }
 import { renderProposalGhosts } from "@/canvas/proposalGhost";
 import { useProposalGhosts } from "@/hooks/useProposalGhosts";
 import { refuseEditIfViewOnly } from "@/lib/slpAccess";
-import { isUnlabeledPoint, markPointLabeled } from "@/lib/slpFormatCompat";
+import { isUnlabeledPoint, markPointLabeled } from "@/lib/slpFormat";
 
 /**
  * First unused `node_${k}` name (k = 0, 1, 2, …) for a fresh builder node, so

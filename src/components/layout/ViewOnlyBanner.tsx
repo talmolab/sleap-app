@@ -9,14 +9,13 @@ import { Button } from "@/components/ui/button";
 import { useAppStore } from "@/stores/appStore";
 import { useSlpAccessNonce } from "@/stores/slpFormatStore";
 import { allowEditing, displayFileName, formatLabel } from "@/lib/slpAccess";
-import { sourceFormatOf } from "@/lib/slpFormatCompat";
 
 export function ViewOnlyBanner() {
   const labels = useAppStore((s) => s.labels);
   const filename = useAppStore((s) => s.filename);
   // Re-read the access whenever it changes in place.
   useSlpAccessNonce((s) => s.nonce);
-  const sf = sourceFormatOf(labels);
+  const sf = labels?.sourceFormat ?? null;
   if (!labels || sf?.access !== "view") return null;
 
   return (

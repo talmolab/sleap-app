@@ -3,10 +3,6 @@
  * JPEG with a quality. Shared by the Export Labels Package and Extract Clip
  * Labels Package dialogs, which open on the user's last choice (persisted in
  * the app store) and remember the choice when they export.
- *
- * When the installed SLP library can't write JPEG frames, JPEG is disabled
- * with the reason and the dialogs export PNG, leaving the remembered choice
- * as it was.
  */
 
 import { useCallback, useEffect, useState } from "react";
@@ -19,7 +15,6 @@ import {
   type PackageImageFormat,
   type PackageImageOptions,
 } from "@/lib/packageImageFormat";
-import { canWriteJpegFrames, JPEG_FRAMES_UNAVAILABLE } from "@/lib/slpFormatCompat";
 import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
 import { Input } from "@/components/ui/input";
 
@@ -32,8 +27,8 @@ export function isValidJpegQuality(quality: number): boolean {
 
 /**
  * The dialog's frame format: the user's last choice each time `open` turns
- * true (PNG when JPEG can't be written), whether it can be exported, and
- * `remember`, which stores it as the last choice (call it on Export).
+ * true, whether it can be exported, and `remember`, which stores it as the
+ * last choice (call it on Export).
  */
 export function usePackageImageChoice(open: boolean) {
   const [choice, setChoice] = useState<PackageImageOptions>(() => initialChoice());
@@ -42,17 +37,14 @@ export function usePackageImageChoice(open: boolean) {
   }, [open]);
   const valid = choice.format === "png" || isValidJpegQuality(choice.quality);
   const remember = useCallback(() => {
-    // Without JPEG the dialog could only show PNG: keep the user's choice for
-    // a build that has it (web channels share their stored preferences).
-    if (canWriteJpegFrames()) useAppStore.getState().setPackageImage(choice);
+    useAppStore.getState().setPackageImage(choice);
   }, [choice]);
   return { choice, setChoice, valid, remember };
 }
 
 function initialChoice(): PackageImageOptions {
   const { packageImageFormat, packageJpegQuality } = useAppStore.getState();
-  const image = normalizePackageImage(packageImageFormat, packageJpegQuality);
-  return canWriteJpegFrames() ? image : { ...image, format: "png" };
+  return normalizePackageImage(packageImageFormat, packageJpegQuality);
 }
 
 interface PackageImageFormatFieldsProps {
@@ -67,7 +59,6 @@ export function PackageImageFormatFields({
   onChange,
   idPrefix,
 }: PackageImageFormatFieldsProps) {
-  const jpegAvailable = canWriteJpegFrames();
   const qualityId = `${idPrefix}-jpeg-quality`;
   return (
     <div className="space-y-2">
@@ -84,9 +75,9 @@ export function PackageImageFormatFields({
         </label>
         <label
           htmlFor={`${idPrefix}-format-jpg`}
-          className={`flex items-center gap-2 text-sm ${jpegAvailable ? "cursor-pointer" : "cursor-not-allowed opacity-50"}`}
+          className="flex items-center gap-2 text-sm cursor-pointer"
         >
-          <RadioGroupItem value="jpg" id={`${idPrefix}-format-jpg`} disabled={!jpegAvailable} />
+          <RadioGroupItem value="jpg" id={`${idPrefix}-format-jpg`} />
           JPEG
         </label>
       </RadioGroup>
@@ -112,16 +103,12 @@ export function PackageImageFormatFields({
           />
         </div>
       )}
-      {jpegAvailable ? (
-        <p className="text-xs text-muted-foreground">
-          JPEG is lossy: the stored frames differ slightly from the video, and the
-          package is usually several times smaller. Quality {MIN_JPEG_QUALITY}–
-          {MAX_JPEG_QUALITY} (default {DEFAULT_JPEG_QUALITY}). Frames a package
-          already stores as JPEG stay JPEG with PNG chosen.
-        </p>
-      ) : (
-        <p className="text-xs text-muted-foreground">JPEG: {JPEG_FRAMES_UNAVAILABLE}</p>
-      )}
+      <p className="text-xs text-muted-foreground">
+        JPEG is lossy: the stored frames differ slightly from the video, and the
+        package is usually several times smaller. Quality {MIN_JPEG_QUALITY}–
+        {MAX_JPEG_QUALITY} (default {DEFAULT_JPEG_QUALITY}). Frames a package
+        already stores as JPEG stay JPEG with PNG chosen.
+      </p>
       {value.format === "jpg" && !isValidJpegQuality(value.quality) && (
         <p className="text-xs text-destructive">
           Enter a quality from {MIN_JPEG_QUALITY} to {MAX_JPEG_QUALITY}.

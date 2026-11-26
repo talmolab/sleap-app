@@ -40,14 +40,18 @@ import {
   buildMetadataJson,
   buildVideoSignatures,
   checkInPlaceWritable,
+  onDiskColumnTableFromMeta,
   onDiskTableFromMeta,
+  SlpViewOnlyError,
   StreamingH5File,
   StreamingH5Writer,
+  type DatasetMetaLike,
   type RangeSink,
   type RangeSource,
   type Labels,
   type Video,
   type LabelTableUpdate,
+  type OnDiskTable,
   type OnDiskTables,
   type OnDiskSidecars,
 } from "@talmolab/sleap-io.js";
@@ -60,7 +64,6 @@ import {
   writeClose,
 } from "./nativeWrite";
 import { fileSize, readRange } from "./nativeRange";
-import { sourceFormatOf, withLegacyLayout } from "./slpFormatCompat";
 
 // Same derivation as loadProject.ts / saveEmbeddedPkgStreaming.ts: h5wasm must be
 // served same-origin so the streaming Worker can load it under cross-origin
@@ -200,10 +203,81 @@ interface OnDiskProbe {
 }
 
 /**
+ * Probe an SLP format 3.0 column-group table (`/{name}/{col}` + optional
+ * `/{name}/metadata/{key}/{values,present}`) via the read-only range reader
+ * and turn it into the `OnDiskTable` (`layout: "columns"`) the gate expects.
+ * Returns `undefined` when `{name}` has no column datasets (not a column table).
+ */
+async function probeColumnTable(
+  reader: StreamingH5File,
+  name: (typeof LABEL_TABLES)[number],
+): Promise<OnDiskTable | undefined> {
+  if (typeof reader.getKeys !== "function") return undefined;
+  let children: string[];
+  try {
+    children = await reader.getKeys(name);
+  } catch {
+    return undefined;
+  }
+  const columns: Record<string, DatasetMetaLike> = {};
+  for (const child of children) {
+    if (child === "metadata") continue;
+    try {
+      const colMeta = await reader.getDatasetMeta(`${name}/${child}`);
+      if (Array.isArray(colMeta.shape)) {
+        columns[child] = {
+          shape: colMeta.shape,
+          metadata: colMeta.metadata as DatasetMetaLike["metadata"],
+        };
+      }
+    } catch {
+      /* subgroup or unreadable child — skip */
+    }
+  }
+  if (Object.keys(columns).length === 0) return undefined;
+
+  let tableMetadata:
+    | Record<string, { values: DatasetMetaLike; kindAttr?: unknown; present: boolean }>
+    | undefined;
+  if (name === "instances" || name === "frames") {
+    tableMetadata = {};
+    if (children.includes("metadata")) {
+      const metaKeys: string[] = await reader.getKeys(`${name}/metadata`).catch(() => []);
+      for (const key of metaKeys) {
+        const keyChildren: string[] = await reader.getKeys(`${name}/metadata/${key}`).catch(() => []);
+        if (!keyChildren.includes("values")) continue;
+        try {
+          const valuesMeta = await reader.getDatasetMeta(`${name}/metadata/${key}/values`);
+          if (!Array.isArray(valuesMeta.shape)) continue;
+          let kindAttr: unknown;
+          try {
+            const attrs = await reader.getAttrs(`${name}/metadata/${key}/values`);
+            kindAttr = decodeH5String(attrs["kind"]);
+          } catch {
+            kindAttr = undefined;
+          }
+          tableMetadata[key] = {
+            values: {
+              shape: valuesMeta.shape,
+              metadata: valuesMeta.metadata as DatasetMetaLike["metadata"],
+            },
+            kindAttr,
+            present: keyChildren.includes("present"),
+          };
+        } catch {
+          /* unreadable metadata entry — skip */
+        }
+      }
+    }
+  }
+  return onDiskColumnTableFromMeta(columns, tableMetadata);
+}
+
+/**
  * PROBE the existing file at `path` via the read-only range reader: read the
- * label tables' on-disk layouts (shape/dtype/chunked/compound-members) and the
- * sidecars (tracks/suggestions/videos signatures + `/metadata` json) the gate
- * needs. Read-only — never opens a write handle.
+ * label tables' on-disk layouts (2.x datasets or format 3.0 column groups) and
+ * the sidecars (tracks/suggestions/videos signatures + `/metadata` json) the
+ * gate needs. Read-only — never opens a write handle.
  */
 async function probeOnDisk(path: string): Promise<OnDiskProbe> {
   const size = await fileSize(path);
@@ -227,21 +301,17 @@ async function probeOnDisk(path: string): Promise<OnDiskProbe> {
       // getDatasetMeta types `metadata` as Record<string, unknown>; narrow it to
       // the layout shape onDiskTableFromMeta reads (chunks ⇒ resizable,
       // compound_type.members ⇒ compound layout / enum detection).
-      const metadata = meta.metadata as
-        | {
-            chunks?: unknown;
-            compound_type?: {
-              members?: Array<{ name: string; type: number; size?: number; signed?: boolean }>;
-            };
-          }
-        | undefined;
-      const table = onDiskTableFromMeta({ shape: meta.shape, metadata });
-      // A label table that is not a dataset (format 3.0 stores each as a group
-      // of columns) can't be patched; failing the probe sends the caller to a
-      // full re-save. Covers a file whose format the labels no longer record
-      // (e.g. a recovered draft of a format 3.0 project).
+      let table: OnDiskTable | undefined = onDiskTableFromMeta({
+        shape: meta.shape,
+        metadata: meta.metadata as DatasetMetaLike["metadata"],
+      });
+      // When `name` is an HDF5 Group (no dataset shape), probe it as a format
+      // 3.0 column table (`/{name}/{col}` + optional `/{name}/metadata`).
       if (!table) {
-        throw new Error(`/${name} is not a table this in-place save can patch (SLP format 3.0?)`);
+        table = await probeColumnTable(reader, name);
+      }
+      if (!table) {
+        throw new Error(`/${name} is not a table this in-place save can patch`);
       }
       tables[keyOf[name]] = table;
     }
@@ -310,6 +380,16 @@ function firstTwoNumbers(value: unknown, xField: string, yField: string): [numbe
   return null;
 }
 
+/** Extract the first finite number from a 1-D column slice value. */
+function firstNumber(value: unknown): number | null {
+  const raw =
+    Array.isArray(value) || ArrayBuffer.isView(value)
+      ? (value as ArrayLike<unknown>)[0]
+      : value;
+  const n = typeof raw === "bigint" ? Number(raw) : typeof raw === "number" ? raw : NaN;
+  return Number.isFinite(n) ? n : null;
+}
+
 /**
  * POST-WRITE VERIFY: reopen the just-written file via the READ-ONLY range reader
  * (a path fully independent of the writer) and assert it is internally
@@ -333,17 +413,22 @@ async function verifyInPlace(
   const reader = new StreamingH5File();
   await reader.openRange(source, { h5wasmUrl: H5WASM_URL });
   try {
+    const isV3 = update.layout === "v3";
     // 1. Row counts of every patched table match the update.
-    const expectedRows: Array<[string, number]> = [
-      ["frames", update.frames.rows.length],
-      ["instances", update.instances.rows.length],
-      ["points", update.points.rows.length],
-      ["pred_points", update.predPoints.rows.length],
+    const expectedRows: Array<[string, string[], number]> = [
+      ["frames", update.frames.fields, update.frames.rows.length],
+      ["instances", update.instances.fields, update.instances.rows.length],
+      ["points", update.points.fields, update.points.rows.length],
+      ["pred_points", update.predPoints.fields, update.predPoints.rows.length],
     ];
     if (update.negativeFrames) {
-      expectedRows.push(["negative_frames", update.negativeFrames.rows.length]);
+      expectedRows.push([
+        "negative_frames",
+        update.negativeFrames.fields,
+        update.negativeFrames.rows.length,
+      ]);
     }
-    for (const [name, want] of expectedRows) {
+    for (const [name, fields, want] of expectedRows) {
       const present = reader.keys().includes(name);
       // An empty table the writer intentionally never created is fine (want 0).
       if (!present) {
@@ -354,7 +439,8 @@ async function verifyInPlace(
         }
         continue;
       }
-      const meta = await reader.getDatasetMeta(name);
+      const metaPath = isV3 && fields[0] ? `${name}/${fields[0]}` : name;
+      const meta = await reader.getDatasetMeta(metaPath);
       const got = meta.shape[0] ?? 0;
       if (got !== want) {
         throw new Error(
@@ -398,17 +484,33 @@ async function verifyInPlace(
     // 3. Best-effort value spot-check: points row 0 reads back what we wrote.
     // Never false-fails — skips (logs) if the value shape can't be interpreted.
     const wantRow0 = update.points.rows[0];
-    if (wantRow0 && reader.keys().includes("points")) {
+    if (
+      wantRow0 &&
+      Number.isFinite(wantRow0[0]) &&
+      Number.isFinite(wantRow0[1]) &&
+      reader.keys().includes("points")
+    ) {
       try {
-        const meta = await reader.getDatasetMeta("points");
-        const md = meta.metadata as { compound_type?: { members?: unknown[] } } | undefined;
-        const compound = !!md?.compound_type?.members;
-        const cols = update.points.fields.length;
-        const slice: Array<[number, number] | []> = compound
-          ? [[0, 1]]
-          : [[0, 1], [0, cols]];
-        const { value } = await reader.getDatasetValue("points", slice);
-        const got = firstTwoNumbers(value, update.points.fields[0], update.points.fields[1]);
+        let got: [number, number] | null = null;
+        if (isV3) {
+          const [xRes, yRes] = await Promise.all([
+            reader.getDatasetValue(`points/${update.points.fields[0]}`, [[0, 1]]),
+            reader.getDatasetValue(`points/${update.points.fields[1]}`, [[0, 1]]),
+          ]);
+          const gx = firstNumber(xRes.value);
+          const gy = firstNumber(yRes.value);
+          got = gx != null && gy != null ? [gx, gy] : null;
+        } else {
+          const meta = await reader.getDatasetMeta("points");
+          const md = meta.metadata as { compound_type?: { members?: unknown[] } } | undefined;
+          const compound = !!md?.compound_type?.members;
+          const cols = update.points.fields.length;
+          const slice: Array<[number, number] | []> = compound
+            ? [[0, 1]]
+            : [[0, 1], [0, cols]];
+          const { value } = await reader.getDatasetValue("points", slice);
+          got = firstTwoNumbers(value, update.points.fields[0], update.points.fields[1]);
+        }
         if (got) {
           const close = (a: number, b: number) => Math.abs(a - b) <= 1e-3;
           if (!close(got[0], wantRow0[0]) || !close(got[1], wantRow0[1])) {
@@ -450,21 +552,26 @@ export async function saveLabelsInPlace(
 ): Promise<{ ok: true } | { ok: false; reason: string }> {
   // Labels opened View only are never written. Throw rather than return
   // {ok:false}, which would send the caller on to a full re-save.
-  const sourceFormat = sourceFormatOf(labels);
+  const sourceFormat = labels.sourceFormat ?? null;
   const formatName = (id: number) => (Number.isInteger(id) ? id.toFixed(1) : String(id));
   if (sourceFormat?.access === "view") {
-    throw new Error(
+    if (typeof SlpViewOnlyError === "function") {
+      throw new SlpViewOnlyError(sourceFormat);
+    }
+    const err = new Error(
       `${destPath} is open View only (SLP format ${formatName(sourceFormat.formatId)}); nothing was written.`
     );
+    err.name = "SlpViewOnlyError";
+    throw err;
   }
-  // A format 3.0 file stores its tables in another layout, which this in-place
-  // patch cannot write; the full re-save writes the 2.x layout instead (the
-  // user chose that, with the list of what it drops, when opening the file).
-  // sleap-io.js's gate refuses this too; skip the probe.
-  if (sourceFormat) {
+  // Labels opened explicitly for 2.x conversion (`access === "edit"`) cannot
+  // patch a format 3.0 file in place; route to full re-save in the 2.x layout.
+  // Labels opened natively (`access === "keep"`) proceed into the format 3.0
+  // column-in-place probe/gate/write path below.
+  if (sourceFormat?.access === "edit") {
     return {
       ok: false,
-      reason: `opened from SLP format ${formatName(sourceFormat.formatId)}, which an in-place save cannot patch — full re-save in the 2.x layout`,
+      reason: `opened from SLP format ${formatName(sourceFormat.formatId)} for 2.x conversion — full re-save in the 2.x layout`,
     };
   }
   if (!hasCrossOriginIsolation()) {
@@ -498,12 +605,9 @@ export async function saveLabelsInPlace(
   try {
     const newMetadataJson = buildMetadataJson(labels);
     metadataChanged = probe.sidecars.metadataJson !== newMetadataJson;
-    // Unlabelled nodes (from a format 3.0 file the user chose to edit or
-    // merge) are written as hidden nodes with no position, as every app save
-    // does; the 2.x tables cannot store the flag.
     update = buildLabelTableUpdate(
       labels,
-      withLegacyLayout(metadataChanged ? { metadataJson: newMetadataJson } : {})
+      metadataChanged ? { metadataJson: newMetadataJson } : {}
     );
     const expected = buildExpectedSidecars(labels);
     const gate = checkInPlaceWritable(update, probe.tables, {
@@ -522,9 +626,14 @@ export async function saveLabelsInPlace(
   }
 
   // 4. WRITE IN PLACE. From here on the user's real file is being modified, so
-  // any failure THROWS (no silent fall-through — see the module header). Reuse the
-  // size the probe already measured rather than a second fileSize() round-trip.
+  // any failure after the first write THROWS (no silent fall-through — see the
+  // module header). For format 3.0 column updates, sleap-io.js validates every
+  // column and string metadata value BEFORE writing any byte and reports
+  // pre-write refusals with "in-place save: ... - re-save the whole file instead",
+  // which safely falls back to a full re-save. Reuse the size the probe already
+  // measured rather than a second fileSize() round-trip.
   const destSize = probe.size;
+  let preWriteRefusal: string | null = null;
   // Exclusive use of the app's one native write handle (an export may hold it).
   await withNativeWriteHandle(async () => {
     await writeOpenAppend(destPath); // open existing WITHOUT truncating
@@ -539,6 +648,14 @@ export async function saveLabelsInPlace(
       await writer.openWrite(destSink, destPath, destSize, H5WASM_URL);
       const res = await writer.updateLabelsInPlace(update);
       if (res.success !== true) {
+        if (
+          update.layout === "v3" &&
+          typeof res.error === "string" &&
+          /^in-place save: .*re-save the whole file instead$/i.test(res.error)
+        ) {
+          preWriteRefusal = res.error;
+          return;
+        }
         throw new Error(
           `saveLabelsInPlace: updateLabelsInPlace failed: ${res.error ?? JSON.stringify(res)}`
         );
@@ -550,6 +667,10 @@ export async function saveLabelsInPlace(
       await writeClose().catch(() => {});
     }
   });
+  if (preWriteRefusal) {
+    console.log(`[saveLabelsInPlace] not in-place-writable: ${preWriteRefusal}`);
+    return { ok: false, reason: preWriteRefusal };
+  }
   console.log(
     `[saveLabelsInPlace] patched label tables in place -> ${destPath}` +
       (metadataChanged ? " (+ /metadata)" : "")

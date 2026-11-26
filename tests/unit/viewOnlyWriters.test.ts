@@ -9,7 +9,16 @@
  * so this runs against any sleap-io.js. Platform I/O is mocked.
  */
 import { describe, it, expect, beforeEach, vi } from "../bun-test";
-import { Instance, LabeledFrame, Labels, Skeleton, Video } from "@talmolab/sleap-io.js";
+import {
+  Instance,
+  LabeledFrame,
+  Labels,
+  Skeleton,
+  Video,
+  type Format3Access,
+  type Format3Summary,
+  type SlpSourceFormat,
+} from "@talmolab/sleap-io.js";
 
 const toastError = vi.fn();
 const writes: string[] = [];
@@ -49,7 +58,6 @@ import { ExtractClipAndLabelsCommand } from "@/commands/extractClipCommands";
 import { exportTrainingJobPackage } from "@/commands/trainingConfigExport";
 import { useAppStore } from "@/stores/appStore";
 import { useSlpFormatStore, type SlpFormatAnswer, type SlpFormatPrompt } from "@/stores/slpFormatStore";
-import { sourceFormatOf, type Format3Summary, type SlpSourceFormat } from "@/lib/slpFormatCompat";
 import type { CommandContext } from "@/commands/CommandContext";
 
 const SUMMARY: Format3Summary = {
@@ -59,11 +67,12 @@ const SUMMARY: Format3Summary = {
   unlabeledPredictedPoints: 0,
   metadataKeys: { instances: ["annotator"], frames: [], bboxes: [] },
   unknownColumns: [],
+  unreadTables: [],
   lossless: false,
 };
 
 /** A small project from a format 3.0 file, opened with `access`. */
-function project(access: "view" | "edit"): Labels {
+function project(access: Format3Access): Labels {
   const skeleton = new Skeleton({ nodes: ["a", "b"] });
   const video = new Video({ filename: "/data/movie.mp4" });
   const inst = new Instance({
@@ -78,8 +87,13 @@ function project(access: "view" | "edit"): Labels {
     videos: [video],
     skeletons: [skeleton],
   });
-  const sf: SlpSourceFormat = { formatId: 3, access, summary: SUMMARY, labelsPath: "/data/x.slp" };
-  (labels as unknown as { sourceFormat: SlpSourceFormat }).sourceFormat = sf;
+  const sf: SlpSourceFormat = Object.freeze({
+    formatId: 3,
+    access,
+    summary: SUMMARY,
+    labelsPath: "/data/x.slp",
+  });
+  labels.sourceFormat = sf;
   return labels;
 }
 
@@ -119,7 +133,7 @@ describe("a project opened View only writes nothing unless editing is allowed", 
     expect(writeFileMock).not.toHaveBeenCalled();
     expect(renameFileMock).not.toHaveBeenCalled();
     expect(toastError).not.toHaveBeenCalled();
-    expect(sourceFormatOf(labels)?.access).toBe("view");
+    expect(labels.sourceFormat?.access).toBe("view");
   });
 
   it("Save As", async () => {
@@ -164,33 +178,39 @@ describe("a project opened View only writes nothing unless editing is allowed", 
     expect(showSaveDialogMock).not.toHaveBeenCalled();
   });
 
-  it("Save after allowing editing writes the 2.x layout and clears sourceFormat", async () => {
+  it("Save after allowing editing writes native format 3.0 and keeps sourceFormat as keep", async () => {
     const labels = project("view");
     open(labels);
-    answerPrompts("edit");
+    answerPrompts("keep");
     await saveProjectAsSlp(labels, "x.slp");
     expect(writeFileMock).toHaveBeenCalledTimes(1);
     expect(toastError).not.toHaveBeenCalled();
-    expect(sourceFormatOf(labels)).toBeNull();
+    expect(labels.sourceFormat?.access).toBe("keep");
   });
 });
 
 describe("saving a project opened for editing", () => {
-  it("a save over the project's file clears sourceFormat", async () => {
-    const labels = project("edit");
-    open(labels);
-    await saveProjectAsSlp(labels, "x.slp");
+  it("a save of an explicit 2.x-edit project clears sourceFormat; native keep retains it", async () => {
+    const edited = project("edit");
+    open(edited);
+    await saveProjectAsSlp(edited, "x.slp");
     expect(writeFileMock).toHaveBeenCalledTimes(1);
-    expect(sourceFormatOf(labels)).toBeNull();
+    expect(edited.sourceFormat).toBeNull();
+
+    const kept = project("keep");
+    open(kept);
+    await saveProjectAsSlp(kept, "x.slp");
+    expect(writeFileMock).toHaveBeenCalledTimes(2);
+    expect(kept.sourceFormat?.access).toBe("keep");
   });
 
-  it("a failed save keeps it", async () => {
+  it("a failed save keeps sourceFormat", async () => {
     const labels = project("edit");
     open(labels);
     writeFileError = new Error("disk full");
     await saveProjectAsSlp(labels, "x.slp");
     expect(toastError).toHaveBeenCalledTimes(1);
-    expect(sourceFormatOf(labels)?.access).toBe("edit");
+    expect(labels.sourceFormat?.access).toBe("edit");
   });
 
   it("a writer's View only refusal is reported, not swallowed", async () => {

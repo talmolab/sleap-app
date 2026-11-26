@@ -82,8 +82,11 @@ import {
 import { toastExported } from "@/lib/exportToast";
 import { getPlatform } from "../platform/index";
 import { useAppStore } from "@/stores/appStore";
-import { withImageFormat, withLegacyLayout } from "@/lib/slpFormatCompat";
-import { normalizePackageImage, type PackageImageOptions } from "@/lib/packageImageFormat";
+import {
+  normalizePackageImage,
+  withImageFormat,
+  type PackageImageOptions,
+} from "@/lib/packageImageFormat";
 import { ensureWritable } from "@/lib/slpAccess";
 
 /** The three PyQt package levels. */
@@ -417,7 +420,7 @@ export async function writeLabelsPackageToPath(
   }
   const bytes = await saveSlpToBytes(
     exportLabels,
-    withLegacyLayout(withImageFormat({ embed: mode, onProgress }, image))
+    withImageFormat({ embed: mode, onProgress }, image)
   );
   await (await getPlatform()).writeFile(destPath, bytes);
   return packageLeavesFramesUnembedded(labels, bytes).catch(() => false);
@@ -437,7 +440,7 @@ export async function labelsPackageBytes(
   await prepareVideosForFrameReads(videosToEmbed(exportLabels, level));
   return saveSlpToBytes(
     exportLabels,
-    withLegacyLayout(withImageFormat({ embed: embedModeForLevel(level), onProgress }, image))
+    withImageFormat({ embed: embedModeForLevel(level), onProgress }, image)
   );
 }
 
@@ -524,7 +527,7 @@ async function exportLabelsPackageNow(
       await prepareVideosForFrameReads(embedVideos);
       return saveSlpToBytes(
         exportLabels,
-        withLegacyLayout(withImageFormat({ embed: mode, onProgress }, image))
+        withImageFormat({ embed: mode, onProgress }, image)
       );
     });
     const saved = await saveBytesFile(bytes, suggestedName, filter);

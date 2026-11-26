@@ -36,8 +36,7 @@ import {
   appendEncodedVideos,
 } from "@talmolab/sleap-io.js";
 import type { EmbedOption, Labels, SlpWriteOptions } from "@talmolab/sleap-io.js";
-import { withImageFormat, withLegacyLayout } from "@/lib/slpFormatCompat";
-import type { PackageImageOptions } from "@/lib/packageImageFormat";
+import { withImageFormat, type PackageImageOptions } from "@/lib/packageImageFormat";
 
 // Same derivation as loadProject.ts / saveEmbeddedPkgStreaming.ts: h5wasm served
 // same-origin (works with or without cross-origin isolation).
@@ -107,7 +106,7 @@ export async function saveEmbeddedPkgOpfs(
   const sourceFile = "getFile" in source ? await source.getFile() : source;
 
   // 1. Small structure (labels/metadata, no embedded images).
-  const structureBytes = await saveSlpStructureToBytes(labels, withLegacyLayout({ embed: false }));
+  const structureBytes = await saveSlpStructureToBytes(labels, { embed: false });
 
   // Plan the raw-copy of already-embedded images. Throws if any video would need
   // the encode (new-embed) path — out of scope for this re-save writer.
@@ -170,7 +169,7 @@ export async function exportNewPkgOpfs(
 ): Promise<string> {
   const structureBytes = await saveSlpStructureToBytes(
     labels,
-    withLegacyLayout(withImageFormat({ embed: options.embed }, options.image))
+    withImageFormat({ embed: options.embed }, options.image)
   );
   const plan = await buildSerializableEmbedPlan(
     labels,

@@ -114,7 +114,6 @@ function destHandle(initial = new Uint8Array(0)) {
 }
 
 const { exportNewPkgOpfs } = await import("@/lib/saveEmbeddedPkgOpfs");
-const { __setJpegFramesSupported } = await import("@/lib/slpFormatCompat");
 const labels = {} as never;
 
 beforeEach(() => {
@@ -153,22 +152,17 @@ describe("exportNewPkgOpfs", () => {
   });
 
   it("writes the structure and plans the frames in the chosen format (JPEG); PNG adds nothing", async () => {
-    __setJpegFramesSupported(true);
-    try {
-      await exportNewPkgOpfs(labels, destHandle() as never, {
-        embed: "user",
-        image: { format: "jpg", quality: 70 },
-      });
-      await exportNewPkgOpfs(labels, destHandle() as never, {
-        embed: "user",
-        image: { format: "png", quality: 70 },
-      });
-    } finally {
-      __setJpegFramesSupported(null);
-    }
+    await exportNewPkgOpfs(labels, destHandle() as never, {
+      embed: "user",
+      image: { format: "jpg", quality: 70 },
+    });
+    await exportNewPkgOpfs(labels, destHandle() as never, {
+      embed: "user",
+      image: { format: "png", quality: 70 },
+    });
     expect(structureOpts).toEqual([
-      { embed: "user", imageFormat: "jpg", imageQuality: 70, unlabeledAs: "absent" },
-      { embed: "user", unlabeledAs: "absent" },
+      { embed: "user", imageFormat: "jpg", imageQuality: 70 },
+      { embed: "user" },
     ]);
     expect(calls.filter((c) => c.startsWith("plan"))).toEqual([
       'plan("user",{"allowEncode":true,"imageFormat":"jpg","imageQuality":70})',

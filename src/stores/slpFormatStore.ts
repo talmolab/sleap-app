@@ -4,10 +4,10 @@
  *
  * - `refused`: sleap-io.js cannot read the file. Says what the file is, which
  *   tool reads it, and how to save a copy this app can open.
- * - `open`: the file is in SLP format 3.0, which this version reads but saves
- *   only in the older 2.x layout. The user opens it View only (nothing is
- *   written back) or for editing (saving drops what the 2.x layout cannot
- *   store, listed in the dialog).
+ * - `open`: the file is in SLP format 3.0 and contains tables this version
+ *   does not read. The user opens it View only (nothing is written back) or
+ *   for editing (saving writes format 3.0 and drops the unread tables listed
+ *   in the dialog).
  * - `merge`: the same, for a file merged into the open project.
  * - `allow-edit`: a view-only project is about to be made editable (from the
  *   banner, or when the user saves or exports it). Shows the same list.
@@ -16,7 +16,7 @@
  * prompt at a time; a new one supersedes a pending one (answered `null`).
  */
 import { create } from "zustand";
-import type { Format3Summary } from "@/lib/slpFormatCompat";
+import type { Format3Summary } from "@talmolab/sleap-io.js";
 import type { AllowEditAction } from "@/lib/slpAccess";
 
 export type SlpFormatPrompt =
@@ -44,8 +44,8 @@ export type SlpFormatPrompt =
       action?: AllowEditAction;
     };
 
-/** `view`/`edit` for the open choice, `edit` to merge or allow editing, `ok` to dismiss a refusal. */
-export type SlpFormatAnswer = "view" | "edit" | "ok" | null;
+/** `view`/`keep` (or `edit`) for the open choice, `keep`/`edit` to merge or allow editing, `ok` to dismiss a refusal. */
+export type SlpFormatAnswer = "view" | "keep" | "edit" | "ok" | null;
 
 interface SlpFormatStore {
   prompt: SlpFormatPrompt | null;

@@ -22,7 +22,7 @@ import type { Command } from "./types";
 import type { CommandContext } from "./CommandContext";
 import { frameHasContent } from "@/lib/frameLabeling";
 import { derivePoseBboxes, normalizeBboxPadding } from "@/lib/poseBboxes";
-import { copyMetadata, copySourceMark } from "@/lib/slpFormatCompat";
+import { copyMetadata, copySourceMark } from "@/lib/slpFormat";
 
 const TOPICS = [UpdateTopic.Frame, UpdateTopic.Instance];
 

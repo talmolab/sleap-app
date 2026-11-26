@@ -45,6 +45,7 @@ import {
   type RangeSource,
   type Labels,
   type SerializableEmbedPlan,
+  type SlpVersion,
   type SlpWriteOptions,
   type AppendEncodedVideosOptions,
 } from "@talmolab/sleap-io.js";
@@ -61,8 +62,8 @@ import {
   removeFile,
 } from "./nativeWrite";
 import { fileSize, readRange } from "./nativeRange";
-import { withImageFormat, withLegacyLayout } from "@/lib/slpFormatCompat";
-import type { PackageImageOptions } from "@/lib/packageImageFormat";
+import { legacyV2WriteOptions } from "@/lib/slpFormat";
+import { withImageFormat, type PackageImageOptions } from "@/lib/packageImageFormat";
 
 // Same derivation as loadProject.ts / writeBridgeSpike.ts: h5wasm must be served
 // same-origin so the streaming Worker can load it under cross-origin isolation
@@ -89,6 +90,9 @@ export interface SaveEmbeddedPkgStreamingOptions {
    * quality (io's `imageFormat` / `imageQuality`), passed to both the
    * structure write and the plan so the two agree. */
   image?: PackageImageOptions;
+  /** Target SLP layout for the structure write (`"auto"` by default, preserving
+   * format 3.0 natively; `"v2"` writes an explicit 2.x copy for legacy tools). */
+  slpVersion?: SlpVersion;
 }
 
 /** Fresh, collision-resistant random suffix for a temp file name. */
@@ -346,10 +350,14 @@ async function saveEmbeddedPkgStreamingNow(
       // 1+2. Main-thread structure write: labels graph + videos_json ONLY, no
       // embedded image data. Small (KB-MB), so writing it whole to a byte
       // buffer first (rather than streaming) is fine.
-      const structureBytes = await saveSlpStructureToBytes(
-        labels,
-        withLegacyLayout(withImageFormat({ embed: embedMode }, options?.image))
-      );
+      const baseStructureOpts = withImageFormat({ embed: embedMode }, options?.image);
+      const structureOpts =
+        options?.slpVersion === "v2"
+          ? legacyV2WriteOptions(baseStructureOpts)
+          : options?.slpVersion
+            ? { ...baseStructureOpts, slpVersion: options.slpVersion }
+            : baseStructureOpts;
+      const structureBytes = await saveSlpStructureToBytes(labels, structureOpts);
       await writeOpen(stagePath);
       stageCreated = true;
       await writeAt(0, structureBytes);

@@ -42,6 +42,7 @@ import { fileSize, readRange } from "./nativeRange";
 import { sleapCmd } from "./sleapPlugin";
 import { basenameFromUrl } from "./urlOpen";
 import { isReportedSlpError, toastLoadError, type Format3Policy } from "./slpAccess";
+import { isStreamingIncompleteError } from "./slpFormat";
 
 // Files larger than this open via the B-seam native range reader (lazy, on-disk)
 // instead of reading the whole file into WASM memory. Below it, eager is simpler
@@ -229,18 +230,34 @@ export async function loadProjectFromUrl(url: string): Promise<boolean> {
   store.setLoading(true, `Streaming ${name}...`);
 
   try {
-    const labels = await readSlpStreaming(url, {
-      openVideos: !LAZY_VIDEO_METADATA,
-      lazyVideoMetadata: LAZY_VIDEO_METADATA,
-      // Must be a bare basename, NOT the URL: io's streaming worker uses
-      // filenameHint as the in-FS (Emscripten) filename, and a value with
-      // "://" and "/" builds an invalid FS path → ENOENT before any range read.
-      filenameHint: name,
-      h5wasmUrl: H5WASM_URL,
-      onProgress: reportParseProgress,
-      // The URL can carry an access token: dialogs name the file only.
-      fileName: name,
-    });
+    let labels: Labels;
+    try {
+      labels = await readSlpStreaming(url, {
+        openVideos: !LAZY_VIDEO_METADATA,
+        lazyVideoMetadata: LAZY_VIDEO_METADATA,
+        // Must be a bare basename, NOT the URL: io's streaming worker uses
+        // filenameHint as the in-FS (Emscripten) filename, and a value with
+        // "://" and "/" builds an invalid FS path → ENOENT before any range read.
+        filenameHint: name,
+        h5wasmUrl: H5WASM_URL,
+        onProgress: reportParseProgress,
+        // The URL can carry an access token: dialogs name the file only.
+        fileName: name,
+        // Format 3.0 files holding non-pose tables (ROIs, masks, label images,
+        // session links) fall back to the full reader below so those tables are
+        // never silently dropped.
+        failIfIncomplete: true,
+      });
+    } catch (streamErr) {
+      if (!isStreamingIncompleteError(streamErr)) throw streamErr;
+      store.setLoading(true, `Downloading ${name}...`);
+      labels = await loadSlp(url, {
+        openVideos: true,
+        h5: { stream: "download", filenameHint: name, h5wasmUrl: H5WASM_URL },
+        onProgress: reportParseProgress,
+        fileName: name,
+      });
+    }
     store.setLoading(true, "Locating videos...");
     await resolveExternalVideos(labels);
     // No projectPath/handle → plain Save is disabled; user must Save As.
@@ -318,6 +335,17 @@ export async function loadProjectFromPath(
       fileBytes = 0;
     }
 
+    const loadEager = async (): Promise<Labels> => {
+      const bytes = await readFile(path);
+      store.setLoading(true, `Parsing ${filename}...`);
+      return loadSlp(bytes, {
+        openVideos: true,
+        h5: { filenameHint: path, h5wasmUrl: H5WASM_URL },
+        onProgress: reportParseProgress,
+        fileName: path,
+      });
+    };
+
     let labels: Labels;
     if (fileBytes > RANGE_READER_THRESHOLD) {
       store.setLoading(true, `Streaming ${filename}...`);
@@ -326,26 +354,26 @@ export async function loadProjectFromPath(
         readRange: (offset: number, length: number) =>
           readRange(path, offset, length),
       };
-      labels = await readSlpStreaming(rangeSource, {
-        fileName: path,
-        // Embedded (pkg.slp) videos: build from videos_json and open each video's
-        // backend on first view (LAZY_VIDEO_METADATA) so a many-video package
-        // opens fast. Eager path (openVideos) reads all per-video metadata now.
-        openVideos: !LAZY_VIDEO_METADATA,
-        lazyVideoMetadata: LAZY_VIDEO_METADATA,
-        filenameHint: path,
-        h5wasmUrl: H5WASM_URL,
-        onProgress: reportParseProgress,
-      });
+      try {
+        labels = await readSlpStreaming(rangeSource, {
+          fileName: path,
+          // Embedded (pkg.slp) videos: build from videos_json and open each video's
+          // backend on first view (LAZY_VIDEO_METADATA) so a many-video package
+          // opens fast. Eager path (openVideos) reads all per-video metadata now.
+          openVideos: !LAZY_VIDEO_METADATA,
+          lazyVideoMetadata: LAZY_VIDEO_METADATA,
+          filenameHint: path,
+          h5wasmUrl: H5WASM_URL,
+          onProgress: reportParseProgress,
+          failIfIncomplete: true,
+        });
+      } catch (streamErr) {
+        if (!isStreamingIncompleteError(streamErr)) throw streamErr;
+        store.setLoading(true, `Reading ${filename}...`);
+        labels = await loadEager();
+      }
     } else {
-      const bytes = await readFile(path);
-      store.setLoading(true, `Parsing ${filename}...`);
-      labels = await loadSlp(bytes, {
-        openVideos: true,
-        h5: { filenameHint: path, h5wasmUrl: H5WASM_URL },
-        onProgress: reportParseProgress,
-        fileName: path,
-      });
+      labels = await loadEager();
     }
 
     store.setLoading(true, "Locating videos...");

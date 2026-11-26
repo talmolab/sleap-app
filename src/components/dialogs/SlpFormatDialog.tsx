@@ -18,7 +18,7 @@ import { Button } from "@/components/ui/button";
 import {
   allowEditText,
   canSaveLegacyCopy,
-  describeFormat3Drops,
+  describeFormat3KeepDrops,
   formatLabel,
   legacyCopyCommand,
   refusalReason,
@@ -26,7 +26,7 @@ import {
 } from "@/lib/slpAccess";
 import { isTauri } from "@/platform/index";
 import { useAppStore } from "@/stores/appStore";
-import type { Format3Summary } from "@/lib/slpFormatCompat";
+import type { Format3Summary } from "@talmolab/sleap-io.js";
 
 /** Action invoked by the refusal modal's `[Upgrade]` button (exported for unit tests). */
 export function runSlpFormatUpgradeAction(): void {
@@ -55,21 +55,22 @@ export function runSlpFormatUpgradeAction(): void {
   window.open(SLEAP_APP_RELEASES_PAGE_URL, "_blank", "noopener,noreferrer");
 }
 
-/** What saving in the 2.x layout drops, as a list (or the lossless note). */
+/** What saving natively in format 3.0 drops (unread tables), as a list. */
 function DropList({ summary }: { summary: Format3Summary }) {
-  const drops = describeFormat3Drops(summary);
+  const drops = describeFormat3KeepDrops(summary);
   if (drops.length === 0) {
     return (
       <p className="text-sm text-muted-foreground">
-        Nothing in this file would be dropped, but saving rewrites it in the
-        older 2.x layout.
+        Saving writes SLP format {formatLabel(summary.formatId)} and preserves
+        all supported format 3.0 features in this file.
       </p>
     );
   }
   return (
     <div className="space-y-1">
       <p className="text-sm text-muted-foreground">
-        Saving writes the older 2.x layout, which drops:
+        Saving writes SLP format {formatLabel(summary.formatId)} (preserving
+        unlabeled nodes and metadata), but drops:
       </p>
       <ul className="list-disc space-y-0.5 pl-5 text-sm" data-testid="slp-format-drops">
         {drops.map((d) => (
@@ -167,8 +168,10 @@ export function SlpFormatDialog() {
               ) : (
                 <DialogDescription>
                   <span className="font-medium text-foreground">{prompt.fileName}</span>{" "}
-                  is in SLP format {formatLabel(prompt.summary.formatId)}. This
-                  version of SLEAP reads it, but saves only the older 2.x layout.
+                  is in SLP format {formatLabel(prompt.summary.formatId)}
+                  {(prompt.summary.unreadTables?.length ?? 0) > 0
+                    ? " and contains parts this version of SLEAP does not read."
+                    : "."}
                 </DialogDescription>
               )}
             </DialogHeader>
@@ -182,7 +185,8 @@ export function SlpFormatDialog() {
                   editing off. Nothing is written back unless you allow editing.
                 </p>
                 <p>
-                  <span className="font-medium">Edit</span> allows changes.
+                  <span className="font-medium">Edit</span> allows changes and
+                  saves in SLP format {formatLabel(prompt.summary.formatId)}.
                 </p>
                 <DropList summary={prompt.summary} />
               </div>
@@ -191,8 +195,8 @@ export function SlpFormatDialog() {
             {prompt.kind === "merge" && (
               <div className="flex flex-col gap-3 text-sm">
                 <p>
-                  Merging adds its labels to this project, which is then saved in
-                  the 2.x layout.
+                  Merging adds its labels to this project. Saving writes SLP
+                  format {formatLabel(prompt.summary.formatId)}.
                 </p>
                 <DropList summary={prompt.summary} />
               </div>
@@ -233,8 +237,10 @@ export function SlpFormatDialog() {
                   </Button>
                   {prompt.kind === "open" && (
                     <>
-                      <Button variant="secondary" size="sm" onClick={() => respond("edit")}>
-                        Edit
+                      <Button variant="secondary" size="sm" onClick={() => respond("keep")}>
+                        {(prompt.summary.unreadTables?.length ?? 0) > 0
+                          ? "Edit (drop unread tables)"
+                          : "Edit"}
                       </Button>
                       <Button size="sm" onClick={() => respond("view")}>
                         View only
@@ -242,12 +248,12 @@ export function SlpFormatDialog() {
                     </>
                   )}
                   {prompt.kind === "merge" && (
-                    <Button size="sm" onClick={() => respond("edit")}>
+                    <Button size="sm" onClick={() => respond("keep")}>
                       Merge
                     </Button>
                   )}
                   {prompt.kind === "allow-edit" && (
-                    <Button size="sm" onClick={() => respond("edit")}>
+                    <Button size="sm" onClick={() => respond("keep")}>
                       {allowEditText(prompt.action).button}
                     </Button>
                   )}

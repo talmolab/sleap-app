@@ -27,17 +27,31 @@ class RemoteIOError extends Error {}
 // Only the class matters here (an instanceof check); the real constructor takes
 // an options object.
 class SlpFormatError extends Error {}
+class StreamingIncompleteError extends Error {
+  unread: string[];
+  constructor(msg: string, unread: string[] = ["rois"]) {
+    super(msg);
+    this.name = "StreamingIncompleteError";
+    this.unread = unread;
+  }
+}
+const loadSlpMock = vi.fn(async (_source: unknown, _options: unknown) => ({
+  videos: [],
+  skeletons: [],
+  labeledFrames: [],
+}));
 const readSlpStreamingMock = vi.fn(async (_source: unknown, _options: unknown) => ({
   videos: [],
   skeletons: [],
   labeledFrames: [],
 }));
 vi.mock("@talmolab/sleap-io.js", () => ({
-  loadSlp: vi.fn(),
+  loadSlp: loadSlpMock,
   readSlpStreaming: readSlpStreamingMock,
   setImageBytesReader: vi.fn(),
   RemoteIOError,
   SlpFormatError,
+  StreamingIncompleteError,
   redactUrl: (u: string) => u,
   redactedCauseSummary: (e: unknown) => String(e),
 }));
@@ -55,6 +69,7 @@ function resetStore() {
 describe("loadProjectFromUrl", () => {
   beforeEach(() => {
     resetStore();
+    loadSlpMock.mockClear();
     readSlpStreamingMock.mockClear();
     readSlpStreamingMock.mockImplementation(async () => ({
       videos: [],
@@ -65,7 +80,7 @@ describe("loadProjectFromUrl", () => {
     (toast.error as unknown as { mockClear: () => void }).mockClear();
   });
 
-  it("streams the URL and installs the project under a name derived from the URL", async () => {
+  it("streams the URL with failIfIncomplete and installs the project under a name derived from the URL", async () => {
     const url = "https://share.sleap.ai/d/abc/set.pkg.slp?token=xyz";
     const ok = await loadProjectFromUrl(url);
     expect(ok).toBe(true);
@@ -73,17 +88,37 @@ describe("loadProjectFromUrl", () => {
     expect(readSlpStreamingMock).toHaveBeenCalledTimes(1);
     const [source, options] = readSlpStreamingMock.mock.calls[0] as unknown as [
       string,
-      { filenameHint?: string; onProgress?: unknown },
+      { filenameHint?: string; failIfIncomplete?: boolean; onProgress?: unknown },
     ];
     expect(source).toBe(url); // URL string handed straight to the streaming reader
     // filenameHint is the basename, not the URL: io's streaming worker uses it
     // as the in-FS (Emscripten) filename, which must not contain "://" or "/".
     expect(options.filenameHint).toBe("set.pkg.slp");
+    expect(options.failIfIncomplete).toBe(true);
     expect(typeof options.onProgress).toBe("function");
 
     expect(useAppStore.getState().labels).toBeTruthy();
     expect(useAppStore.getState().filename).toBe("set.pkg.slp"); // query stripped
     expect(useAppStore.getState().isLoading).toBe(false);
+  });
+
+  it("falls back to full download via loadSlp when StreamingIncompleteError is thrown", async () => {
+    readSlpStreamingMock.mockImplementationOnce(async () => {
+      throw new StreamingIncompleteError("non-pose 3.0 tables", ["rois", "masks"]);
+    });
+    const url = "https://share.sleap.ai/d/abc/format3_rois.slp?token=xyz";
+    const ok = await loadProjectFromUrl(url);
+    expect(ok).toBe(true);
+    expect(loadSlpMock).toHaveBeenCalledTimes(1);
+    const [dlSource, dlOpts] = loadSlpMock.mock.calls[0] as unknown as [
+      string,
+      { openVideos?: boolean; h5?: { stream?: string; filenameHint?: string } },
+    ];
+    expect(dlSource).toBe(url);
+    expect(dlOpts.openVideos).toBe(true);
+    expect(dlOpts.h5?.stream).toBe("download");
+    expect(dlOpts.h5?.filenameHint).toBe("format3_rois.slp");
+    expect(toast.error).not.toHaveBeenCalled();
   });
 
   it("surfaces a redacted RemoteIOError and does NOT install the project", async () => {
