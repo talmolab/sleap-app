@@ -17,10 +17,11 @@
  *
  * They also handle files sleap-io.js refuses (`SlpFormatError`: a newer
  * format, unknown required features) with a dialog instead of a bare error,
- * and SLP format 3.0 files, which a reader opens only with an explicit
- * choice: View only (nothing is written back) or Edit (saving writes the 2.x
- * layout and drops what it cannot store). Every caller says how with
- * `format3` (see {@link SlpReadOptions}); the default asks the user.
+ * and SLP format 3.0 files: files whose tables this version reads open
+ * directly for native format 3.0 editing (`"keep"`), while files with unread
+ * tables prompt the user to open View only or Edit (dropping unread tables).
+ * Every caller says how with `format3` (see {@link SlpReadOptions}); the
+ * default asks only when the reader reports unread tables.
  */
 import {
   loadSlp as ioLoadSlp,
@@ -28,7 +29,6 @@ import {
 } from "@talmolab/sleap-io.js";
 import { toast } from "./notify";
 import { readWithFormatChoice, type Format3Policy } from "./slpAccess";
-import { withFormat3 } from "./slpFormatCompat";
 
 type LoadArgs = Parameters<typeof ioLoadSlp>;
 type StreamArgs = Parameters<typeof ioReadSlpStreaming>;
@@ -38,16 +38,16 @@ type IoStreamOptions = Omit<NonNullable<StreamArgs[1]>, "format3">;
 
 /**
  * The app's options on top of sleap-io.js's reader options. Its `format3`
- * replaces sleap-io.js's (which takes only "view" or "edit").
+ * replaces sleap-io.js's (`Format3Option`) with app dialog policies.
  */
 export interface SlpReadOptions {
   /**
    * How to open a file in SLP format 3.0:
-   * - `"ask"` (default): ask the user, View only or Edit, with the list of
-   *   what an edit drops (for opening a project).
-   * - `"merge"`: ask whether to merge it, with the same list.
-   * - `"view"` / `"edit"`: open it so without asking, where asking makes no
-   *   sense (the caller says why).
+   * - `"ask"` (default): open directly as `"keep"` when all tables are read;
+   *   when the file holds unread tables, ask the user View only vs Edit.
+   * - `"merge"`: open directly as `"keep"` when all tables are read; ask
+   *   whether to merge when the file holds unread tables.
+   * - `"keep"` / `"view"` / `"edit"`: open with that access without asking.
    */
   format3?: Format3Policy;
   /** The file's name for the dialogs (defaults to the reader's own). */
@@ -133,7 +133,11 @@ export function loadSlp(
   return readWithFormatChoice(
     (access) =>
       withPointSpanWarnings(() =>
-        ioLoadSlp(source, withFormat3({ ...io, repairPointSpans: true }, access)),
+        ioLoadSlp(source, {
+          ...io,
+          repairPointSpans: true,
+          ...(access !== undefined ? { format3: access } : {}),
+        }),
       ),
     app.format3 ?? "ask",
     app.fileName ?? sourceName(source) ?? io?.h5?.filenameHint,
@@ -153,7 +157,11 @@ export function readSlpStreaming(
   return readWithFormatChoice(
     (access) =>
       withPointSpanWarnings(() =>
-        ioReadSlpStreaming(source, withFormat3({ ...io, repairPointSpans: true }, access)),
+        ioReadSlpStreaming(source, {
+          ...io,
+          repairPointSpans: true,
+          ...(access !== undefined ? { format3: access } : {}),
+        }),
       ),
     app.format3 ?? "ask",
     app.fileName ?? sourceName(source) ?? io?.filenameHint,

@@ -673,7 +673,10 @@ export function NewJobWizard({ workerId, workerLabel, seed, onClose, onSubmitted
         if (!(await confirmUnlabeledAsHidden(labels, "training"))) return;
         const { buildRemoteLabelsPayload } = await import("@/lib/remoteLabelsPayload");
         const visibility = videoChecksToVisibility(videoCheck);
-        const payload = await buildRemoteLabelsPayload(labels, visibility, { embedFramesToPredict: false });
+        const payload = await buildRemoteLabelsPayload(labels, visibility, {
+          embedFramesToPredict: false,
+          allowViewOnlyCopy: true,
+        });
         labelsContent = payload.labelsContent;
       }
       const postInference = postInferenceEnabled

@@ -19,7 +19,7 @@ import {
   StreamingH5File,
 } from "@talmolab/sleap-io.js";
 import { loadSlp } from "@/lib/slpRead";
-import { copyPoint } from "@/lib/slpFormatCompat";
+import { copyPoint } from "@/lib/slpFormat";
 import type { Skeleton, Instance, Node } from "@talmolab/sleap-io.js";
 import { distinctSkeletonCount } from "./skeletonStructure";
 

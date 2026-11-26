@@ -7,24 +7,15 @@
  * `imageQuality`. PNG adds nothing on either.
  */
 import { describe, it, expect, beforeEach } from "../bun-test";
-import * as sio from "@talmolab/sleap-io.js";
+import { EMBED_IMAGE_FORMATS } from "@talmolab/sleap-io.js";
 import { useAppStore, PERSISTED_KEYS } from "@/stores/appStore";
 import {
   DEFAULT_PACKAGE_IMAGE,
   clampJpegQuality,
   isJpegChoice,
   normalizePackageImage,
-} from "@/lib/packageImageFormat";
-import {
-  canWriteJpegFrames,
   withImageFormat,
-  JPEG_FRAMES_UNAVAILABLE,
-} from "@/lib/slpFormatCompat";
-
-/** Does the installed sleap-io.js list JPEG among its embed formats? */
-const LIBRARY_HAS_JPEG = (
-  (sio as unknown as { EMBED_IMAGE_FORMATS?: readonly string[] }).EMBED_IMAGE_FORMATS ?? []
-).includes("jpg");
+} from "@/lib/packageImageFormat";
 
 describe("packageImageFormat", () => {
   it("defaults to PNG, with JPEG quality 95", () => {
@@ -95,25 +86,16 @@ describe("withImageFormat against the installed sleap-io.js", () => {
     expect(withImageFormat(opts, { format: "png", quality: 50 })).toBe(opts);
   });
 
-  it("knows whether this sleap-io.js can write JPEG frames", () => {
-    expect(canWriteJpegFrames()).toBe(LIBRARY_HAS_JPEG);
-    if (!LIBRARY_HAS_JPEG) {
-      console.info(
-        "[packageImageFormat] the installed sleap-io.js has no imageFormat: JPEG is refused"
-      );
-    }
+  it("the installed sleap-io.js lists JPEG among its embed formats", () => {
+    expect(EMBED_IMAGE_FORMATS).toContain("jpg");
   });
 
-  it("adds imageFormat and imageQuality for JPEG, or refuses it on a release without them", () => {
+  it("adds imageFormat and imageQuality for JPEG", () => {
     const jpeg = { format: "jpg" as const, quality: 85 };
-    if (LIBRARY_HAS_JPEG) {
-      expect(withImageFormat<Record<string, unknown>>({ embed: "user" }, jpeg)).toEqual({
-        embed: "user",
-        imageFormat: "jpg",
-        imageQuality: 85,
-      });
-    } else {
-      expect(() => withImageFormat({ embed: "user" }, jpeg)).toThrow(JPEG_FRAMES_UNAVAILABLE);
-    }
+    expect(withImageFormat({ embed: "user" }, jpeg)).toEqual({
+      embed: "user",
+      imageFormat: "jpg",
+      imageQuality: 85,
+    });
   });
 });

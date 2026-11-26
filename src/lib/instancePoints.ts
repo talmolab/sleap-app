@@ -7,7 +7,7 @@
  */
 
 import type { Instance, PredictedInstance } from "../types";
-import { isUnlabeledPoint } from "@/lib/slpFormatCompat";
+import { isUnlabeledPoint } from "@/lib/slpFormat";
 
 export interface NamedPoint {
   /** Node name from the skeleton, in point order. */

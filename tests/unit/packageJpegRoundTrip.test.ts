@@ -269,7 +269,7 @@ describe.skipIf(!HAS_JPEG)("JPEG package export, read back (local sleap-io.js bu
     expect([png[0], png[1], png[2], png[3]]).toEqual([0x89, 0x50, 0x4e, 0x47]);
 
     const labels = labelsOn(new Video({ filename: "clip.mp4", backend: backend(10, 3) }), [3, 5]);
-    const { withImageFormat } = await import("@/lib/slpFormatCompat");
+    const { withImageFormat } = await import("@/lib/packageImageFormat");
     const plan = await io.buildSerializableEmbedPlan(
       labels,
       "user",

@@ -312,8 +312,7 @@ describe("MergePredictionsDialog", () => {
     fireEvent.click(downloadButton);
 
     await waitFor(() => expect(saveBytesFileMock).toHaveBeenCalledTimes(1));
-    // Unlabelled nodes are saved as hidden ones (the 2.x layout has no flag).
-    expect(saveSlpToBytesMock).toHaveBeenCalledWith(predictions, { unlabeledAs: "absent" });
+    expect(saveSlpToBytesMock).toHaveBeenCalledWith(predictions);
     expect(saveBytesFileMock).toHaveBeenCalledWith(SAVED_BYTES, `${JOB_ID}.predictions.slp`, {
       name: "SLEAP Labels",
       ext: "slp",

@@ -13,10 +13,14 @@
  * whose `backend == null` is never newly embedded and keeps its `filename`
  * reference (see the spike note in the plan above).
  */
-import { saveSlpToBytes, type Labels } from "@talmolab/sleap-io.js";
+import {
+  saveSlpToBytes,
+  type Labels,
+  type SlpVersion,
+} from "@talmolab/sleap-io.js";
 import { detectPrefixDiff, translatePath } from "@/lib/pathMappings";
 import type { VideoVisibility } from "@/lib/remoteVisibility";
-import { withLegacyLayout } from "@/lib/slpFormatCompat";
+import { legacyV2WriteOptions, setSourceAccess } from "@/lib/slpFormat";
 
 // Warn/block thresholds for inline-embedded `labels_content` (labeled
 // frames' pixel data, sent when the worker can't see one or more original
@@ -74,9 +78,23 @@ function retargetFilename(original: string | string[], workerFirst: string): str
 export async function buildRemoteLabelsPayload(
   labels: Labels,
   visibility: VideoVisibility[],
-  opts: { embedFramesToPredict: boolean },
+  opts: {
+    embedFramesToPredict: boolean;
+    /**
+     * Explicit opt-in for callers holding a read-only worker inspection copy
+     * (loaded with `format3: "view"` + `userInstancesOnly: true`) that needs
+     * re-pointed video paths serialized into a throwaway job copy. Never
+     * mutates `labels`.
+     */
+    allowViewOnlyCopy?: boolean;
+    /** Target SLP layout for the worker copy (defaults to `"v2"` for legacy worker compat). */
+    slpVersion?: SlpVersion;
+  },
 ): Promise<LabelsPayload> {
   const copy = labels.copy();
+  if (opts.allowViewOnlyCopy && copy.sourceFormat?.access === "view") {
+    setSourceAccess(copy, opts.slpVersion === "v3" ? "keep" : "edit");
+  }
   let hiddenCount = 0;
   const embeddedVideos: number[] = [];
   const unavailableVideos: number[] = [];
@@ -115,7 +133,11 @@ export async function buildRemoteLabelsPayload(
   // is for the caller to warn about).
   const embed: boolean | string =
     hiddenCount === 0 ? false : opts.embedFramesToPredict ? "all+suggestions" : "all";
-  const bytes = await saveSlpToBytes(copy, withLegacyLayout({ embed }));
+  const writeOpts =
+    opts.slpVersion === "v3"
+      ? { embed, slpVersion: "v3" as const }
+      : legacyV2WriteOptions({ embed });
+  const bytes = await saveSlpToBytes(copy, writeOpts);
 
   return {
     labelsContent: bytesToBase64(bytes),

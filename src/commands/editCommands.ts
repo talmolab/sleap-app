@@ -22,7 +22,7 @@ import {
   copySourceMark,
   isUnlabeledPoint,
   markPointLabeled,
-} from "@/lib/slpFormatCompat";
+} from "@/lib/slpFormat";
 import {
   showLabelingHint,
   hintIfFirstInstance,

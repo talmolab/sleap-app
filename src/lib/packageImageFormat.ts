@@ -6,9 +6,10 @@
  * user (`packageImageFormat` / `packageJpegQuality` in the app store).
  *
  * The writers take it as sleap-io.js's `imageFormat` / `imageQuality` (see
- * `withImageFormat` in `slpFormatCompat.ts`): PNG passes no option at all,
- * so a PNG export writes exactly what it wrote before the choice existed.
+ * {@link withImageFormat}): PNG passes no option at all, so a PNG export
+ * writes exactly what it wrote before the choice existed.
  */
+import type { SlpWriteOptions } from "@talmolab/sleap-io.js";
 
 /** A frame image format the export dialogs offer. */
 export type PackageImageFormat = "png" | "jpg";
@@ -65,4 +66,17 @@ export function normalizePackageImage(
     format: format === "jpg" ? "jpg" : "png",
     quality: clampJpegQuality(quality),
   };
+}
+
+/**
+ * Attach `imageFormat: "jpg"` and `imageQuality` to SLP write / embed-plan
+ * options when JPEG was chosen. PNG (or omitted) returns `options` unchanged
+ * so PNG exports preserve existing verbatim-copy behavior.
+ */
+export function withImageFormat<T extends object>(
+  options: T,
+  image: PackageImageOptions | null | undefined,
+): T & Pick<SlpWriteOptions, "imageFormat" | "imageQuality"> {
+  if (!image || image.format !== "jpg") return options;
+  return { ...options, imageFormat: "jpg", imageQuality: image.quality };
 }

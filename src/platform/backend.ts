@@ -9,7 +9,7 @@ import { isTauri } from "./index";
 import { sleapCmd } from "@/lib/sleapPlugin";
 import { saveSlpToBytes, type Labels, type Skeleton } from "@talmolab/sleap-io.js";
 import type { JobLabelsCopy } from "@/lib/jobLabelsFile";
-import { withLegacyLayout } from "@/lib/slpFormatCompat";
+import { legacyV2WriteOptions } from "@/lib/slpFormat";
 import { installedSleapNnVersion, sleapNnSupportsSlp3 } from "@/lib/sleapNnVersion";
 import type { InferenceConfig } from "@/stores/inferenceStore";
 import {
@@ -604,7 +604,7 @@ export async function runInference(
     console.log("[inference] Serializing project to temp file:", dataPath);
     const bytes = nativeSlp3
       ? await saveSlpToBytes(labels)
-      : await saveSlpToBytes(labels, withLegacyLayout());
+      : await saveSlpToBytes(labels, legacyV2WriteOptions());
     await writeFile(dataPath, bytes);
     console.log("[inference] Wrote %d bytes to %s", bytes.byteLength, dataPath);
   }
@@ -720,7 +720,7 @@ export async function runInference(
     dataPath = await join(tmp, `sleap_inference_input_${ts}${tag}.slp`);
     const bytes = nativeSlp3
       ? await saveSlpToBytes(opts.inputLabels)
-      : await saveSlpToBytes(opts.inputLabels, withLegacyLayout());
+      : await saveSlpToBytes(opts.inputLabels, legacyV2WriteOptions());
     await writeFile(dataPath, bytes);
     console.log("[inference] Wrote per-skeleton input (%d bytes) to %s", bytes.byteLength, dataPath);
   }

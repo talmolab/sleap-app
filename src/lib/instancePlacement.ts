@@ -16,7 +16,7 @@ import {
   isUnlabeledPoint,
   markPointLabeled,
   type PointLike,
-} from "@/lib/slpFormatCompat";
+} from "@/lib/slpFormat";
 
 /** A captured drawn node layout in IMAGE space, index-aligned to skeleton.nodes. */
 export type TemplateLayout = ({ x: number; y: number } | null)[];

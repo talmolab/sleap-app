@@ -9,16 +9,16 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { Labels, Skeleton, Video } from "@talmolab/sleap-io.js";
 
-const FORMAT3_PATH = join(import.meta.dir, "../fixtures/format3_minimal.slp");
-const format3Bytes = new Uint8Array(readFileSync(FORMAT3_PATH));
+const FORMAT4_PATH = join(import.meta.dir, "../fixtures/format4_stub.slp");
+const format4Bytes = new Uint8Array(readFileSync(FORMAT4_PATH));
 
 vi.mock("@/platform/index", () => ({
   isTauri: true,
   consumeLastBrowserFileHandle: () => null,
   getPlatform: async () => ({
     isTauri: true,
-    showOpenDialog: async () => FORMAT3_PATH,
-    readFile: async () => format3Bytes,
+    showOpenDialog: async () => FORMAT4_PATH,
+    readFile: async () => format4Bytes,
   }),
 }));
 
@@ -116,7 +116,7 @@ describe("SlpFormatDialog Desktop [Upgrade]", () => {
     expect(windowOpenMock).not.toHaveBeenCalled();
   });
 
-  it("MergeProjectDialog opens the refusal modal on a format 3.0 donor file without raw library wording", async () => {
+  it("MergeProjectDialog opens the refusal modal on a refused format 4.0 donor file without raw library wording", async () => {
     const sk = new Skeleton({ nodes: ["head", "tail"], name: "s" });
     const v = new Video({
       filename: "session.mp4",
@@ -128,7 +128,7 @@ describe("SlpFormatDialog Desktop [Upgrade]", () => {
       labels: current as never,
       projectLoaded: true,
       mergeProjectDialogOpen: true,
-      mergeProjectSeedPath: FORMAT3_PATH,
+      mergeProjectSeedPath: FORMAT4_PATH,
     });
 
     render(<MergeProjectDialog />);
@@ -140,13 +140,13 @@ describe("SlpFormatDialog Desktop [Upgrade]", () => {
     const prompt = useSlpFormatStore.getState().prompt;
     expect(prompt?.kind).toBe("refused");
     if (prompt?.kind === "refused") {
-      expect(prompt.fileName).toBe("format3_minimal.slp");
-      expect(prompt.formatId).toBe(3);
+      expect(prompt.fileName).toBe("format4_stub.slp");
+      expect(prompt.formatId).toBe(4);
     }
     expect(toast.error).not.toHaveBeenCalled();
 
     const inlineErr = screen.getByTestId("merge-load-error");
-    expect(inlineErr.textContent).toContain("format3_minimal.slp");
+    expect(inlineErr.textContent).toContain("format4_stub.slp");
     expect(inlineErr.textContent).not.toContain("sleap-io.js");
   });
 });

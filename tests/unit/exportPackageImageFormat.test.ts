@@ -86,9 +86,6 @@ const {
   ExportTrainingPackageCommand,
   ExportFullPackageCommand,
 } = await import("@/commands/exportPackageCommands");
-const { __setJpegFramesSupported, JPEG_FRAMES_UNAVAILABLE } = await import(
-  "@/lib/slpFormatCompat"
-);
 
 const JPEG = { format: "jpg" as const, quality: 80 };
 const PNG = { format: "png" as const, quality: 80 };
@@ -115,10 +112,8 @@ beforeEach(() => {
   platform.isTauri = false;
   opfs.supported = false;
   toastError.mockClear();
-  __setJpegFramesSupported(true);
 });
 afterEach(() => {
-  __setJpegFramesSupported(null);
   delete (globalThis as { crossOriginIsolated?: boolean }).crossOriginIsolated;
 });
 
@@ -128,7 +123,7 @@ describe("in-memory package export (browser, or already-embedded videos)", () =>
     await exportLabelsPackage(mp4Labels(), "labels.slp", "user", { image: PNG });
     expect(calls.map((c) => c.path)).toEqual(["memory", "memory"]);
     for (const { opts } of calls) {
-      expect(keys(opts)).toEqual(["embed", "onProgress", "unlabeledAs"]);
+      expect(keys(opts)).toEqual(["embed", "onProgress"]);
       expect(opts.embed).toBe("user");
     }
   });
@@ -139,18 +134,7 @@ describe("in-memory package export (browser, or already-embedded videos)", () =>
     expect(opts.imageFormat).toBe("jpg");
     expect(opts.imageQuality).toBe(80);
     expect(opts.embed).toBe("user+suggestions");
-    expect(opts.unlabeledAs).toBe("absent");
     expect(saved).toHaveLength(1);
-  });
-
-  it("writes nothing, and says why, when the installed sleap-io.js can't write JPEG", async () => {
-    __setJpegFramesSupported(false);
-    const result = await exportLabelsPackage(mp4Labels(), "labels.slp", "user", { image: JPEG });
-    expect(result).toBeNull();
-    expect(calls).toEqual([]);
-    expect(saved).toEqual([]);
-    const [, toastOpts] = toastError.mock.calls[0] as unknown as [string, { description: string }];
-    expect(toastOpts.description).toBe(JPEG_FRAMES_UNAVAILABLE);
   });
 });
 
@@ -202,7 +186,7 @@ describe("training job package builders", () => {
     await labelsPackageBytes(mp4Labels(), "user", () => true);
     expect(calls[0].opts.imageFormat).toBe("jpg");
     expect(calls[0].opts.imageQuality).toBe(80);
-    expect(keys(calls[1].opts)).toEqual(["embed", "onProgress", "unlabeledAs"]);
+    expect(keys(calls[1].opts)).toEqual(["embed", "onProgress"]);
   });
 
   it("to a path without streaming: the same", async () => {
@@ -228,7 +212,7 @@ describe("package commands", () => {
 
   it("export PNG without params (as before)", async () => {
     await ExportTrainingPackageCommand.execute(ctx());
-    expect(keys(calls[0].opts)).toEqual(["embed", "onProgress", "unlabeledAs"]);
+    expect(keys(calls[0].opts)).toEqual(["embed", "onProgress"]);
   });
 
   it("ignore a malformed format param, and clean a bad quality", () => {

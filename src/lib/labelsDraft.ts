@@ -18,7 +18,6 @@
  */
 import { saveSlpStructureToBytes, type Labels } from "@talmolab/sleap-io.js";
 import { type JournalStore, baseBakPath } from "@/lib/incrementalAutosave";
-import { withLegacyLayout } from "@/lib/slpFormatCompat";
 
 /**
  * Derive a deterministic OPFS filename for a labels draft of `projectName`,
@@ -45,7 +44,7 @@ export function newDraftPath(projectName?: string): string {
 
 /** Serialize the current labels as a bare-bones (imageless) `.slp` — the draft. */
 export async function serializeLabelsDraft(labels: Labels): Promise<Uint8Array> {
-  return saveSlpStructureToBytes(labels, withLegacyLayout({ embed: false }));
+  return saveSlpStructureToBytes(labels, { embed: false });
 }
 
 /**

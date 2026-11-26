@@ -226,7 +226,7 @@ describe("runInference on a project whose file is in format 3.0", () => {
     const labels = project();
     useAppStore.getState().setLabels(labels, "flies.slp", "/data/flies.slp");
 
-    // Pre-0.4 (or unknown) sleap-nn downgrades per-skeleton inputLabels via withLegacyLayout().
+    // Pre-0.4 (or unknown) sleap-nn downgrades per-skeleton inputLabels via legacyV2WriteOptions().
     const legacyRes = await runInference(config(), "/data/flies.slp", () => {}, {
       inputLabels: labels,
       outputTag: "sk0",
@@ -234,7 +234,7 @@ describe("runInference on a project whose file is in format 3.0", () => {
     expect(legacyRes.success).toBe(true);
     expect(saveSlpToBytesCalls).toHaveLength(1);
     expect(saveSlpToBytesCalls[0][0]).toBe(labels);
-    expect(saveSlpToBytesCalls[0][1]).toEqual({ unlabeledAs: "absent" });
+    expect(saveSlpToBytesCalls[0][1]).toEqual({ slpVersion: "v2", unlabeledAs: "absent" });
 
     // sleap-nn >= 0.4.0a0 reads SLP 3.0 natively, so no legacy layout option is passed.
     saveSlpToBytesCalls.length = 0;

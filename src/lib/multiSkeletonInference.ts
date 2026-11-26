@@ -24,7 +24,7 @@ import { cropModeOf, headTypeMatches, type CropMode } from "./bboxModels";
 import { MODEL_TYPE_LABELS, parseTrainingConfig } from "./metrics/loadModelMetrics";
 import { PIPELINE_HEADS } from "./modelDiscovery";
 import { sameSkeletonStructure, structuralGroups } from "./skeletonStructure";
-import { copyMetadata, copySourceMark } from "@/lib/slpFormatCompat";
+import { copyMetadata, copySourceMark } from "@/lib/slpFormat";
 import type { InferenceConfig, PipelineType } from "@/stores/inferenceStore";
 import { INFERENCE_DEFAULTS } from "./inferenceDefaults";
 import { remoteIgnoredSettings } from "./remoteInferenceSupport";

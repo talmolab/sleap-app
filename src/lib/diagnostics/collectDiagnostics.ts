@@ -317,10 +317,10 @@ export async function collectDiagnostics(opts: {
     } catch (err) {
       projectDraft = null;
       // Say why in the bundle: a View only project (an SLP format 3.0 file)
-      // can't be written in the 2.x layout until editing is allowed.
-      const { isSlpViewOnlyError } = await import("@/lib/slpFormatCompat");
+      // can't be written until editing is allowed.
+      const { isSlpViewOnlyError } = await import("@/lib/slpFormat");
       projectDraftNote = isSlpViewOnlyError(err)
-        ? "Not included: the project is open View only (SLP format 3.0), so its labels can't be written in the 2.x layout until editing is allowed."
+        ? "Not included: the project is open View only (SLP format 3.0), so its labels can't be written until editing is allowed."
         : `Not included: ${err instanceof Error ? err.message : String(err)}`;
     }
   }

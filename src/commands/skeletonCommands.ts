@@ -18,7 +18,7 @@ import {
 import { remapInstancePoints } from "../lib/skeletonIO";
 import { dirtyFrameTracker } from "../lib/autosaveDirty";
 import { sameSkeletonStructure } from "../lib/skeletonStructure";
-import { copyPoint } from "@/lib/slpFormatCompat";
+import { copyPoint } from "@/lib/slpFormat";
 
 // ---------------------------------------------------------------------------
 // Snapshot helpers
