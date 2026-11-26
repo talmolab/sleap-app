@@ -90,6 +90,13 @@ Claude Code). For native MCP tool use instead of the CLI, run `tauri-pilot mcp`.
 > the existing server instead of killing it:
 > `bun run tauri dev --config '{"build":{"beforeDevCommand":""}}'`
 
+## Usage analytics
+The app reports feature usage and errors to `analytics.sleap.ai` (Help ▸ Share Usage Data). Map of the whole system, across this repo, `sleap-analytics-service` and `sleap-analytics`: `docs/.internal/analytics.md`.
+- Code: `src/lib/analytics/` (+ `src-tauri/src/analytics.rs` for the desktop transport). App code calls only the leaf API in `src/lib/analytics/index.ts`.
+- `src/lib/analytics/events.ts` is the catalog of everything that can be sent. Adding an event or property means updating `docs/usage-data.md` in the same change.
+- Never put file names, paths, video/project/node/track names or anything the user typed into an event. Free text goes through `scrubText`; counts describing a project go through `bucket`.
+- Dev builds and automated browsers never report. To exercise it locally see "Testing it locally" in the map.
+
 # Deployment
 - On push to `main`:
   - Deployed to: `https://app.sleap.ai/main/`

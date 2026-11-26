@@ -14,6 +14,7 @@ import type { Command } from "./types";
 import { toast } from "@/lib/notify";
 import { humanizeCommandName } from "@/lib/humanizeCommand";
 import { dirtyFrameTracker } from "@/lib/autosaveDirty";
+import { countCommand } from "@/lib/analytics";
 import {
   captureSourceMark,
   copyMetadata,
@@ -646,6 +647,10 @@ export class CommandContext {
       // Clear redo stack on new action
       this.redoStack.length = 0;
     }
+
+    // Feature usage (a no-op unless usage sharing is on). Counted before the
+    // command runs so that an error it throws is reported as following it.
+    countCommand(command.name);
 
     await command.execute(this, params);
 

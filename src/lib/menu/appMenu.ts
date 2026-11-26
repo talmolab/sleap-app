@@ -95,12 +95,16 @@ import {
   selectNextInstance,
   togglePlacementMode,
 } from "./menuActions";
-import type { AppMenu, MenuNode, MenuRadioNode, TopMenu } from "./types";
+import type { AppMenu, MenuNode, MenuRadioNode, TopAction, TopMenu } from "./types";
+import { countMenu } from "@/lib/analytics";
+import { usageDataEnabled } from "@/lib/analytics/consent";
 import { useModelOverlayStore } from "@/stores/modelOverlayStore";
 
 /** Everything that changes what the menus show. */
 export interface MenuSnapshot {
   isTauri: boolean;
+  /** Help ▸ Share Usage Data, as it takes effect (see `usageDataEnabled`). */
+  shareUsageData: boolean;
   projectLoaded: boolean;
   hasProjectPath: boolean;
   videoNames: string[];
@@ -993,7 +997,7 @@ function analyzeMenu(s: MenuSnapshot): TopMenu {
   };
 }
 
-function helpMenu(): TopMenu {
+function helpMenu(s: MenuSnapshot): TopMenu {
   return {
     kind: "menu",
     id: "help",
@@ -1009,12 +1013,65 @@ function helpMenu(): TopMenu {
       { kind: "item", id: "help.diagnostics", label: "Collect Diagnostics...", run: () => store().setDiagnosticsDialogOpen(true) },
       { kind: "item", id: "help.releases", label: "Releases", run: () => openExternal("https://github.com/talmolab/sleap-app/releases") },
       SEP,
+      // PyQt SLEAP's Help ▸ "Share usage data" toggle. Choosing either way is
+      // an explicit choice, so it also retires the first-run notice.
+      {
+        kind: "check",
+        id: "help.shareUsageData",
+        label: "Share Usage Data",
+        title: "Send feature usage and error reports to the SLEAP team. Never videos, labels or file names.",
+        checked: s.shareUsageData,
+        run: () => {
+          store().set("shareUsageData", !usageDataEnabled(store().shareUsageData));
+          store().set("usageDataNoticeSeen", true);
+        },
+      },
+      { kind: "item", id: "help.usageData", label: "About Usage Data", run: () => openExternal(`${getDocsUrl()}usage-data/`) },
+      SEP,
       { kind: "item", id: "help.about", label: "About SLEAP Label", run: () => store().setHelpDialogOpen(true) },
     ],
   };
 }
 
+/**
+ * Count each menu item as it runs. Done here, on the one definition, so the
+ * in-window bar, the native menu and Search Menus are all covered without any
+ * of them knowing; `countMenu` is a no-op unless usage sharing is on.
+ */
+function countingUsage<T extends MenuNode | TopAction>(node: T): T {
+  switch (node.kind) {
+    case "item":
+    case "check":
+    case "action":
+      return {
+        ...node,
+        run: () => {
+          countMenu(node.id);
+          return node.run();
+        },
+      };
+    case "radio":
+      return {
+        ...node,
+        select: (value: string) => {
+          countMenu(node.id);
+          node.select(value);
+        },
+      };
+    case "submenu":
+      return { ...node, items: node.items.map(countingUsage) };
+    default:
+      return node;
+  }
+}
+
 export function buildAppMenu(s: MenuSnapshot): AppMenu {
+  return menuDefinition(s).map((top) =>
+    top.kind === "menu" ? { ...top, items: top.items.map(countingUsage) } : countingUsage(top),
+  );
+}
+
+function menuDefinition(s: MenuSnapshot): AppMenu {
   return [
     // The order of PyQt SLEAP's menus.
     fileMenu(s),
@@ -1029,6 +1086,6 @@ export function buildAppMenu(s: MenuSnapshot): AppMenu {
     // in Predict too, which is where Search Menus and the native menu list it.)
     { kind: "action", id: "connect", label: "Connect", searchGroup: "Predict", run: () => store().setConnectWindowOpen(true) },
     { kind: "action", id: "tutorial", label: "Start Tutorial", searchGroup: "Help", run: () => void requestStartTutorial() },
-    helpMenu(),
+    helpMenu(s),
   ];
 }

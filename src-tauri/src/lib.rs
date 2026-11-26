@@ -1,3 +1,4 @@
+mod analytics;
 mod app_menu;
 mod environment;
 mod iroh_client;
@@ -704,6 +705,8 @@ fn sleap_plugin<R: tauri::Runtime>() -> tauri::plugin::TauriPlugin<R> {
             mcp_bridge::mcp_stop,
             mcp_bridge::mcp_status,
             mcp_bridge::mcp_response,
+            analytics::analytics_post,
+            analytics::system_info,
         ])
         .build()
 }

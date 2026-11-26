@@ -8,6 +8,7 @@
 import { Component, type ErrorInfo, type ReactNode } from "react";
 import { Button } from "@/components/ui/button";
 import { saveDiagnosticsBundle } from "@/lib/diagnostics";
+import { reportError } from "@/lib/analytics";
 
 interface ErrorBoundaryProps {
   children: ReactNode;
@@ -45,6 +46,9 @@ export class ErrorBoundary extends Component<
     // Always record the stack (console.error is intercepted into the diagnostics
     // buffer + disk log), so a "Collect Diagnostics" from this screen carries it.
     console.error("[ErrorBoundary] Caught error:", error, errorInfo);
+    // A render crash is the worst thing a user can hit; report it (scrubbed,
+    // and only if usage sharing is on).
+    reportError("render", error?.message, error?.stack);
   }
 
   handleCollect = async () => {

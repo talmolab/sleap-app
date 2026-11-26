@@ -164,6 +164,7 @@ nav:
       - File Formats: reference/formats.md
       - Sample Datasets: reference/datasets.md
       - Browser vs Desktop: reference/browser-vs-desktop.md
+      - Usage Data: usage-data.md
       - Contributing: reference/contributing.md
   - Help:
       - FAQ: help/faq.md

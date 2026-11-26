@@ -19,6 +19,7 @@ import {
 } from "@/components/ui/dialog";
 import { APP_VERSION, APP_VERSION_KIND_LABEL } from "@/lib/version";
 import { isTauri } from "@/lib/platform";
+import { getInstallId } from "@/lib/diagnostics/sessionLog";
 
 interface HelpDialogProps {
   open: boolean;
@@ -44,6 +45,18 @@ export function HelpDialog({ open, onOpenChange }: HelpDialogProps) {
               <span data-testid="about-version-kind">
                 {APP_VERSION_KIND_LABEL}
               </span>
+            </p>
+            {/* The random per-install id that diagnostics bundles and usage
+                data carry. Quoting it in a bug report lets us find the errors
+                this install reported; it identifies the install, not a person. */}
+            <p
+              className="text-xs text-muted-foreground select-text"
+              title="A random ID for this install. Include it when you report an issue so we can find the errors it reported."
+            >
+              Support ID{" "}
+              <code data-testid="about-support-id" className="font-mono">
+                {getInstallId()}
+              </code>
             </p>
           </div>
 

@@ -91,6 +91,9 @@ fn main() {
                     "mcp_stop",
                     "mcp_status",
                     "mcp_response",
+                    // usage analytics (Help > Share Usage Data)
+                    "analytics_post",
+                    "system_info",
                 ])
                 .default_permission(DefaultPermissionRule::AllowAllCommands),
         ),

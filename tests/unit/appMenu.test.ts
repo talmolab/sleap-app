@@ -6,9 +6,12 @@ import { describe, it, expect } from "../bun-test";
 import { buildAppMenu, type MenuSnapshot } from "@/lib/menu/appMenu";
 import { searchableCommands } from "@/lib/menu/searchable";
 import type { AppMenu, MenuNode, TopMenu } from "@/lib/menu/types";
+import { menuUsageKey } from "@/lib/analytics";
+import { isValidKey } from "@/lib/analytics/protocol";
 
 const BASE: MenuSnapshot = {
   isTauri: true,
+  shareUsageData: true,
   projectLoaded: true,
   hasProjectPath: true,
   videoNames: ["a.mp4", "b.mp4"],
@@ -249,5 +252,72 @@ describe("Preferences parity (PyQt File ▸ Reset preferences to defaults…, st
     expect(item.enabled ?? true).toBe(true);
     await item.run();
     expect(useAppStore.getState().frameStepSizesDialogOpen).toBe(true);
+  });
+});
+
+describe("Help ▸ Share Usage Data (PyQt parity)", () => {
+  it("is a check item that reflects the setting, next to a link explaining it", () => {
+    const on = find(buildAppMenu(BASE), "help.shareUsageData");
+    expect(on).toMatchObject({ kind: "check", label: "Share Usage Data", checked: true });
+    const off = find(buildAppMenu({ ...BASE, shareUsageData: false }), "help.shareUsageData");
+    expect(off).toMatchObject({ checked: false });
+    expect(find(buildAppMenu(BASE), "help.usageData")).toMatchObject({ kind: "item", label: "About Usage Data" });
+  });
+
+  it("toggles an explicit choice and retires the first-run notice", async () => {
+    const { useAppStore } = await import("@/stores/appStore");
+    useAppStore.setState({ shareUsageData: null, usageDataNoticeSeen: false });
+    const item = () => find(buildAppMenu(BASE), "help.shareUsageData") as { run: () => void };
+
+    item().run(); // unset means on, so the first click turns it off
+    expect(useAppStore.getState().shareUsageData).toBe(false);
+    expect(useAppStore.getState().usageDataNoticeSeen).toBe(true);
+
+    item().run();
+    expect(useAppStore.getState().shareUsageData).toBe(true);
+  });
+});
+
+describe("menu usage counting", () => {
+  it("counts an item by its id when it runs, wherever it is rendered", async () => {
+    const { setAnalyticsClient } = await import("@/lib/analytics");
+    const counted: string[] = [];
+    setAnalyticsClient({ count: (key: string) => counted.push(key) } as never);
+    try {
+      const menu = buildAppMenu(BASE);
+      await (find(menu, "help.shortcuts") as { run: () => void }).run();
+      await (find(menu, "view.showLabels") as { run: () => void }).run();
+      // Search Menus runs the same nodes, so it is counted too.
+      await searchableCommands(menu).find((c) => c.id === "help.labelingTips")?.run();
+      // A top-level button.
+      await (menu.find((t) => t.id === "connect") as { run: () => void }).run();
+      expect(counted).toEqual(["m:help.shortcuts", "m:view.showLabels", "m:help.labelingTips", "m:connect"]);
+    } finally {
+      setAnalyticsClient(null);
+    }
+  });
+
+  it("counts a radio by its id, never by the chosen value", async () => {
+    // Radio values can be user data (the trail node is a skeleton node name).
+    const { setAnalyticsClient } = await import("@/lib/analytics");
+    const counted: string[] = [];
+    setAnalyticsClient({ count: (key: string) => counted.push(key) } as never);
+    try {
+      const radios = all(buildAppMenu(BASE)).filter((n) => n.kind === "radio");
+      expect(radios.length).toBeGreaterThan(0);
+      for (const radio of radios) {
+        if (radio.kind === "radio") radio.select(radio.options[0].value);
+      }
+      expect(counted).toHaveLength(radios.length);
+      for (const key of counted) expect(key).toMatch(/^m:[A-Za-z][A-Za-z0-9_.-]*$/);
+    } finally {
+      setAnalyticsClient(null);
+    }
+  });
+
+  it("gives every countable node an id the service will keep as a key", () => {
+    for (const node of all(buildAppMenu(BASE))) {
+      if ("id" in node && node.kind !== "label") expect(isValidKey(menuUsageKey(node.id))).toBe(true);
+    }
   });
 });

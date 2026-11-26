@@ -34,6 +34,7 @@ import {
   capTrackColorOverrides,
 } from "@/lib/trackColorOverrides";
 import type { QcMode } from "@/lib/instanceVisibility";
+import type { UsageDataPreference } from "@/lib/analytics/consent";
 import type { CropRect } from "@/lib/imageFeaturesCore";
 import {
   mergeVideoPrefixSwap,
@@ -402,6 +403,17 @@ export interface AppState {
   // dismissing it should mean "never nag me about this again," not just
   // "not right now" (which the badge reappearing on next launch would imply).
   packagesSetupNudgeDismissed: boolean;
+  // Help ▸ Share Usage Data (persisted). `null` until the user chooses: the
+  // effective default is then "on, unless the browser asks not to be tracked"
+  // — always read it through `usageDataEnabled()` (lib/analytics/consent.ts),
+  // never as a plain boolean. Kept across Reset Preferences to Defaults: a
+  // privacy choice is not a display setting, and a reset must never turn
+  // sharing back on for someone who turned it off.
+  shareUsageData: UsageDataPreference;
+  // Whether the one-time notice explaining usage data has been shown
+  // (persisted, sticky). Until it has, nothing is stored or sent (see
+  // lib/analytics/client.ts `canSend`).
+  usageDataNoticeSeen: boolean;
   // Whether a newer STABLE / LATEST release exists than the one currently
   // running — each checked once at startup against its own channel
   // regardless of updateChannel above, so a user on any channel (or just
@@ -869,6 +881,8 @@ export const PERSISTED_KEYS: (keyof AppState)[] = [
   "updateChannelExplicitlySet",
   "hasOptedIntoLatestChannel",
   "packagesSetupNudgeDismissed",
+  "shareUsageData",
+  "usageDataNoticeSeen",
   "videoPrefixSwaps",
   "packageImageFormat",
   "packageJpegQuality",
@@ -1010,6 +1024,8 @@ export const useAppStore = create<AppState>()(
       updateChannelExplicitlySet: false,
       hasOptedIntoLatestChannel: false,
       packagesSetupNudgeDismissed: false,
+      shareUsageData: null,
+      usageDataNoticeSeen: false,
       stableUpdateAvailable: false,
       stableUpdateVersion: null,
       latestUpdateAvailable: false,

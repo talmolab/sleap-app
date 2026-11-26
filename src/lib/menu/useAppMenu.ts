@@ -8,6 +8,7 @@ import { useShallow } from "zustand/react/shallow";
 import { useAppStore, type AppState } from "@/stores/appStore";
 import { commandContext } from "@/commands";
 import { isTauri } from "@/lib/platform";
+import { usageDataEnabled } from "@/lib/analytics/consent";
 import { buildAppMenu, type MenuSnapshot } from "./appMenu";
 import type { AppMenu } from "./types";
 
@@ -72,6 +73,7 @@ function pickInputs(s: AppState) {
     overlayModelOutputs: s.overlayModelOutputs,
     propagateTrackLabels: s.propagateTrackLabels,
     seekbarHeaderGraph: s.seekbarHeaderGraph,
+    shareUsageData: s.shareUsageData,
   };
 }
 
@@ -88,6 +90,7 @@ export function snapshotFrom(i: MenuInputs): MenuSnapshot {
   const canRedo = commandContext.canRedo;
   return {
     isTauri,
+    shareUsageData: usageDataEnabled(i.shareUsageData),
     projectLoaded: i.projectLoaded,
     hasProjectPath: !!i.projectPath,
     videoNames: i.labels?.videos.map(videoName) ?? [],

@@ -53,6 +53,9 @@ const vizRunDir = vizParams.get("viz");
 // the viz window is a short-lived isolated heap. Best-effort; never blocks boot.
 if (!vizRunDir) {
   void initDiagnostics();
+  // Usage analytics (Help ▸ Share Usage Data). Loaded off the boot path; it
+  // waits for diagnostics, which mints the install and session ids it uses.
+  void import("./lib/analytics/init").then((m) => m.initAnalytics());
   // "Allow Claude to control SLEAP" was left on: start the connector again.
   if (isTauri) {
     void import("./stores/claudeConnectorStore").then((m) => m.useClaudeConnectorStore.getState().resume());

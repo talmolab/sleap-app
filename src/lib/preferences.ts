@@ -16,14 +16,17 @@ import { isValidStepSize } from "@/lib/shortcuts";
 /**
  * Persisted keys a preferences reset leaves alone. They are saved alongside the
  * preferences but are not display or navigation settings: the desktop update
- * channel, one-time prompts that would otherwise reappear, and data the user
- * built up for specific projects (video path fixes, track colors).
+ * channel, one-time prompts that would otherwise reappear, the choice whether
+ * to share usage data, and data the user built up for specific projects (video
+ * path fixes, track colors).
  */
 export const KEPT_ON_PREFERENCES_RESET: readonly (keyof AppState)[] = [
   "updateChannel",
   "updateChannelExplicitlySet",
   "hasOptedIntoLatestChannel",
   "packagesSetupNudgeDismissed",
+  "shareUsageData",
+  "usageDataNoticeSeen",
   "hasSeenLabelingHintsPrompt",
   "videoPrefixSwaps",
   "trackColorOverrides",
@@ -61,7 +64,7 @@ export async function confirmAndResetPreferences(): Promise<boolean> {
       "Reset all preferences to their defaults?\n\n" +
       "This resets display settings (colors, marker and label sizes, trails), " +
       "navigation settings (step sizes, navigation scope), the panel layout, the text size and the package export format.\n" +
-      "Your projects, video path fixes, track colors and update channel are kept.",
+      "Your projects, video path fixes, track colors, update channel and usage data setting are kept.",
     confirmLabel: "Reset",
     destructive: true,
   });
