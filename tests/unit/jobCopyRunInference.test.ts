@@ -16,7 +16,20 @@ const files = new Map<string, Uint8Array>();
 const removed: string[] = [];
 const commands: string[][] = [];
 const streamed: Array<[unknown, string, string | null]> = [];
+const saveSlpToBytesCalls: Array<[unknown, unknown]> = [];
+const realSaveSlpToBytes = sio.saveSlpToBytes;
 let sourceSize = 1000;
+
+vi.mock("@talmolab/sleap-io.js", () => ({
+  ...sio,
+  saveSlpToBytes: async (
+    labels: sio.Labels,
+    options?: Parameters<typeof sio.saveSlpToBytes>[1],
+  ) => {
+    saveSlpToBytesCalls.push([labels, options]);
+    return realSaveSlpToBytes(labels, options);
+  },
+}));
 
 vi.mock("@/platform/index", () => ({
   isTauri: true,
@@ -142,6 +155,7 @@ beforeEach(() => {
   removed.length = 0;
   commands.length = 0;
   streamed.length = 0;
+  saveSlpToBytesCalls.length = 0;
   sourceSize = 1000;
 });
 
@@ -206,6 +220,43 @@ describe("runInference on a project whose file is in format 3.0", () => {
     expect(dataPath()).toBe("/data/flies.slp");
     expect(files.size).toBe(0);
     expect(removed).toEqual([]);
+  });
+
+  it("gates per-skeleton inputLabels legacy layout on sleap-nn >= 0.4.0a0", async () => {
+    const labels = project();
+    useAppStore.getState().setLabels(labels, "flies.slp", "/data/flies.slp");
+
+    // Pre-0.4 (or unknown) sleap-nn downgrades per-skeleton inputLabels via withLegacyLayout().
+    const legacyRes = await runInference(config(), "/data/flies.slp", () => {}, {
+      inputLabels: labels,
+      outputTag: "sk0",
+    });
+    expect(legacyRes.success).toBe(true);
+    expect(saveSlpToBytesCalls).toHaveLength(1);
+    expect(saveSlpToBytesCalls[0][0]).toBe(labels);
+    expect(saveSlpToBytesCalls[0][1]).toEqual({ unlabeledAs: "absent" });
+
+    // sleap-nn >= 0.4.0a0 reads SLP 3.0 natively, so no legacy layout option is passed.
+    saveSlpToBytesCalls.length = 0;
+    useEnvironmentStore.setState({
+      tools: [
+        {
+          name: "sleap-nn",
+          version: "0.4.0a0",
+          commands: ["sleap-nn"],
+          updateAvailable: false,
+          latestVersion: "0.4.0a0",
+        },
+      ],
+    });
+    const nativeRes = await runInference(config(), "/data/flies.slp", () => {}, {
+      inputLabels: labels,
+      outputTag: "sk0",
+    });
+    expect(nativeRes.success).toBe(true);
+    expect(saveSlpToBytesCalls).toHaveLength(1);
+    expect(saveSlpToBytesCalls[0][0]).toBe(labels);
+    expect(saveSlpToBytesCalls[0][1]).toBeUndefined();
   });
 });
 

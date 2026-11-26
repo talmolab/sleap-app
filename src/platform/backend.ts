@@ -718,7 +718,9 @@ export async function runInference(
     const { writeFile } = await import("@tauri-apps/plugin-fs");
     const tag = opts.outputTag ? `_${opts.outputTag}` : "";
     dataPath = await join(tmp, `sleap_inference_input_${ts}${tag}.slp`);
-    const bytes = await saveSlpToBytes(opts.inputLabels, withLegacyLayout());
+    const bytes = nativeSlp3
+      ? await saveSlpToBytes(opts.inputLabels)
+      : await saveSlpToBytes(opts.inputLabels, withLegacyLayout());
     await writeFile(dataPath, bytes);
     console.log("[inference] Wrote per-skeleton input (%d bytes) to %s", bytes.byteLength, dataPath);
   }
