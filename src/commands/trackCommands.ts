@@ -10,6 +10,9 @@ import { UpdateTopic } from "../types";
 import type { Command } from "./types";
 import type { CommandContext } from "./CommandContext";
 import { useAppStore } from "../stores/appStore";
+import { repairBboxLinks, syncLinkedBboxTracks } from "@/lib/bboxLinks";
+import { frameHasContent } from "@/lib/frameLabeling";
+import { frameTrackHolders, staticRoiHolders, type TrackHolder } from "@/lib/trackHolders";
 
 /**
  * Swap `oldTrack`<->`newTrack` across `frames` (assumed already sorted by
@@ -32,6 +35,11 @@ function applyTrackSwapForward(
     const reverseInstances = lf.instances.filter((inst) => inst.track === newTrack);
     for (const inst of matchingInstances) inst.track = newTrack;
     for (const inst of reverseInstances) inst.track = oldTrack;
+    // Boxes on these tracks swap with them, linked or not.
+    for (const box of lf.bboxes) {
+      if (box.track === oldTrack) box.track = newTrack;
+      else if (box.track === newTrack) box.track = oldTrack;
+    }
   }
 }
 
@@ -49,6 +57,7 @@ export const AddTrack: Command = {
 
     labels.tracks.push(track);
     instance.track = track;
+    if (ctx.state.labeledFrame) syncLinkedBboxTracks(ctx.state.labeledFrame);
 
     ctx.state.markChanged();
   },
@@ -111,6 +120,7 @@ export const SetInstanceTrack: Command = {
       if (instance.fromPredicted) {
         instance.fromPredicted.track = newTrack;
       }
+      if (labeledFrame) syncLinkedBboxTracks(labeledFrame);
     }
 
     ctx.state.markChanged();
@@ -183,6 +193,8 @@ export const TransposeInstances: Command = {
     const tempTrack = first.track;
     first.track = second.track;
     second.track = tempTrack;
+    const current = videoFrames.find((lf) => lf.frameIdx === frameIdx);
+    if (current) syncLinkedBboxTracks(current);
 
     if (propagate) {
       applyTrackSwapForward(
@@ -324,23 +336,55 @@ export const DeleteInstanceAndTrack: Command = {
     // The selected instance first, then (on a track) every instance on that
     // track in this video, matching legacy's order of removal.
     current.instances = current.instances.filter((inst) => inst !== instance);
+    repairBboxLinks(current);
     if (track) {
       for (const lf of frames) {
         if (lf.instances.some((inst) => inst.track === track)) {
           lf.instances = lf.instances.filter((inst) => inst.track !== track);
+          repairBboxLinks(lf);
         }
       }
     }
 
     ctx.pushUndoSnapshot(snapshot);
     ctx.state.setInstance(null);
-    ctx.state.setLabeledFrame(current.instances.length > 0 ? current : null);
+    ctx.state.setLabeledFrame(frameHasContent(current) ? current : null);
     ctx.state.markChanged();
   },
 };
 
 /**
- * Remove a track from labels.tracks and unassign it from all instances.
+ * Unassign the given tracks (all when `tracks` is null) from everything in the
+ * project: instances, frame annotations, label-image objects and static ROIs.
+ * These touch many frames, so the default current-frame snapshot isn't enough
+ * (undo used to leave every other frame untracked, #487 audit). They only
+ * change `.track`, so a track-only snapshot of the frames holding those tracks
+ * is enough — not a copy of the whole project. Returns whether anything changed.
+ */
+function unassignTracks(ctx: CommandContext, commandName: string, tracks: Set<Track> | null): boolean {
+  const { labels } = ctx.state;
+  if (!labels) return false;
+  const hit = (holder: TrackHolder) => !!holder.track && (!tracks || tracks.has(holder.track));
+  const frames = labels.labeledFrames.filter((lf) => frameTrackHolders(lf).some(hit));
+  const rois = staticRoiHolders(labels).filter(hit);
+  const before = labels.tracks.length;
+  const remaining = tracks ? labels.tracks.filter((t) => !tracks.has(t)) : [];
+  if (frames.length === 0 && rois.length === 0 && remaining.length === before) return false;
+
+  const snapshot = ctx.takeTrackSnapshot(commandName, frames);
+  for (const lf of frames) {
+    for (const holder of frameTrackHolders(lf)) if (hit(holder)) holder.track = null;
+  }
+  for (const roi of rois) roi.track = null;
+  labels.tracks = remaining;
+  ctx.pushUndoSnapshot(snapshot);
+  ctx.state.markChanged();
+  return true;
+}
+
+/**
+ * Remove a track from labels.tracks and unassign it from all instances and
+ * annotations (boxes, centroids, masks, ROIs, label-image objects).
  * Does NOT delete any instances.
  *
  * Params:
@@ -350,6 +394,7 @@ export const DeleteInstanceAndTrack: Command = {
 export const DeleteTrack: Command = {
   name: "DeleteTrack",
   topics: [UpdateTopic.Tracks, UpdateTopic.Instance],
+  skipAutoSnapshot: true,
   execute(ctx: CommandContext, params?: Record<string, unknown>) {
     const { labels } = ctx.state;
     if (!labels) return;
@@ -365,27 +410,13 @@ export const DeleteTrack: Command = {
     }
     if (!track) return;
 
-    // Remove track from all instances across all labeled frames
-    for (const lf of labels.labeledFrames) {
-      for (const inst of lf.instances) {
-        if (inst.track === track) {
-          inst.track = undefined;
-        }
-      }
-    }
-
-    // Remove track from labels.tracks
-    const trackIdx = labels.tracks.indexOf(track);
-    if (trackIdx >= 0) {
-      labels.tracks.splice(trackIdx, 1);
-    }
-
-    ctx.state.markChanged();
+    unassignTracks(ctx, "DeleteTrack", new Set([track]));
   },
 };
 
 /**
- * Find and remove tracks not assigned to any instance across all labeled frames.
+ * Find and remove tracks not assigned to anything (an instance, an
+ * annotation or a static ROI) in the project.
  */
 export const DeleteUnusedTracks: Command = {
   name: "DeleteUnusedTracks",
@@ -394,14 +425,16 @@ export const DeleteUnusedTracks: Command = {
     const { labels } = ctx.state;
     if (!labels) return;
 
-    // Collect all tracks that are in use
+    // Collect all tracks that are in use — a box or centroid using a track
+    // keeps it, or deleting it would leave that annotation on a lost track.
     const usedTracks = new Set<Track>();
     for (const lf of labels.labeledFrames) {
-      for (const inst of lf.instances) {
-        if (inst.track) {
-          usedTracks.add(inst.track);
-        }
+      for (const holder of frameTrackHolders(lf)) {
+        if (holder.track) usedTracks.add(holder.track);
       }
+    }
+    for (const roi of staticRoiHolders(labels)) {
+      if (roi.track) usedTracks.add(roi.track);
     }
 
     // Remove unused tracks
@@ -415,28 +448,15 @@ export const DeleteUnusedTracks: Command = {
 };
 
 /**
- * Clear all tracks from labels.tracks and unassign tracks from all instances.
+ * Clear all tracks from labels.tracks and unassign tracks from all instances
+ * and annotations.
  */
 export const DeleteAllTracks: Command = {
   name: "DeleteAllTracks",
   topics: [UpdateTopic.Tracks, UpdateTopic.Instance],
+  skipAutoSnapshot: true,
   execute(ctx: CommandContext) {
-    const { labels } = ctx.state;
-    if (!labels) return;
-
-    // Unassign tracks from all instances
-    for (const lf of labels.labeledFrames) {
-      for (const inst of lf.instances) {
-        if (inst.track) {
-          inst.track = undefined;
-        }
-      }
-    }
-
-    // Clear all tracks
-    labels.tracks = [];
-
-    ctx.state.markChanged();
+    unassignTracks(ctx, "DeleteAllTracks", null);
   },
 };
 

@@ -7,11 +7,19 @@
 
 import { isTauri } from "./index";
 import { sleapCmd } from "@/lib/sleapPlugin";
-import { saveSlpToBytes } from "@talmolab/sleap-io.js";
+import { saveSlpToBytes, type Labels, type Skeleton } from "@talmolab/sleap-io.js";
 import type { JobLabelsCopy } from "@/lib/jobLabelsFile";
 import { withLegacyLayout } from "@/lib/slpFormatCompat";
 import type { InferenceConfig } from "@/stores/inferenceStore";
-import { buildInferenceArgs, pickInferenceSubcommand } from "./inferenceArgs";
+import {
+  buildInferenceArgs,
+  formatFramesArg,
+  framesExcludingUserLabeled,
+  isPredictSupported,
+  MAX_FRAMES_ARG_LENGTH,
+  pickInferenceSubcommand,
+  randomSampleFrameCount,
+} from "./inferenceArgs";
 import type { UnlistenFn } from "@tauri-apps/api/event";
 import { formatRunTimestamp as formatPredictionsTimestamp } from "@/lib/timestamp";
 import { buildTrainingArgs } from "./trainingArgs";
@@ -497,18 +505,50 @@ export async function runTraining(
  * 2. Build CLI args with data path, output path, and config
  * 3. Spawn process with streaming
  */
-export async function runInference(
-  config: InferenceConfig,
-  projectPath: string | null,
-  onEvent: (event: ProcessEvent) => void,
+export interface RunInferenceOptions {
+  /**
+   * Labels to give sleap-nn instead of the project file (written to a temp
+   * .slp) — a multi-skeleton run's per-skeleton copy (see
+   * `labelsForSkeleton`). Ignored when the run reads the video file directly.
+   */
+  inputLabels?: Labels;
+  /** Extra tag in the predictions filename (e.g. the skeleton's name). */
+  outputTag?: string;
+  /**
+   * Multi-skeleton run: the skeleton it predicts. "Exclude user-labeled
+   * frames" then skips only frames with a user instance of THIS skeleton,
+   * as sleap-nn does on the per-skeleton copy.
+   */
+  skeleton?: Skeleton;
   /**
    * The job's 2.x copy of the project, shared by its runs (see
    * `jobLabelsFile.ts`); used only when the project file is still in SLP
    * format 3.0. Without one, a run that needs a copy writes its own and
    * deletes it when sleap-nn exits.
    */
-  labelsCopy?: JobLabelsCopy
-): Promise<{ success: boolean; outputPath: string | null; command: string }> {
+  labelsCopy?: JobLabelsCopy;
+}
+
+export async function runInference(
+  config: InferenceConfig,
+  projectPath: string | null,
+  onEvent: (event: ProcessEvent) => void,
+  optsOrCopy: RunInferenceOptions | JobLabelsCopy = {},
+): Promise<{
+  success: boolean;
+  outputPath: string | null;
+  command: string;
+  /** Not run: Exclude user-labeled frames left no frame of the target to predict. */
+  nothingToPredict?: boolean;
+}> {
+  const opts: RunInferenceOptions =
+    typeof optsOrCopy === "object" &&
+    optsOrCopy !== null &&
+    "path" in optsOrCopy &&
+    typeof (optsOrCopy as JobLabelsCopy).path === "function"
+      ? { labelsCopy: optsOrCopy as JobLabelsCopy }
+      : (optsOrCopy as RunInferenceOptions);
+  const labelsCopy = opts.labelsCopy;
   if (!isTauri) {
     console.warn("Inference is only available in Tauri desktop mode");
     return { success: false, outputPath: null, command: "" };
@@ -521,10 +561,13 @@ export async function runInference(
 
   // Use the original project file if available, otherwise serialize. A
   // project file still in SLP format 3.0 is read through the job's 2.x copy,
-  // written below only if the run reads the project at all.
+  // and a per-skeleton input (opts.inputLabels) is written further down —
+  // both only when the run doesn't read the video file directly.
   const { projectFileIsFormat3, createJobLabelsCopy } = await import("@/lib/jobLabelsFile");
   let dataPath: string | null = null;
-  if (projectPath) {
+  if (opts.inputLabels) {
+    if (projectPath) console.log("[inference] Using project file:", projectPath);
+  } else if (projectPath) {
     const { useAppStore } = await import("@/stores/appStore");
     if (!projectFileIsFormat3(useAppStore.getState().labels)) {
       dataPath = projectPath;
@@ -565,16 +608,100 @@ export async function runInference(
       videoDataPath = filename;
     }
   }
-  if (videoDataPath) {
-    dataPath = videoDataPath;
-    console.log("[inference] Video-scoped run targeting the video file directly:", dataPath);
-  }
 
   // The current-frame index for frameRange === "frame" (needs the app store).
   let currentFrameIdx: number | undefined;
   if (config.frameRange === "frame") {
     const { useAppStore } = await import("@/stores/appStore");
     currentFrameIdx = useAppStore.getState().frameIdx;
+  }
+
+  // Pick the sleap-nn subcommand by installed version: the new `predict`
+  // (Predictor) pipeline when available (>= 0.2.0), else fall back to the legacy
+  // `track` command — present in every sleap-nn version and exactly what the app
+  // invoked before the `predict` migration. Older installs are never blocked and
+  // see no regression; only newer installs get the new pipeline.
+  const program = "sleap-nn";
+  const { useEnvironmentStore } = await import("@/stores/environmentStore");
+  const sleapNnVersion =
+    useEnvironmentStore.getState().pythonCheck?.sleapNnVersion ?? null;
+  const subcommand = pickInferenceSubcommand(sleapNnVersion);
+  if (subcommand === "track") {
+    console.log(
+      "[inference] sleap-nn v%s predates the 'predict' command; using legacy 'track'.",
+      sleapNnVersion
+    );
+  }
+
+  // Resolve random-video frame sampling here (needs the app store + RNG); the
+  // rest of the argv is built by the pure buildInferenceArgs helper.
+  let sampledFrames: number[] | undefined;
+  if (config.frameRange === "random_video") {
+    const { useAppStore } = await import("@/stores/appStore");
+    const { labels, video: activeVideo } = useAppStore.getState();
+    const nFrames = randomSampleFrameCount(config.videoIndex, labels?.videos, activeVideo);
+    if (nFrames === 0) {
+      const which = config.videoIndex === "all" ? "the current video" : `video ${config.videoIndex + 1}`;
+      throw new Error(`Cannot sample: ${which} has an unknown frame count`);
+    }
+    sampledFrames = sampleRandomFrames(nFrames, config.sampleCount);
+  }
+
+  // A raw video has no annotations, so sleap-nn ignores --exclude_user_labeled
+  // for it and predicts every frame. List the target's frames minus the
+  // user-labeled ones here instead. A list too long for one command line goes
+  // back to the project-file route, where sleap-nn >= 0.3.5 filters the video's
+  // frames by its annotations itself.
+  let frames: number[] | undefined;
+  if (videoDataPath && config.excludeUserLabeled && config.videoIndex !== "all") {
+    const { useAppStore } = await import("@/stores/appStore");
+    const labels = useAppStore.getState().labels;
+    const video = labels?.videos[config.videoIndex];
+    const nFrames = video?.shape?.[0] ?? 0;
+    const userLabeledFrames = new Set(
+      (labels?.labeledFrames ?? [])
+        .filter((lf) =>
+          lf.video === video &&
+          (opts.skeleton
+            ? lf.userInstances.some((inst) => inst.skeleton === opts.skeleton)
+            : lf.hasUserInstances),
+        )
+        .map((lf) => lf.frameIdx),
+    );
+    const listed =
+      config.frameRange === "video" && nFrames === 0
+        ? null
+        : framesExcludingUserLabeled(config, {
+            nFrames,
+            userLabeledFrames,
+            currentFrameIdx,
+            sampledFrames,
+          });
+    if (listed?.length === 0) {
+      return { success: true, outputPath: null, command: "", nothingToPredict: true };
+    }
+    if (listed && formatFramesArg(listed).length <= MAX_FRAMES_ARG_LENGTH) {
+      frames = listed;
+    } else if (subcommand === "predict" && isPredictSupported(sleapNnVersion, "0.3.5")) {
+      videoDataPath = null;
+    } else {
+      throw new Error(
+        "Too many frames to list for \"Exclude user-labeled frames\" with this sleap-nn " +
+          "version. Update sleap-nn to 0.3.5 or later, or turn the option off."
+      );
+    }
+  }
+
+  if (videoDataPath) {
+    dataPath = videoDataPath;
+    console.log("[inference] Video-scoped run targeting the video file directly:", dataPath);
+  } else if (opts.inputLabels) {
+    const { writeFile } = await import("@tauri-apps/plugin-fs");
+    const tag = opts.outputTag ? `_${opts.outputTag}` : "";
+    dataPath = await join(tmp, `sleap_inference_input_${ts}${tag}.slp`);
+    const bytes = await saveSlpToBytes(opts.inputLabels, withLegacyLayout());
+    await writeFile(dataPath, bytes);
+    console.log("[inference] Wrote per-skeleton input (%d bytes) to %s", bytes.byteLength, dataPath);
   }
 
   // Resolve where to write the predictions file, matching legacy SLEAP GUI
@@ -620,36 +747,8 @@ export async function runInference(
   }
   const outputPath = await join(
     predictionsDir,
-    `${videoPrefix}${sourceName}.${formatPredictionsTimestamp()}.predictions.slp`
+    `${videoPrefix}${sourceName}${opts.outputTag ? `.${opts.outputTag}` : ""}.${formatPredictionsTimestamp()}.predictions.slp`
   );
-
-  // Pick the sleap-nn subcommand by installed version: the new `predict`
-  // (Predictor) pipeline when available (>= 0.2.0), else fall back to the legacy
-  // `track` command — present in every sleap-nn version and exactly what the app
-  // invoked before the `predict` migration. Older installs are never blocked and
-  // see no regression; only newer installs get the new pipeline.
-  const program = "sleap-nn";
-  const { useEnvironmentStore } = await import("@/stores/environmentStore");
-  const sleapNnVersion =
-    useEnvironmentStore.getState().pythonCheck?.sleapNnVersion ?? null;
-  const subcommand = pickInferenceSubcommand(sleapNnVersion);
-  if (subcommand === "track") {
-    console.log(
-      "[inference] sleap-nn v%s predates the 'predict' command; using legacy 'track'.",
-      sleapNnVersion
-    );
-  }
-
-  // Resolve random-video frame sampling here (needs the app store + RNG); the
-  // rest of the argv is built by the pure buildInferenceArgs helper.
-  let sampledFrames: number[] | undefined;
-  if (config.frameRange === "random_video") {
-    const { useAppStore } = await import("@/stores/appStore");
-    const activeVideo = useAppStore.getState().video;
-    const nFrames = activeVideo?.shape?.[0] ?? 0;
-    if (nFrames === 0) throw new Error("Cannot sample: current video has no frames");
-    sampledFrames = sampleRandomFrames(nFrames, config.sampleCount);
-  }
 
   // The project file is in format 3.0 and the run reads the project: use the
   // job's 2.x copy (or this run's own, deleted when sleap-nn exits).
@@ -666,6 +765,7 @@ export async function runInference(
       currentFrameIdx,
       suppressVideoIndex: videoDataPath !== null,
       subcommand,
+      frames,
     });
 
     const command = `${program} ${args.join(" ")}`;

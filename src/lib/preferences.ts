@@ -1,6 +1,8 @@
 /**
  * App-wide preference helpers: File ▸ Reset Preferences to Defaults… and the
- * frame step sizes (Go ▸ Frame Step Sizes…).
+ * frame step sizes (Go ▸ Frame Step Sizes…). The reset also puts keyboard
+ * shortcuts back (`shortcutOverrides`; PyQt keeps those in shortcuts.yaml
+ * and resets them from the Shortcuts dialog).
  *
  * PyQt SLEAP keeps these in `preferences.yaml` (`sleap/prefs.py`): "Reset
  * preferences to defaults..." rewrites that file with its defaults, and the
@@ -60,7 +62,7 @@ export async function confirmAndResetPreferences(): Promise<boolean> {
     message:
       "Reset all preferences to their defaults?\n\n" +
       "This resets display settings (colors, marker and label sizes, trails), " +
-      "navigation settings (step sizes, navigation scope), the panel layout, the text size and the package export format.\n" +
+      "navigation settings (step sizes, navigation scope), keyboard shortcuts, the panel layout, the text size and the package export format.\n" +
       "Your projects, video path fixes, track colors and update channel are kept.",
     confirmLabel: "Reset",
     destructive: true,

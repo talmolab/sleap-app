@@ -9,6 +9,8 @@ import { Instance, PredictedInstance } from "@talmolab/sleap-io.js";
 import type { Labels, Skeleton, Video, LabeledFrame, InstancePlacementMethod } from "../types";
 import { toSourceCoords } from "@/lib/cropTransform";
 import {
+  copyMetadata,
+  copyPoint,
   copyPointLabeled,
   copySourceMark,
   isUnlabeledPoint,
@@ -404,54 +406,57 @@ function placePriorFrame(
   return placeBest(skeleton, video, existingInstances);
 }
 
-/** "prediction" — copy from an unmatched predicted instance on the current frame. */
+/**
+ * Clone a predicted instance's points for conversion to a user Instance,
+ * forcing `visible` to match sleap_io's canonical rule (`visible = !isNaN(x)`)
+ * rather than trusting the model's `visible` flag as-is. A model can emit
+ * `visible: true` for a keypoint it failed to place (`xy: [NaN, NaN]`); left
+ * uncorrected, the renderer tries to draw a filled marker at NaN and nothing
+ * appears at all, instead of the hollow "invisible node" marker it draws for
+ * genuinely non-visible points.
+ */
+export function clonePredictedPoints(points: Instance["points"]): Instance["points"] {
+  // A predicted node not labelled stays so (and hidden) in the user instance.
+  return points.map((p) =>
+    copyPoint(p, { visible: isUnlabeledPoint(p) ? false : !Number.isNaN(p.xy[0]) }),
+  );
+}
+
+/**
+ * "prediction" — copy from an unused predicted instance on the current frame,
+ * linking the copy to it (`fromPredicted`), as PyQt SLEAP does. A prediction
+ * is used once a user instance on the frame was made from it, or (tracked)
+ * once a user instance holds its track.
+ */
 function placePrediction(
   skeleton: Skeleton,
   video: Video | null,
   existingInstances: Instance[]
 ): Instance {
-  // Find predicted instances that don't have a corresponding user instance
-  const predicted = existingInstances.filter(
-    (inst) =>
-      inst instanceof PredictedInstance &&
-      hasPlacedPoints(inst) &&
-      sameSkeletonLayout(inst, skeleton)
-  );
   const userInstances = existingInstances.filter(
     (inst) => !(inst instanceof PredictedInstance)
   );
+  const linked = new Set(userInstances.map((u) => u.fromPredicted));
+  const userTracks = new Set(userInstances.map((u) => u.track).filter(Boolean));
 
-  // Find a predicted instance whose track doesn't already have a user instance
-  let source: Instance | undefined;
-  for (const pred of predicted) {
-    if (pred.track) {
-      const hasUserWithTrack = userInstances.some(
-        (u) => u.track === pred.track
-      );
-      if (!hasUserWithTrack) {
-        source = pred;
-        break;
-      }
-    } else {
-      // No track — use first unmatched prediction
-      source = pred;
-      break;
-    }
-  }
+  const source = existingInstances.find(
+    (inst): inst is PredictedInstance =>
+      inst instanceof PredictedInstance &&
+      hasPlacedPoints(inst) &&
+      sameSkeletonLayout(inst, skeleton) &&
+      !linked.has(inst) &&
+      !(inst.track && userTracks.has(inst.track))
+  );
 
   if (source) {
-    const instance = Instance.empty({ skeleton });
-    for (let i = 0; i < instance.points.length && i < source.points.length; i++) {
-      instance.points[i].xy = [source.points[i].xy[0], source.points[i].xy[1]];
-      instance.points[i].visible = source.points[i].visible;
-      instance.points[i].complete = source.points[i].complete;
-      copyPointLabeled(source.points[i], instance.points[i]);
-    }
+    const instance = new Instance({
+      skeleton,
+      points: clonePredictedPoints(source.points),
+      track: source.track,
+      fromPredicted: source,
+    });
+    copyMetadata(source, instance);
     copySourceMark(source, instance);
-    // Copy track from the prediction
-    if (source.track) {
-      instance.track = source.track;
-    }
     return instance;
   }
 
@@ -608,7 +613,12 @@ export function fillMissingUserNodes(
   const pts = instance.points;
   const missing: number[] = [];
   const labeled: number[] = [];
-  pts.forEach((p, i) => (isPlaced(p) ? labeled : missing).push(i));
+  pts.forEach((p, i) => {
+    // A node not labelled (SLP format 3.0) is intentionally unannotated, not a
+    // missing one: leave it untouched (matching fillMissingPredictedNodes).
+    if (isUnlabeledPoint(p)) return;
+    (isPlaced(p) ? labeled : missing).push(i);
+  });
   if (missing.length === 0) return 0;
 
   const place = (idx: number, xy: [number, number]) => {

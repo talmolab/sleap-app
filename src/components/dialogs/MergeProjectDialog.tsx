@@ -32,7 +32,12 @@ import {
   type ResolvedConflict,
 } from "../../lib/mergeConflicts";
 import { loadLabelsFromSlpFile, loadLabelsFromSlpPath } from "../../lib/loadProject";
-import { isReportedSlpError, refuseEditIfViewOnly, SlpOpenCancelled } from "../../lib/slpAccess";
+import {
+  handleSlpFormatError,
+  isReportedSlpError,
+  refuseEditIfViewOnly,
+  SlpOpenCancelled,
+} from "../../lib/slpAccess";
 import { summarizeMatch, type MatchPreview } from "../../lib/mergeProject";
 import { getPlatform } from "../../platform/index";
 import { ConflictReview } from "./ConflictReview";
@@ -58,11 +63,11 @@ const errMsg = (e: unknown) => (e instanceof Error ? e.message : String(e));
  * The inline error for a donor that didn't load. A refused file was already
  * explained in its own dialog, and a cancelled format 3.0 choice is no error.
  */
-const donorLoadError = (e: unknown): string | null =>
+const donorLoadError = (e: unknown, name: string): string | null =>
   e instanceof SlpOpenCancelled
     ? null
-    : isReportedSlpError(e)
-      ? "This file can't be read by this version of SLEAP."
+    : handleSlpFormatError(e, name) || isReportedSlpError(e)
+      ? `${name} uses an unsupported SLP format and cannot be merged in this version of SLEAP.`
       : errMsg(e);
 
 /** A file to merge: a path on desktop, a File in the browser. */
@@ -154,7 +159,7 @@ export function MergeProjectDialog() {
           setConflicts(found);
         }
       } catch (e) {
-        if (!stale()) setError(donorLoadError(e));
+        if (!stale()) setError(donorLoadError(e, sourceName(source)));
       } finally {
         if (!stale()) setBusy(null);
       }

@@ -22,6 +22,7 @@ import type { FrameKey } from "@/lib/autosaveDirty";
 import {
   buildBaseIndex,
   encodeFrameDelta,
+  encodeFrameDeletion,
   frameDeltaToRecord,
   decodeJournal,
   applyDeltas,
@@ -41,9 +42,11 @@ export const baseBakPath = (basePath: string): string => `${basePath}.bak`;
 
 /**
  * A cheap signature of the labels' *structural* shape — track count, video
- * count, and per-skeleton (node count : edge count). If this changes between the
- * base write and a later tick, something structural happened (a new track,
- * skeleton node, video, …) that a frame delta can't represent — so the tick must
+ * count, suggestion count, and per-skeleton (node count : edge count). The
+ * journal records only frames, so suggestions live in the base alone. If this
+ * changes between the base write and a later tick, something structural
+ * happened (a new track, skeleton node, video, …) that a frame delta can't
+ * represent — so the tick must
  * rewrite the base rather than append. This is a belt-and-suspenders backstop to
  * the per-command `markStructural()` calls: it catches structural mutations made
  * OUTSIDE the command pipeline (e.g. a direct `labels.tracks.push`) that never
@@ -55,7 +58,7 @@ export function structuralSignature(labels: Labels): string {
   const sk = (labels.skeletons ?? [])
     .map((s) => `${s.nodeNames?.length ?? 0}:${s.edgeIndices?.length ?? 0}`)
     .join(",");
-  return `t${labels.tracks?.length ?? 0}|v${labels.videos?.length ?? 0}|s${sk}`;
+  return `t${labels.tracks?.length ?? 0}|v${labels.videos?.length ?? 0}|g${labels.suggestions?.length ?? 0}|s${sk}`;
 }
 
 export type FireAction = "full" | "append" | "noop";
@@ -183,8 +186,8 @@ export interface RunIncrementalAutosaveDeps {
 /**
  * Run one incremental autosave: decide, then either rewrite the base (and
  * truncate the journal) or append a delta record per dirty frame. Returns the
- * action taken. Any dirty frame that no longer exists (e.g. raced with a
- * structural op) is skipped; if that leaves nothing to append, it's a no-op.
+ * action taken. A dirty frame that no longer exists (deleted, or its creation
+ * undone) is journaled as a deletion so recovery doesn't bring it back.
  */
 export async function runIncrementalAutosave(
   deps: RunIncrementalAutosaveDeps,
@@ -242,13 +245,16 @@ export async function runIncrementalAutosave(
     return "full";
   }
 
-  // Append: encode each still-present dirty frame against the base's indices.
+  // Append: encode each dirty frame against the base's indices.
   const index = buildBaseIndex(labels);
   const records: Uint8Array[] = [];
   for (const fk of drained.frames) {
     const lf = labels.find({ video: fk.video, frameIdx: fk.frameIdx })[0];
-    if (!lf) continue; // frame gone (raced a structural op) — skip
-    records.push(frameDeltaToRecord(encodeFrameDelta(lf, index)));
+    const delta = lf
+      ? encodeFrameDelta(lf, index)
+      : encodeFrameDeletion(fk.video, fk.frameIdx, index);
+    if (delta.v < 0) continue; // video not in the base — nothing to reference
+    records.push(frameDeltaToRecord(delta));
   }
   if (records.length === 0) return "noop";
   await store.appendRecords(records);

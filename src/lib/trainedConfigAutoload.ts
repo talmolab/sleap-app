@@ -52,8 +52,32 @@ export interface ResolveSlotConfigOptions {
 }
 
 /**
- * Pick the config source for one slot: the matching trained run's
- * `training_config.yaml` if `discovered` has one for this slot's head, else
+ * Read the config a trained run was launched with. sleap-nn writes two:
+ * `initial_config.yaml` (as given) and `training_config.yaml`, where every
+ * Auto value is replaced by what it resolved to for that run's data
+ * (max_height/max_width, crop_size, train_steps_per_epoch, ...). Reloading the
+ * resolved one would freeze those Auto boxes at the old data's values, so
+ * prefer the initial config; older runs without one fall back to the resolved
+ * config. Architecture fields (max_stride, in_channels, filters) are concrete
+ * in both — the app resolves them before launch — so a checkpoint from the run
+ * stays loadable for Resume/Fine-tune either way. Throws if neither is readable.
+ */
+export async function readTrainedRunConfig(
+  runPath: string,
+  fs: TrainedConfigFsAccess,
+): Promise<{ yamlText: string; filename: string }> {
+  try {
+    const filename = "initial_config.yaml";
+    return { yamlText: await fs.readTextFile(await fs.join(runPath, filename)), filename };
+  } catch {
+    const filename = "training_config.yaml";
+    return { yamlText: await fs.readTextFile(await fs.join(runPath, filename)), filename };
+  }
+}
+
+/**
+ * Pick the config source for one slot: the matching trained run's config
+ * (see `readTrainedRunConfig`) if `discovered` has one for this slot's head, else
  * the baseline profile. Returns `null` only if neither exists (no trained run
  * AND no baseline for this head).
  */
@@ -69,12 +93,11 @@ export async function resolveSlotConfigSource(
     const trainedMatch = discovered.find((m) => headTypeMatches(headType, m));
     if (trainedMatch) {
       try {
-        const cfgPath = await fs.join(trainedMatch.path, "training_config.yaml");
-        const yamlText = await fs.readTextFile(cfgPath);
+        const { yamlText, filename } = await readTrainedRunConfig(trainedMatch.path, fs);
         const checkpointPath = trainedMatch.checkpointFile
           ? await fs.join(trainedMatch.path, trainedMatch.checkpointFile)
           : null;
-        return { yamlText, filename: "training_config.yaml", checkpointPath, source: "trained" };
+        return { yamlText, filename, checkpointPath, source: "trained" };
       } catch {
         // Unreadable/missing despite discovery — fall through to the baseline.
       }

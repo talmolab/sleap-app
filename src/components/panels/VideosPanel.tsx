@@ -7,6 +7,7 @@
  */
 
 import { useAppStore } from "../../stores/appStore";
+import { commandContext, ToggleGrayscale } from "@/commands";
 import { toast } from "@/lib/notify";
 import { cn } from "@/lib/utils";
 import {
@@ -48,7 +49,9 @@ import {
 } from "../../lib/resolveVideos";
 import {
   VideoImportList,
-  toVideoImportEntries,
+  prepareVideoImportEntries,
+  hdf5ImportOptions,
+  importGrayscale,
   type VideoImportEntry,
 } from "@/components/dialogs/VideoImportList";
 import { displayFrameCount } from "@/lib/videoFrameCount";
@@ -479,7 +482,7 @@ export function VideosPanel() {
     }
   };
 
-  /** Add every staged video from the Import Videos dialog, with its chosen grayscale flag. */
+  /** Add every staged video from the Import Videos dialog, with its chosen options. */
   const handleConfirmImport = async () => {
     if (!labels || !pendingImport) return;
     // View only: no videos added (relinking a missing video is still allowed).
@@ -488,7 +491,12 @@ export function VideosPanel() {
     try {
       const added: Video[] = [];
       for (const pv of pendingImport) {
-        const video = await addVideoFileToLabels(labels, pv, pv.grayscale);
+        const video = await addVideoFileToLabels(
+          labels,
+          pv,
+          importGrayscale(pv),
+          hdf5ImportOptions(pv)
+        );
         if (video) added.push(video);
       }
       if (added.length > 0) labels.reindex();
@@ -709,11 +717,22 @@ export function VideosPanel() {
       <Separator />
       <div className="px-2 pt-2">
         <VideoDropzone
-          onFiles={(picked) => setPendingImport(toVideoImportEntries(picked))}
+          onFiles={(picked) =>
+            void prepareVideoImportEntries(picked).then(setPendingImport)
+          }
           data-tutorial="add-videos-button"
         />
       </div>
       <div className="flex gap-1 p-2">
+        {/* PyQt's Videos dock button: flips every video, silently (undoable). */}
+        <Button
+          variant="subtle"
+          size="xs"
+          disabled={!currentVideo}
+          onClick={() => void commandContext.execute(ToggleGrayscale)}
+        >
+          Toggle Grayscale
+        </Button>
         <Button
           variant="subtle"
           size="xs"
@@ -763,8 +782,7 @@ export function VideosPanel() {
           <DialogHeader>
             <DialogTitle>Import Videos</DialogTitle>
             <DialogDescription>
-              Choose which video(s) to import as grayscale. This can&apos;t be
-              changed after import.
+              Choose the import options for each video.
             </DialogDescription>
           </DialogHeader>
           {pendingImport && (

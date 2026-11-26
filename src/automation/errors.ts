@@ -8,6 +8,8 @@ export type AutomationErrorCode =
   | "NO_QC_RUN"
   | "QC_RUNNING"
   | "UNKNOWN_FLAG"
+  | "UNKNOWN_PREDICTION"
+  | "NO_PREDICTIONS"
   | "UNKNOWN_RENDER"
   | "UNKNOWN_PROPOSAL"
   | "UNKNOWN_TOOL"

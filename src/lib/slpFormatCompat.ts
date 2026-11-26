@@ -84,11 +84,14 @@ export type RecordMetadataValue = boolean | number | string;
 /** The metadata of one instance, labeled frame or bounding box. */
 export type RecordMetadata = Record<string, RecordMetadataValue>;
 
-/** The fields every `SlpFormatError` carries. */
-export interface SlpFormatErrorLike extends Error {
-  labelsPath: string;
-  formatId: number | null;
-  unsupportedFeatures: string[];
+/** The fields an `SlpFormatError` carries (including Worker-serialized copies). */
+export interface SlpFormatErrorLike {
+  name?: string;
+  message: string;
+  labelsPath?: string;
+  formatId?: number | null;
+  unsupportedFeatures?: string[];
+  requiredFeatures?: string[];
 }
 
 /** An `SlpFormat3ChoiceError`: an `SlpFormatError` with the drop summary. */
@@ -97,24 +100,30 @@ export interface SlpFormat3ChoiceErrorLike extends SlpFormatErrorLike {
 }
 
 // ---------------------------------------------------------------------------
-// Errors (detected by name: the old pin has no such classes to compare with)
+// Errors (detected by instance or name, including Worker-serialized copies)
 // ---------------------------------------------------------------------------
 
-function errorNamed(err: unknown, names: readonly string[]): err is Error {
-  return err instanceof Error && names.includes(err.name);
+function errorNamed(err: unknown, names: readonly string[]): err is { name: string; message: string } {
+  if (typeof err !== "object" || err === null) return false;
+  const candidate = err as { name?: unknown; message?: unknown };
+  return (
+    typeof candidate.name === "string" &&
+    names.includes(candidate.name) &&
+    typeof candidate.message === "string"
+  );
 }
 
-/** sleap-io.js refused the file (any `SlpFormatError`, the 3.0 choice included). */
+/** sleap-io.js refused the file (any `SlpFormatError`, including Worker-serialized copies). */
 export function isSlpFormatError(err: unknown): err is SlpFormatErrorLike {
-  return (
-    errorNamed(err, ["SlpFormatError", "SlpFormat3ChoiceError", "SlpTableError"]) &&
-    "formatId" in err
-  );
+  const Ctor = (sio as unknown as { SlpFormatError?: new (...args: never[]) => Error })
+    .SlpFormatError;
+  if (typeof Ctor === "function" && err instanceof Ctor) return true;
+  return errorNamed(err, ["SlpFormatError", "SlpFormat3ChoiceError", "SlpTableError"]);
 }
 
 /** A format 3.0 file whose tables are inconsistent (`SlpTableError`). */
 export function isSlpTableError(err: unknown): err is SlpFormatErrorLike {
-  return errorNamed(err, ["SlpTableError"]) && "formatId" in err;
+  return errorNamed(err, ["SlpTableError"]);
 }
 
 /** A format 3.0 file was read without the `format3` option. */
@@ -123,13 +132,14 @@ export function isSlpFormat3ChoiceError(
 ): err is SlpFormat3ChoiceErrorLike {
   return (
     errorNamed(err, ["SlpFormat3ChoiceError"]) &&
-    typeof (err as { summary?: unknown }).summary === "object"
+    typeof (err as { summary?: unknown }).summary === "object" &&
+    (err as { summary?: unknown }).summary !== null
   );
 }
 
 /** A writer refused labels opened view-only. */
 export function isSlpViewOnlyError(err: unknown): err is Error {
-  return errorNamed(err, ["SlpViewOnlyError"]);
+  return err instanceof Error && err.name === "SlpViewOnlyError";
 }
 
 // ---------------------------------------------------------------------------

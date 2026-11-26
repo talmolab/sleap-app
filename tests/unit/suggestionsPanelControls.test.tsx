@@ -18,6 +18,7 @@ import {
   within,
 } from "@testing-library/react";
 import { useAppStore } from "@/stores/appStore";
+import { dirtyFrameTracker } from "@/lib/autosaveDirty";
 import {
   Labels,
   Instance,
@@ -105,6 +106,24 @@ describe("SuggestionsPanel controls (#159)", () => {
     // Clicking again must NOT add a duplicate.
     fireEvent.click(screen.getByRole("button", { name: /add current/i }));
     expect(useAppStore.getState().labels!.suggestions.length).toBe(1);
+  });
+
+  it("changing the list marks the autosave structural (suggestions aren't in the frame journal)", async () => {
+    const { labels, video } = makeProject();
+    useAppStore.getState().setLabels(labels, "test.slp");
+    useAppStore.getState().setVideo(video);
+    dirtyFrameTracker.clear();
+
+    const { SuggestionsPanel } = await import(
+      "@/components/panels/SuggestionsPanel"
+    );
+    render(<SuggestionsPanel />);
+    fireEvent.click(screen.getByRole("button", { name: /add current/i }));
+
+    await waitFor(() => {
+      expect(useAppStore.getState().labels!.suggestions.length).toBe(1);
+    });
+    expect(dirtyFrameTracker.needsFullSnapshot).toBe(true);
   });
 
   it("selecting a row then Remove deletes that specific suggestion", async () => {

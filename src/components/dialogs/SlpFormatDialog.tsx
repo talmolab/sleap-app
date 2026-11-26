@@ -22,8 +22,38 @@ import {
   formatLabel,
   legacyCopyCommand,
   refusalReason,
+  SLEAP_APP_RELEASES_PAGE_URL,
 } from "@/lib/slpAccess";
+import { isTauri } from "@/platform/index";
+import { useAppStore } from "@/stores/appStore";
 import type { Format3Summary } from "@/lib/slpFormatCompat";
+
+/** Action invoked by the refusal modal's `[Upgrade]` button (exported for unit tests). */
+export function runSlpFormatUpgradeAction(): void {
+  const formatStore = useSlpFormatStore.getState();
+  formatStore.respond("ok");
+
+  if (isTauri) {
+    const app = useAppStore.getState();
+    if (app.mergeProjectDialogOpen) {
+      app.setMergeProjectDialogOpen(false);
+    }
+    if (app.projectLoaded) {
+      if (app.hiddenPanels.includes("environment")) {
+        app.set(
+          "hiddenPanels",
+          app.hiddenPanels.filter((id) => id !== "environment"),
+        );
+      }
+      app.openPanel("environment");
+    } else {
+      formatStore.requestWelcomeEnvironment();
+    }
+    return;
+  }
+
+  window.open(SLEAP_APP_RELEASES_PAGE_URL, "_blank", "noopener,noreferrer");
+}
 
 /** What saving in the 2.x layout drops, as a list (or the lossless note). */
 function DropList({ summary }: { summary: Format3Summary }) {
@@ -130,7 +160,11 @@ export function SlpFormatDialog() {
           <>
             <DialogHeader>
               <DialogTitle>{title(prompt)}</DialogTitle>
-              {prompt.kind !== "refused" && (
+              {prompt.kind === "refused" ? (
+                <DialogDescription className="sr-only">
+                  This file uses an SLP format that cannot be opened in this version of SLEAP.
+                </DialogDescription>
+              ) : (
                 <DialogDescription>
                   <span className="font-medium text-foreground">{prompt.fileName}</span>{" "}
                   is in SLP format {formatLabel(prompt.summary.formatId)}. This
@@ -173,9 +207,25 @@ export function SlpFormatDialog() {
 
             <div className="flex flex-wrap justify-end gap-2 pt-1">
               {prompt.kind === "refused" ? (
-                <Button size="sm" onClick={() => respond("ok")}>
-                  OK
-                </Button>
+                <>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    data-testid="slp-format-refusal-cancel"
+                    onClick={() => respond("ok")}
+                  >
+                    Cancel
+                  </Button>
+                  <Button
+                    type="button"
+                    size="sm"
+                    data-testid="slp-format-refusal-upgrade"
+                    onClick={runSlpFormatUpgradeAction}
+                  >
+                    Upgrade
+                  </Button>
+                </>
               ) : (
                 <>
                   <Button variant="outline" size="sm" onClick={() => respond(null)}>

@@ -65,6 +65,9 @@ function Toggle({
     | "showLabels"
     | "showEdges"
     | "showBboxes"
+    | "showCentroids"
+    | "showPoseBboxes"
+    | "poseBboxIncludePredicted"
     | "showNonVisibleNodes"
     | "colorPredicted"
     | "showInset"
@@ -95,6 +98,63 @@ function Toggle({
       />
       {label}
     </label>
+  );
+}
+
+/**
+ * Settings for View ▸ Show Boxes Around Poses, shown while it's on: padding,
+ * whether predictions get boxes, and a way to save the shown boxes.
+ */
+function PoseBboxControls() {
+  const show = useAppStore((s) => s.showPoseBboxes);
+  const padding = useAppStore((s) => s.poseBboxPadding);
+  const set = useAppStore((s) => s.set);
+  const labels = useAppStore((s) => s.labels);
+  useAppStore((s) => s.overlayVersion); // recheck for drawn boxes after edits
+  const [draft, setDraft] = useState(String(padding));
+  useEffect(() => setDraft(String(padding)), [padding]);
+  if (!show) return null;
+
+  const hasDrawnBoxes = !!labels?.labeledFrames.some((lf) => lf.bboxes.some((b) => !b.isPredicted));
+  const commit = () => {
+    const n = Number(draft);
+    const value = Number.isFinite(n) && n > 0 ? n : 0;
+    set("poseBboxPadding", value);
+    setDraft(String(value));
+  };
+
+  return (
+    <div className="ml-5 space-y-1.5 text-xs">
+      <label className="flex items-center justify-between gap-2">
+        <span className="text-muted-foreground">Padding (px)</span>
+        <input
+          type="number"
+          min={0}
+          value={draft}
+          onChange={(e) => setDraft(e.target.value)}
+          onBlur={commit}
+          onKeyDown={(e) => e.key === "Enter" && commit()}
+          className="h-6 w-16 rounded border bg-background px-1 text-right"
+          aria-label="Padding of boxes around poses, in pixels"
+        />
+      </label>
+      <Toggle label="Include predictions" storeKey="poseBboxIncludePredicted" />
+      {hasDrawnBoxes && (
+        <p className="text-muted-foreground">
+          This project has drawn boxes, so a box detector trains on those (sleap-nn&apos;s
+          &quot;auto&quot; box source), not on these.
+        </p>
+      )}
+      <Button
+        variant="outline"
+        size="sm"
+        className="h-6 w-full text-xs"
+        disabled={!labels}
+        onClick={() => set("bboxFromPosesOpen", true)}
+      >
+        Make Shown Boxes Real…
+      </Button>
+    </div>
   );
 }
 
@@ -426,6 +486,9 @@ export function ViewPanel() {
         <Toggle label="Show labels" storeKey="showLabels" />
         <Toggle label="Show edges" storeKey="showEdges" />
         <Toggle label="Show bounding boxes" storeKey="showBboxes" />
+        <Toggle label="Show centroids" storeKey="showCentroids" />
+        <Toggle label="Show boxes around poses" storeKey="showPoseBboxes" />
+        <PoseBboxControls />
         <Toggle label="Show non-visible nodes" storeKey="showNonVisibleNodes" />
         <DisplayModeSelect />
       </Section>

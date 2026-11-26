@@ -18,6 +18,11 @@ import { useAppStore } from "../../stores/appStore";
 import { commandContext } from "../../commands/CommandContext";
 import { videoFrameCount } from "@/lib/inferFrameCount";
 import {
+  boxesBeyondMaxInstances,
+  boxesOnTrack,
+  boxesOnUserLabeledFrames,
+  boxesOutsideFrameRange,
+  boxesWithLowScore,
   predictionsBeyondMaxInstances,
   predictionsOnUserLabeledFrames,
   predictionsOutsideFrameRange,
@@ -97,32 +102,42 @@ export function DeletePredictionsDialog({
   // Get available tracks
   const tracks = useMemo(() => labels?.tracks ?? [], [labels]);
 
-  // Compute preview count based on current filter settings
-  const previewCount = useMemo(() => {
-    if (!labels) return 0;
+  // Compute preview counts (instances, and predicted boxes from a box
+  // detector) based on current filter settings
+  const { count: previewCount, boxCount: previewBoxCount } = useMemo(() => {
+    if (!labels) return { count: 0, boxCount: 0 };
     let count = 0;
+    let boxCount = 0;
 
     switch (mode) {
       case "score":
-        if (video) count = predictionsWithLowScore(labels, video, scoreThreshold).length;
+        if (video) {
+          count = predictionsWithLowScore(labels, video, scoreThreshold).length;
+          boxCount = boxesWithLowScore(labels, video, scoreThreshold).length;
+        }
         break;
       case "range":
-        if (video) count = predictionsOutsideFrameRange(labels, video, rangeStart, rangeEnd).length;
+        if (video) {
+          count = predictionsOutsideFrameRange(labels, video, rangeStart, rangeEnd).length;
+          boxCount = boxesOutsideFrameRange(labels, video, rangeStart, rangeEnd).length;
+        }
         break;
       case "labeled":
         if (labeledAllVideos || video) {
-          count = predictionsOnUserLabeledFrames(
-            labels,
-            labeledAllVideos ? null : (video ?? null),
-            unlinkedOnly,
-          ).length;
+          const scope = labeledAllVideos ? null : (video ?? null);
+          count = predictionsOnUserLabeledFrames(labels, scope, unlinkedOnly).length;
+          boxCount = boxesOnUserLabeledFrames(labels, scope, unlinkedOnly).length;
         }
         break;
       case "maxCount":
-        if (video) count = predictionsBeyondMaxInstances(labels, video, maxCount).length;
+        if (video) {
+          count = predictionsBeyondMaxInstances(labels, video, maxCount).length;
+          boxCount = boxesBeyondMaxInstances(labels, video, maxCount).length;
+        }
         break;
       case "track": {
         const trackName = selectedTrack === "__untracked__" ? null : selectedTrack;
+        boxCount = boxesOnTrack(labels, trackName).length;
         for (const lf of labels.labeledFrames) {
           for (const inst of lf.instances) {
             if (!(inst instanceof PredictedInstance)) continue;
@@ -137,6 +152,7 @@ export function DeletePredictionsDialog({
       }
       case "type":
         for (const lf of labels.labeledFrames) {
+          if (instanceType !== "user") boxCount += lf.bboxes.filter((b) => b.isPredicted).length;
           for (const inst of lf.instances) {
             if (instanceType === "predicted" && inst instanceof PredictedInstance) {
               count++;
@@ -150,7 +166,7 @@ export function DeletePredictionsDialog({
         break;
     }
 
-    return count;
+    return { count, boxCount };
   }, [labels, video, mode, scoreThreshold, rangeStart, rangeEnd, maxCount, selectedTrack, instanceType, labeledAllVideos, unlinkedOnly]);
 
   const handleDelete = useCallback(async () => {
@@ -422,7 +438,14 @@ export function DeletePredictionsDialog({
           {/* Preview count */}
           <div className="pt-2 border-t text-sm text-muted-foreground">
             <span className="font-medium text-foreground">{previewCount}</span>{" "}
-            instance{previewCount !== 1 ? "s" : ""} will be deleted
+            instance{previewCount !== 1 ? "s" : ""}
+            {previewBoxCount > 0 && (
+              <>
+                {" "}and <span className="font-medium text-foreground">{previewBoxCount}</span>{" "}
+                predicted box{previewBoxCount !== 1 ? "es" : ""}
+              </>
+            )}{" "}
+            will be deleted
           </div>
         </div>
 
@@ -433,7 +456,7 @@ export function DeletePredictionsDialog({
           <Button
             variant="destructive"
             onClick={handleDelete}
-            disabled={previewCount === 0 || (mode === "range" && !rangeValid)}
+            disabled={previewCount + previewBoxCount === 0 || (mode === "range" && !rangeValid)}
           >
             Delete
           </Button>

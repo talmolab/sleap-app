@@ -11,7 +11,6 @@
 import {
   LabeledFrame,
   PredictedBoundingBox,
-  PredictedInstance,
   UserBoundingBox,
   type BoundingBox,
   type Instance,
@@ -22,6 +21,8 @@ import { UpdateTopic } from "../types";
 import type { Command } from "./types";
 import type { CommandContext } from "./CommandContext";
 import { frameHasContent } from "@/lib/frameLabeling";
+import { derivePoseBboxes, normalizeBboxPadding } from "@/lib/poseBboxes";
+import { copyMetadata, copySourceMark } from "@/lib/slpFormatCompat";
 
 const TOPICS = [UpdateTopic.Frame, UpdateTopic.Instance];
 
@@ -105,7 +106,15 @@ export const SetBboxGeometry: Command = {
   },
 };
 
-/** Delete a box. Params: `index`. Removes the frame if nothing else is on it. */
+/**
+ * Delete a box. Params: `index`.
+ *
+ * The frame is kept even when this was the last thing on it, as Delete
+ * Instance does. This is a frame-level edit for the incremental autosave, which
+ * journals frames that still exist: removing the frame meant the deletion was
+ * never journaled, and the box came back after crash recovery. An empty frame
+ * counts as unlabeled (`frameHasContent`).
+ */
 export const DeleteBbox: Command = {
   name: "DeleteBbox",
   topics: TOPICS,
@@ -114,11 +123,6 @@ export const DeleteBbox: Command = {
     if (!t) return;
     t.lf.bboxes.splice(t.index, 1);
     ctx.state.set("selectedBboxIdx", null);
-    const { labels } = ctx.state;
-    if (labels && !frameHasContent(t.lf)) {
-      labels.labeledFrames = labels.labeledFrames.filter((f) => f !== t.lf);
-      labels.reindex();
-    }
     touched(ctx, t.lf);
   },
 };
@@ -163,6 +167,22 @@ export function toUserBbox(box: BoundingBox): UserBoundingBox {
   user.identity = box.identity ?? null;
   user.identityScore = box.identityScore ?? null;
   user.categoryScore = box.categoryScore ?? null;
+  const srcEmb = box as BoundingBox & {
+    identityEmbedding?: unknown;
+    categoryEmbedding?: unknown;
+  };
+  const dstEmb = user as UserBoundingBox & {
+    identityEmbedding?: unknown;
+    categoryEmbedding?: unknown;
+  };
+  if (srcEmb.identityEmbedding !== undefined) {
+    dstEmb.identityEmbedding = srcEmb.identityEmbedding;
+  }
+  if (srcEmb.categoryEmbedding !== undefined) {
+    dstEmb.categoryEmbedding = srcEmb.categoryEmbedding;
+  }
+  copyMetadata(box, user);
+  copySourceMark(box, user);
   return user;
 }
 
@@ -274,26 +294,21 @@ export const DeletePredictedBboxes: Command = {
   },
 };
 
-/** Boxes "Boxes from Poses" would add to a frame (not yet added). */
-export function posesToBboxes(lf: LabeledFrame, padding: number): BoundingBox[] {
-  const linked = new Set(
-    lf.bboxes.filter((b) => !(b instanceof PredictedBoundingBox)).map((b) => b.instance),
-  );
-  const out: BoundingBox[] = [];
-  for (const inst of lf.instances) {
-    if (inst instanceof PredictedInstance || linked.has(inst)) continue;
-    const box = inst.toBbox({ padding });
-    if (!box.isEmpty) out.push(box);
-  }
-  return out;
+/**
+ * Boxes "Boxes from Poses" would add to a frame (not yet added): see
+ * `derivePoseBboxes` for the rules, which match sleap-nn's.
+ */
+export function posesToBboxes(lf: LabeledFrame, padding: number, includePredicted = false): BoundingBox[] {
+  return derivePoseBboxes(lf, { padding, includePredicted }).map((d) => d.box);
 }
 
 /**
- * Add a padded user box around every user pose instance that doesn't already
- * have a linked user box — on the current frame (`scope: "frame"`, default)
- * or every frame (`scope: "project"`). The same boxes sleap-nn derives at
- * train time with `bbox_source: instances`, but saved and editable. One undo
- * step. Params: `padding` (px, default 0), `scope`.
+ * Add a padded box around every pose instance that doesn't already have a
+ * linked box, on the current frame (`scope: "frame"`, default) or every frame
+ * (`scope: "project"`). These are the same boxes sleap-nn derives at train
+ * time with `bbox_source: instances`, but saved and editable. One undo step.
+ * Params: `padding` (px, default 0, at least 0), `scope`, `includePredicted`
+ * (also box predicted instances, as predicted boxes; default false).
  */
 export const BboxesFromPoses: Command = {
   name: "BboxesFromPoses",
@@ -302,8 +317,8 @@ export const BboxesFromPoses: Command = {
   execute(ctx, params) {
     const { labels } = ctx.state;
     if (!labels) return;
-    const padding = Number(params?.padding ?? 0);
-    const pad = Number.isFinite(padding) ? padding : 0;
+    const pad = normalizeBboxPadding(params?.padding ?? 0);
+    const includePredicted = params?.includePredicted === true;
     const project = params?.scope === "project";
     const frames = project ? labels.labeledFrames : [currentFrame(ctx)].filter((f): f is LabeledFrame => !!f);
     const snapshot = project
@@ -311,12 +326,14 @@ export const BboxesFromPoses: Command = {
       : ctx.takeSnapshot("BboxesFromPoses");
     let n = 0;
     for (const lf of frames) {
-      const add = posesToBboxes(lf, pad);
+      const add = posesToBboxes(lf, pad, includePredicted);
       lf.bboxes.push(...add);
       n += add.length;
     }
     if (n === 0) {
-      toast.info("Every user instance already has a box.");
+      toast.info(
+        includePredicted ? "Every instance already has a box." : "Every user instance already has a box.",
+      );
       return;
     }
     ctx.pushUndoSnapshot(snapshot);

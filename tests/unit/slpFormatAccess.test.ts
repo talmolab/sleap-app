@@ -13,7 +13,15 @@ vi.mock("@/lib/notify", () => ({
   toast: { success: vi.fn(), error: toastError, info: toastInfo, warning: vi.fn() },
 }));
 
-import { Instance, LabeledFrame, Labels, Skeleton, Video } from "@talmolab/sleap-io.js";
+import {
+  Instance,
+  LabeledFrame,
+  Labels,
+  PredictedBoundingBox,
+  PredictedInstance,
+  Skeleton,
+  Video,
+} from "@talmolab/sleap-io.js";
 import {
   copyMetadata,
   copyPoint,
@@ -47,7 +55,11 @@ import {
 import { useSlpFormatStore, type SlpFormatAnswer, type SlpFormatPrompt } from "@/stores/slpFormatStore";
 import { useAppStore } from "@/stores/appStore";
 import { CommandContext } from "@/commands/CommandContext";
-import { SetPointLocation } from "@/commands/editCommands";
+import { AddMissingInstanceNodes, SetNodes, SetPointLocation } from "@/commands/editCommands";
+import { AcceptCorrectedPrediction } from "@/commands/proposalCommands";
+import { toUserBbox } from "@/commands/bboxCommands";
+import { clonePredictedPoints, fillMissingUserNodes } from "@/lib/instancePlacement";
+import { labelsForSkeleton } from "@/lib/multiSkeletonInference";
 
 const SUMMARY: Format3Summary = {
   formatId: 3,
@@ -200,7 +212,7 @@ describe("dialog text", () => {
     expect(refusalReason(3, [], true)).toContain("inconsistent");
     const cmd = legacyCopyCommand("my data.slp");
     expect(cmd).toContain('sio.load_slp("my data.slp")');
-    expect(cmd).toContain('"my data.v2.slp", legacy_format=True, unlabeled_as="absent"');
+    expect(cmd).toContain('"my data.v2.slp", slp_version="v2"');
   });
 });
 
@@ -346,5 +358,160 @@ describe("View only projects", () => {
     expect(refuseEditIfViewOnly()).toBe(false);
     await ctx.execute(SetPointLocation, { nodeIdx: 0, x: 50, y: 60 });
     expect(inst.points[0].xy).toEqual([50, 60]);
+  });
+});
+
+describe("format 3.0 metadata and unlabeled preservation across commands", () => {
+  it("CommandContext undo shallow-copies instance, frame and bbox metadata", async () => {
+    const skeleton = new Skeleton({ nodes: ["a", "b"] });
+    const video = new Video({ filename: "v.mp4" });
+    const inst = new Instance({
+      skeleton,
+      points: [
+        { xy: [1, 2], visible: true, complete: true },
+        { xy: [3, 4], visible: true, complete: true },
+      ],
+    });
+    (inst as unknown as { metadata: Record<string, unknown> }).metadata = { annotator: "alice" };
+    const box = new PredictedBoundingBox({ x1: 0, y1: 0, x2: 10, y2: 10, score: 0.9 });
+    (box as unknown as { metadata: Record<string, unknown> }).metadata = { src: "det" };
+    const lf = new LabeledFrame({ video, frameIdx: 0, instances: [inst], bboxes: [box] });
+    (lf as unknown as { metadata: Record<string, unknown> }).metadata = { note: "initial" };
+    const labels = new Labels({ labeledFrames: [lf], videos: [video], skeletons: [skeleton] });
+
+    useAppStore.getState().setLabels(labels, "x.slp");
+    useAppStore.setState({ video, frameIdx: 0, labeledFrame: lf, instance: inst });
+    const ctx = new CommandContext();
+
+    await ctx.execute(SetNodes, { nodes: { 0: [20, 30] } });
+    // Mutate live metadata objects in place after the snapshot was taken.
+    ((lf as unknown as { metadata: Record<string, unknown> }).metadata).note = "mutated";
+    ((inst as unknown as { metadata: Record<string, unknown> }).metadata).annotator = "bob";
+    ((box as unknown as { metadata: Record<string, unknown> }).metadata).src = "edited";
+
+    expect(ctx.undo()).toBe(true);
+    const restoredLf = labels.labeledFrames[0];
+    expect(metadataOf(restoredLf)).toEqual({ note: "initial" });
+    expect(metadataOf(restoredLf.instances[0])).toEqual({ annotator: "alice" });
+    expect(metadataOf(restoredLf.bboxes[0])).toEqual({ src: "det" });
+  });
+
+  it("AcceptCorrectedPrediction labels edited/hidden nodes and keeps predicted metadata", async () => {
+    const skeleton = new Skeleton({ nodes: ["a", "b", "c"] });
+    const video = new Video({ filename: "v.mp4" });
+    const pred = new PredictedInstance({
+      skeleton,
+      points: [
+        { xy: [10, 10], visible: true, complete: false, score: 0.9 },
+        { xy: [Number.NaN, Number.NaN], visible: false, complete: false, score: 0 },
+        { xy: [Number.NaN, Number.NaN], visible: false, complete: false, score: 0 },
+      ],
+      score: 0.9,
+    });
+    // Mark nodes 1 & 2 as unlabeled (stand-in for format 3.0 points).
+    const unlabeledPts = pred.points.map((p, i) =>
+      i >= 1 ? { ...copyPoint(p), labeled: false as const } : copyPoint(p),
+    );
+    Object.defineProperty(pred, "points", { value: unlabeledPts, configurable: true });
+    (pred as unknown as { metadata: Record<string, unknown> }).metadata = { model: "v1" };
+
+    const lf = new LabeledFrame({ video, frameIdx: 0, instances: [pred] });
+    const labels = new Labels({ labeledFrames: [lf], videos: [video], skeletons: [skeleton] });
+    useAppStore.getState().setLabels(labels, "x.slp");
+    useAppStore.setState({ video, frameIdx: 0, labeledFrame: lf });
+    const ctx = new CommandContext();
+
+    // Verify clonePredictedPoints keeps labeled: false on unlabeled points.
+    const cloned = clonePredictedPoints(pred.points);
+    expect(isUnlabeledPoint(cloned[1])).toBe(true);
+    expect(isUnlabeledPoint(cloned[2])).toBe(true);
+
+    // Accept correction: move node 1 to [15, 25], explicitly hide node 2 (null).
+    await ctx.execute(AcceptCorrectedPrediction, {
+      instance: pred,
+      nodes: { 1: [15, 25], 2: null },
+    });
+    const accepted = lf.instances[0];
+    expect(metadataOf(accepted)).toEqual({ model: "v1" });
+    expect(accepted.points[1].xy).toEqual([15, 25]);
+    expect(accepted.points[1].visible).toBe(true);
+    expect(isPointLabeled(accepted.points[1])).toBe(true);
+    expect(accepted.points[2].visible).toBe(false);
+    expect(isPointLabeled(accepted.points[2])).toBe(true);
+  });
+
+  it("toUserBbox preserves metadata and embeddings", () => {
+    const pred = new PredictedBoundingBox({ x1: 1, y1: 2, x2: 10, y2: 20, score: 0.8 });
+    const idEmb = new Float32Array([0.1, 0.2]);
+    const catEmb = new Float32Array([0.3, 0.4]);
+    (pred as unknown as Record<string, unknown>).metadata = { reviewer: "ok" };
+    (pred as unknown as Record<string, unknown>).identityEmbedding = idEmb;
+    (pred as unknown as Record<string, unknown>).categoryEmbedding = catEmb;
+
+    const user = toUserBbox(pred);
+    expect(metadataOf(user)).toEqual({ reviewer: "ok" });
+    expect(metadataOf(user)).not.toBe(metadataOf(pred));
+    expect((user as unknown as Record<string, unknown>).identityEmbedding).toBe(idEmb);
+    expect((user as unknown as Record<string, unknown>).categoryEmbedding).toBe(catEmb);
+  });
+
+  it("labelsForSkeleton preserves LabeledFrame metadata", () => {
+    const skA = new Skeleton({ nodes: ["a"], name: "A" });
+    const skB = new Skeleton({ nodes: ["b"], name: "B" });
+    const video = new Video({ filename: "v.mp4" });
+    const lf = new LabeledFrame({
+      video,
+      frameIdx: 5,
+      instances: [
+        new Instance({ skeleton: skA, points: [{ xy: [1, 2], visible: true, complete: true }] }),
+        new Instance({ skeleton: skB, points: [{ xy: [3, 4], visible: true, complete: true }] }),
+      ],
+    });
+    (lf as unknown as { metadata: Record<string, unknown> }).metadata = { trial: 7 };
+    const labels = new Labels({ labeledFrames: [lf], videos: [video], skeletons: [skA, skB] });
+
+    const filtered = labelsForSkeleton(labels, skA);
+    expect(filtered.labeledFrames).toHaveLength(1);
+    expect(metadataOf(filtered.labeledFrames[0])).toEqual({ trial: 7 });
+    expect(metadataOf(filtered.labeledFrames[0])).not.toBe(metadataOf(lf));
+  });
+
+  it("fillMissingUserNodes and AddMissingInstanceNodes leave unlabeled nodes untouched", async () => {
+    const skeleton = new Skeleton({ nodes: ["a", "b", "c"] });
+    const video = new Video({ filename: "v.mp4" });
+    const inst = new Instance({
+      skeleton,
+      points: [
+        { xy: [10, 10], visible: true, complete: true },
+        { xy: [Number.NaN, Number.NaN], visible: false, complete: false },
+        { xy: [Number.NaN, Number.NaN], visible: false, complete: false },
+      ],
+    });
+    // Node 1 is absent (labeled), node 2 is unlabeled (labeled: false).
+    const pts = [
+      { xy: [10, 10] as [number, number], visible: true, complete: true, labeled: true },
+      { xy: [Number.NaN, Number.NaN] as [number, number], visible: false, complete: false, labeled: true },
+      { xy: [Number.NaN, Number.NaN] as [number, number], visible: false, complete: false, labeled: false },
+    ];
+    Object.defineProperty(inst, "points", { value: pts, configurable: true });
+    const lf = new LabeledFrame({ video, frameIdx: 0, instances: [inst] });
+    const labels = new Labels({ labeledFrames: [lf], videos: [video], skeletons: [skeleton] });
+
+    const added = fillMissingUserNodes(inst, labels, video, 0);
+    expect(added).toBe(1);
+    // Node 1 (absent) was filled; node 2 (unlabeled) stayed NaN + unlabeled.
+    expect(Number.isFinite(pts[1].xy[0])).toBe(true);
+    expect(pts[1].labeled).toBe(true);
+    expect(Number.isNaN(pts[2].xy[0])).toBe(true);
+    expect(pts[2].labeled).toBe(false);
+
+    // Double-clicking again when only an unlabeled node remains is a no-op (no undo step).
+    useAppStore.getState().setLabels(labels, "x.slp");
+    useAppStore.setState({ video, frameIdx: 0, labeledFrame: lf, instance: inst });
+    const ctx = new CommandContext();
+    await ctx.execute(AddMissingInstanceNodes, { instance: inst });
+    expect(ctx.canUndo).toBe(false);
+    expect(Number.isNaN(pts[2].xy[0])).toBe(true);
+    expect(pts[2].labeled).toBe(false);
   });
 });

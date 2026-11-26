@@ -160,9 +160,10 @@ describe("cancelled run folder", () => {
   });
 
   it("never deletes a folder that existed before the run (a reused run name)", async () => {
-    // The run name is resolved inside startTraining; make every name "exist" up front.
+    // The run name is resolved inside startTraining; make every run folder
+    // "exist" up front, without a best.ckpt (sleap-nn reuses such a folder).
     const realHas = dirs.has.bind(dirs);
-    dirs.has = (p: string) => p.startsWith("/data/models/") || realHas(p);
+    dirs.has = (p: string) => (p.startsWith("/data/models/") && !p.endsWith("/best.ckpt")) || realHas(p);
     try {
       const running = runStarted();
       const training = useTrainingStore.getState().startTraining({});
@@ -173,5 +174,23 @@ describe("cancelled run folder", () => {
       dirs.has = realHas;
     }
     expect(removedDirs).toEqual([]);
+  });
+
+  it("a reused name with a finished run trains into <name>-1, and Cancel deletes only that", async () => {
+    const realHas = dirs.has.bind(dirs);
+    // Every un-suffixed run name already holds a finished run (folder + best.ckpt).
+    dirs.has = (p: string) =>
+      (p.startsWith("/data/models/") && !/-\d+$/.test(p)) || realHas(p);
+    try {
+      const running = runStarted();
+      const training = useTrainingStore.getState().startTraining({});
+      await running;
+      await useTrainingStore.getState().cancelTraining();
+      await training;
+    } finally {
+      dirs.has = realHas;
+    }
+    expect(lastRunDir).toMatch(/^\/data\/models\/.+centroid.*-1$/);
+    expect(removedDirs).toEqual([lastRunDir]);
   });
 });

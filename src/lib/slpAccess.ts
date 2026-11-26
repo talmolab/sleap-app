@@ -124,15 +124,32 @@ export function canSaveLegacyCopy(formatId: number | null): boolean {
   return formatId === null || formatId < 4;
 }
 
+/** GitHub Releases landing page opened by `[Upgrade]` in the web build. */
+export const SLEAP_APP_RELEASES_PAGE_URL =
+  "https://github.com/talmolab/sleap-app/releases";
+
+/** Fallback parser when a Worker-serialized error retains only its `message`. */
+function parseFormatIdFromMessage(message: string): number | null {
+  const match = /\bSLP format\s+(\d+(?:\.\d+)?)\b/i.exec(message);
+  if (!match) return null;
+  const parsed = Number(match[1]);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function normalizeFeatureList(err: SlpFormatErrorLike): string[] {
+  const raw = err.unsupportedFeatures ?? err.requiredFeatures;
+  if (!Array.isArray(raw)) return [];
+  return raw.filter((item): item is string => typeof item === "string" && item.length > 0);
+}
+
 /** Python that saves a copy of `fileName` in the 2.x layout, which this app reads. */
 export function legacyCopyCommand(fileName: string): string {
-  const stem = fileName.replace(/\.slp$/i, "");
-  const quote = (s: string) => JSON.stringify(s);
+  const input = fileName && fileName !== "This file" ? fileName : "input.slp";
+  const stem = input.replace(/\.slp$/i, "");
   return [
     "import sleap_io as sio",
-    "",
-    `labels = sio.load_slp(${quote(fileName)})`,
-    `labels.save(${quote(`${stem}.v2.slp`)}, legacy_format=True, unlabeled_as="absent")`,
+    `labels = sio.load_slp(${JSON.stringify(input)})`,
+    `labels.save(${JSON.stringify(`${stem}.v2.slp`)}, slp_version="v2")`,
   ].join("\n");
 }
 
@@ -209,20 +226,39 @@ export function toastLoadError(title: string, err: unknown, description?: string
 
 /**
  * Show the dialog for a file sleap-io.js refused, and mark the error reported.
+ * Opens the modal without blocking so the caller's `finally` block clears any
+ * loading overlay immediately while leaving the refusal dialog visible.
  */
-export async function showSlpRefusal(
+export function showSlpRefusal(
   err: SlpFormatErrorLike,
   fileName?: string,
-): Promise<void> {
+): void {
   markReported(err);
-  await askSlpFormat({
+  const formatId =
+    typeof err.formatId === "number" && Number.isFinite(err.formatId)
+      ? err.formatId
+      : parseFormatIdFromMessage(err.message);
+  void askSlpFormat({
     kind: "refused",
     fileName: displayFileName(fileName ?? err.labelsPath),
-    formatId: err.formatId,
-    unsupportedFeatures: err.unsupportedFeatures ?? [],
+    formatId,
+    unsupportedFeatures: normalizeFeatureList(err),
     damagedTables: isSlpTableError(err),
     detail: err.message,
   });
+}
+
+/**
+ * If `err` is an `SlpFormatError` (live or Worker-serialized), ensure the
+ * refusal modal is open and return `true` so callers skip generic error toasts.
+ */
+export function handleSlpFormatError(
+  err: unknown,
+  fileName?: string,
+): boolean {
+  if (!isSlpFormatError(err) || isSlpFormat3ChoiceError(err)) return false;
+  if (!isReportedSlpError(err)) showSlpRefusal(err, fileName);
+  return true;
 }
 
 /**
@@ -270,7 +306,7 @@ export async function readWithFormatChoice<T>(
       return await read(access);
     }
     if (isSlpFormatError(err) && refusal === "dialog") {
-      await showSlpRefusal(err, fileName);
+      showSlpRefusal(err, fileName);
     }
     throw err;
   }

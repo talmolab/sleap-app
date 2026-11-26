@@ -7,7 +7,8 @@
 
 import { useState, useCallback } from "react";
 import { useAppStore } from "@/stores/appStore";
-import { shortcutBindings, STEP_SIZES, MAX_STEP_SIZE } from "@/lib/shortcuts";
+import { STEP_SIZES, MAX_STEP_SIZE } from "@/lib/shortcuts";
+import { currentShortcuts } from "@/lib/shortcutPrefs";
 import { formatShortcut } from "@/lib/formatShortcut";
 import { parseStepSize } from "@/lib/preferences";
 import {
@@ -24,8 +25,8 @@ import { Button } from "@/components/ui/button";
 
 /** Every key pair bound to a step, e.g. "⌘⇧→ / ⌘⇧←, ⌘⌥→ / ⌘⌥←". */
 export function stepKeysLabel(next: string, prev: string): string {
-  const fwd = shortcutBindings(next);
-  const back = shortcutBindings(prev);
+  const fwd = currentShortcuts(next);
+  const back = currentShortcuts(prev);
   return fwd
     .map((k, i) => (back[i] ? `${formatShortcut(k)} / ${formatShortcut(back[i])}` : formatShortcut(k)))
     .join(", ");
