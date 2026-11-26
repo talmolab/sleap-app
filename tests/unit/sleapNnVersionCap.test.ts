@@ -1,18 +1,30 @@
 /**
- * The app installs sleap-nn below 0.4 only, until its train, predict and track
- * flows have been tried against 0.4. Every path that picks a sleap-nn version
- * carries the cap: first install, changing the export extras, reinstall and
- * the Update button. An update at or above the cap is not announced.
+ * The app targets sleap-nn 0.4 (`>=0.4.0a0,<0.5`) alongside bare
+ * `--with sleap-io>=0.10.0a0,<0.11.0`, enforces Python `>=3.11,<3.14`,
+ * unlocks the Update button for existing 0.3.x installs, preserves the
+ * `backbones` extra across update/reinstall/toggle, and hides 0.5+ updates.
  */
 
 import { describe, it, expect, vi, beforeEach } from "../bun-test";
 import {
+  SLEAP_IO_WITH_SPEC,
+  SLEAP_NN_PYTHON_SPEC,
+  SLEAP_NN_VERSION_CAP,
+  SLEAP_NN_VERSION_FLOOR,
   SLEAP_NN_VERSION_SPECIFIER,
   capSleapNnUpdate,
+  comparePep440Versions,
+  exportExtras,
+  installedSleapNnVersion,
+  isPythonVersionCompatible,
   isSleapNnVersionBelowCap,
+  isSleapNnVersionBelowFloor,
+  parseSleapNnVersion,
   sleapNnInstallSpec,
+  sleapNnSupportsSlp3,
+  sleapNnUvExtraArgs,
 } from "@/lib/sleapNnVersion";
-import type { SleapNnExtras, UvTool } from "@/platform/backend";
+import type { PythonInterpreter, SleapNnExtras, UvTool } from "@/platform/backend";
 
 type Event = { event: string; data: { line?: string; success?: boolean } };
 
@@ -22,10 +34,13 @@ let gpu = "none";
 let installedExtras: SleapNnExtras = {
   onnx: false,
   tensorrt: false,
+  backbones: false,
+  pythonVersion: "3.12.7",
   tensorrtSupported: true,
   error: null,
 };
 let listedTools: UvTool[] = [];
+let listedInterpreters: PythonInterpreter[] = [];
 
 vi.mock("@/platform/index", () => ({ isTauri: true }));
 vi.mock("@/lib/notify", () => ({
@@ -60,7 +75,7 @@ vi.mock("@/platform/backend", () => ({
   }),
   detectSleapNnExtras: async () => installedExtras,
   listUvTools: async () => listedTools,
-  listPythonInterpreters: async () => [],
+  listPythonInterpreters: async () => listedInterpreters,
   listDownloadablePythons: async () => [],
   checkPython: unused,
   installPython: unused,
@@ -100,8 +115,10 @@ async function store() {
   useEnvironmentStore.setState({
     refresh: async () => {},
     tools: listedTools,
+    interpreters: listedInterpreters,
     extras: null,
     selectedPythonPath: null,
+    pythonCheck: null,
     lastNotifiedSleapNnVersion: null,
   });
   return useEnvironmentStore;
@@ -110,10 +127,10 @@ async function store() {
 function tool(overrides: Partial<UvTool> = {}): UvTool {
   return {
     name: "sleap-nn",
-    version: "0.3.5",
+    version: "0.4.0a0",
     commands: ["sleap-nn"],
     updateAvailable: true,
-    latestVersion: "0.4.0",
+    latestVersion: "0.5.0",
     ...overrides,
   };
 }
@@ -125,116 +142,265 @@ beforeEach(() => {
   installedExtras = {
     onnx: false,
     tensorrt: false,
+    backbones: false,
+    pythonVersion: "3.12.7",
     tensorrtSupported: true,
     error: null,
   };
   listedTools = [];
+  listedInterpreters = [];
 });
 
-describe("sleapNnInstallSpec", () => {
-  it("caps sleap-nn below 0.4", () => {
-    expect(SLEAP_NN_VERSION_SPECIFIER).toBe("<0.4");
-    expect(sleapNnInstallSpec(["torch-cpu"])).toBe("sleap-nn[torch-cpu]<0.4");
-    expect(sleapNnInstallSpec(["torch-cuda130", "export", "tensorrt"])).toBe(
-      "sleap-nn[torch-cuda130,export,tensorrt]<0.4"
+describe("sleapNnInstallSpec & sleapNnUvExtraArgs", () => {
+  it("targets >=0.4.0a0,<0.5 and includes bare sleap-io>=0.10.0a0,<0.11.0 (never [pyav])", () => {
+    expect(SLEAP_NN_VERSION_FLOOR).toBe("0.4.0a0");
+    expect(SLEAP_NN_VERSION_CAP).toBe("0.5");
+    expect(SLEAP_NN_VERSION_SPECIFIER).toBe(">=0.4.0a0,<0.5");
+    expect(SLEAP_IO_WITH_SPEC).toBe("sleap-io>=0.10.0a0,<0.11.0");
+    expect(SLEAP_IO_WITH_SPEC).not.toContain("pyav");
+    expect(sleapNnInstallSpec(["torch-cpu"])).toBe(
+      "sleap-nn[torch-cpu]>=0.4.0a0,<0.5"
     );
-    expect(sleapNnInstallSpec([])).toBe("sleap-nn<0.4");
+    expect(
+      sleapNnInstallSpec(["torch-cuda130", "export", "tensorrt", "backbones"])
+    ).toBe("sleap-nn[torch-cuda130,export,tensorrt,backbones]>=0.4.0a0,<0.5");
+    expect(sleapNnInstallSpec([])).toBe("sleap-nn>=0.4.0a0,<0.5");
+    expect(sleapNnUvExtraArgs(["--upgrade"])).toEqual([
+      "--upgrade",
+      "--torch-backend=auto",
+      "--with",
+      "sleap-io>=0.10.0a0,<0.11.0",
+    ]);
+  });
+
+  it("includes backbones in exportExtras when installed", () => {
+    expect(exportExtras({ onnx: false, tensorrt: false, backbones: true })).toEqual([
+      "backbones",
+    ]);
+    expect(exportExtras({ onnx: true, tensorrt: true, backbones: true })).toEqual([
+      "export",
+      "tensorrt",
+      "backbones",
+    ]);
   });
 });
 
-describe("isSleapNnVersionBelowCap", () => {
-  it("accepts every 0.3 and older release", () => {
-    for (const v of ["0.0.1", "0.1.1", "0.3.0", "0.3.5", "0.3.99", "v0.3.5"]) {
+describe("PEP 440 version parsing, ordering, Python range & SLP 3.0 gating", () => {
+  it("parses and orders PEP 440 pre-releases, finals, and post releases", () => {
+    expect(parseSleapNnVersion("0.4.0a0")).not.toBeNull();
+    expect(parseSleapNnVersion("not-a-version")).toBeNull();
+    expect(comparePep440Versions("0.3.5", "0.4.0a0")).toBe(-1);
+    expect(comparePep440Versions("0.4.0.dev0", "0.4.0a0")).toBe(-1);
+    expect(comparePep440Versions("0.4.0a0", "0.4.0a1")).toBe(-1);
+    expect(comparePep440Versions("0.4.0a1", "0.4.0b0")).toBe(-1);
+    expect(comparePep440Versions("0.4.0b0", "0.4.0rc1")).toBe(-1);
+    expect(comparePep440Versions("0.4.0rc1", "0.4.0")).toBe(-1);
+    expect(comparePep440Versions("0.4.0", "0.4.0.post1")).toBe(-1);
+    expect(comparePep440Versions("0.4.0a0", "0.3.4")).toBe(1);
+    expect(comparePep440Versions("0.3.0a1", "0.3.2")).toBe(-1);
+    expect(comparePep440Versions("v0.4.0a0", "0.4.0a0")).toBe(0);
+  });
+
+  it("gates native SLP 3.0 on >= 0.4.0a0 and stays conservative when unknown", () => {
+    expect(sleapNnSupportsSlp3("0.4.0a0")).toBe(true);
+    expect(sleapNnSupportsSlp3("0.4.0a1")).toBe(true);
+    expect(sleapNnSupportsSlp3("0.4.0")).toBe(true);
+    expect(sleapNnSupportsSlp3("0.3.5")).toBe(false);
+    expect(sleapNnSupportsSlp3(null)).toBe(false);
+    expect(sleapNnSupportsSlp3(undefined)).toBe(false);
+  });
+
+  it("accepts Python 3.11–3.13 and rejects 3.10 and 3.14+", () => {
+    expect(isPythonVersionCompatible("3.11.0")).toBe(true);
+    expect(isPythonVersionCompatible("3.12.7")).toBe(true);
+    expect(isPythonVersionCompatible("3.13.11")).toBe(true);
+    expect(isPythonVersionCompatible("3.10.14")).toBe(false);
+    expect(isPythonVersionCompatible("3.9.6")).toBe(false);
+    expect(isPythonVersionCompatible("3.14.0")).toBe(false);
+    expect(isPythonVersionCompatible(null)).toBe(false);
+  });
+
+  it("resolves installed sleap-nn version from uv tools first, then pythonCheck", () => {
+    expect(
+      installedSleapNnVersion({
+        tools: [tool({ version: "0.4.0a0" })],
+        pythonCheck: { sleapNnVersion: "0.3.5" },
+      })
+    ).toBe("0.4.0a0");
+    expect(
+      installedSleapNnVersion({
+        tools: [],
+        pythonCheck: { sleapNnVersion: "0.3.5" },
+      })
+    ).toBe("0.3.5");
+  });
+});
+
+describe("isSleapNnVersionBelowCap & isSleapNnVersionBelowFloor", () => {
+  it("accepts every 0.4 and older release below 0.5", () => {
+    for (const v of ["0.3.5", "0.4.0a0", "0.4.0a1", "0.4.0rc1", "0.4.0", "0.4.9", "v0.4.0"]) {
       expect(isSleapNnVersionBelowCap(v)).toBe(true);
     }
   });
 
-  it("rejects 0.4 and newer, pre-releases included", () => {
-    for (const v of ["0.4", "0.4.0", "0.4.0a0", "0.4.0rc1", "0.4.1", "0.10.0", "1.0.0"]) {
+  it("rejects 0.5 and newer, pre-releases included", () => {
+    for (const v of ["0.5", "0.5.0", "0.5.0a0", "0.5.0rc1", "0.10.0", "1.0.0"]) {
       expect(isSleapNnVersionBelowCap(v)).toBe(false);
     }
+  });
+
+  it("flags < 0.4.0a0 as below floor", () => {
+    expect(isSleapNnVersionBelowFloor("0.3.5")).toBe(true);
+    expect(isSleapNnVersionBelowFloor("0.4.0a0")).toBe(false);
+    expect(isSleapNnVersionBelowFloor("0.4.0")).toBe(false);
   });
 });
 
 describe("capSleapNnUpdate", () => {
-  it("hides an update at or above the cap", () => {
-    expect(capSleapNnUpdate(tool({ latestVersion: "0.4.0" }))).toEqual(
+  it("forces updateAvailable=true for 0.3.5 even when uv tool list --outdated ignores pre-releases", () => {
+    const stuck = tool({
+      version: "0.3.5",
+      updateAvailable: false,
+      latestVersion: "0.3.5",
+    });
+    expect(capSleapNnUpdate(stuck)).toEqual({
+      ...stuck,
+      updateAvailable: true,
+      latestVersion: "0.4.0a0",
+    });
+  });
+
+  it("keeps an in-range 0.4.x update reported for 0.3.5", () => {
+    const t = tool({
+      version: "0.3.5",
+      updateAvailable: true,
+      latestVersion: "0.4.0",
+    });
+    expect(capSleapNnUpdate(t)).toBe(t);
+  });
+
+  it("hides an update at or above the 0.5 cap for a 0.4.x install", () => {
+    expect(capSleapNnUpdate(tool({ latestVersion: "0.5.0" }))).toEqual(
+      tool({ updateAvailable: null, latestVersion: null })
+    );
+    expect(capSleapNnUpdate(tool({ latestVersion: "0.5.0a0" }))).toEqual(
       tool({ updateAvailable: null, latestVersion: null })
     );
   });
 
-  it("keeps an update below the cap", () => {
-    const t = tool({ latestVersion: "0.3.6" });
-    expect(capSleapNnUpdate(t)).toBe(t);
+  it("keeps an update within 0.4 (e.g. 0.4.0a0 -> 0.4.0a1 or 0.4.0)", () => {
+    const t1 = tool({ version: "0.4.0a0", latestVersion: "0.4.0a1" });
+    expect(capSleapNnUpdate(t1)).toBe(t1);
+    const t2 = tool({ version: "0.4.0a0", latestVersion: "0.4.0" });
+    expect(capSleapNnUpdate(t2)).toBe(t2);
   });
 
-  it("leaves an up-to-date or unchecked tool alone", () => {
-    // For an up-to-date tool the backend reports the installed version as
-    // the latest.
-    const upToDate = tool({ updateAvailable: false, latestVersion: "0.3.5" });
+  it("leaves an up-to-date or unchecked 0.4+ tool alone", () => {
+    const upToDate = tool({ version: "0.4.0a0", updateAvailable: false, latestVersion: "0.4.0a0" });
     expect(capSleapNnUpdate(upToDate)).toBe(upToDate);
-    const unknown = tool({ updateAvailable: null, latestVersion: null });
+    const unknown = tool({ version: "0.4.0a0", updateAvailable: null, latestVersion: null });
     expect(capSleapNnUpdate(unknown)).toBe(unknown);
   });
 
-  // A sleap-nn already at 0.4 must keep reading as up to date. Turning it
-  // into "unknown" would offer an Update that could only move it down.
   it("leaves an up-to-date sleap-nn at or above the cap alone", () => {
     const above = tool({
-      version: "0.4.0",
+      version: "0.5.0",
       updateAvailable: false,
-      latestVersion: "0.4.0",
+      latestVersion: "0.5.0",
     });
     expect(capSleapNnUpdate(above)).toBe(above);
   });
 
   it("leaves other tools alone", () => {
-    const other = tool({ name: "sleap-connect", latestVersion: "0.4.0" });
+    const other = tool({ name: "sleap-connect", latestVersion: "0.5.0" });
     expect(capSleapNnUpdate(other)).toBe(other);
   });
 });
 
-describe("every sleap-nn install the app runs is capped", () => {
+describe("every sleap-nn install passes >=0.4.0a0,<0.5, --with sleap-io>=0.10.0a0,<0.11.0, and Python >=3.11,<3.14", () => {
   it("first install, CPU", async () => {
     const s = await store();
     await s.getState().doInstallTool("sleap-nn");
     expect(calls).toEqual([
-      "install sleap-nn[torch-cpu]<0.4 --torch-backend=auto",
+      `install sleap-nn[torch-cpu]>=0.4.0a0,<0.5 --python ${SLEAP_NN_PYTHON_SPEC} --torch-backend=auto --with sleap-io>=0.10.0a0,<0.11.0`,
     ]);
   });
 
-  it("first install, CUDA, with a selected Python", async () => {
+  it("first install, CUDA, with a compatible selected Python", async () => {
     gpu = "cuda";
+    listedInterpreters = [
+      { key: "cpython-3.12", version: "3.12.7", path: "/opt/py/bin/python3", source: "system" },
+    ];
     const s = await store();
     s.setState({ selectedPythonPath: "/opt/py/bin/python3" });
     await s.getState().doInstallTool("sleap-nn");
     expect(calls).toEqual([
-      "install sleap-nn[torch-cuda130]<0.4 --python /opt/py/bin/python3 --torch-backend=auto",
+      "install sleap-nn[torch-cuda130]>=0.4.0a0,<0.5 --python /opt/py/bin/python3 --torch-backend=auto --with sleap-io>=0.10.0a0,<0.11.0",
     ]);
   });
 
-  it("changing the export extras", async () => {
+  it("overrides an incompatible selected Python (3.10 or 3.14) with >=3.11,<3.14", async () => {
+    listedInterpreters = [
+      { key: "cpython-3.10", version: "3.10.14", path: "/opt/py310/bin/python3", source: "system" },
+    ];
+    const s = await store();
+    s.setState({ selectedPythonPath: "/opt/py310/bin/python3" });
+    await s.getState().doInstallTool("sleap-nn");
+    expect(calls).toEqual([
+      `install sleap-nn[torch-cpu]>=0.4.0a0,<0.5 --python ${SLEAP_NN_PYTHON_SPEC} --torch-backend=auto --with sleap-io>=0.10.0a0,<0.11.0`,
+    ]);
+  });
+
+  it("changing export + backbones extras", async () => {
     gpu = "cuda";
     const s = await store();
-    await s.getState().installExtras({ onnx: true, tensorrt: true });
+    await s.getState().installExtras({ onnx: true, tensorrt: true, backbones: true });
     expect(calls).toEqual([
-      "install sleap-nn[torch-cuda130,export,tensorrt]<0.4 --force --torch-backend=auto",
+      `install sleap-nn[torch-cuda130,export,tensorrt,backbones]>=0.4.0a0,<0.5 --python ${SLEAP_NN_PYTHON_SPEC} --force --torch-backend=auto --with sleap-io>=0.10.0a0,<0.11.0`,
     ]);
   });
 
-  it("removing the export extras", async () => {
+  it("installExportExtra preserves already-installed backbones extra", async () => {
     const s = await store();
-    await s.getState().installExtras({ onnx: false, tensorrt: false });
+    s.setState({
+      extras: {
+        onnx: false,
+        tensorrt: false,
+        backbones: true,
+        pythonVersion: "3.12.7",
+        tensorrtSupported: true,
+        error: null,
+      },
+    });
+    await s.getState().installExportExtra(false);
     expect(calls).toEqual([
-      "install sleap-nn[torch-cpu]<0.4 --force --torch-backend=auto",
+      `install sleap-nn[torch-cpu,export,backbones]>=0.4.0a0,<0.5 --python ${SLEAP_NN_PYTHON_SPEC} --force --torch-backend=auto --with sleap-io>=0.10.0a0,<0.11.0`,
     ]);
   });
 
-  it("reinstall", async () => {
+  it("removing all optional extras", async () => {
+    const s = await store();
+    await s.getState().installExtras({ onnx: false, tensorrt: false, backbones: false });
+    expect(calls).toEqual([
+      `install sleap-nn[torch-cpu]>=0.4.0a0,<0.5 --python ${SLEAP_NN_PYTHON_SPEC} --force --torch-backend=auto --with sleap-io>=0.10.0a0,<0.11.0`,
+    ]);
+  });
+
+  it("reinstall preserves installed backbones & export extras", async () => {
+    installedExtras = { ...installedExtras, backbones: true };
     const s = await store();
     await s.getState().doReinstallTool("sleap-nn");
     expect(calls).toEqual([
-      "install sleap-nn[torch-cpu]<0.4 --force --torch-backend=auto",
+      `install sleap-nn[torch-cpu,backbones]>=0.4.0a0,<0.5 --python ${SLEAP_NN_PYTHON_SPEC} --force --torch-backend=auto --with sleap-io>=0.10.0a0,<0.11.0`,
+    ]);
+  });
+
+  it("reinstall still succeeds without extras when extras probe fails", async () => {
+    installedExtras = { ...installedExtras, error: "broken venv" };
+    const s = await store();
+    await s.getState().doReinstallTool("sleap-nn");
+    expect(calls).toEqual([
+      `install sleap-nn[torch-cpu]>=0.4.0a0,<0.5 --python ${SLEAP_NN_PYTHON_SPEC} --force --torch-backend=auto --with sleap-io>=0.10.0a0,<0.11.0`,
     ]);
   });
 
@@ -247,31 +413,38 @@ describe("every sleap-nn install the app runs is capped", () => {
 });
 
 describe("the Update button for sleap-nn", () => {
-  // `uv tool upgrade` follows the range recorded at install time; installs
-  // made before the cap recorded none and would move to 0.4.
-  it("runs a capped install with --upgrade, not `uv tool upgrade`", async () => {
+  it("runs a bounded install with --upgrade and --with sleap-io>=0.10.0a0,<0.11.0", async () => {
     const s = await store();
     await s.getState().doUpgradeTool("sleap-nn");
     expect(calls).toEqual([
-      "install sleap-nn[torch-cpu]<0.4 --upgrade --torch-backend=auto",
+      "install sleap-nn[torch-cpu]>=0.4.0a0,<0.5 --upgrade --torch-backend=auto --with sleap-io>=0.10.0a0,<0.11.0",
     ]);
     expect(s.getState().installStatus).toBe("done");
   });
 
-  it("keeps the interpreter the env already has", async () => {
+  it("keeps a compatible interpreter the env already has", async () => {
     const s = await store();
     s.setState({ selectedPythonPath: "/opt/py/bin/python3" });
     await s.getState().doUpgradeTool("sleap-nn");
     expect(calls[0]).not.toContain("--python");
   });
 
-  it("restates the extras the env has now", async () => {
-    gpu = "cuda";
-    installedExtras = { ...installedExtras, onnx: true, tensorrt: true };
+  it("switches to >=3.11,<3.14 when upgrading an old Python 3.10 venv", async () => {
+    installedExtras = { ...installedExtras, pythonVersion: "3.10.14" };
     const s = await store();
     await s.getState().doUpgradeTool("sleap-nn");
     expect(calls).toEqual([
-      "install sleap-nn[torch-cuda130,export,tensorrt]<0.4 --upgrade --torch-backend=auto",
+      `install sleap-nn[torch-cpu]>=0.4.0a0,<0.5 --python ${SLEAP_NN_PYTHON_SPEC} --upgrade --torch-backend=auto --with sleap-io>=0.10.0a0,<0.11.0`,
+    ]);
+  });
+
+  it("restates onnx, tensorrt, and backbones extras on update", async () => {
+    gpu = "cuda";
+    installedExtras = { ...installedExtras, onnx: true, tensorrt: true, backbones: true };
+    const s = await store();
+    await s.getState().doUpgradeTool("sleap-nn");
+    expect(calls).toEqual([
+      "install sleap-nn[torch-cuda130,export,tensorrt,backbones]>=0.4.0a0,<0.5 --upgrade --torch-backend=auto --with sleap-io>=0.10.0a0,<0.11.0",
     ]);
   });
 
@@ -281,9 +454,8 @@ describe("the Update button for sleap-nn", () => {
     await s.getState().doUpgradeTool("sleap-nn");
     expect(calls).toEqual([]);
     expect(s.getState().installStatus).toBe("error");
-    // Reinstall drops the export extras, and the message says so.
     expect(s.getState().installLog.join("\n")).toContain(
-      "without the ONNX and TensorRT extras"
+      "without optional extras"
     );
   });
 
@@ -291,18 +463,24 @@ describe("the Update button for sleap-nn", () => {
     installedExtras = { ...installedExtras, error: "python exited" };
     const s = await store();
     s.setState({
-      extras: { onnx: true, tensorrt: false, tensorrtSupported: true, error: null },
+      extras: {
+        onnx: true,
+        tensorrt: false,
+        backbones: true,
+        pythonVersion: "3.12.7",
+        tensorrtSupported: true,
+        error: null,
+      },
     });
     await s.getState().doUpgradeTool("sleap-nn");
     expect(calls).toEqual([
-      "install sleap-nn[torch-cpu,export]<0.4 --upgrade --torch-backend=auto",
+      "install sleap-nn[torch-cpu,export,backbones]>=0.4.0a0,<0.5 --upgrade --torch-backend=auto --with sleap-io>=0.10.0a0,<0.11.0",
     ]);
   });
 
-  // The capped install would move the env down, to the newest 0.3.
-  it("never downgrades a sleap-nn that is already at or above the cap", async () => {
+  it("never downgrades a sleap-nn that is already at or above the 0.5 cap", async () => {
     listedTools = [
-      tool({ version: "0.4.0", updateAvailable: false, latestVersion: "0.4.0" }),
+      tool({ version: "0.5.0", updateAvailable: false, latestVersion: "0.5.0" }),
     ];
     const s = await store();
     await s.getState().doUpgradeTool("sleap-nn");
@@ -321,12 +499,10 @@ describe("the Update button for sleap-nn", () => {
 });
 
 describe("the Environment panel's refresh", () => {
-  // The tests above replace refresh(); this one runs the real one, which
-  // feeds the panel's tool rows.
-  it("hides an update at or above the cap", async () => {
+  it("hides an update at or above the 0.5 cap", async () => {
     listedTools = [
-      tool({ latestVersion: "0.4.0" }),
-      tool({ name: "sleap-connect", version: "0.0.8", latestVersion: "0.4.0" }),
+      tool({ version: "0.4.0a0", latestVersion: "0.5.0" }),
+      tool({ name: "sleap-connect", version: "0.0.8", latestVersion: "0.5.0" }),
     ];
     const s = await store();
     await realRefresh!();
@@ -334,21 +510,26 @@ describe("the Environment panel's refresh", () => {
     expect(nn.updateAvailable).toBeNull();
     expect(nn.latestVersion).toBeNull();
     expect(connect.updateAvailable).toBe(true);
-    expect(connect.latestVersion).toBe("0.4.0");
+    expect(connect.latestVersion).toBe("0.5.0");
   });
 
-  it("keeps an update below the cap", async () => {
-    listedTools = [tool({ latestVersion: "0.3.6" })];
+  it("keeps an update within 0.4 and flags 0.3.5 as upgradable to 0.4.0a0", async () => {
+    listedTools = [tool({ version: "0.4.0a0", latestVersion: "0.4.0" })];
     const s = await store();
     await realRefresh!();
     expect(s.getState().tools[0].updateAvailable).toBe(true);
-    expect(s.getState().tools[0].latestVersion).toBe("0.3.6");
+    expect(s.getState().tools[0].latestVersion).toBe("0.4.0");
+
+    listedTools = [tool({ version: "0.3.5", updateAvailable: false, latestVersion: "0.3.5" })];
+    await realRefresh!();
+    expect(s.getState().tools[0].updateAvailable).toBe(true);
+    expect(s.getState().tools[0].latestVersion).toBe("0.4.0a0");
   });
 });
 
 describe("the update check", () => {
-  it("does not announce a release at or above the cap", async () => {
-    listedTools = [tool({ latestVersion: "0.4.0" })];
+  it("does not announce a release at or above the 0.5 cap", async () => {
+    listedTools = [tool({ version: "0.4.0a0", latestVersion: "0.5.0" })];
     const s = await store();
     await s.getState().checkSleapNnUpdateAndNotify();
     expect(toasts).toEqual([]);
@@ -357,11 +538,11 @@ describe("the update check", () => {
     expect(s.getState().lastNotifiedSleapNnVersion).toBeNull();
   });
 
-  it("still announces a release below the cap", async () => {
-    listedTools = [tool({ latestVersion: "0.3.6" })];
+  it("still announces a release within 0.4", async () => {
+    listedTools = [tool({ version: "0.4.0a0", latestVersion: "0.4.0" })];
     const s = await store();
     await s.getState().checkSleapNnUpdateAndNotify();
-    expect(toasts).toEqual(["sleap-nn v0.3.6 is available"]);
-    expect(s.getState().tools[0].latestVersion).toBe("0.3.6");
+    expect(toasts).toEqual(["sleap-nn v0.4.0 is available"]);
+    expect(s.getState().tools[0].latestVersion).toBe("0.4.0");
   });
 });

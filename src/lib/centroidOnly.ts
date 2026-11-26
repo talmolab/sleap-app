@@ -11,7 +11,7 @@
  *   skeleton, so the app asks for `--centroid-output centroid` and gets
  *   `PredictedCentroid`s in `LabeledFrame.centroids`, drawn on the canvas.
  */
-import { compareVersions } from "@/platform/inferenceArgs";
+import { comparePep440Versions } from "@/lib/sleapNnVersion";
 
 /** First sleap-nn with `--centroid_only` / `--centroid-output`. */
 export const MIN_SLEAP_NN_CENTROID_ONLY_VERSION = "0.3.5";
@@ -28,8 +28,8 @@ export function centroidOnlyProblem(opts: {
   if (opts.remote) {
     return "Centroid Only can't run on a worker yet: workers run `sleap-nn track`, which can't run a centroid model alone. Run it on this computer.";
   }
-  const core = opts.sleapNnVersion?.trim().replace(/^v/i, "").split(/[-+ ]/)[0];
-  if (core && /^\d+(\.\d+)*$/.test(core) && compareVersions(core, MIN_SLEAP_NN_CENTROID_ONLY_VERSION) < 0) {
+  const cmp = comparePep440Versions(opts.sleapNnVersion, MIN_SLEAP_NN_CENTROID_ONLY_VERSION);
+  if (cmp !== null && cmp < 0) {
     return `Centroid Only needs sleap-nn ${MIN_SLEAP_NN_CENTROID_ONLY_VERSION} or newer (installed: ${opts.sleapNnVersion}). Update it in the Environment panel.`;
   }
   return null;

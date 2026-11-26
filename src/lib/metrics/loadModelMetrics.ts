@@ -315,12 +315,15 @@ export const MODEL_TYPE_LABELS: Record<string, string> = {
   multi_class_topdown: "Multi-Class Top-Down",
   bbox_centernet: "Box Detector (CenterNet)",
   bbox_ssd: "Box Detector (SSD)",
+  bbox_detr: "Box Detector (DETR)",
 };
 
 const BACKBONE_LABELS: Record<string, string> = {
   unet: "UNet",
   convnext: "ConvNeXt",
   swint: "Swin-T",
+  pretrained: "Pretrained",
+  dinov2_windowed: "DINOv2 Windowed",
 };
 
 function titleCase(key: string): string {
@@ -395,6 +398,8 @@ export function parseTrainingConfig(yamlText: string): TrainingConfigInfo {
     architecture = BACKBONE_LABELS[bbKey] ?? titleCase(bbKey);
     if (bbVal && typeof bbVal === "object") {
       const bb = bbVal as Record<string, unknown>;
+      if (typeof bb.model_name === "string" && bb.model_name) architecture += ` (${bb.model_name})`;
+      else if (typeof bb.weights === "string" && bb.weights) architecture += ` (${bb.weights})`;
       if (typeof bb.max_stride === "number") architecture += `, max stride: ${bb.max_stride}`;
       if (typeof bb.filters === "number") architecture += `, filters: ${bb.filters}`;
     }

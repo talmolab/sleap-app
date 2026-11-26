@@ -15,6 +15,7 @@
  * nothing is reported here.
  */
 import type { InferenceConfig } from "@/stores/inferenceStore";
+import { normalizeIntegralRefinement } from "@/platform/inferenceArgs";
 import { INFERENCE_DEFAULTS as D } from "@/lib/inferenceDefaults";
 
 /** `worker.info.features` entry for a worker that applies every inference field the app sends. */
@@ -30,9 +31,20 @@ export function remoteIgnoredSettings(config: InferenceConfig, workerFeatures: r
   const out: string[] = [];
   const c = config;
   if (c.maxInstances != null) out.push("Max instances");
-  if (c.integralRefinement !== D.integralRefinement || (c.integralRefinement && c.integralPatchSize !== D.integralPatchSize)) {
+  const refinement = normalizeIntegralRefinement(c.integralRefinement);
+  const defaultRefinement = normalizeIntegralRefinement(D.integralRefinement);
+  if (
+    refinement !== defaultRefinement ||
+    (refinement !== "none" && c.integralPatchSize !== D.integralPatchSize)
+  ) {
     out.push("Integral refinement");
   }
+  if (c.precision && c.precision !== D.precision) out.push("Precision");
+  if (c.uploadBatches) out.push("Upload batches to GPU");
+  if (c.flipTest) out.push("Flip test");
+  if (c.rescore) out.push("Rescore");
+  if (c.bboxNmsIou != null) out.push("BBox NMS IoU");
+  if (c.slpVersion && c.slpVersion !== D.slpVersion) out.push("Output SLP format");
   if (
     (c.pipeline === "bottom-up" || c.pipeline === "bottom-up-id") &&
     (c.nPoints !== D.nPoints ||

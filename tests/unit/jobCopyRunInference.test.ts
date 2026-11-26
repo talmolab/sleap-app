@@ -16,7 +16,20 @@ const files = new Map<string, Uint8Array>();
 const removed: string[] = [];
 const commands: string[][] = [];
 const streamed: Array<[unknown, string, string | null]> = [];
+const saveSlpToBytesCalls: Array<[unknown, unknown]> = [];
+const realSaveSlpToBytes = sio.saveSlpToBytes;
 let sourceSize = 1000;
+
+vi.mock("@talmolab/sleap-io.js", () => ({
+  ...sio,
+  saveSlpToBytes: async (
+    labels: sio.Labels,
+    options?: Parameters<typeof sio.saveSlpToBytes>[1],
+  ) => {
+    saveSlpToBytesCalls.push([labels, options]);
+    return realSaveSlpToBytes(labels, options);
+  },
+}));
 
 vi.mock("@/platform/index", () => ({
   isTauri: true,
@@ -72,8 +85,9 @@ vi.mock("@/lib/notify", () => ({
 }));
 
 const { runInference } = await import("@/platform/backend");
-const { createJobLabelsCopy } = await import("@/lib/jobLabelsFile");
+const { createJobLabelsCopy, jobLabelsPath } = await import("@/lib/jobLabelsFile");
 const { useAppStore } = await import("@/stores/appStore");
+const { useEnvironmentStore } = await import("@/stores/environmentStore");
 
 /** A small project opened for editing from a format 3.0 file at /data/flies.slp. */
 function project(embedded = false): sio.Labels {
@@ -136,10 +150,12 @@ const COPY = /^\/cache\/job-copies\/sleap-job-inference-main-\d+-\d+\.slp$/;
 
 beforeEach(() => {
   useAppStore.setState(useAppStore.getInitialState());
+  useEnvironmentStore.setState({ tools: [], pythonCheck: null });
   files.clear();
   removed.length = 0;
   commands.length = 0;
   streamed.length = 0;
+  saveSlpToBytesCalls.length = 0;
   sourceSize = 1000;
 });
 
@@ -182,6 +198,65 @@ describe("runInference on a project whose file is in format 3.0", () => {
     await runInference(config(), "/data/flies.slp", () => {});
     expect(dataPath()).toBe("/data/flies.slp");
     expect(files.size).toBe(0);
+  });
+
+  it("bypasses the 2.x downgrade copy when local sleap-nn >= 0.4.0a0 is installed", async () => {
+    useEnvironmentStore.setState({
+      tools: [
+        {
+          name: "sleap-nn",
+          version: "0.4.0a0",
+          commands: ["sleap-nn"],
+          updateAvailable: false,
+          latestVersion: "0.4.0a0",
+        },
+      ],
+    });
+    useAppStore.getState().setLabels(project(), "flies.slp", "/data/flies.slp");
+    const copy = createJobLabelsCopy("training");
+    expect(await jobLabelsPath("/data/flies.slp", copy)).toBe("/data/flies.slp");
+    const res = await runInference(config(), "/data/flies.slp", () => {});
+    expect(res.success).toBe(true);
+    expect(dataPath()).toBe("/data/flies.slp");
+    expect(files.size).toBe(0);
+    expect(removed).toEqual([]);
+  });
+
+  it("gates per-skeleton inputLabels legacy layout on sleap-nn >= 0.4.0a0", async () => {
+    const labels = project();
+    useAppStore.getState().setLabels(labels, "flies.slp", "/data/flies.slp");
+
+    // Pre-0.4 (or unknown) sleap-nn downgrades per-skeleton inputLabels via legacyV2WriteOptions().
+    const legacyRes = await runInference(config(), "/data/flies.slp", () => {}, {
+      inputLabels: labels,
+      outputTag: "sk0",
+    });
+    expect(legacyRes.success).toBe(true);
+    expect(saveSlpToBytesCalls).toHaveLength(1);
+    expect(saveSlpToBytesCalls[0][0]).toBe(labels);
+    expect(saveSlpToBytesCalls[0][1]).toEqual({ slpVersion: "v2", unlabeledAs: "absent" });
+
+    // sleap-nn >= 0.4.0a0 reads SLP 3.0 natively, so no legacy layout option is passed.
+    saveSlpToBytesCalls.length = 0;
+    useEnvironmentStore.setState({
+      tools: [
+        {
+          name: "sleap-nn",
+          version: "0.4.0a0",
+          commands: ["sleap-nn"],
+          updateAvailable: false,
+          latestVersion: "0.4.0a0",
+        },
+      ],
+    });
+    const nativeRes = await runInference(config(), "/data/flies.slp", () => {}, {
+      inputLabels: labels,
+      outputTag: "sk0",
+    });
+    expect(nativeRes.success).toBe(true);
+    expect(saveSlpToBytesCalls).toHaveLength(1);
+    expect(saveSlpToBytesCalls[0][0]).toBe(labels);
+    expect(saveSlpToBytesCalls[0][1]).toBeUndefined();
   });
 });
 

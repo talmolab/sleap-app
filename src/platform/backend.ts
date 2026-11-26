@@ -10,6 +10,7 @@ import { sleapCmd } from "@/lib/sleapPlugin";
 import { saveSlpToBytes, type Labels, type Skeleton } from "@talmolab/sleap-io.js";
 import type { JobLabelsCopy } from "@/lib/jobLabelsFile";
 import { legacyV2WriteOptions } from "@/lib/slpFormat";
+import { installedSleapNnVersion, sleapNnSupportsSlp3 } from "@/lib/sleapNnVersion";
 import type { InferenceConfig } from "@/stores/inferenceStore";
 import {
   buildInferenceArgs,
@@ -224,6 +225,10 @@ export interface SleapNnExtras {
   onnx: boolean;
   /** sleap-nn's `[tensorrt]` extra: tensorrt + torch_tensorrt. */
   tensorrt: boolean;
+  /** sleap-nn's `[backbones]` extra: timm + transformers (DETR & pretrained ViT backbones). */
+  backbones?: boolean;
+  /** Python version of the installed sleap-nn venv (e.g. `"3.12.7"`), when probed. */
+  pythonVersion?: string | null;
   /**
    * Whether TensorRT is installable here at all. sleap-nn marks both tensorrt
    * deps linux/win-only, so on macOS the extra resolves to nothing — asking
@@ -559,17 +564,33 @@ export async function runInference(
   const tmp = await tempDir();
   const ts = Date.now();
 
+  // Resolve the installed sleap-nn version up front (preferring the uv-tool
+  // entry, which is what actually runs, with pythonCheck as fallback). This
+  // drives both SLP 3.0 native passthrough (>= 0.4.0a0) and `predict` vs
+  // legacy `track` subcommand selection.
+  const program = "sleap-nn";
+  let sleapNnVersion: string | null = null;
+  try {
+    const { useEnvironmentStore } = await import("@/stores/environmentStore");
+    sleapNnVersion = installedSleapNnVersion(useEnvironmentStore.getState());
+  } catch {
+    sleapNnVersion = null;
+  }
+  const nativeSlp3 = sleapNnSupportsSlp3(sleapNnVersion);
+
   // Use the original project file if available, otherwise serialize. A
-  // project file still in SLP format 3.0 is read through the job's 2.x copy,
-  // and a per-skeleton input (opts.inputLabels) is written further down —
-  // both only when the run doesn't read the video file directly.
+  // project file still in SLP format 3.0 is read through the job's 2.x copy
+  // only when the installed sleap-nn is < 0.4.0a0 (or unknown); sleap-nn
+  // 0.4.0a0+ reads SLP 3.0 natively (via sleap-io >= 0.10.0a0). A per-skeleton
+  // input (opts.inputLabels) is written further down — both only when the run
+  // doesn't read the video file directly.
   const { projectFileIsFormat3, createJobLabelsCopy } = await import("@/lib/jobLabelsFile");
   let dataPath: string | null = null;
   if (opts.inputLabels) {
     if (projectPath) console.log("[inference] Using project file:", projectPath);
   } else if (projectPath) {
     const { useAppStore } = await import("@/stores/appStore");
-    if (!projectFileIsFormat3(useAppStore.getState().labels)) {
+    if (!projectFileIsFormat3(useAppStore.getState().labels) || nativeSlp3) {
       dataPath = projectPath;
       console.log("[inference] Using project file:", dataPath);
     }
@@ -581,7 +602,9 @@ export async function runInference(
     if (!labels) throw new Error("No project loaded");
     dataPath = await join(tmp, `sleap_inference_input_${ts}.slp`);
     console.log("[inference] Serializing project to temp file:", dataPath);
-    const bytes = await saveSlpToBytes(labels, legacyV2WriteOptions());
+    const bytes = nativeSlp3
+      ? await saveSlpToBytes(labels)
+      : await saveSlpToBytes(labels, legacyV2WriteOptions());
     await writeFile(dataPath, bytes);
     console.log("[inference] Wrote %d bytes to %s", bytes.byteLength, dataPath);
   }
@@ -617,14 +640,10 @@ export async function runInference(
   }
 
   // Pick the sleap-nn subcommand by installed version: the new `predict`
-  // (Predictor) pipeline when available (>= 0.2.0), else fall back to the legacy
+  // (Predictor) pipeline when available (>= 0.3.2), else fall back to the legacy
   // `track` command — present in every sleap-nn version and exactly what the app
   // invoked before the `predict` migration. Older installs are never blocked and
   // see no regression; only newer installs get the new pipeline.
-  const program = "sleap-nn";
-  const { useEnvironmentStore } = await import("@/stores/environmentStore");
-  const sleapNnVersion =
-    useEnvironmentStore.getState().pythonCheck?.sleapNnVersion ?? null;
   const subcommand = pickInferenceSubcommand(sleapNnVersion);
   if (subcommand === "track") {
     console.log(
@@ -699,7 +718,9 @@ export async function runInference(
     const { writeFile } = await import("@tauri-apps/plugin-fs");
     const tag = opts.outputTag ? `_${opts.outputTag}` : "";
     dataPath = await join(tmp, `sleap_inference_input_${ts}${tag}.slp`);
-    const bytes = await saveSlpToBytes(opts.inputLabels, legacyV2WriteOptions());
+    const bytes = nativeSlp3
+      ? await saveSlpToBytes(opts.inputLabels)
+      : await saveSlpToBytes(opts.inputLabels, legacyV2WriteOptions());
     await writeFile(dataPath, bytes);
     console.log("[inference] Wrote per-skeleton input (%d bytes) to %s", bytes.byteLength, dataPath);
   }

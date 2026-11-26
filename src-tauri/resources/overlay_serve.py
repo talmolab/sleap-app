@@ -258,10 +258,11 @@ def _warmup_frame_hw_ch():
     ch = 1
     try:
         bb = cc.model_config.backbone_config
-        for k in ("unet", "convnext", "swint"):
+        for k in ("unet", "convnext", "swint", "pretrained", "dinov2_windowed"):
             sub = getattr(bb, k, None)
-            if sub is not None and getattr(sub, "in_channels", None) is not None:
-                ch = int(sub.in_channels)
+            if sub is not None:
+                in_ch = getattr(sub, "in_channels", None)
+                ch = int(in_ch) if in_ch is not None else (3 if k in ("pretrained", "dinov2_windowed") else 1)
                 break
     except Exception:
         pass

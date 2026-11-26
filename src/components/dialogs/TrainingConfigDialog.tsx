@@ -26,6 +26,7 @@ import { getSlotLabel, getConfigSlots, useTrainingStore, BACKBONE_SIZES, resolve
 import { checkWandbAuth, detectGpu, type WandbAuth } from "@/platform/backend";
 import { BackendPicker } from "@/components/common/BackendPicker";
 import { useAppStore } from "@/stores/appStore";
+import { useEnvironmentStore } from "@/stores/environmentStore";
 import { ModelStatsPreview } from "@/components/dialogs/ModelStatsPreview";
 import type { PreviewFrame } from "@/lib/workerLabels";
 import { getBaselineProfilesForHead, getRecommendedProfileForHead, slotToHeadType } from "@/lib/trainingProfiles";
@@ -465,6 +466,8 @@ function HeadTabContent({
 }) {
   const headType = slotToHeadType(modelType, slot);
   const baselineProfiles = getBaselineProfilesForHead(headType);
+  const sleapNnExtras = useEnvironmentStore((s) => s.extras);
+  const backbonesMissing = sleapNnExtras !== null && !sleapNnExtras.backbones;
   // Detectors and centroid models see the whole frame: no crop.
   const showCropSize = slot !== "centroid" && slot !== "bbox";
   const showNegativeFrames = usesNegativeFrames(headType);
@@ -619,11 +622,19 @@ function HeadTabContent({
             <SelectValue placeholder="Select training config file..." />
           </SelectTrigger>
           <SelectContent>
-            {baselineProfiles.map((p) => (
-              <SelectItem key={p.filename} value={p.filename}>
-                {p.label}
-              </SelectItem>
-            ))}
+            {baselineProfiles.map((p) => {
+              const needsBackbones = Boolean(p.requiresBackbones) && backbonesMissing;
+              return (
+                <SelectItem
+                  key={p.filename}
+                  value={p.filename}
+                  disabled={needsBackbones && configFile?.filename !== p.filename}
+                >
+                  {p.label}
+                  {needsBackbones ? " (install Pretrained backbones extra)" : ""}
+                </SelectItem>
+              );
+            })}
             {configFile && !baselineProfiles.some((p) => p.filename === configFile.filename) && (
               <SelectItem value={configFile.filename}>
                 {(() => {
@@ -1117,9 +1128,22 @@ function HeadTabContent({
             <SelectTrigger className="h-9 text-sm"><SelectValue placeholder="From config..." /></SelectTrigger>
             <SelectContent>
               {BACKBONE_OPTIONS.map((o) => <SelectItem key={o.value} value={o.value}>{o.label}</SelectItem>)}
+              {hp.backbone === "pretrained" && (
+                <SelectItem value="pretrained">Pretrained (HuggingFace / timm)</SelectItem>
+              )}
+              {hp.backbone === "dinov2_windowed" && (
+                <SelectItem value="dinov2_windowed">DINOv2 Windowed (RF-DETR)</SelectItem>
+              )}
             </SelectContent>
           </Select>
         </Field>
+        {(hp.backbone === "pretrained" || hp.backbone === "dinov2_windowed") && (
+          <p className="text-[10px] text-muted-foreground pl-1">
+            <Lightbulb className="mr-1 inline h-3 w-3 align-[-2px]" />
+            Backbone architecture and weights are preserved from the YAML config (requires the{" "}
+            <code className="font-mono">backbones</code> extra in Environment).
+          </p>
+        )}
         {(hp.backbone === "convnext" || hp.backbone === "swint") && (
           <>
             <Field {...HEAD_FIELD_DEFS.backboneSize}>

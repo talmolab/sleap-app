@@ -46,13 +46,14 @@ export function tensorrtAvailability(
 export interface ExtrasSelection {
   onnx: boolean;
   tensorrt: boolean;
+  backbones?: boolean;
 }
 
 /**
  * Apply one checkbox change to an extras selection, enforcing the installer's
  * rule that TensorRT always ships with ONNX (`installExtras` adds `export`
  * whenever `tensorrt` is asked for, because TensorRT export is built on the
- * ONNX toolchain).
+ * ONNX toolchain). `backbones` (`timm`, `transformers`) toggles independently.
  *
  * Rather than let the boxes claim a combination the installer would silently
  * rewrite, the implication is applied here and stays visible: checking
@@ -60,11 +61,14 @@ export interface ExtrasSelection {
  */
 export function toggleExtra(
   sel: ExtrasSelection,
-  extra: "onnx" | "tensorrt",
+  extra: "onnx" | "tensorrt" | "backbones",
   value: boolean
 ): ExtrasSelection {
-  if (extra === "onnx") {
-    return { onnx: value, tensorrt: value ? sel.tensorrt : false };
+  if (extra === "backbones") {
+    return { ...sel, backbones: value };
   }
-  return { onnx: value || sel.onnx, tensorrt: value };
+  if (extra === "onnx") {
+    return { ...sel, onnx: value, tensorrt: value ? sel.tensorrt : false };
+  }
+  return { ...sel, onnx: value || sel.onnx, tensorrt: value };
 }

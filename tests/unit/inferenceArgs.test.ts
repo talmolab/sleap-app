@@ -320,13 +320,77 @@ describe("buildInferenceArgs — tracking / bottom-up / preprocessing / filter",
     expect(args).not.toContain("--features");
   });
 
-  it("integral refinement off sends --integral_refinement none (sleap-nn refines by default)", () => {
+  it("integral refinement: auto omits flag for 0.4 DARK default; explicit methods emit verbatim; none disables", () => {
     const off = buildInferenceArgs(baseConfig({ integralRefinement: false }), io());
     expect(valAfter(off, "--integral_refinement")).toBe("none");
     expect(off).not.toContain("--integral_patch_size");
-    const on = buildInferenceArgs(baseConfig({ integralRefinement: true, integralPatchSize: 7 }), io());
-    expect(valAfter(on, "--integral_refinement")).toBe("integral");
-    expect(valAfter(on, "--integral_patch_size")).toBe("7");
+
+    const autoDefault = buildInferenceArgs(baseConfig({ integralRefinement: "auto", integralPatchSize: 5 }), io());
+    expect(autoDefault).not.toContain("--integral_refinement");
+    expect(autoDefault).not.toContain("--integral_patch_size");
+
+    const autoLegacyBool = buildInferenceArgs(baseConfig({ integralRefinement: true, integralPatchSize: 7 }), io());
+    expect(autoLegacyBool).not.toContain("--integral_refinement");
+    expect(valAfter(autoLegacyBool, "--integral_patch_size")).toBe("7");
+
+    const dark = buildInferenceArgs(baseConfig({ integralRefinement: "dark", integralPatchSize: 7 }), io());
+    expect(valAfter(dark, "--integral_refinement")).toBe("dark");
+    expect(dark).not.toContain("--integral_patch_size");
+
+    const local = buildInferenceArgs(baseConfig({ integralRefinement: "local" }), io());
+    expect(valAfter(local, "--integral_refinement")).toBe("local");
+
+    const explicitIntegral = buildInferenceArgs(baseConfig({ integralRefinement: "integral", integralPatchSize: 7 }), io());
+    expect(valAfter(explicitIntegral, "--integral_refinement")).toBe("integral");
+    expect(valAfter(explicitIntegral, "--integral_patch_size")).toBe("7");
+  });
+
+  it("sleap-nn 0.4 predict flags are omitted at default and emitted when enabled", () => {
+    const defaults = buildInferenceArgs(baseConfig({
+      precision: "32",
+      uploadBatches: false,
+      flipTest: false,
+      rescore: false,
+      bboxNmsIou: null,
+      slpVersion: "auto",
+    }), io());
+    expect(defaults).not.toContain("--precision");
+    expect(defaults).not.toContain("--upload_batches");
+    expect(defaults).not.toContain("--flip_test");
+    expect(defaults).not.toContain("--rescore");
+    expect(defaults).not.toContain("--bbox_nms_iou");
+    expect(defaults).not.toContain("--slp_version");
+
+    const enabled = buildInferenceArgs(baseConfig({
+      precision: "bf16-encoder",
+      uploadBatches: true,
+      flipTest: true,
+      rescore: true,
+      bboxNmsIou: 0.45,
+      slpVersion: "v3",
+    }), io());
+    expect(valAfter(enabled, "--precision")).toBe("bf16-encoder");
+    expect(enabled).toContain("--upload_batches");
+    expect(enabled).toContain("--flip_test");
+    expect(enabled).toContain("--rescore");
+    expect(valAfter(enabled, "--bbox_nms_iou")).toBe("0.45");
+    expect(valAfter(enabled, "--slp_version")).toBe("v3");
+
+    // Predict-only flags are never emitted on legacy `track`.
+    const legacyTrack = buildInferenceArgs(baseConfig({
+      precision: "bf16",
+      uploadBatches: true,
+      flipTest: true,
+      rescore: true,
+      bboxNmsIou: 0.45,
+      slpVersion: "v2",
+    }), { ...io(), subcommand: "track" });
+    expect(legacyTrack).not.toContain("--precision");
+    expect(legacyTrack).not.toContain("--upload_batches");
+    expect(legacyTrack).not.toContain("--flip_test");
+    expect(legacyTrack).not.toContain("--rescore");
+    expect(legacyTrack).not.toContain("--bbox_nms_iou");
+    expect(valAfter(legacyTrack, "--slp_version")).toBe("v2");
   });
 
   it("flow tracker emits --use_flow plus the optical-flow sub-params (regression: these were previously dropped)", () => {
@@ -476,23 +540,26 @@ describe("isPredictSupported / version floor", () => {
     expect(isPredictSupported(undefined)).toBe(true);
     expect(isPredictSupported("")).toBe(true);
     expect(isPredictSupported("garbage")).toBe(true);
-    expect(isPredictSupported("0.3.0a1")).toBe(true); // no separator → unparseable → allowed
   });
 
-  it("blocks parseable versions below the floor (0.2.0–0.3.1: broken save or corrupt predict --gui)", () => {
+  it("blocks parseable versions below the floor (0.2.0–0.3.1, including PEP 440 pre-releases)", () => {
     expect(isPredictSupported("0.1.0")).toBe(false);
     expect(isPredictSupported("0.1.3")).toBe(false);
     expect(isPredictSupported("0.2.0")).toBe(false);
     expect(isPredictSupported("0.3.0")).toBe(false);
+    expect(isPredictSupported("0.3.0a1")).toBe(false);
     expect(isPredictSupported("0.3.1")).toBe(false); // save works but predict --gui JSON is corrupt
+    expect(isPredictSupported("0.3.2-rc1")).toBe(false); // PEP 440: 0.3.2rc1 < 0.3.2
   });
 
-  it("allows the floor and above", () => {
+  it("allows the floor and above, including PEP 440 pre-releases like 0.4.0a0", () => {
     expect(isPredictSupported("0.3.2")).toBe(true);
     expect(isPredictSupported("0.3.3")).toBe(true);
+    expect(isPredictSupported("0.4.0a0")).toBe(true);
+    expect(isPredictSupported("0.4.0a0", "0.3.4")).toBe(true);
+    expect(isPredictSupported("0.4.0a0", "0.3.5")).toBe(true);
     expect(isPredictSupported("0.4.0")).toBe(true);
     expect(isPredictSupported("1.0.0")).toBe(true);
-    expect(isPredictSupported("0.3.2-rc1")).toBe(true); // separator → core 0.3.2 ≥ floor
   });
 });
 
@@ -545,7 +612,7 @@ describe("buildInferenceArgs — full-config parity lock", () => {
     device: "cuda",
     maxInstances: 2,
     peakThreshold: 0.15,
-    integralRefinement: true,
+    integralRefinement: "integral",
     integralPatchSize: 7,
     nPoints: 12,
     maxEdgeLengthRatio: 0.3,

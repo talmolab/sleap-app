@@ -29,4 +29,25 @@ describe("buildExportArgs", () => {
     const trt = buildExportArgs({ modelPaths: ["/m"], outputDir: "/o", format: "tensorrt" });
     expect(trt[trt.indexOf("--precision") + 1]).toBe("fp16");
   });
+
+  it("supports bf16 precision and --network-only flag", () => {
+    const args = buildExportArgs({
+      modelPaths: ["/m/pose"],
+      outputDir: "/out/pose",
+      format: "tensorrt",
+      precision: "bf16",
+      networkOnly: true,
+    });
+    expect(args).toEqual([
+      "export",
+      "/m/pose",
+      "--output",
+      "/out/pose",
+      "--format",
+      "tensorrt",
+      "--precision",
+      "bf16",
+      "--network-only",
+    ]);
+  });
 });
