@@ -13,7 +13,6 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "../bun-test";
 import { render, screen, fireEvent, waitFor, cleanup } from "@testing-library/react";
 import { useAppStore } from "@/stores/appStore";
-import { __setJpegFramesSupported, JPEG_FRAMES_UNAVAILABLE } from "@/lib/slpFormatCompat";
 
 const events: string[] = [];
 const params: unknown[] = [];
@@ -39,7 +38,6 @@ beforeEach(() => {
 });
 afterEach(() => {
   cleanup();
-  __setJpegFramesSupported(null);
 });
 
 function renderDialog() {
@@ -60,7 +58,6 @@ describe("ExportPackageDialog", () => {
   });
 
   it("exports PNG frames by default, and says JPEG is lossy", async () => {
-    __setJpegFramesSupported(true);
     renderDialog();
     expect(radio("PNG (lossless)").getAttribute("aria-checked")).toBe("true");
     expect(radio("JPEG").getAttribute("aria-checked")).toBe("false");
@@ -72,7 +69,6 @@ describe("ExportPackageDialog", () => {
   });
 
   it("exports JPEG at the chosen quality, and remembers the choice", async () => {
-    __setJpegFramesSupported(true);
     renderDialog();
     fireEvent.click(radio("JPEG"));
     const quality = screen.getByLabelText("Quality") as HTMLInputElement;
@@ -92,7 +88,6 @@ describe("ExportPackageDialog", () => {
   });
 
   it("can't export a JPEG quality outside 1-100", () => {
-    __setJpegFramesSupported(true);
     useAppStore.setState({ packageImageFormat: "jpg", packageJpegQuality: 90 });
     renderDialog();
     const quality = screen.getByLabelText("Quality") as HTMLInputElement;
@@ -112,24 +107,7 @@ describe("ExportPackageDialog", () => {
     expect(exportButton().disabled).toBe(false);
   });
 
-  it("disables JPEG, with the reason, when sleap-io.js can't write it, and exports PNG", async () => {
-    __setJpegFramesSupported(false);
-    useAppStore.setState({ packageImageFormat: "jpg", packageJpegQuality: 80 });
-    renderDialog();
-    expect(radio("JPEG").disabled).toBe(true);
-    expect(radio("PNG (lossless)").getAttribute("aria-checked")).toBe("true");
-    expect(screen.getByText(`JPEG: ${JPEG_FRAMES_UNAVAILABLE}`)).toBeTruthy();
-    expect(screen.queryByText(/JPEG is lossy/)).toBeNull();
-    fireEvent.click(exportButton());
-    await waitFor(() => expect(params.length).toBe(1));
-    expect(params[0]).toEqual({ image: { format: "png", quality: 80 } });
-    // The remembered JPEG choice is kept for a build that can write it.
-    expect(useAppStore.getState().packageImageFormat).toBe("jpg");
-    expect(useAppStore.getState().packageJpegQuality).toBe(80);
-  });
-
   it("says that frames already stored as JPEG stay JPEG", () => {
-    __setJpegFramesSupported(true);
     renderDialog();
     expect(screen.getByText(/already stores as JPEG stay JPEG with PNG chosen/)).toBeTruthy();
     expect(screen.getByText(/usually several times smaller/)).toBeTruthy();

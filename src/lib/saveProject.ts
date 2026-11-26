@@ -36,7 +36,7 @@ import { recordDraftSave, deleteDraftEntry } from "@/lib/draftManifest";
 import { removeTauriDraft } from "@/lib/tauriDraft";
 import { isSameSaveTarget } from "@/lib/saveTargetGuard";
 import { shouldOverwriteOpenedFile } from "@/lib/browserSaveTarget";
-import { markSavedInLegacyLayout, withLegacyLayout } from "@/lib/slpFormatCompat";
+import { markSavedInLegacyLayout } from "@/lib/slpFormat";
 import { ensureWritable, handleViewOnlyWriteError } from "@/lib/slpAccess";
 
 /**
@@ -85,7 +85,7 @@ async function saveBrowserInMemory(
   forceDialog: boolean
 ): Promise<InMemorySaveResult | null> {
   const store = useAppStore.getState();
-  const bytes = await saveSlpToBytes(labels, withLegacyLayout());
+  const bytes = await saveSlpToBytes(labels);
   const blob = new Blob([bytes], { type: "application/octet-stream" });
 
   if ("showSaveFilePicker" in window) {
@@ -313,7 +313,7 @@ export async function saveProjectAsSlp(
             await saveEmbeddedPkgStreaming(labels, existingPath, sourcePath);
           } else {
             console.log(`[save] Saving via in-memory backend (Tauri, in-place): ${existingPath}`);
-            const bytes = await saveSlpToBytes(labels, withLegacyLayout());
+            const bytes = await saveSlpToBytes(labels);
             if (hasEmbeddedImages) {
               // Never truncate the embedded original in place — write+rename atomically.
               await writeSlpBytesAtomic(platform, existingPath, bytes);
@@ -340,7 +340,7 @@ export async function saveProjectAsSlp(
           await saveEmbeddedPkgStreaming(labels, savePath, sourcePath);
         } else {
           console.log(`[save] Saving via in-memory backend (Tauri, Save As): ${savePath}`);
-          const bytes = await saveSlpToBytes(labels, withLegacyLayout());
+          const bytes = await saveSlpToBytes(labels);
           if (hasEmbeddedImages) {
             // Never truncate an embedded destination in place — write+rename atomically.
             await writeSlpBytesAtomic(platform, savePath, bytes);
@@ -366,8 +366,8 @@ export async function saveProjectAsSlp(
         void removeTauriDraft(tauriDraft);
         store.set("labelsDraftPath", null);
       }
-      // The project's file (saved over, or the Save As target, now its path)
-      // is in the 2.x layout.
+      // Mark rewritten so an explicit 2.x downgrade (`access === "edit"`) clears
+      // `sourceFormat`; native format 3.0 saves (`access === "keep"`) retain it.
       projectFileRewritten = true;
     } else {
       // Browser save (EDL model): for a LARGE embedded pkg.slp the LABELS are the
@@ -515,9 +515,9 @@ export async function saveProjectAsSlp(
     // does set it) rather than actually reflecting the freshly-saved project.
     store.set("filename", displayName.split(/[\\/]/).pop() ?? displayName);
     store.clearChanges();
-    // Labels opened for editing from an SLP format 3.0 file now live in a 2.x
-    // file: say so, so the in-place save patches it again next time. Their
-    // records keep their marks, so later saves drop the same fields silently.
+    // If the user explicitly opened a format 3.0 file in 2.x downgrade mode
+    // (`access === "edit"`), clear `sourceFormat` now that the file is in 2.x.
+    // Native format 3.0 files (`access === "keep"`) retain `sourceFormat`.
     if (projectFileRewritten) markSavedInLegacyLayout(labels);
     toast.success("Project saved", { description: displayName });
   } catch (err) {

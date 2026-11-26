@@ -9,7 +9,7 @@ import { isTauri } from "./index";
 import { sleapCmd } from "@/lib/sleapPlugin";
 import { saveSlpToBytes, type Labels, type Skeleton } from "@talmolab/sleap-io.js";
 import type { JobLabelsCopy } from "@/lib/jobLabelsFile";
-import { withLegacyLayout } from "@/lib/slpFormatCompat";
+import { legacyV2WriteOptions } from "@/lib/slpFormat";
 import type { InferenceConfig } from "@/stores/inferenceStore";
 import {
   buildInferenceArgs,
@@ -581,7 +581,7 @@ export async function runInference(
     if (!labels) throw new Error("No project loaded");
     dataPath = await join(tmp, `sleap_inference_input_${ts}.slp`);
     console.log("[inference] Serializing project to temp file:", dataPath);
-    const bytes = await saveSlpToBytes(labels, withLegacyLayout());
+    const bytes = await saveSlpToBytes(labels, legacyV2WriteOptions());
     await writeFile(dataPath, bytes);
     console.log("[inference] Wrote %d bytes to %s", bytes.byteLength, dataPath);
   }
@@ -699,7 +699,7 @@ export async function runInference(
     const { writeFile } = await import("@tauri-apps/plugin-fs");
     const tag = opts.outputTag ? `_${opts.outputTag}` : "";
     dataPath = await join(tmp, `sleap_inference_input_${ts}${tag}.slp`);
-    const bytes = await saveSlpToBytes(opts.inputLabels, withLegacyLayout());
+    const bytes = await saveSlpToBytes(opts.inputLabels, legacyV2WriteOptions());
     await writeFile(dataPath, bytes);
     console.log("[inference] Wrote per-skeleton input (%d bytes) to %s", bytes.byteLength, dataPath);
   }

@@ -42,7 +42,6 @@ import { openNewInstance } from "@/lib/newInstance";
 import { toast } from "@/lib/notify";
 import { toastExported } from "@/lib/exportToast";
 import { useAppStore } from "@/stores/appStore";
-import { withLegacyLayout } from "@/lib/slpFormatCompat";
 import { ensureWritable } from "@/lib/slpAccess";
 import type { PackageImageOptions } from "@/lib/packageImageFormat";
 
@@ -273,7 +272,6 @@ export const ExtractClipAndLabelsCommand: Command = {
       });
       const slpBytes = await saveSlpToBytes(
         labelsForRange(labels, video, range, clipVideo),
-        withLegacyLayout(),
       );
       setLoading(false);
 

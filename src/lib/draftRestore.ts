@@ -21,7 +21,7 @@ import { videoSignature, buildBackendGraftPlan } from "@/lib/videoGraft";
 import { isDraftStaleVsDisk, isSourceChanged } from "@/lib/draftStaleness";
 import { toast } from "@/lib/notify";
 import { toastLoadError } from "@/lib/slpAccess";
-import { restoreSourceFormat } from "@/lib/slpFormatCompat";
+import { restoreSourceFormat } from "@/lib/slpFormat";
 
 const H5WASM_URL =
   typeof location !== "undefined"
@@ -181,10 +181,10 @@ export async function restoreDraft(entry: DraftManifestEntry): Promise<boolean> 
     const loadDraftBase = async (
       opts: Parameters<typeof loadSlp>[1],
     ): Promise<Labels> => {
-      // The app writes drafts itself, in the 2.x layout (sleap-io.js writes no
-      // other), so no format 3.0 question ever applies to them; "edit" keeps
-      // a restored draft editable should that change.
-      opts = { ...opts, format3: "edit" };
+      // The app writes drafts itself (preserving format 3.0 natively), so no
+      // format 3.0 choice prompt applies; `"keep"` keeps a restored format 3.0
+      // draft editable in native format 3.0.
+      opts = { ...opts, format3: "keep" };
       try {
         return await loadSlp(await readOpfsFile(entry.draftPath), opts);
       } catch (primaryErr) {

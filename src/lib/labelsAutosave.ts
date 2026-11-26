@@ -35,7 +35,7 @@ import {
 } from "@/lib/tauriDraft";
 import { computeAutosaveDebounceMs } from "@/lib/autosaveDebounce";
 import { isIncrementalAutosaveEnabled } from "@/lib/autosaveFlags";
-import { isViewOnlyLabels } from "@/lib/slpFormatCompat";
+import { isViewOnlyLabels } from "@/lib/slpFormat";
 import { dirtyFrameTracker } from "@/lib/autosaveDirty";
 import {
   runIncrementalAutosave,

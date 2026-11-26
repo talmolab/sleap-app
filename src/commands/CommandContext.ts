@@ -14,7 +14,7 @@ import type { Command } from "./types";
 import { toast } from "@/lib/notify";
 import { humanizeCommandName } from "@/lib/humanizeCommand";
 import { dirtyFrameTracker } from "@/lib/autosaveDirty";
-import { captureSourceMark, copySourceMark } from "@/lib/slpFormatCompat";
+import { captureSourceMark, copySourceMark } from "@/lib/slpFormat";
 import { refuseEditIfViewOnly } from "@/lib/slpAccess";
 import { frameTrackHolders, staticRoiHolders, type TrackHolder } from "@/lib/trackHolders";
 

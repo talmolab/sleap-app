@@ -97,7 +97,6 @@ vi.mock("@tauri-apps/api/path", () => ({
 }));
 
 const { saveEmbeddedPkgStreaming } = await import("@/lib/saveEmbeddedPkgStreaming");
-const { __setJpegFramesSupported } = await import("@/lib/slpFormatCompat");
 
 const labels = {} as never;
 
@@ -134,27 +133,30 @@ describe("saveEmbeddedPkgStreaming — new embed (no source file)", () => {
   });
 
   it("writes the structure and plans the frames in the chosen format (JPEG); PNG adds nothing", async () => {
-    __setJpegFramesSupported(true);
-    try {
-      await saveEmbeddedPkgStreaming(labels, "/out/x.pkg.slp", null, {
-        embed: "user",
-        image: { format: "jpg", quality: 70 },
-      });
-      await saveEmbeddedPkgStreaming(labels, "/out/x.pkg.slp", null, {
-        embed: "user",
-        image: { format: "png", quality: 70 },
-      });
-    } finally {
-      __setJpegFramesSupported(null);
-    }
+    await saveEmbeddedPkgStreaming(labels, "/out/x.pkg.slp", null, {
+      embed: "user",
+      image: { format: "jpg", quality: 70 },
+    });
+    await saveEmbeddedPkgStreaming(labels, "/out/x.pkg.slp", null, {
+      embed: "user",
+      image: { format: "png", quality: 70 },
+    });
     expect(structureOpts).toEqual([
-      { embed: "user", imageFormat: "jpg", imageQuality: 70, unlabeledAs: "absent" },
-      { embed: "user", unlabeledAs: "absent" },
+      { embed: "user", imageFormat: "jpg", imageQuality: 70 },
+      { embed: "user" },
     ]);
     expect(calls.filter((c) => c.startsWith("plan"))).toEqual([
       'plan("",{"allowEncode":true,"imageFormat":"jpg","imageQuality":70})',
       'plan("",{"allowEncode":true})',
     ]);
+  });
+
+  it("writes explicit v2 + unlabeledAs: 'absent' when slpVersion: 'v2' is requested", async () => {
+    await saveEmbeddedPkgStreaming(labels, "/out/x.pkg.slp", null, {
+      embed: "user",
+      slpVersion: "v2",
+    });
+    expect(structureOpts).toEqual([{ embed: "user", slpVersion: "v2", unlabeledAs: "absent" }]);
   });
 
   it("hands a frame reader (desktop: ffmpeg) through to io", async () => {

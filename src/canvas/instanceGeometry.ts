@@ -7,7 +7,7 @@
 
 import type { Instance, Video } from "@talmolab/sleap-io.js";
 import { toImageCoords } from "@/lib/cropTransform";
-import { isUnlabeledPoint } from "@/lib/slpFormatCompat";
+import { isUnlabeledPoint } from "@/lib/slpFormat";
 import type { RenderedEdge, RenderedNode } from "./SkeletonRenderer";
 
 export function instanceGeometry(

@@ -37,7 +37,7 @@ import {
   mergeDraftEntry,
   sortEntriesNewestFirst,
 } from "@/lib/tauriDraftManifest";
-import { sourceFormatRecord } from "@/lib/slpFormatCompat";
+import { sourceFormatRecord } from "@/lib/slpFormat";
 
 /** Sub-directory (under the app's local data dir) holding all draft `.slp`s + the
  *  manifest. Enumerable/cleanable, mirrors the browser `sleap-draft-` prefix. */

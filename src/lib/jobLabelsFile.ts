@@ -28,11 +28,11 @@
  */
 import { saveSlpToBytes, type Labels } from "@talmolab/sleap-io.js";
 import { useAppStore } from "@/stores/appStore";
-import { sourceFormatOf, withLegacyLayout } from "@/lib/slpFormatCompat";
+import { legacyV2WriteOptions } from "@/lib/slpFormat";
 
 /** Whether the project file the labels were opened from is still in format 3.0 on disk. */
 export function projectFileIsFormat3(labels: Labels | null | undefined): boolean {
-  return sourceFormatOf(labels) !== null;
+  return (labels?.sourceFormat ?? null) !== null;
 }
 
 /**
@@ -134,12 +134,12 @@ async function writeLegacyCopy(labels: Labels, path: string, sourcePath: string 
       })
     ) {
       const { saveEmbeddedPkgStreaming } = await import("@/lib/saveEmbeddedPkgStreaming");
-      await saveEmbeddedPkgStreaming(labels, path, sourcePath);
+      await saveEmbeddedPkgStreaming(labels, path, sourcePath, { slpVersion: "v2" });
       return;
     }
   }
   const { writeFile } = await import("@tauri-apps/plugin-fs");
-  await writeFile(path, await saveSlpToBytes(labels, withLegacyLayout()));
+  await writeFile(path, await saveSlpToBytes(labels, legacyV2WriteOptions()));
 }
 
 /** One job's 2.x copy of the open project (see the module comment). */

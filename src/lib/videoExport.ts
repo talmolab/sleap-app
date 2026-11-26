@@ -28,7 +28,7 @@ import type { TrailStyle } from "@/canvas/TrailRenderer";
 import { SLEAP_IO_DEFAULT_PALETTE, SLEAP_IO_PALETTES, sleapIoPaletteKey } from "@/lib/sleapIoPalettes";
 import { getInstanceColor, getPaletteColor, resolveColorTarget, type RGB } from "@/lib/colorPalettes";
 import { toImageCoords } from "@/lib/cropTransform";
-import { isUnlabeledPoint } from "@/lib/slpFormatCompat";
+import { isUnlabeledPoint } from "@/lib/slpFormat";
 import type { ColorTarget, Instance, Labels, Track, Video } from "@/types";
 
 /** The codec used for clip export. `avc` is H.264 (universally playable mp4). */

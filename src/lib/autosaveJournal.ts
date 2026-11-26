@@ -43,7 +43,7 @@ import {
   metadataOf,
   setMetadata,
   type RecordMetadata,
-} from "@/lib/slpFormatCompat";
+} from "@/lib/slpFormat";
 
 /** One keypoint's state (short keys keep the journal compact). */
 export interface PointDelta {

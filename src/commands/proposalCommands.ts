@@ -16,7 +16,7 @@ import { UpdateTopic } from "../types";
 import type { Command } from "./types";
 import type { CommandContext } from "./CommandContext";
 import { clonePredictedPoints, fillMissingPredictedNodes } from "@/lib/instancePlacement";
-import { copyMetadata, copySourceMark, markPointLabeled } from "@/lib/slpFormatCompat";
+import { copyMetadata, copySourceMark, markPointLabeled } from "@/lib/slpFormat";
 
 /**
  * Params:

@@ -19,7 +19,7 @@ import {
   requestOpfsPersistence,
 } from "@/lib/labelsDraft";
 import { videoSignature } from "@/lib/videoGraft";
-import { sourceFormatRecord, type Format3Summary } from "@/lib/slpFormatCompat";
+import { sourceFormatRecord, type DraftSourceFormat } from "@/lib/slpFormat";
 
 const DB_NAME = "sleap-app";
 const DB_VERSION = 1;
@@ -61,7 +61,7 @@ export interface DraftManifestEntry {
    *  opened for editing and not yet saved): its format and what saving drops.
    *  Restored onto the recovered labels so the in-place save and local jobs
    *  never patch or read that file as it is. Absent otherwise. */
-  sourceFormat?: { formatId: number; summary: Format3Summary };
+  sourceFormat?: DraftSourceFormat;
 }
 
 function openDb(): Promise<IDBDatabase> {
