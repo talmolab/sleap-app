@@ -48,6 +48,13 @@ describe("consent", () => {
     expect(usageDataEnabled(true, { globalPrivacyControl: true, doNotTrack: "1" })).toBe(true);
   });
 
+  it("treats a corrupt stored value as no choice, not as consent", () => {
+    for (const junk of ["false", "true", 0, 1, {}, undefined]) {
+      expect(usageDataEnabled(junk as never, { doNotTrack: "1" })).toBe(false);
+      expect(usageDataEnabled(junk as never, {})).toBe(true);
+    }
+  });
+
   describe("the build gate", () => {
     afterEach(() => {
       localStorage.removeItem(DEBUG_FLAG);

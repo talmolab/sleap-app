@@ -41,7 +41,11 @@ export function usageDataEnabled(
   preference: UsageDataPreference,
   signals?: TrackingSignals,
 ): boolean {
-  return preference ?? !browserAsksNotToBeTracked(signals);
+  // Compared against the two booleans rather than `??`: the value comes out of
+  // localStorage, and anything else found there (a hand-edited or corrupt
+  // entry) is treated as "no choice made", not as a yes.
+  if (preference === true || preference === false) return preference;
+  return !browserAsksNotToBeTracked(signals);
 }
 
 /** `localStorage` flag that turns reporting on in a dev build and logs every batch. */
