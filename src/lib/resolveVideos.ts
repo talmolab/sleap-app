@@ -538,14 +538,51 @@ export function getVideoPathCandidates(
     if (p && !candidates.includes(p)) candidates.push(p);
   };
 
-  // 1. If absolute, try as-is, then graft its trailing tails onto the project
-  //    dir — a cross-machine absolute path (e.g. a Linux `/home/...` path on a
-  //    Windows mount) whose file now lives in a subfolder beside the `.slp`.
-  //    The full foreign path is never reproduced (tailGraftCandidates stops one
-  //    segment short), so the old "never graft an absolute onto the .slp dir"
-  //    contract is only relaxed for genuine trailing-subpath matches.
+  // 1. If absolute, try as-is, then check shared-directory anchor against the
+  //    .slp's dir and its ancestors (handles predictions saved into a child
+  //    output folder like `predictions/` or `out/` below the video),
+  //    then graft trailing tails onto the project dir — a cross-machine
+  //    absolute path (e.g. a Linux `/home/...` path on a Windows/macOS mount).
   if (isAbsolute) {
     add(raw);
+    const rawParts = raw.replace(/\\/g, "/").split("/").filter(Boolean);
+    const rawDirParts = rawParts.slice(0, -1);
+    const dirParts = projectDir.replace(/\\/g, "/").split("/").filter(Boolean);
+    const dirIsUnixRoot = projectDir.startsWith("/");
+    const dirPrefix = dirIsUnixRoot ? "/" : "";
+    // Walk projectDir and its ancestors to find a shared directory anchor
+    // (deepest ancestor, longest shared suffix first).
+    const maxAnc = Math.min(dirParts.length, MAX_ANCESTOR_WALK + 1);
+    for (let anc = 0; anc < maxAnc; anc++) {
+      const ldParts = dirParts.slice(0, dirParts.length - anc);
+      const maxL = Math.min(ldParts.length, rawDirParts.length);
+      let matched = false;
+      for (let L = maxL; L >= 1; L--) {
+        const suffix = ldParts.slice(ldParts.length - L);
+        // Find last contiguous occurrence of `suffix` inside `rawDirParts`
+        let end = -1;
+        for (let start = rawDirParts.length - L; start >= 0; start--) {
+          let ok = true;
+          for (let j = 0; j < L; j++) {
+            if (rawDirParts[start + j] !== suffix[j]) {
+              ok = false;
+              break;
+            }
+          }
+          if (ok) {
+            end = start + L;
+            break;
+          }
+        }
+        if (end >= 0) {
+          const remainder = rawDirParts.slice(end);
+          add(dirPrefix + [...ldParts, ...remainder, baseName].join(sep));
+          matched = true;
+          break;
+        }
+      }
+      if (matched) break;
+    }
     for (const c of tailGraftCandidates(raw, projectDir, {
       maxDepth: MAX_ANCESTOR_WALK,
     })) {
@@ -624,19 +661,42 @@ export async function resolveExternalVideos(
   // videos still frees the old readers.
   await releaseHdf5Containers();
 
-  // Validate existing backends: loadSlp may have created Mp4BoxVideoBackend
-  // instances with invalid paths (e.g. Windows paths on Mac). These have
-  // backend !== null but their ready promise will reject. Await each and
-  // null out broken ones so they get picked up by auto-resolution.
+  // Validate existing backends: loadSlp may have created URL-fetch backends
+  // (e.g. Mp4BoxVideoBackend) with local filesystem paths (which cannot be
+  // fetched over HTTP in Tauri — and on Vite dev server even return 200 OK
+  // index.html!). On desktop (`options` provided), discard any non-embedded,
+  // non-URL, non-image-sequence fetch backend immediately instead of awaiting
+  // a bogus HTTP fetch, so auto-resolution locates the file natively and opens
+  // it via RangeSource. For real URL backends (or browser mode), await `ready`
+  // and null out broken ones.
   await Promise.all(
     labels.videos.map(async (video) => {
       if (!video.backend || !("ready" in video.backend)) return;
+      if (
+        options &&
+        !video.hasEmbeddedImages &&
+        !isFetchableUrl(video.filename) &&
+        !isImageSequenceVideo(video)
+      ) {
+        try {
+          video.backend.close?.();
+        } catch {
+          /* ignore */
+        }
+        video.backend = null;
+        return;
+      }
       try {
         await (video.backend as { ready: Promise<unknown> }).ready;
       } catch (err) {
         console.log(
           `[video] Backend failed for "${Array.isArray(video.filename) ? video.filename[0] : video.filename}", clearing for re-resolution`
         );
+        try {
+          video.backend.close?.();
+        } catch {
+          /* ignore */
+        }
         video.backend = null;
         video.backendError = classifyVideoError(err);
       }

@@ -22,6 +22,7 @@ vi.mock("@/platform/backend", () => ({
   detectGpu: unused,
   detectAccelerator: unused,
   detectSleapNnExtras: unused,
+  checkSleapNnVersions: unused,
   listUvTools: unused,
   listPythonInterpreters: unused,
   listDownloadablePythons: unused,

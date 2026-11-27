@@ -68,7 +68,9 @@ import {
 } from "@/lib/extras";
 import {
   isPythonVersionCompatible,
+  resolveSleapNnStatus,
   SLEAP_NN_PYTHON_SPEC,
+  type SleapNnChannel,
 } from "@/lib/sleapNnVersion";
 import { openExternal } from "@/lib/openExternal";
 import { cn } from "@/lib/utils";
@@ -83,6 +85,15 @@ import { toast } from "@/lib/notify";
 import { confirmDialog } from "@/stores/confirmStore";
 
 const SLEAP_NN_RELEASES_URL = "https://github.com/talmolab/sleap-nn/releases/tag";
+const SLEAP_IO_RELEASES_URL = "https://github.com/talmolab/sleap-io/releases/tag";
+
+const SLEAP_NN_CHANNELS: {
+  value: SleapNnChannel;
+  label: string;
+}[] = [
+  { value: "stable", label: "Stable" },
+  { value: "prerelease", label: "Pre-release" },
+];
 
 // ---------------------------------------------------------------------------
 // Shared components
@@ -522,14 +533,26 @@ function InstallLog({
 function ToolActions({
   tool,
   installing,
+  installTitle,
+  isSwitchDowngrade = false,
+  switchTargetVersion,
+  extraUpdateAvailable = false,
+  extraUpdateTitle,
   onInstall,
   onUpgrade,
+  onSwitch,
   onReinstall,
 }: {
   tool: UvTool | undefined;
   installing: boolean;
+  installTitle?: string;
+  isSwitchDowngrade?: boolean;
+  switchTargetVersion?: string | null;
+  extraUpdateAvailable?: boolean;
+  extraUpdateTitle?: string;
   onInstall: () => void;
   onUpgrade: () => void;
+  onSwitch?: () => void;
   onReinstall: () => void;
 }) {
   if (installing) {
@@ -548,6 +571,7 @@ function ToolActions({
         size="sm"
         className="h-5 text-[10px]"
         onClick={onInstall}
+        title={installTitle}
       >
         <Download className="h-3 w-3 mr-1" />
         Install
@@ -555,12 +579,45 @@ function ToolActions({
     );
   }
 
-  const isUpToDate = tool.updateAvailable === false;
+  if (isSwitchDowngrade && onSwitch) {
+    const switchTitle = switchTargetVersion
+      ? `Switch to v${switchTargetVersion} (selected channel)`
+      : "Switch to selected channel";
+    return (
+      <div className="flex gap-1">
+        <Button
+          variant="outline"
+          size="sm"
+          className="h-5 text-[10px]"
+          onClick={onSwitch}
+          title={switchTitle}
+        >
+          <ArrowDownCircle className="h-3 w-3 mr-1" />
+          Switch
+        </Button>
+        <Button
+          variant="ghost"
+          size="sm"
+          className="h-5 text-[10px]"
+          onClick={onReinstall}
+          title="Force reinstall"
+        >
+          <RotateCw className="h-3 w-3 mr-1" />
+          Reinstall
+        </Button>
+      </div>
+    );
+  }
+
+  const hasUpdate = tool.updateAvailable === true || extraUpdateAvailable;
+  const isUpToDate = !hasUpdate && tool.updateAvailable === false;
   const updateTitle = isUpToDate
     ? "Already up to date"
     : tool.updateAvailable && tool.latestVersion
       ? `Upgrade to v${tool.latestVersion}`
-      : "Upgrade to latest version";
+      : extraUpdateAvailable && extraUpdateTitle
+        ? extraUpdateTitle
+        : "Upgrade to latest version";
 
   return (
     <div className="flex gap-1">
@@ -1068,6 +1125,8 @@ export function EnvironmentPanel() {
     tools,
     interpreters,
     downloadable,
+    sleapNnChannel,
+    pypiVersions,
     accelerator,
     acceleratorStatus,
     extras,
@@ -1080,11 +1139,13 @@ export function EnvironmentPanel() {
     installLog,
     installTarget,
     refresh,
+    setSleapNnChannel,
     selectPython,
     doInstallPython,
     doInstallTool,
     installExtras,
     doUpgradeTool,
+    doSwitchSleapNnChannel,
     doReinstallTool,
     switchToSleapConnect,
     doUpdateUv,
@@ -1118,6 +1179,12 @@ export function EnvironmentPanel() {
   }
 
   const sleapNnTool = tools.find((t) => t.name === "sleap-nn");
+  const sleapNnStatus = resolveSleapNnStatus({
+    tool: sleapNnTool,
+    channel: sleapNnChannel,
+    pypi: pypiVersions,
+    installedSleapIoVersion: extras?.sleapIoVersion,
+  });
   // The SLEAP Connect worker. Up to 0.0.7 its PyPI package was `sleap-rtc`;
   // an install under that name is offered a switch to `sleap-connect`.
   const connectTool = tools.find((t) => t.name === "sleap-connect");
@@ -1414,52 +1481,195 @@ export function EnvironmentPanel() {
           </Section>
         )}
 
-        {/* sleap-nn: the training/inference engine. Its accelerator and
-            extras are properties OF this install, so they're rows here
-            rather than sections of their own. */}
+        {/* sleap-nn: the training/inference engine. Its channel, sleap-io
+            companion version, accelerator, and extras are properties OF this
+            install, so they're rows here rather than sections of their own. */}
         {detected && uv?.available && (
           <Section
             title="sleap-nn"
             aside={
               sleapNnTool?.version ? (
-                <span className="text-xs text-muted-foreground">
-                  v{sleapNnTool.version}
-                </span>
+                <>
+                  {sleapNnStatus.installedIsPrerelease && (
+                    <Badge
+                      variant="secondary"
+                      className="h-4 shrink-0 rounded-sm px-1.5 py-0 text-[10px]"
+                      title="Installed sleap-nn version is a pre-release (derived from the installed version string, independent of the selected channel)."
+                    >
+                      Pre-release
+                    </Badge>
+                  )}
+                  <span className="text-xs text-muted-foreground">
+                    v{sleapNnTool.version}
+                  </span>
+                </>
               ) : null
             }
           >
-            <Field label="Status">
+            <Field label="Status" align={sleapNnTool ? "center" : "start"}>
               <span className="flex min-w-0 items-center gap-1.5">
                 <StatusIcon ok={!!sleapNnTool} />
                 {sleapNnTool ? (
-                  <>
-                    <VersionStatus
-                      latestVersion={sleapNnTool.latestVersion}
-                      updateAvailable={
-                        sleapNnTool.latestVersion
-                          ? sleapNnTool.updateAvailable
-                          : null
-                      }
-                    />
-                    {sleapNnTool.latestVersion && (
-                      <button
-                        onClick={() =>
-                          openExternal(
-                            `${SLEAP_NN_RELEASES_URL}/v${sleapNnTool.latestVersion}`
-                          )
+                  sleapNnStatus.isSwitchDowngrade ? (
+                    <>
+                      <span className="truncate text-blue-500">
+                        {sleapNnStatus.targetVersion
+                          ? `v${sleapNnStatus.targetVersion} (switch)`
+                          : "stable (switch)"}
+                      </span>
+                      {sleapNnStatus.targetVersion && (
+                        <button
+                          onClick={() =>
+                            openExternal(
+                              `${SLEAP_NN_RELEASES_URL}/v${sleapNnStatus.targetVersion}`
+                            )
+                          }
+                          title={`View release notes for v${sleapNnStatus.targetVersion}`}
+                          className="shrink-0 text-muted-foreground transition-colors hover:text-foreground"
+                        >
+                          <ExternalLink className="h-3 w-3" />
+                        </button>
+                      )}
+                    </>
+                  ) : (
+                    <>
+                      <VersionStatus
+                        latestVersion={sleapNnTool.latestVersion}
+                        updateAvailable={
+                          sleapNnTool.latestVersion
+                            ? sleapNnTool.updateAvailable
+                            : null
                         }
-                        title="View release notes"
-                        className="shrink-0 text-muted-foreground transition-colors hover:text-foreground"
-                      >
-                        <ExternalLink className="h-3 w-3" />
-                      </button>
-                    )}
-                  </>
+                      />
+                      {sleapNnTool.latestVersion && (
+                        <button
+                          onClick={() =>
+                            openExternal(
+                              `${SLEAP_NN_RELEASES_URL}/v${sleapNnTool.latestVersion}`
+                            )
+                          }
+                          title="View release notes"
+                          className="shrink-0 text-muted-foreground transition-colors hover:text-foreground"
+                        >
+                          <ExternalLink className="h-3 w-3" />
+                        </button>
+                      )}
+                    </>
+                  )
                 ) : (
                   <span className="text-muted-foreground">Not installed</span>
                 )}
               </span>
+              {!sleapNnTool && (
+                <Detail>
+                  {sleapNnChannel === "prerelease"
+                    ? `Will install ${
+                        sleapNnStatus.targetVersion
+                          ? `v${sleapNnStatus.targetVersion}`
+                          : "0.4 pre-release"
+                      } (pre-release)${
+                        sleapNnStatus.targetSleapIoVersion
+                          ? ` + sleap-io v${sleapNnStatus.targetSleapIoVersion}`
+                          : ""
+                      }`
+                    : `Will install ${
+                        sleapNnStatus.targetVersion
+                          ? `v${sleapNnStatus.targetVersion} (stable)`
+                          : "latest stable (<0.5)"
+                      }`}
+                </Detail>
+              )}
             </Field>
+
+            <Field label="Channel">
+              <div className="flex min-w-0 items-center gap-1.5">
+                <Select
+                  value={sleapNnChannel}
+                  onValueChange={(v) => setSleapNnChannel(v as SleapNnChannel)}
+                  disabled={isInstalling}
+                >
+                  <SelectTrigger
+                    aria-label="sleap-nn channel"
+                    className="h-5 w-auto gap-1 px-1.5 text-[10px]"
+                  >
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {SLEAP_NN_CHANNELS.map((c) => (
+                      <SelectItem
+                        key={c.value}
+                        value={c.value}
+                        className="text-xs"
+                      >
+                        {c.label}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+                <Hint>
+                  <p>
+                    <span className="font-semibold">Stable</span> — full
+                    releases only (<code>&lt;0.5</code>). Recommended for
+                    stable workflows.
+                  </p>
+                  <p>
+                    <span className="font-semibold">Pre-release</span> —
+                    includes alpha/beta/RC builds (
+                    <code>&gt;=0.4.0a0,&lt;0.5</code> with{" "}
+                    <code>sleap-io &gt;=0.10.0a0</code>) for native SLP 3.0,{" "}
+                    <code>bbox_detr</code>, and ViT backbones.
+                  </p>
+                </Hint>
+              </div>
+            </Field>
+
+            {sleapNnTool && extras?.sleapIoVersion && (
+              <Field label="sleap-io">
+                <span className="flex min-w-0 items-center gap-1.5">
+                  <span className="truncate">v{extras.sleapIoVersion}</span>
+                  {sleapNnStatus.installedSleapIoIsPrerelease && (
+                    <Badge
+                      variant="secondary"
+                      className="h-4 shrink-0 rounded-sm px-1.5 py-0 text-[10px]"
+                      title="Installed sleap-io version inside sleap-nn's venv is a pre-release."
+                    >
+                      Pre-release
+                    </Badge>
+                  )}
+                  {sleapNnStatus.sleapIoUpdateAvailable &&
+                  sleapNnStatus.targetSleapIoVersion ? (
+                    <>
+                      <span className="shrink-0 text-[10px] text-orange-500">
+                        → v{sleapNnStatus.targetSleapIoVersion}
+                      </span>
+                      <button
+                        onClick={() =>
+                          openExternal(
+                            `${SLEAP_IO_RELEASES_URL}/v${sleapNnStatus.targetSleapIoVersion}`
+                          )
+                        }
+                        title={`View sleap-io v${sleapNnStatus.targetSleapIoVersion} release notes`}
+                        className="shrink-0 text-muted-foreground transition-colors hover:text-foreground"
+                      >
+                        <ExternalLink className="h-3 w-3" />
+                      </button>
+                    </>
+                  ) : (
+                    <button
+                      onClick={() =>
+                        openExternal(
+                          `${SLEAP_IO_RELEASES_URL}/v${extras.sleapIoVersion}`
+                        )
+                      }
+                      title={`View sleap-io v${extras.sleapIoVersion} release notes`}
+                      className="shrink-0 text-muted-foreground transition-colors hover:text-foreground"
+                    >
+                      <ExternalLink className="h-3 w-3" />
+                    </button>
+                  )}
+                </span>
+              </Field>
+            )}
 
             {sleapNnTool && (
               <>
@@ -1483,8 +1693,22 @@ export function EnvironmentPanel() {
                 installing={
                   isInstalling && (installTarget?.includes("sleap-nn") ?? false)
                 }
+                installTitle={
+                  sleapNnStatus.targetVersion
+                    ? `Install sleap-nn v${sleapNnStatus.targetVersion} (${sleapNnChannel === "prerelease" ? "pre-release" : "stable"})`
+                    : `Install sleap-nn (${sleapNnChannel})`
+                }
+                isSwitchDowngrade={sleapNnStatus.isSwitchDowngrade}
+                switchTargetVersion={sleapNnStatus.targetVersion}
+                extraUpdateAvailable={sleapNnStatus.sleapIoUpdateAvailable}
+                extraUpdateTitle={
+                  sleapNnStatus.targetSleapIoVersion
+                    ? `Upgrade sleap-io to v${sleapNnStatus.targetSleapIoVersion}`
+                    : undefined
+                }
                 onInstall={() => doInstallTool("sleap-nn")}
                 onUpgrade={() => doUpgradeTool("sleap-nn")}
+                onSwitch={() => doSwitchSleapNnChannel()}
                 onReinstall={() => doReinstallTool("sleap-nn")}
               />
             </Actions>

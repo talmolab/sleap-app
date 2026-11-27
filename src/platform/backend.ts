@@ -229,6 +229,8 @@ export interface SleapNnExtras {
   backbones?: boolean;
   /** Python version of the installed sleap-nn venv (e.g. `"3.12.7"`), when probed. */
   pythonVersion?: string | null;
+  /** Installed `sleap-io` version inside sleap-nn's venv (e.g. `"0.10.0a0"`), when probed. */
+  sleapIoVersion?: string | null;
   /**
    * Whether TensorRT is installable here at all. sleap-nn marks both tensorrt
    * deps linux/win-only, so on macOS the extra resolves to nothing — asking
@@ -243,11 +245,31 @@ export async function detectSleapNnExtras(): Promise<SleapNnExtras> {
     return {
       onnx: false,
       tensorrt: false,
+      sleapIoVersion: null,
       tensorrtSupported: false,
       error: "Extras detection is only available in the desktop app.",
     };
   }
   return invokeCmd<SleapNnExtras>("detect_sleap_nn_extras", {});
+}
+
+/**
+ * Available non-yanked PyPI versions for `sleap-nn` and `sleap-io`.
+ * Used for channel-aware update checks (`stable` vs `prerelease`) and
+ * tracking `--with sleap-io` companion updates that `uv tool list --outdated`
+ * doesn't inspect.
+ */
+export interface PyPiPackageVersions {
+  sleapNn: string[];
+  sleapIo: string[];
+  error: string | null;
+}
+
+export async function checkSleapNnVersions(): Promise<PyPiPackageVersions> {
+  if (!isTauri) {
+    return { sleapNn: [], sleapIo: [], error: null };
+  }
+  return invokeCmd<PyPiPackageVersions>("check_sleap_nn_versions", {});
 }
 
 /** Point-in-time GPU stats (NVIDIA util/VRAM via nvidia-smi; backend-only on mps/cpu). */

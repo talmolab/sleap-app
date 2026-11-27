@@ -74,6 +74,7 @@ vi.mock("@/platform/backend", () => ({
   detectGpu: vi.fn(async () => {}),
   detectAccelerator: vi.fn(async () => {}),
   detectSleapNnExtras: vi.fn(async () => {}),
+  checkSleapNnVersions: vi.fn(async () => {}),
   gpuStats: vi.fn(async () => {}),
   checkWandbAuth: vi.fn(async () => {}),
   installUvTool: vi.fn(async () => {}),
