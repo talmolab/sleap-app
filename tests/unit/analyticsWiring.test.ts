@@ -433,6 +433,34 @@ describe("video backend classification, panel usage, and Connect watcher", () =>
     ).toBe("mixed");
   });
 
+  it("survives Vite class-name minification via instanceof, metadata, wrapper unwrapping, and extension fallback", () => {
+    class a {} // simulates minified Mp4BoxVideoBackend
+    class b {
+      inner: unknown;
+      constructor(inner: unknown) {
+        this.inner = inner;
+      }
+    } // simulates minified GrayscaleVideoBackend wrapper
+    class c {} // simulates unknown minified backend
+
+    // instanceof beats mangled class names even through minified wrapper
+    expect(
+      classifyVideoBackend([{ backend: new b(new a()) }], { media: [a] }),
+    ).toBe("media");
+    // backendMetadata.type beats mangled class name
+    expect(
+      classifyVideoBackend([{ backend: new c(), backendMetadata: { type: "HDF5Video" } }]),
+    ).toBe("hdf5");
+    // embedded HDF5 dataset metadata classifies as hdf5
+    expect(
+      classifyVideoBackend([{ backend: new c(), backendMetadata: { dataset: "video0/video" } }]),
+    ).toBe("hdf5");
+    // lazy/unresolved videos fall back to local extension or image-array shape
+    expect(classifyVideoBackend([{ backend: null, filename: "/tmp/mice.mp4" }])).toBe("media");
+    expect(classifyVideoBackend([{ backend: null, filename: ["f0.png", "f1.png"] }])).toBe("image");
+    expect(classifyVideoBackend([{ backend: new c(), filename: "clip.avi" }])).toBe("avi");
+  });
+
   it("counts sidebar panels under the p: prefix", () => {
     const counted: string[] = [];
     setAnalyticsClient({ count: (k: string) => counted.push(k) } as unknown as AnalyticsClient);
