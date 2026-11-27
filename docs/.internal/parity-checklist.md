@@ -117,7 +117,7 @@ Use this to track which PyQt features have been ported to sleap-app.
 - [x] GitHub (links to issues)
 - [x] Releases link
 - [x] Check for Updates (auto-updater instead)
-- [ ] Share usage data toggle
+- [x] Share usage data toggle (Help ▸ Share Usage Data; see `docs/.internal/analytics.md`)
 - [x] Keyboard Shortcuts
 - [x] Debug mode (sidebar panel instead of toggle)
 

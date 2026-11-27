@@ -170,4 +170,6 @@ Buttons in the menu bar, not menus.
 | Report Issue | Opens the issue tracker |
 | Collect Diagnostics… | Bundles environment info for a bug report |
 | Releases | Opens the releases page |
-| About SLEAP Label | Version and channel |
+| Share Usage Data | Sends feature usage and error reports to the SLEAP team; never videos, labels or file names. See [Usage Data](../usage-data.md) |
+| About Usage Data | Opens [Usage Data](../usage-data.md): what is shared and what never is |
+| About SLEAP Label | Version, channel and your [Support ID](../usage-data.md#your-support-id) |

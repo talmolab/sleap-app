@@ -154,6 +154,7 @@ describe("File ▸ Export ▸ SLP Copy… menu wiring", () => {
   it("exposes File ▸ Export ▸ SLP Copy… in appMenu and searchableCommands, opening SaveSlpCopyDialog", async () => {
     const menu = buildAppMenu({
       isTauri: true,
+      shareUsageData: true,
       projectLoaded: true,
       hasProjectPath: true,
       videoNames: ["a.mp4"],

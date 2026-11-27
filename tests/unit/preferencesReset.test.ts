@@ -55,6 +55,25 @@ describe("preference keys", () => {
   });
 });
 
+describe("the usage data choice", () => {
+  // A reset must never turn sharing back on for someone who turned it off,
+  // nor show the first-run notice again.
+  it("survives a preferences reset", () => {
+    const s = useAppStore.getState();
+    s.set("shareUsageData", false);
+    s.set("usageDataNoticeSeen", true);
+    resetPreferencesToDefaults();
+    expect(useAppStore.getState().shareUsageData).toBe(false);
+    expect(useAppStore.getState().usageDataNoticeSeen).toBe(true);
+  });
+
+  it("starts unset, with the notice not yet shown", () => {
+    const fresh = useAppStore.getInitialState();
+    expect(fresh.shareUsageData).toBeNull();
+    expect(fresh.usageDataNoticeSeen).toBe(false);
+  });
+});
+
 describe("resetPreferencesToDefaults", () => {
   // The reset must bring back each changed preference, the step sizes included.
   it("puts changed preferences back to their defaults", () => {
