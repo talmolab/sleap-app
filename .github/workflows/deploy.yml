@@ -44,7 +44,12 @@ on:
         options:
           - main
           - prod
+          - release
         required: true
+      release_tag:
+        description: "Release tag to deploy (required when target=release, e.g. v0.2.0-0)"
+        type: string
+        required: false
 
 # Serialize deploys to avoid race conditions on gh-pages branch
 concurrency:
@@ -87,7 +92,7 @@ jobs:
       - name: Checkout source
         uses: actions/checkout@v5
         with:
-          ref: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.head_sha || github.ref }}
+          ref: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.head_sha || (github.event_name == 'workflow_dispatch' && inputs.target == 'release' && inputs.release_tag || github.ref) }}
           # Full history + tags so highest_tag() can verify git ancestry against
           # HEAD (prevents diverged release/* tags from mislabeling /main/).
           fetch-depth: 0
@@ -123,6 +128,7 @@ jobs:
           WORKFLOW_HEAD_BRANCH: ${{ github.event.workflow_run.head_branch }}
           HEAD_SHA: ${{ github.event.workflow_run.head_sha || github.sha }}
           DISPATCH_TARGET: ${{ inputs.target }}
+          DISPATCH_RELEASE_TAG: ${{ inputs.release_tag }}
           REF_NAME: ${{ github.ref_name }}
         run: |
           set -euo pipefail
@@ -201,10 +207,25 @@ jobs:
             python3 -c "import json; print(json.load(open('package.json')).get('version', '0.0.0'))" 2>/dev/null || echo "0.0.0"
           }
 
-          if [ "$EVENT_NAME" = "workflow_run" ] && [ "$WORKFLOW_NAME" = "Build Desktop Apps" ]; then
-            # The job guard restricts this to SUCCESSFUL release runs, so every
-            # platform's installer exists and the tag is a real release.
-            RELEASE_TAG="$WORKFLOW_HEAD_BRANCH"
+          if { [ "$EVENT_NAME" = "workflow_run" ] && [ "$WORKFLOW_NAME" = "Build Desktop Apps" ]; } \
+            || { [ "$EVENT_NAME" = "workflow_dispatch" ] && [ "$DISPATCH_TARGET" = "release" ]; }; then
+            if [ "$EVENT_NAME" = "workflow_dispatch" ]; then
+              RELEASE_TAG="$DISPATCH_RELEASE_TAG"
+              if [ -z "$RELEASE_TAG" ]; then
+                echo "::error::release_tag input is required when target=release"
+                exit 1
+              fi
+              HAS_MANIFEST="$(gh api "repos/$REPO/releases/tags/$RELEASE_TAG" \
+                --jq '(.draft == false) and (.assets | any(.name == "latest.json"))')"
+              if [ "$HAS_MANIFEST" != "true" ]; then
+                echo "::error::release '$RELEASE_TAG' is missing, draft, or has no latest.json asset"
+                exit 1
+              fi
+            else
+              # The job guard restricts this to SUCCESSFUL release runs, so every
+              # platform's installer exists and the tag is a real release.
+              RELEASE_TAG="$WORKFLOW_HEAD_BRANCH"
+            fi
             # Identical derivation to build.yml's "Set version from release
             # tag" (VERSION="${RELEASE_TAG#v}"), which is the version the
             # desktop app reports -- so the web build at /v<tag>/ and the
@@ -471,7 +492,7 @@ jobs:
           # being guarded against is a file moving OUT of that directory: a
           # derived list would stop containing exactly the name that escaped.
           # Check 2 below is what keeps this list honest.
-          INTERNAL_NOTES="macos-code-signing parity-checklist linux-h264-fallback-test training-panel-prototype"
+          INTERNAL_NOTES="macos-code-signing parity-checklist linux-h264-fallback-test training-panel-prototype analytics"
 
           # 1. The directory must still be dot-prefixed.
           if [ ! -d docs/.internal ]; then
@@ -501,13 +522,17 @@ jobs:
           #    is a raw .html asset copied through verbatim, so its name
           #    appears nowhere inside any built file and a content-only `grep
           #    -r` reports clean while site/prototypes/ is being published.
-          #    `-print -quit` rather than a pipe into `grep -q`, which would
-          #    exit on the first match and SIGPIPE find -- pipefail then turns
-          #    a found leak into a failed condition, i.e. reads as clean.
+          #    Single-word stems (like `analytics`) also appear in public prose
+          #    (`analytics.sleap.ai` in usage-data.md), so match them as paths
+          #    or filenames while keeping full-substring checks for hyphenated
+          #    stems. `-print -quit` avoids SIGPIPE under pipefail.
           LEAKED=""
           for stem in $INTERNAL_NOTES; do
-            if [ -n "$(find site -name "$stem*" -print -quit)" ] \
-              || grep -rqs -- "$stem" site/; then
+            if [ -n "$(find site -name "$stem*" -print -quit)" ]; then
+              LEAKED="$LEAKED $stem"
+            elif [[ "$stem" == *-* ]] && grep -rqs -- "$stem" site/; then
+              LEAKED="$LEAKED $stem"
+            elif grep -rqsE -- "(^|[^A-Za-z0-9_.-])(\.internal/|internal/)?${stem}(\.md|\.html|/)" site/; then
               LEAKED="$LEAKED $stem"
             fi
           done
@@ -518,15 +543,13 @@ jobs:
 
       - name: Deploy to gh-pages
         env:
-          # Matches the exact commit the "Checkout source" step used --
-          # plain $GITHUB_SHA reflects the triggering EVENT, which for a
-          # workflow_run isn't guaranteed to equal build-dev.yml's head_sha,
-          # so the commit message would otherwise cite a slightly different
-          # commit than what was actually built and deployed.
-          DEPLOY_SHA: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.head_sha || github.sha }}
+          # Matches the exact commit the "Checkout source" step checked out --
+          # plain $GITHUB_SHA reflects the triggering EVENT, which differs on
+          # workflow_run or target=release dispatches.
           DOCS_TARGETS_JSON: ${{ steps.targets.outputs.docs_targets }}
         run: |
           set -euo pipefail
+          DEPLOY_SHA="$(git rev-parse HEAD)"
           echo "${DOCS_TARGETS_JSON:-[]}" > /tmp/docs-targets.json
 
           # Set up a fresh clone of just the gh-pages branch
