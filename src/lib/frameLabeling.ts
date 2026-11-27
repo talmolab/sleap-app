@@ -67,7 +67,7 @@ export function frameHasContent(
   lf: Pick<
     LabeledFrame,
     "instances" | "isNegative" | "centroids" | "bboxes" | "masks" | "labelImages" | "rois"
-  >,
+  > & { metadata?: Record<string, unknown> | null },
 ): boolean {
   return (
     lf.instances.length > 0 ||
@@ -76,6 +76,7 @@ export function frameHasContent(
     lf.bboxes.length > 0 ||
     lf.masks.length > 0 ||
     lf.labelImages.length > 0 ||
-    lf.rois.length > 0
+    lf.rois.length > 0 ||
+    (lf.metadata != null && Object.keys(lf.metadata).length > 0)
   );
 }

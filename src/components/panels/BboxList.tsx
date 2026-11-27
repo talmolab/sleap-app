@@ -4,11 +4,17 @@
  * linked pose instance; delete it. Every edit is one undo step.
  */
 import { useEffect, useState } from "react";
-import { Check, X } from "lucide-react";
+import { Check, Tag, X } from "lucide-react";
 import { PredictedBoundingBox, type BoundingBox } from "@talmolab/sleap-io.js";
 import { useAppStore } from "@/stores/appStore";
-import { commandContext } from "@/commands";
+import { useSlpAccessNonce } from "@/stores/slpFormatStore";
+import { commandContext, SetRecordMetadata } from "@/commands";
 import { AcceptBbox, AcceptFrameBboxes, DeleteBbox, SetBboxProps } from "@/commands/bboxCommands";
+import { isViewOnlyLabels, metadataOf } from "@/lib/slpFormat";
+import {
+  MetadataEditor,
+  formatMetadataPreview,
+} from "@/components/common/MetadataEditor";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import {
@@ -70,13 +76,19 @@ export function BboxList({ labeledFrame }: { labeledFrame: LabeledFrame | null }
   const labels = useAppStore((s) => s.labels);
   const selectedBboxIdx = useAppStore((s) => s.selectedBboxIdx);
   const bboxDrawMode = useAppStore((s) => s.bboxDrawMode);
-  // Re-render after in-place edits.
+  // Re-render after in-place edits or view-only access toggle.
   useAppStore((s) => s.editSeq);
   useAppStore((s) => s.overlayVersion);
+  useSlpAccessNonce((s) => s.nonce);
+  const viewOnly = isViewOnlyLabels(labels);
 
   const boxes = labeledFrame?.bboxes ?? [];
   if (boxes.length === 0 && !bboxDrawMode) return null;
   const tracks = labels?.tracks ?? [];
+  const selectedBox =
+    selectedBboxIdx !== null && selectedBboxIdx >= 0 && selectedBboxIdx < boxes.length
+      ? boxes[selectedBboxIdx]
+      : null;
   const select = "h-6 shrink-0 rounded border border-input bg-background px-1 text-xs";
 
   return (
@@ -132,6 +144,7 @@ export function BboxList({ labeledFrame }: { labeledFrame: LabeledFrame | null }
               {boxes.map((box, i) => {
                 const predicted = box instanceof PredictedBoundingBox;
                 const linkedIdx = box.instance && labeledFrame ? labeledFrame.instances.indexOf(box.instance) : -1;
+                const boxMetaPreview = formatMetadataPreview(metadataOf(box));
                 return (
                   <TableRow
                     key={i}
@@ -140,7 +153,20 @@ export function BboxList({ labeledFrame }: { labeledFrame: LabeledFrame | null }
                     className="cursor-pointer text-xs"
                     onClick={() => useAppStore.getState().set("selectedBboxIdx", i)}
                   >
-                    <TableCell className="px-1.5 py-0.5 text-right tabular-nums text-muted-foreground">{i + 1}</TableCell>
+                    <TableCell className="px-1.5 py-0.5 text-right tabular-nums text-muted-foreground">
+                      <span className="inline-flex items-center justify-end gap-1">
+                        {boxMetaPreview && (
+                          <span
+                            title={`Metadata: ${boxMetaPreview}`}
+                            aria-label={`Box ${i + 1} has metadata`}
+                            className="inline-flex text-muted-foreground"
+                          >
+                            <Tag className="h-2.5 w-2.5" />
+                          </span>
+                        )}
+                        {i + 1}
+                      </span>
+                    </TableCell>
                     <TableCell className="px-1.5 py-0.5">{predicted ? "pred" : "user"}</TableCell>
                     <TableCell className="px-1.5 py-0.5 text-right tabular-nums">
                       {predicted ? (box as PredictedBoundingBox).score.toFixed(2) : "—"}
@@ -226,6 +252,23 @@ export function BboxList({ labeledFrame }: { labeledFrame: LabeledFrame | null }
               })}
             </TableBody>
           </Table>
+        </div>
+      )}
+      {selectedBox && selectedBboxIdx !== null && (
+        <div className="border-t border-border/50 px-2 py-1">
+          <MetadataEditor
+            label={`Box ${selectedBboxIdx + 1} metadata`}
+            metadata={selectedBox.metadata}
+            readOnly={viewOnly}
+            testId="bbox-metadata"
+            onChange={(next) => {
+              void commandContext.execute(SetRecordMetadata, {
+                target: "bbox",
+                index: selectedBboxIdx,
+                metadata: next,
+              });
+            }}
+          />
         </div>
       )}
     </div>

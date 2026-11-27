@@ -11,8 +11,9 @@
  */
 
 import { useState, useRef, useCallback, useEffect, useMemo } from "react";
-import { Clipboard, Check, Search } from "lucide-react";
+import { Clipboard, Check, Crosshair, Search, Tag } from "lucide-react";
 import { useAppStore } from "../../stores/appStore";
+import { useSlpAccessNonce } from "@/stores/slpFormatStore";
 import {
   rgbToCSS,
   rgbToHex,
@@ -34,6 +35,8 @@ import {
   DeleteSelectedInstance,
   AddInstancesFromAllPredictions,
   SetTrackName,
+  SetPointState,
+  SetRecordMetadata,
 } from "../../commands";
 import { cn } from "@/lib/utils";
 import {
@@ -55,7 +58,19 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 import { PredictedInstance } from "@talmolab/sleap-io.js";
-import { instanceNamedPoints, unlabeledNodeCount } from "@/lib/instancePoints";
+import { instanceNamedPoints } from "@/lib/instancePoints";
+import {
+  countPointStates,
+  formatPointStateSummary,
+  getPointState,
+  hasPointCoords,
+  type PointState,
+} from "@/lib/pointState";
+import { isViewOnlyLabels, metadataOf } from "@/lib/slpFormat";
+import {
+  MetadataEditor,
+  formatMetadataPreview,
+} from "@/components/common/MetadataEditor";
 import { meanNodeScore } from "@/lib/meanNodeScore";
 import { BboxList } from "./BboxList";
 import type { Instance, Labels } from "../../types";
@@ -269,9 +284,11 @@ function InstanceRow({
     trackColorOverrides,
   );
   const trackName = instance.track?.name ?? "[no track]";
-  const visibleNodes = instance.nVisible;
-  const totalNodes = instance.points.length;
-  const notLabelled = unlabeledNodeCount(instance);
+  const counts = countPointStates(instance);
+  const visibleNodes = counts.visible;
+  const totalNodes = counts.total;
+  const notLabelled = counts.unlabeled;
+  const metaPreview = formatMetadataPreview(metadataOf(instance));
   const score = predicted ? (instance as PredictedInstance).score : null;
   const nodeScore = showMeanNodeScore && predicted ? meanNodeScore(instance.points) : null;
 
@@ -341,20 +358,27 @@ function InstanceRow({
         )}
       </TableCell>
       <TableCell className="py-0.5 px-2 text-xs">
-        <Badge
-          variant={predicted ? "secondary" : "outline"}
-          className="text-[10px] px-1.5 py-0"
-        >
-          {predicted ? "pred" : "user"}
-        </Badge>
+        <span className="inline-flex items-center gap-1">
+          <Badge
+            variant={predicted ? "secondary" : "outline"}
+            className="text-[10px] px-1.5 py-0"
+          >
+            {predicted ? "pred" : "user"}
+          </Badge>
+          {metaPreview && (
+            <span
+              title={`Metadata: ${metaPreview}`}
+              aria-label="Has metadata"
+              className="inline-flex text-muted-foreground"
+            >
+              <Tag className="h-2.5 w-2.5" />
+            </span>
+          )}
+        </span>
       </TableCell>
       <TableCell
         className="py-0.5 px-2 text-xs text-right tabular-nums"
-        title={
-          notLabelled > 0
-            ? `${visibleNodes} visible of ${totalNodes} nodes; ${notLabelled} not labeled`
-            : undefined
-        }
+        title={formatPointStateSummary(counts)}
       >
         {visibleNodes}/{totalNodes}
         {notLabelled > 0 && <span className="text-muted-foreground">*</span>}
@@ -400,22 +424,186 @@ function InstanceRow({
   );
 }
 
+/** Interactive 4-state status pill + popover for a single node row. */
+function NodeStateControl({
+  nodeName,
+  nodeIdx,
+  instance,
+  instanceIdx,
+  state,
+  placed,
+  x,
+  y,
+  editable,
+}: {
+  nodeName: string;
+  nodeIdx: number;
+  instance: Instance | PredictedInstance;
+  instanceIdx: number;
+  state: PointState;
+  placed: boolean;
+  x: number;
+  y: number;
+  editable: boolean;
+}) {
+  const [open, setOpen] = useState(false);
+
+  const label =
+    state === "visible"
+      ? `${x.toFixed(1)}, ${y.toFixed(1)}`
+      : state === "occluded"
+        ? "occluded"
+        : state === "absent"
+          ? "absent"
+          : "unlabeled";
+
+  const colorClass =
+    state === "visible"
+      ? "text-green-500"
+      : state === "occluded"
+        ? "text-amber-500"
+        : state === "absent"
+          ? "text-red-500"
+          : "text-muted-foreground italic";
+
+  const title =
+    state === "occluded"
+      ? `Occluded at ${x.toFixed(1)}, ${y.toFixed(1)}`
+      : state === "unlabeled"
+        ? "Unlabeled (not annotated — ignored in training)"
+        : state === "absent"
+          ? "Absent (marked absent with no position)"
+          : `Visible at ${x.toFixed(1)}, ${y.toFixed(1)}`;
+
+  if (!editable) {
+    return (
+      <span
+        data-point-state={state}
+        title={title}
+        className={cn("tabular-nums text-right", colorClass)}
+      >
+        {label}
+      </span>
+    );
+  }
+
+  const applyState = (next: PointState) => {
+    setOpen(false);
+    void commandContext.execute(SetPointState, {
+      nodes: [{ instanceIdx, nodeIdx }],
+      state: next,
+    });
+  };
+
+  const placeOnCanvas = () => {
+    setOpen(false);
+    const store = useAppStore.getState();
+    store.setInstance(instance);
+    store.set("placementNodeIdx", nodeIdx);
+    store.set("labelingMode", "place");
+  };
+
+  return (
+    <Popover open={open} onOpenChange={setOpen}>
+      <PopoverTrigger asChild>
+        <button
+          type="button"
+          data-point-state={state}
+          aria-label={`State for ${nodeName}: ${state}`}
+          title={`${title} — click to change state or place on canvas`}
+          className={cn(
+            "tabular-nums text-right rounded px-1 -mx-1 cursor-pointer hover:bg-accent/70 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
+            colorClass,
+          )}
+        >
+          {label}
+        </button>
+      </PopoverTrigger>
+      <PopoverContent
+        align="end"
+        className="w-48 p-1 text-xs"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="px-2 py-1 text-[10px] font-medium text-muted-foreground truncate">
+          {nodeName}
+        </div>
+        <button
+          type="button"
+          onClick={placeOnCanvas}
+          className="flex w-full items-center gap-1.5 rounded-sm px-2 py-1 text-left text-xs hover:bg-accent hover:text-accent-foreground"
+        >
+          <Crosshair className="h-3 w-3 shrink-0" />
+          <span>{placed ? "Re-place on canvas" : "Place on canvas"}</span>
+        </button>
+        <Separator className="my-1" />
+        <button
+          type="button"
+          disabled={!placed}
+          onClick={() => applyState("visible")}
+          className={cn(
+            "flex w-full items-center justify-between rounded-sm px-2 py-1 text-left text-xs",
+            placed
+              ? "hover:bg-accent hover:text-accent-foreground"
+              : "cursor-not-allowed text-muted-foreground opacity-40",
+          )}
+        >
+          <span className="text-green-500">Visible</span>
+          {state === "visible" && <Check className="h-3 w-3" />}
+        </button>
+        <button
+          type="button"
+          disabled={!placed}
+          onClick={() => applyState("occluded")}
+          className={cn(
+            "flex w-full items-center justify-between rounded-sm px-2 py-1 text-left text-xs",
+            placed
+              ? "hover:bg-accent hover:text-accent-foreground"
+              : "cursor-not-allowed text-muted-foreground opacity-40",
+          )}
+        >
+          <span className="text-amber-500">Occluded (hidden)</span>
+          {state === "occluded" && <Check className="h-3 w-3" />}
+        </button>
+        <button
+          type="button"
+          onClick={() => applyState("absent")}
+          className="flex w-full items-center justify-between rounded-sm px-2 py-1 text-left text-xs hover:bg-accent hover:text-accent-foreground"
+        >
+          <span className="text-red-500">Absent</span>
+          {state === "absent" && <Check className="h-3 w-3" />}
+        </button>
+        <button
+          type="button"
+          onClick={() => applyState("unlabeled")}
+          className="flex w-full items-center justify-between rounded-sm px-2 py-1 text-left text-xs hover:bg-accent hover:text-accent-foreground"
+        >
+          <span className="italic text-muted-foreground">Unlabeled</span>
+          {state === "unlabeled" && <Check className="h-3 w-3" />}
+        </button>
+      </PopoverContent>
+    </Popover>
+  );
+}
+
 function InstanceDetailPanel({
   instance,
+  instanceIdx,
+  viewOnly,
 }: {
   instance: Instance | PredictedInstance;
+  instanceIdx: number;
+  viewOnly: boolean;
 }) {
   const [copied, setCopied] = useState(false);
   const predicted = isPredicted(instance);
   const trackName = instance.track?.name ?? "Untracked";
-  const visibleNodes = instance.nVisible;
-  const totalNodes = instance.points.length;
+  const counts = countPointStates(instance);
   const score = predicted ? (instance as PredictedInstance).score : null;
   // Copy payload stays the plain np.array([...]); the on-screen list below is a
   // human-readable node-name view only (names never enter the clipboard).
   const pointsStr = formatPointsAsPython(instance);
   const namedPoints = instanceNamedPoints(instance);
-  const notLabelled = unlabeledNodeCount(instance);
+  const editableNodes = !predicted && !viewOnly && instanceIdx >= 0;
 
   const handleCopy = async () => {
     await navigator.clipboard.writeText(pointsStr);
@@ -433,9 +621,11 @@ function InstanceDetailPanel({
           {predicted ? "Predicted" : "User"}
           {score !== null && ` (${score.toFixed(2)})`}
         </span>
-        <span>
-          Nodes: {visibleNodes}/{totalNodes}
-          {notLabelled > 0 && ` (${notLabelled} not labeled)`}
+        <span title={formatPointStateSummary(counts)}>
+          Nodes: {counts.visible}/{counts.total}
+          {counts.occluded > 0 && ` · ${counts.occluded} occ`}
+          {counts.absent > 0 && ` · ${counts.absent} abs`}
+          {counts.unlabeled > 0 && ` · ${counts.unlabeled} unl`}
         </span>
       </div>
       <div className="relative">
@@ -452,50 +642,50 @@ function InstanceDetailPanel({
             <Clipboard className="h-3 w-3" />
           )}
         </Button>
-        {/* Readable named list (node name + coords). Must stay inside a
-            max-h + overflow-auto box so many-node skeletons scroll here rather
-            than pushing the Add/Delete/Accept buttons off-screen. */}
-        <div className="text-[10px] leading-tight font-mono bg-muted/50 rounded p-2 pr-8 max-h-32 overflow-auto select-text">
+        {/* Readable named list (node name + interactive 4-state pill). Must stay
+            inside a max-h + overflow-auto box so many-node skeletons scroll here
+            rather than pushing the Add/Delete/Accept buttons off-screen. */}
+        <div className="text-[10px] leading-tight font-mono bg-muted/50 rounded p-2 pr-8 max-h-40 overflow-auto space-y-0.5 select-text">
           {namedPoints.map((pt, i) => {
-            // Green only when actually placed AND visible; a NaN/unset coord
-            // (not placed) is red, not green (#278 feedback).
-            const placed = Number.isFinite(pt.x) && Number.isFinite(pt.y);
-            const shown = pt.visible && placed;
-            // Not labelled (SLP format 3.0): the node was never annotated in
-            // this instance. Muted, unlike a hidden or unplaced node (red),
-            // since nothing is wrong with it.
-            const status = !pt.labeled
-              ? "not labeled"
-              : shown
-                ? `${pt.x.toFixed(1)}, ${pt.y.toFixed(1)}`
-                : placed
-                  ? "not visible"
-                  : "not placed";
+            const rawPt = instance.points[i];
+            const state = rawPt ? getPointState(rawPt) : "absent";
+            const placed = rawPt ? hasPointCoords(rawPt) : false;
             return (
               <div
                 key={i}
-                className="grid grid-cols-[1fr_auto] gap-x-3 whitespace-nowrap"
+                className="grid grid-cols-[1fr_auto] items-center gap-x-3 whitespace-nowrap"
               >
-                {/* Node name white; coords green when placed+visible, else red
-                    ("not visible"/"not placed") — same red/green as Frames tab. */}
                 <span className="text-foreground truncate">{pt.name}</span>
-                <span
-                  className={cn(
-                    "tabular-nums text-right",
-                    !pt.labeled
-                      ? "text-muted-foreground italic"
-                      : shown
-                        ? "text-green-500"
-                        : "text-red-500",
-                  )}
-                >
-                  {status}
-                </span>
+                <NodeStateControl
+                  nodeName={pt.name}
+                  nodeIdx={i}
+                  instance={instance}
+                  instanceIdx={instanceIdx}
+                  state={state}
+                  placed={placed}
+                  x={pt.x}
+                  y={pt.y}
+                  editable={editableNodes}
+                />
               </div>
             );
           })}
         </div>
       </div>
+      <MetadataEditor
+        label="Instance metadata"
+        metadata={instance.metadata}
+        readOnly={viewOnly}
+        testId="instance-metadata"
+        onChange={(next) => {
+          if (instanceIdx < 0) return;
+          void commandContext.execute(SetRecordMetadata, {
+            target: "instance",
+            index: instanceIdx,
+            metadata: next,
+          });
+        }}
+      />
     </div>
   );
 }
@@ -512,6 +702,8 @@ export function InstancesPanel() {
   // panel only updates by luck via some other re-render (and not at all on a
   // frame with no incidental repaint — e.g. a negative frame).
   const editSeq = useAppStore((s) => s.editSeq);
+  useSlpAccessNonce((s) => s.nonce);
+  const viewOnly = isViewOnlyLabels(labels);
   // Instances require a skeleton with at least one node; a node-less skeleton
   // would yield a null instance. Re-evaluates when the node count changes
   // (skeleton commands bump overlayVersion, which notifies this selector).
@@ -800,7 +992,31 @@ export function InstancesPanel() {
       {currentInstance && (
         <>
           <Separator />
-          <InstanceDetailPanel instance={currentInstance} />
+          <InstanceDetailPanel
+            instance={currentInstance}
+            instanceIdx={currentIndex}
+            viewOnly={viewOnly}
+          />
+        </>
+      )}
+
+      {video && (
+        <>
+          <Separator />
+          <div className="px-2 py-1">
+            <MetadataEditor
+              label="Frame metadata"
+              metadata={labeledFrame?.metadata}
+              readOnly={viewOnly}
+              testId="frame-metadata"
+              onChange={(next) => {
+                void commandContext.execute(SetRecordMetadata, {
+                  target: "frame",
+                  metadata: next,
+                });
+              }}
+            />
+          </div>
         </>
       )}
 

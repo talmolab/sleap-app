@@ -23,8 +23,10 @@ import {
   AddTrack,
   SetInstanceTrack,
   ToggleNodeVisibility,
+  SetPointState,
   MergeInstance,
 } from "../../commands";
+import type { PointState } from "@/lib/pointState";
 import { cn } from "@/lib/utils";
 import { formatShortcut } from "@/lib/formatShortcut";
 import { currentShortcut } from "@/lib/shortcutPrefs";
@@ -40,6 +42,7 @@ interface ContextMenuProps {
   nodeIdx: number | null;
   selectedNodes?: Set<string>;
   onToggleSelectedNodesVisibility?: () => void;
+  onSetSelectedNodesState?: (state: PointState) => void;
   onClose: () => void;
 }
 
@@ -50,6 +53,7 @@ export function ContextMenu({
   nodeIdx,
   selectedNodes,
   onToggleSelectedNodesVisibility,
+  onSetSelectedNodesState,
   onClose,
 }: ContextMenuProps) {
   const labels = useAppStore((s) => s.labels);
@@ -137,14 +141,30 @@ export function ContextMenu({
       style={{ left: clampedPos.left, top: clampedPos.top }}
       onClick={(e) => e.stopPropagation()}
     >
-      {/* Selected nodes visibility toggle */}
+      {/* Selected nodes state actions */}
       {selectedNodes && selectedNodes.size > 1 && !isPredicted && (
         <>
           <ContextMenuItem
             label={`Toggle ${selectedNodes.size} Selected Nodes Visibility`}
-            shortcut="V"
+            shortcut={formatShortcut(currentShortcut("toggle node visibility"))}
             onClick={() => {
               onToggleSelectedNodesVisibility?.();
+              onClose();
+            }}
+          />
+          <ContextMenuItem
+            label={`Mark ${selectedNodes.size} Selected Nodes Absent`}
+            shortcut={formatShortcut(currentShortcut("mark node absent"))}
+            onClick={() => {
+              onSetSelectedNodesState?.("absent");
+              onClose();
+            }}
+          />
+          <ContextMenuItem
+            label={`Mark ${selectedNodes.size} Selected Nodes Unlabeled`}
+            shortcut={formatShortcut(currentShortcut("mark node unlabeled"))}
+            onClick={() => {
+              onSetSelectedNodesState?.("unlabeled");
               onClose();
             }}
           />
@@ -152,7 +172,7 @@ export function ContextMenu({
         </>
       )}
 
-      {/* Node-specific actions */}
+      {/* Node-specific state actions */}
       {hasNode && !isPredicted && (
         <>
           <ContextMenuItem
@@ -161,11 +181,35 @@ export function ContextMenu({
                 ? "Mark Node Non-Visible"
                 : "Mark Node Visible"
             }
-            shortcut="V"
+            shortcut={formatShortcut(currentShortcut("toggle node visibility"))}
             onClick={() => {
               const lf = useAppStore.getState().labeledFrame;
               const instanceIdx = lf ? lf.instances.indexOf(instance) : -1;
               exec(ToggleNodeVisibility, { nodes: [{ instanceIdx, nodeIdx: nodeIdx! }] });
+            }}
+          />
+          <ContextMenuItem
+            label="Mark Node Absent"
+            shortcut={formatShortcut(currentShortcut("mark node absent"))}
+            onClick={() => {
+              const lf = useAppStore.getState().labeledFrame;
+              const instanceIdx = lf ? lf.instances.indexOf(instance) : -1;
+              exec(SetPointState, {
+                nodes: [{ instanceIdx, nodeIdx: nodeIdx! }],
+                state: "absent",
+              });
+            }}
+          />
+          <ContextMenuItem
+            label="Mark Node Unlabeled"
+            shortcut={formatShortcut(currentShortcut("mark node unlabeled"))}
+            onClick={() => {
+              const lf = useAppStore.getState().labeledFrame;
+              const instanceIdx = lf ? lf.instances.indexOf(instance) : -1;
+              exec(SetPointState, {
+                nodes: [{ instanceIdx, nodeIdx: nodeIdx! }],
+                state: "unlabeled",
+              });
             }}
           />
           <ContextMenuSeparator />
