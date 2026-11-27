@@ -68,6 +68,7 @@ function Toggle({
     | "showCentroids"
     | "showPoseBboxes"
     | "poseBboxIncludePredicted"
+    | "showMasks"
     | "showNonVisibleNodes"
     | "colorPredicted"
     | "showInset"
@@ -204,6 +205,7 @@ function SliderRow({
   storeKey:
     | "markerSize"
     | "poseOpacity"
+    | "maskOpacity"
     | "nodeLabelSize"
     | "insetSize"
     | "insetZoom"
@@ -489,6 +491,7 @@ export function ViewPanel() {
         <Toggle label="Show centroids" storeKey="showCentroids" />
         <Toggle label="Show boxes around poses" storeKey="showPoseBboxes" />
         <PoseBboxControls />
+        <Toggle label="Show masks" storeKey="showMasks" />
         <Toggle label="Show non-visible nodes" storeKey="showNonVisibleNodes" />
         <DisplayModeSelect />
       </Section>
@@ -516,6 +519,7 @@ export function ViewPanel() {
         <SliderRow label="Marker size" storeKey="markerSize" min={1} max={20} />
         <SliderRow label="Label size" storeKey="nodeLabelSize" min={0} max={20} />
         <SliderRow label="Pose opacity" storeKey="poseOpacity" min={10} max={100} step={5} suffix="%" />
+        <SliderRow label="Mask opacity" storeKey="maskOpacity" min={0} max={100} step={5} suffix="%" />
         <Toggle label="Show magnifier" storeKey="showInset" />
         <SliderRow label="Inset size" storeKey="insetSize" min={100} max={800} step={10} />
         <SliderRow label="Inset zoom" storeKey="insetZoom" min={1} max={20} />

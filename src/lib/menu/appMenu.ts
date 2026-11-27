@@ -129,6 +129,7 @@ export interface MenuSnapshot {
   showBboxes: boolean;
   showCentroids: boolean;
   showPoseBboxes: boolean;
+  showMasks: boolean;
   bboxDrawMode: boolean;
   showCrosshair: boolean;
   showInset: boolean;
@@ -462,6 +463,7 @@ function viewMenu(s: MenuSnapshot): TopMenu {
       { kind: "check", id: "view.showBboxes", label: "Show Bounding Boxes", checked: s.showBboxes, run: toggle("showBboxes") },
       { kind: "check", id: "view.showCentroids", label: "Show Centroids", checked: s.showCentroids, run: toggle("showCentroids") },
       { kind: "check", id: "view.showPoseBboxes", label: "Show Boxes Around Poses", checked: s.showPoseBboxes, run: toggle("showPoseBboxes") },
+      { kind: "check", id: "view.showMasks", label: "Show Masks", checked: s.showMasks, run: toggle("showMasks") },
       { kind: "check", id: "view.crosshair", label: "Crosshair When Zoomed", checked: s.showCrosshair, run: toggle("showCrosshair") },
       { kind: "check", id: "view.magnifier", label: "Magnifier When Moving Nodes", checked: s.showInset, run: toggle("showInset") },
       { kind: "check", id: "view.temporalLoupe", label: "Play Neighboring Frames in Magnifier", checked: s.temporalLoupe, run: toggle("temporalLoupe") },

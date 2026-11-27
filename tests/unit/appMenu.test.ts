@@ -35,6 +35,7 @@ const BASE: MenuSnapshot = {
   showBboxes: true,
   showCentroids: true,
   showPoseBboxes: false,
+  showMasks: false,
   bboxDrawMode: false,
   showCrosshair: true,
   showInset: true,
@@ -159,6 +160,7 @@ describe("buildAppMenu", () => {
   it("reflects checked state", () => {
     const menu = buildAppMenu({ ...BASE, hiddenPanels: ["labelingTips"], fit: true });
     expect(find(menu, "view.fit")).toMatchObject({ checked: true });
+    expect(find(menu, "view.showMasks")).toMatchObject({ label: "Show Masks", checked: false });
     expect(top(menu, "labels").items.at(-1)).toMatchObject({ text: "3 labeled frames, 7 instances" });
   });
 });

@@ -202,6 +202,8 @@ export interface AppState {
   poseBboxPadding: number;
   /** Also draw boxes around predicted instances (sleap-nn trains on user instances only). */
   poseBboxIncludePredicted: boolean;
+  /** Draw segmentation masks (`LabeledFrame.masks`) on the canvas. Persisted. */
+  showMasks: boolean;
   showNonVisibleNodes: boolean;
   /**
    * Currently-visible portion of the video frame, in frame/scene pixel
@@ -286,6 +288,8 @@ export interface AppState {
   markerSize: number;
   /** Node and edge opacity in percent (10-100); labels stay opaque. Persisted. */
   poseOpacity: number;
+  /** Segmentation-mask fill opacity in percent (0-100); outlines follow pose opacity. Persisted. */
+  maskOpacity: number;
   nodeLabelSize: number;
   insetSize: number;
   insetZoom: number;
@@ -845,6 +849,7 @@ export const PERSISTED_KEYS: (keyof AppState)[] = [
   "edgeStyle",
   "markerSize",
   "poseOpacity",
+  "maskOpacity",
   "nodeLabelSize",
   "showLabels",
   "showEdges",
@@ -854,6 +859,7 @@ export const PERSISTED_KEYS: (keyof AppState)[] = [
   "showPoseBboxes",
   "poseBboxPadding",
   "poseBboxIncludePredicted",
+  "showMasks",
   "showNonVisibleNodes",
   "showCrosshair",
   "colorPredicted",
@@ -968,6 +974,7 @@ export const useAppStore = create<AppState>()(
       showPoseBboxes: false,
       poseBboxPadding: 0,
       poseBboxIncludePredicted: false,
+      showMasks: true,
       showNonVisibleNodes: true,
       visibleSceneRect: null,
       showCrosshair: false,
@@ -992,6 +999,7 @@ export const useAppStore = create<AppState>()(
       distinctlyColor: "auto" as ColorTarget,
       markerSize: 4,
       poseOpacity: 100,
+      maskOpacity: 35,
       nodeLabelSize: 12,
       insetSize: 400,
       insetZoom: 2,

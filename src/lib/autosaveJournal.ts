@@ -10,7 +10,8 @@
  * Fidelity: a delta captures ONE frame's imageless annotation state at exactly
  * the fidelity the app's own undo system preserves (mirrors CommandContext's
  * `cloneInstances`: skeleton, points {xy, visible, complete, name, score},
- * track, predicted + score, isNegative), plus the frame's bounding boxes. A recovered edited frame therefore
+ * track, predicted + score, isNegative), plus the frame's bounding boxes,
+ * centroids and segmentation masks. A recovered edited frame therefore
  * matches what an undo would have produced. Instances reference the base's
  * videos/tracks/skeletons BY INDEX — valid because any structural change (new/
  * removed/renamed track, skeleton edit, new video, merge) rewrites the base and
@@ -29,7 +30,10 @@ import {
   PredictedBoundingBox,
   UserCentroid,
   PredictedCentroid,
+  UserSegmentationMask,
+  PredictedSegmentationMask,
   type BoundingBox,
+  type SegmentationMask,
   type Labels,
   type Video,
   type Track,
@@ -107,6 +111,38 @@ export interface CentroidDelta {
   src: string;
 }
 
+/**
+ * One segmentation mask's state. Score maps, identity and category scores /
+ * embeddings are not recorded: a frame carrying them escalates to a full
+ * snapshot instead (see `frameHasAdvancedInstanceFields`).
+ */
+export interface MaskDelta {
+  /** Raster height and width (mask pixels). */
+  h: number;
+  w: number;
+  /** RLE run lengths (`rleCounts`): alternating background / foreground runs. */
+  r: number[];
+  /** Predicted mask? */
+  p: boolean;
+  /** Score (predicted only); null otherwise. */
+  s: number | null;
+  /** Index into base.tracks, or -1 if untracked. */
+  t: number;
+  /** Tracking score; null if unrecorded. */
+  ts: number | null;
+  /** Index of the linked instance in this frame's `ins`, or -1. */
+  i: number;
+  /** Category, name, source. */
+  c: string;
+  n: string;
+  src: string;
+  /** Scale (x, y) and offset (x, y): source = maskPx / scale + offset. */
+  sc: [number, number];
+  of: [number, number];
+  /** Index (in this frame's masks) of the predicted mask a user mask came from, or -1. */
+  fp: number;
+}
+
 /** One frame's full imageless state. */
 export interface FrameDelta {
   /** Index into base.videos. */
@@ -126,6 +162,11 @@ export interface FrameDelta {
    * replay then leaves the base frame's centroids as they are.
    */
   ce?: CentroidDelta[];
+  /**
+   * Segmentation masks. Absent in journals written before masks were recorded;
+   * replay then leaves the base frame's masks as they are.
+   */
+  mk?: MaskDelta[];
   /**
    * The frame no longer exists (deleted, or its creation undone); replay
    * removes it. Absent in journals written before deletions were recorded.
@@ -180,6 +221,28 @@ export function encodeFrameDelta(frame: LabeledFrame, index: BaseIndex): FrameDe
       n: c.name ?? "",
       src: c.source ?? "",
     })),
+    mk: (frame.masks ?? []).map((mask) => encodeMask(mask, frame, index)),
+  };
+}
+
+function encodeMask(mask: SegmentationMask, frame: LabeledFrame, index: BaseIndex): MaskDelta {
+  const predicted = mask instanceof PredictedSegmentationMask;
+  const from = predicted ? null : (mask as UserSegmentationMask).fromPredicted;
+  return {
+    h: mask.height,
+    w: mask.width,
+    r: Array.from(mask.rleCounts),
+    p: predicted,
+    s: predicted ? (mask as PredictedSegmentationMask).score ?? null : null,
+    t: mask.track ? index.tracks.get(mask.track) ?? -1 : -1,
+    ts: mask.trackingScore ?? null,
+    i: mask.instance ? frame.instances.indexOf(mask.instance) : -1,
+    c: mask.category ?? "",
+    n: mask.name ?? "",
+    src: mask.source ?? "",
+    sc: [mask.scale[0], mask.scale[1]],
+    of: [mask.offset[0], mask.offset[1]],
+    fp: from ? frame.masks.indexOf(from) : -1,
   };
 }
 
@@ -334,6 +397,7 @@ export function applyDeltas(base: Labels, deltas: FrameDelta[]): void {
         return c.p ? new PredictedCentroid({ ...opts, score: c.s ?? Number.NaN }) : new UserCentroid(opts);
       });
     }
+    if (delta.mk) lf.masks = rebuildMasks(delta.mk, base, slots);
   }
   if (removed.size > 0) {
     base.labeledFrames = base.labeledFrames.filter((lf) => !removed.has(lf));
@@ -365,6 +429,39 @@ function rebuildBbox(
   return b.p
     ? new PredictedBoundingBox({ ...opts, score: b.s ?? 0 })
     : new UserBoundingBox(opts);
+}
+
+function rebuildMasks(
+  deltas: MaskDelta[],
+  base: Labels,
+  instances: (Instance | null)[],
+): SegmentationMask[] {
+  const masks: SegmentationMask[] = deltas.map((m) => {
+    const opts = {
+      rleCounts: Uint32Array.from(m.r ?? []),
+      height: m.h,
+      width: m.w,
+      track: m.t >= 0 ? base.tracks[m.t] ?? null : null,
+      trackingScore: m.ts,
+      instance: m.i >= 0 ? instances[m.i] ?? null : null,
+      category: m.c,
+      name: m.n,
+      source: m.src,
+      scale: m.sc ?? [1, 1],
+      offset: m.of ?? [0, 0],
+    };
+    return m.p
+      ? new PredictedSegmentationMask({ ...opts, score: m.s ?? 0 })
+      : new UserSegmentationMask(opts);
+  });
+  // Re-link accepted masks to the predictions they came from (same frame).
+  deltas.forEach((m, k) => {
+    const src = m.fp >= 0 ? masks[m.fp] : null;
+    if (src instanceof PredictedSegmentationMask && masks[k] instanceof UserSegmentationMask) {
+      (masks[k] as UserSegmentationMask).fromPredicted = src;
+    }
+  });
+  return masks;
 }
 
 function rebuildInstance(ins: InstanceDelta, base: Labels): Instance | null {

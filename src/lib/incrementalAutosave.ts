@@ -92,11 +92,12 @@ export function decideAutosaveWrite(input: FireInput): FireAction {
 }
 
 /**
- * Whether any instance on `frame` carries advanced re-ID / classification fields
- * (SLP 2.5+ `identity`, SLP 2.7+ `category`) that the compact frame delta does
- * NOT round-trip. Such a frame is escalated to a full snapshot so those fields
- * are preserved on recovery. Runs only over one frame's instances (tick-time,
- * O(dirty frames) — never the hot per-edit path).
+ * Whether `frame` carries fields the compact frame delta does NOT round-trip:
+ * advanced re-ID / classification fields on instances (SLP 2.5+ `identity`,
+ * SLP 2.7+ `category`) or boxes, or a mask's score map / identity / category
+ * scores. Such a frame is escalated to a full snapshot so those fields are
+ * preserved on recovery. Runs only over one frame (tick-time, O(dirty frames)
+ * — never the hot per-edit path).
  */
 export function frameHasAdvancedInstanceFields(frame: LabeledFrame): boolean {
   for (const inst of frame.instances) {
@@ -115,6 +116,26 @@ export function frameHasAdvancedInstanceFields(frame: LabeledFrame): boolean {
       identityEmbedding?: unknown;
     };
     if (
+      adv.identity != null ||
+      adv.categoryScore != null ||
+      adv.categoryEmbedding != null ||
+      adv.identityEmbedding != null
+    ) {
+      return true;
+    }
+  }
+  // Masks: the delta keeps the raster, links and metadata, but not a predicted
+  // mask's score map or identity / category scores and embeddings.
+  for (const mask of frame.masks ?? []) {
+    const adv = mask as unknown as {
+      scoreMap?: unknown;
+      identity?: unknown;
+      categoryScore?: unknown;
+      categoryEmbedding?: unknown;
+      identityEmbedding?: unknown;
+    };
+    if (
+      adv.scoreMap != null ||
       adv.identity != null ||
       adv.categoryScore != null ||
       adv.categoryEmbedding != null ||
