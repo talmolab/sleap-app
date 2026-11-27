@@ -162,44 +162,73 @@ async function detectPrimaryWindow(): Promise<boolean> {
  * Show the one-time notice. It marks itself seen when it closes, however it
  * closes: dismissed, timed out, or either of its two choices taken.
  */
-async function showFirstRunNotice(onSeen: () => void): Promise<void> {
-  const [{ toast }, { openExternal }, { createElement }] = await Promise.all([
+export async function showFirstRunNotice(onSeen: () => void): Promise<void> {
+  const [{ toast }, { openExternal }, { createElement, Fragment }] = await Promise.all([
     import("@/lib/notify"),
     import("@/lib/menu/menuActions"),
     import("react"),
   ]);
   const id = NOTICE_TOAST_ID;
-  toast.info("SLEAP shares usage data", {
+  toast.info("Help improve SLEAP", {
     id,
-    // "Learn more" sits in the text rather than beside "Turn off": two buttons
-    // squeeze the explanation into a column a few words wide.
+    // Render the button row beneath the text (and suppress notify.tsx's default
+    // CopyAction via an empty Fragment) so the explanation gets the full toast
+    // width and "Make SLEAP better" stands out as the primary orange action.
+    action: createElement(Fragment),
     description: createElement(
-      "span",
-      null,
-      "Which features are used and which errors occur, tied to a random ID. " +
-        "Never your videos, labels or file names. ",
+      "div",
+      { className: "flex flex-col gap-2.5 pt-0.5" },
       createElement(
-        "button",
-        {
-          type: "button",
-          className: "underline hover:text-foreground",
-          onClick: () => {
-            void openExternal(usageDataDocsUrl());
-            onSeen();
-            toast.dismiss(id);
+        "span",
+        null,
+        "SLEAP shares anonymous usage data and error reports (tied to a random ID — " +
+          "never your videos, labels, or file names). ",
+        createElement(
+          "button",
+          {
+            type: "button",
+            className: "underline hover:text-foreground",
+            onClick: () => {
+              void openExternal(usageDataDocsUrl());
+            },
           },
-        },
-        "Learn more",
+          "Learn more",
+        ),
+      ),
+      createElement(
+        "div",
+        { className: "flex items-center gap-2" },
+        createElement(
+          "button",
+          {
+            type: "button",
+            className:
+              "inline-flex items-center justify-center rounded-md bg-primary px-2.5 py-1 text-xs font-medium text-primary-foreground hover:bg-primary/90 transition-colors",
+            onClick: () => {
+              useAppStore.getState().set("shareUsageData", true);
+              onSeen();
+              toast.dismiss(id);
+            },
+          },
+          "Make SLEAP better",
+        ),
+        createElement(
+          "button",
+          {
+            type: "button",
+            className:
+              "inline-flex items-center justify-center rounded-md px-2 py-1 text-xs text-muted-foreground hover:bg-accent/60 hover:text-foreground transition-colors",
+            onClick: () => {
+              useAppStore.getState().set("shareUsageData", false);
+              onSeen();
+              toast.dismiss(id);
+            },
+          },
+          "Turn off",
+        ),
       ),
     ),
     duration: NOTICE_DURATION_MS,
-    action: {
-      label: "Turn off",
-      onClick: () => {
-        useAppStore.getState().set("shareUsageData", false);
-        onSeen();
-      },
-    },
     onDismiss: onSeen,
     onAutoClose: onSeen,
   });

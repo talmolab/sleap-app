@@ -9,9 +9,9 @@ something is broken for people who never file a bug report.
 projects, videos, skeleton nodes or tracks.**
 
 You can turn it off at any time: **Help ▸ Share Usage Data**. The first time
-you start the app, a notice says the same thing and offers a **Turn off**
-button; nothing is sent, or even saved to disk, before that notice has been
-shown.
+you start the app, a notice says the same thing and lets you choose **Make SLEAP
+better** or **Turn off**; nothing is sent, or even saved to disk, before that
+notice has been shown.
 
 ## What is sent
 
