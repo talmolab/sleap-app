@@ -1,0 +1,11 @@
+{
+  "bundle": {
+    "externalBin": [],
+    "resources": {
+      "binaries/FFMPEG_LICENSE_NOTICE.md": "binaries/FFMPEG_LICENSE_NOTICE.md",
+      "resources/overlay_serve.py": "resources/overlay_serve.py",
+      "binaries/ffmpeg-x86_64-unknown-linux-gnu": "ffmpeg",
+      "binaries/ffprobe-x86_64-unknown-linux-gnu": "ffprobe"
+    }
+  }
+}

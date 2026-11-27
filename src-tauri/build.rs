@@ -23,6 +23,8 @@ fn main() {
                     // file / native
                     "read_range",
                     "file_size",
+                    // Linux bundled ffmpeg/ffprobe dir (#507)
+                    "linux_tools_dir",
                     // native menu bar (macOS)
                     "set_app_menu",
                     "write_open",

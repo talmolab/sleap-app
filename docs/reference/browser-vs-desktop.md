@@ -50,6 +50,9 @@ See [Saving & Recovery](../guides/saving.md).
 
 The desktop app is [Tauri v2](https://v2.tauri.app/) — it uses the operating
 system's own WebView rather than bundling a browser engine. It does bundle its
-own `ffmpeg`/`ffprobe` for converting legacy-codec videos. Platform-specific
+own `ffmpeg`/`ffprobe` for converting legacy-codec videos. These are private to
+the app: the Linux `.deb`/`.rpm` install them in `/usr/lib/SLEAP/`, off your
+`PATH`, so they never replace or clash with a system `ffmpeg`; tools the app
+launches (sleap-nn, sleap-io) still find them first. Platform-specific
 behavior is isolated behind a small abstraction layer, so features arrive in
 both runtimes at once unless they fundamentally cannot.

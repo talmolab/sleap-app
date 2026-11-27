@@ -34,14 +34,18 @@
       "identifier": "shell:allow-spawn",
       "allow": [
         { "name": "binaries/ffmpeg", "sidecar": true, "args": true },
-        { "name": "binaries/ffprobe", "sidecar": true, "args": true }
+        { "name": "binaries/ffprobe", "sidecar": true, "args": true },
+        { "name": "bundled-ffmpeg", "cmd": "$RESOURCE/ffmpeg", "args": true },
+        { "name": "bundled-ffprobe", "cmd": "$RESOURCE/ffprobe", "args": true }
       ]
     },
     {
       "identifier": "shell:allow-execute",
       "allow": [
         { "name": "binaries/ffmpeg", "sidecar": true, "args": true },
-        { "name": "binaries/ffprobe", "sidecar": true, "args": true }
+        { "name": "binaries/ffprobe", "sidecar": true, "args": true },
+        { "name": "bundled-ffmpeg", "cmd": "$RESOURCE/ffmpeg", "args": true },
+        { "name": "bundled-ffprobe", "cmd": "$RESOURCE/ffprobe", "args": true }
       ]
     },
     "shell:allow-kill",

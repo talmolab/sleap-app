@@ -1,4 +1,5 @@
 mod app_menu;
+mod bundled_tools;
 mod environment;
 mod iroh_client;
 mod mcp_bridge;
@@ -642,6 +643,7 @@ fn sleap_plugin<R: tauri::Runtime>() -> tauri::plugin::TauriPlugin<R> {
     tauri::plugin::Builder::new("sleap")
         .invoke_handler(tauri::generate_handler![
             app_menu::set_app_menu,
+            bundled_tools::linux_tools_dir,
             read_range,
             file_size,
             write_open,
@@ -803,14 +805,18 @@ fn localhost_capability(port: u16) -> String {
       "identifier": "shell:allow-spawn",
       "allow": [
         {{ "name": "binaries/ffmpeg", "sidecar": true, "args": true }},
-        {{ "name": "binaries/ffprobe", "sidecar": true, "args": true }}
+        {{ "name": "binaries/ffprobe", "sidecar": true, "args": true }},
+        {{ "name": "bundled-ffmpeg", "cmd": "$RESOURCE/ffmpeg", "args": true }},
+        {{ "name": "bundled-ffprobe", "cmd": "$RESOURCE/ffprobe", "args": true }}
       ]
     }},
     {{
       "identifier": "shell:allow-execute",
       "allow": [
         {{ "name": "binaries/ffmpeg", "sidecar": true, "args": true }},
-        {{ "name": "binaries/ffprobe", "sidecar": true, "args": true }}
+        {{ "name": "binaries/ffprobe", "sidecar": true, "args": true }},
+        {{ "name": "bundled-ffmpeg", "cmd": "$RESOURCE/ffmpeg", "args": true }},
+        {{ "name": "bundled-ffprobe", "cmd": "$RESOURCE/ffprobe", "args": true }}
       ]
     }},
     "updater:default",
@@ -978,6 +984,8 @@ pub fn run() {
 
   let builder = builder.setup(move |app| {
     use tauri::Manager; // for add_capability (dynamic-acl)
+    // Linux: where the bundled ffmpeg/ffprobe resources live (#507).
+    bundled_tools::init(app.handle());
     if cfg!(debug_assertions) {
       // iroh and its networking stack log every packet path at Info (e.g.
       // `poll_send; network_path=...` spans), which buried the app's own

@@ -333,7 +333,8 @@ jobs:
             gstreamer1.0-plugins-bad \
             gstreamer1.0-gl \
             gstreamer1.0-alsa \
-            gstreamer1.0-pulseaudio ||
+            gstreamer1.0-pulseaudio \
+            rpm ||
             {
               echo "::error::could not install Linux build dependencies"
               exit 1
@@ -459,6 +460,15 @@ jobs:
           APPIMAGE="$(find "${{ matrix.bundle-dir }}/appimage" -maxdepth 1 -type f -name '*.AppImage' | head -1)"
           [ -n "$APPIMAGE" ] || { echo "::error::no .AppImage under ${{ matrix.bundle-dir }}/appimage"; exit 1; }
           bash scripts/appimage-gstreamer.sh verify "$APPIMAGE"
+
+      # #507: Linux ships ffmpeg/ffprobe as resources -- /usr/lib/SLEAP in the
+      # .deb/.rpm (never /usr/bin, where they clashed with the system's ffmpeg)
+      # and usr/lib/SLEAP inside the AppImage. `rpm` (apt list above) is only
+      # needed to list the .rpm's contents.
+      - name: Verify Linux package ffmpeg layout
+        if: matrix.target == 'linux'
+        shell: bash
+        run: bash scripts/verify-linux-packages.sh "${{ matrix.bundle-dir }}"
 
       # Tauri notarizes and staples the .app, then builds the .dmg around it. The
       # disk image itself is left un-notarized, and Gatekeeper assesses the image
