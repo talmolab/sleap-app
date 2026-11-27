@@ -71,6 +71,8 @@ export const DEFAULT_SHORTCUTS: Record<string, string> = {
   // Shift+V shows/hides non-visible nodes across the view, as in legacy SLEAP.
   // Both used to be plain V, so one press did both and the node vanished.
   "toggle node visibility": "KeyV",
+  "mark node unlabeled": "KeyU",
+  "mark node absent": "Shift+KeyU",
   "show non-visible nodes": "Shift+KeyV",
   "toggle pan mode": "KeyP",
   // B: box tool — drag on the canvas to draw a bounding box (Esc leaves it).

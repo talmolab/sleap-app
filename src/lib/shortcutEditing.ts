@@ -58,6 +58,8 @@ export const SHORTCUT_CATEGORIES: Record<string, string[]> = {
     "merge instance",
     "select instance nodes",
     "toggle node visibility",
+    "mark node unlabeled",
+    "mark node absent",
     "accept all predictions",
     "mark negative",
     "copy instance",

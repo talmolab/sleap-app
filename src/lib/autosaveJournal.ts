@@ -346,7 +346,9 @@ export function applyDeltas(base: Labels, deltas: FrameDelta[]): void {
     const slots = delta.ins.map((ins) => rebuildInstance(ins, base));
     lf.instances = slots.filter((inst): inst is Instance => inst !== null);
     lf.isNegative = delta.neg;
-    setMetadata(lf, delta.md);
+    // Always replace frame metadata so clearing all metadata on an existing
+    // frame in the base draft is not resurrected on replay.
+    lf.metadata = delta.md ? { ...delta.md } : {};
     if (delta.bb) lf.bboxes = delta.bb.map((b) => rebuildBbox(b, base, slots));
     if (delta.ce) {
       lf.centroids = delta.ce.map((c) => {
