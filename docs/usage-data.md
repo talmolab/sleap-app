@@ -23,10 +23,11 @@ shown.
 | Language (not region), CPU core count, memory size, screen size | `en`, `10`, `16 GB`, `1728×1117` | To prioritize translation, performance and layout work |
 | Whether the browser supports the features the app relies on | WebCodecs: yes, WebGPU: no | Video decoding and large projects depend on them |
 | GPU and SLEAP-NN setup (desktop) | `cuda`, `NVIDIA RTX 4090`, `sleap-nn 0.3.2` | Training and inference problems are usually environment problems |
-| Which menu items and commands you use, as counts | `File ▸ Save: 12` | To see which features matter and which nobody finds |
-| That a project was opened, with its rough size | `6–20 videos`, `101–500 labeled frames` | To know what scale of project to design for. Ranges only, never exact counts |
-| Training and inference runs: started, finished, failed or cancelled, and how long they took | `training finished, 14 min, 2 models` | Failed runs are the most common reason people need help |
-| Errors: the message, where in the app's code it happened, and the last command used | `Cannot read properties of undefined`, after `Add Instance` | To fix crashes, including ones nobody reports |
+| Which menu items, commands, and sidebar panels you use, as counts | `File ▸ Save: 12`, `Label QC: 3` | To see which features matter and which nobody finds |
+| That a project was opened, with its rough size and video reader type | `6–20 videos`, `101–500 labeled frames`, `media` | To know what scale of project and video formats to design for. Ranges only, never exact counts |
+| Training and inference runs: model type, local or remote (Connect), outcome, coarse failure category, and duration | `training finished, top_down, 14 min, 2 models` | Failed runs are the most common reason people need help |
+| Remote worker (Connect) connection outcomes and transport | `iroh`, `connected` | To measure remote-compute reliability |
+| Errors: the scrubbed message, where in the app's code it happened, and the last command used | `Cannot read properties of undefined`, after `Add Instance` | To fix crashes, including ones nobody reports (kept private for the SLEAP team; never published on `stats.sleap.ai`) |
 | Whether the app closed unexpectedly last time (desktop) | yes / no | To measure how often it crashes |
 | How long the app was open and in use | `42 min` | To tell a quick look from a working session |
 | Tutorial progress | `step 4 of 9, exited` | To find where the tutorial loses people |
@@ -55,9 +56,11 @@ becomes `Failed to open <path>`.
 Reports are sent over HTTPS to `analytics.sleap.ai`, a service run by the
 [Talmo Lab](https://talmolab.org) at the Salk Institute, and stored in a
 database only the SLEAP team can read. They are not shared with or sold to
-anyone, and no third-party analytics service is involved. Aggregate numbers,
-such as how many people use each version, are published at
-[stats.sleap.ai](https://stats.sleap.ai).
+anyone, and no third-party analytics service is involved. High-level aggregate
+numbers, such as how many people use each version, are published at
+[stats.sleap.ai](https://stats.sleap.ai). Scrubbed error messages and stack
+frames are never published to `stats.sleap.ai`; they stay in private SLEAP team
+storage for debugging.
 
 Like any server, the service sees the IP address a report arrives from. It
 keeps only the network part of it (for example `203.0.113.0/24`), which is

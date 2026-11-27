@@ -32,9 +32,9 @@ import {
   type EnvironmentFacts,
   type SystemInfo,
 } from "./context";
-import { setAnalyticsClient, track } from "./index";
+import { setAnalyticsClient, setQuitFlusher, track } from "./index";
 import { watchErrors, watchStores } from "./instrument";
-import { buildLegacyPing } from "./protocol";
+import { buildLegacyPing, isValidId } from "./protocol";
 import { createDesktopTransport, createWebTransport } from "./transport";
 
 /** How often a window with something to report sends it. */
@@ -145,6 +145,19 @@ async function createTransport(): Promise<Transport> {
   return createDesktopTransport(invoke, sleapCmd("analytics_post"));
 }
 
+const NOTICE_TOAST_ID = "usage-data-notice";
+
+/** Whether this is the primary (cold-launch) window on desktop; always true on web. */
+async function detectPrimaryWindow(): Promise<boolean> {
+  if (!isTauri) return true;
+  try {
+    const { getCurrentWebviewWindow } = await import("@tauri-apps/api/webviewWindow");
+    return getCurrentWebviewWindow().label === "main";
+  } catch {
+    return true;
+  }
+}
+
 /**
  * Show the one-time notice. It marks itself seen when it closes, however it
  * closes: dismissed, timed out, or either of its two choices taken.
@@ -155,7 +168,7 @@ async function showFirstRunNotice(onSeen: () => void): Promise<void> {
     import("@/lib/menu/menuActions"),
     import("react"),
   ]);
-  const id = "usage-data-notice";
+  const id = NOTICE_TOAST_ID;
   toast.info("SLEAP shares usage data", {
     id,
     // "Learn more" sits in the text rather than beside "Turn off": two buttons
@@ -207,10 +220,11 @@ export async function initAnalytics(): Promise<void> {
     const debug = analyticsDebugEnabled();
     const bootedAt = Date.now();
 
-    const [transport, system, environment] = await Promise.all([
+    const [transport, system, environment, primaryWindow] = await Promise.all([
       createTransport(),
       readSystemInfo(),
       readEnvironmentFacts(),
+      detectPrimaryWindow(),
     ]);
     const browser = readBrowserInputs();
     const channel = resolveChannel();
@@ -223,13 +237,21 @@ export async function initAnalytics(): Promise<void> {
         environment: environment(),
       });
 
+    // `getInstallId()` returns "unknown" (7 chars) when localStorage throws, which
+    // would fail the service's 8-char IdStr check with permanent 422s. Fall back to
+    // an ephemeral valid UUID in that case.
+    const rawInstallId = getInstallId();
+    const installId = isValidId(rawInstallId) ? rawInstallId : safeUuid();
+    const rawSessionId = getSessionId();
+    const sessionId = isValidId(rawSessionId) ? rawSessionId : safeUuid();
+
     let flushTimer: ReturnType<typeof setTimeout> | null = null;
     const client = new AnalyticsClient({
       transport,
       storage,
       version: APP_VERSION,
-      installId: getInstallId(),
-      sessionId: getSessionId() || safeUuid(),
+      installId,
+      sessionId,
       now: Date.now,
       uuid: safeUuid,
       isEnabled: () => usageDataEnabled(useAppStore.getState().shareUsageData),
@@ -253,14 +275,33 @@ export async function initAnalytics(): Promise<void> {
     setAnalyticsClient(client);
 
     // ── What gets reported ──────────────────────────────────────────────────
+    // Read `firstRun` now without writing to localStorage yet: nothing is saved
+    // to disk until the first-run notice has been seen and sharing is enabled.
     let firstRun = false;
     try {
-      firstRun = storage?.getItem(SEEN_KEY) == null;
-      storage?.setItem(SEEN_KEY, "1");
+      firstRun = storage != null && storage.getItem(SEEN_KEY) == null;
     } catch {
       /* without storage every launch looks like a first run; report it as not */
     }
-    track("session_start", { first_run: firstRun, prior_crash: getPriorCrashInfo() != null });
+    const markSeenOnDisk = () => {
+      try {
+        if (
+          storage &&
+          usageDataEnabled(useAppStore.getState().shareUsageData) &&
+          useAppStore.getState().usageDataNoticeSeen
+        ) {
+          storage.setItem(SEEN_KEY, "1");
+        }
+      } catch {
+        /* ignore */
+      }
+    };
+
+    track("session_start", {
+      first_run: firstRun,
+      prior_crash: getPriorCrashInfo() != null,
+      primary_window: primaryWindow,
+    });
     watchErrors();
     void watchStores();
 
@@ -290,10 +331,26 @@ export async function initAnalytics(): Promise<void> {
       });
       void client.flush({ keepalive });
     };
+
+    // Bounded clean-quit flush for desktop (`quit.ts` awaits this before exit/destroy).
+    setQuitFlusher(async (timeoutMs) => {
+      settleActive();
+      if (client.hasPending()) {
+        track("heartbeat", {
+          uptime_s: Math.round((Date.now() - bootedAt) / 1000),
+          active_s: Math.round(activeMs / 1000),
+        });
+      }
+      await Promise.race([
+        client.flush({ keepalive: true }),
+        new Promise<void>((r) => setTimeout(r, timeoutMs)),
+      ]);
+    });
+
     setInterval(() => sendIfAnything(false), FLUSH_INTERVAL_MS);
-    // The last chance before a tab closes or the app quits. The batch is
-    // already in storage by the time the request is made, so if this one does
-    // not complete, the next launch delivers it.
+    // The last chance before a tab closes or the app quits. `flush()` seals
+    // synchronously up front, so if the request does not complete in time the
+    // batch survives in storage for the next launch.
     document.addEventListener("visibilitychange", () => {
       if (document.visibilityState === "hidden") sendIfAnything(true);
       else settleActive();
@@ -301,22 +358,51 @@ export async function initAnalytics(): Promise<void> {
     window.addEventListener("pagehide", () => sendIfAnything(true));
 
     // ── Consent ─────────────────────────────────────────────────────────────
+    const dismissNoticeIfOpen = () => {
+      void import("@/lib/notify")
+        .then(({ toast }) => toast.dismiss(NOTICE_TOAST_ID))
+        .catch(() => {});
+    };
     const markNoticeSeen = () => {
       if (useAppStore.getState().usageDataNoticeSeen) return;
       useAppStore.getState().set("usageDataNoticeSeen", true);
+      markSeenOnDisk();
       void client.flush();
     };
     useAppStore.subscribe((state, previous) => {
-      if (state.shareUsageData === previous.shareUsageData) return;
-      // Turned off: forget everything held and stored, immediately.
-      if (!usageDataEnabled(state.shareUsageData)) client.discardAll();
+      if (
+        state.shareUsageData === previous.shareUsageData &&
+        state.usageDataNoticeSeen === previous.usageDataNoticeSeen
+      ) {
+        return;
+      }
+      if (state.usageDataNoticeSeen && !previous.usageDataNoticeSeen) {
+        dismissNoticeIfOpen();
+        markSeenOnDisk();
+      }
+      if (state.shareUsageData !== previous.shareUsageData) {
+        // Turned off: forget everything held and stored, immediately.
+        if (!usageDataEnabled(state.shareUsageData)) {
+          dismissNoticeIfOpen();
+          client.discardAll();
+        } else {
+          markSeenOnDisk();
+        }
+      }
     });
 
     const { shareUsageData, usageDataNoticeSeen } = useAppStore.getState();
     if (usageDataEnabled(shareUsageData) && !usageDataNoticeSeen) {
-      // Give the app shell (and its toaster) a moment to mount.
-      setTimeout(() => void showFirstRunNotice(markNoticeSeen), 1_500);
+      // Give the app shell (and its toaster) a moment to mount, then re-check
+      // consent in case the user already toggled Help ▸ Share Usage Data.
+      setTimeout(() => {
+        const cur = useAppStore.getState();
+        if (usageDataEnabled(cur.shareUsageData) && !cur.usageDataNoticeSeen) {
+          void showFirstRunNotice(markNoticeSeen);
+        }
+      }, 1_500);
     } else {
+      markSeenOnDisk();
       // Deliver anything a previous session sealed but could not send.
       void client.flush();
     }

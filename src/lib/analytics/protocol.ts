@@ -118,29 +118,94 @@ export function sanitizeProps(
 const SCRUBBERS: [RegExp, string][] = [
   // blob: and data: URLs first — a blob URL wraps another URL (blob:http://…).
   [/\b(?:blob|data):[^\s"'<>)\]]+/gi, "<url>"],
-  // scheme://anything — http(s), file, tauri, asset, s3, …
+  // scheme://anything — http(s), file, tauri, asset, s3, ws(s), …
   [/\b[a-z][a-z0-9+.-]{1,15}:\/\/[^\s"'<>)\]]+/gi, "<url>"],
   [/[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/g, "<email>"],
-  // A quoted path is taken whole, spaces included: '/Users/Jane Doe/a b.slp'.
-  [/(["'`])(?:[A-Za-z]:[\\/]|\\\\|~?\/)[^"'`]*\1/g, "$1<path>$1"],
+  // Quoted paths matched per-delimiter so an apostrophe inside double quotes
+  // ("/Users/O'Brien/file.slp") is scrubbed whole instead of breaking on `'`.
+  [/"(?:[A-Za-z]:[\\/]|\\\\|~?\/)[^"]*"/g, '"<path>"'],
+  [/'(?:[A-Za-z]:[\\/]|\\\\|~?\/)[^']*'/g, "'<path>'"],
+  [/`(?:[A-Za-z]:[\\/]|\\\\|~?\/)[^`]*`/g, "`<path>`"],
   // Windows drive paths (C:\Users\… or C:/Users/…) and UNC shares (\\server\share\…)
   [/\b[A-Za-z]:[\\/][^\s"'<>|*?]*/g, "<path>"],
   [/\\\\[^\s"'<>|*?\\]+\\[^\s"'<>|*?]*/g, "<path>"],
   // Home-relative and POSIX absolute paths with at least two segments.
   [/(^|[\s"'(=:,[])~\/[^\s"'<>)\]]*/g, "$1<path>"],
   [/(^|[\s"'(=:,[])\/(?:[^\s"'<>)\]/]+\/)+[^\s"'<>)\]]*/g, "$1<path>"],
+  // Relative multi-segment paths (2+ slashes with at least one letter, so
+  // numeric ratios like `120/300` and dates like `2026/11/26` are left alone).
+  [
+    /(^|[\s"'(=:,[])(?=(?:[^\s"'<>)\]/]+\/){2,})(?=[^\s"'<>)\]]*[A-Za-z])(?:[^\s"'<>)\]/]+\/){2,}[^\s"'<>)\]]*/g,
+    "$1<path>",
+  ],
   // An unquoted path with a space in it ("C:\Users\Jane Doe\a.mp4") is cut
   // short by the rules above, leaving its tail behind — and the tail is the
   // part with the person's name in it. Anything after a path that still has a
   // separator in it is the rest of that path. This can swallow a few innocent
   // words; erring that way is the point.
   [/<path>(?:(?: [^\s"'<>]+){0,3}? [^\s"'<>]*[\\/][^\s"'<>]*)+/g, "<path>"],
-  // What is left of a path-less filename: anything ending in a data extension.
+  // IPv4 addresses (optionally with :port), e.g. Connect workers / LAN hosts.
+  [/\b(?:\d{1,3}\.){3}\d{1,3}(?::\d{1,5})?\b/g, "<ip>"],
+  // What is left of a path-less filename: anything ending in a data/media/archive extension.
   [
-    /[^\s"'<>()[\]/\\]+\.(?:pkg\.slp|slp|mp4|avi|mov|mkv|webm|mjpeg|h264|h5|hdf5|nwb|csv|json|ya?ml|png|jpe?g|tiff?|bmp|ckpt|pt|pth|onnx|zip)\b/gi,
+    /[^\s"'<>()[\]/\\]+\.(?:pkg\.slp|slp(?:\.(?:tmp|bak))?|mp4|m4v|avi|wmv|mov|mkv|webm|flv|mjpeg|h264|h5|hdf5|nwb|zarr|npz|npy|mat|pkl|joblib|parquet|csv|json|ya?ml|toml|ini|cfg|log|txt|sqlite|db|png|jpe?g|tiff?|bmp|ckpt|pt|pth|onnx|zip|tar(?:\.gz)?|tgz|gz|bz2|7z|rar)\b/gi,
     "<file>",
   ],
 ];
+
+/** Exact UTF-8 byte length, matching Rust `str::len()` and the service's byte cap. */
+export function utf8ByteLength(text: string): number {
+  if (typeof TextEncoder !== "undefined") {
+    return new TextEncoder().encode(text).byteLength;
+  }
+  let bytes = 0;
+  for (let i = 0; i < text.length; i++) {
+    const code = text.charCodeAt(i);
+    if (code < 0x80) bytes += 1;
+    else if (code < 0x800) bytes += 2;
+    else if (code >= 0xd800 && code <= 0xdbff && i + 1 < text.length) {
+      bytes += 4;
+      i++;
+    } else {
+      bytes += 3;
+    }
+  }
+  return bytes;
+}
+
+/** Valid envelope ID shape enforced by the service (`IdStr` in app/events.py). */
+const ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9_-]{7,63}$/;
+
+export function isValidId(id: string | null | undefined): id is string {
+  return typeof id === "string" && ID_PATTERN.test(id);
+}
+
+/**
+ * Classify a training or inference failure message into a fixed coarse bucket.
+ * Never returns free text or user paths.
+ */
+export function classifyRunError(
+  error: string | null | undefined,
+): "oom" | "cuda" | "missing_env" | "validation" | "network" | "other" {
+  const msg = String(error ?? "").toLowerCase();
+  if (!msg) return "other";
+  if (/out of memory|cuda oom|mps backend out of memory|\boom\b|allocat.*memory/.test(msg)) {
+    return "oom";
+  }
+  if (/cuda|cudnn|cublas|nvrtc|nvidia|mps|gpu driver|rocm/.test(msg)) {
+    return "cuda";
+  }
+  if (/sleap-nn|python|uv\b|no such file|not installed|executable|venv|conda/.test(msg)) {
+    return "missing_env";
+  }
+  if (/connect|network|timeout|timed out|websocket|iroh|econnrefused|unreachable|worker/.test(msg)) {
+    return "network";
+  }
+  if (/no project|skeleton|labeled frame|not enough|invalid|unsupported|mismatch|config/.test(msg)) {
+    return "validation";
+  }
+  return "other";
+}
 
 /** Longest scrubbed message kept. Enough to tell errors apart, no more. */
 export const MAX_MESSAGE = 300;

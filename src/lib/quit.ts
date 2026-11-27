@@ -2,6 +2,7 @@ import { isTauri } from "./platform";
 import { useAppStore } from "../stores/appStore";
 import { hasUnsavedWork } from "./unsavedGuard";
 import { markCleanShutdown } from "./diagnostics/sessionLog";
+import { flushAnalyticsBeforeQuit, sealAnalyticsSync } from "./analytics";
 
 let pendingQuitResolve: ((confirmed: boolean) => void) | null = null;
 
@@ -28,9 +29,10 @@ async function confirmUnsaved(): Promise<boolean> {
 }
 
 async function forceQuit(): Promise<void> {
-  // Mark the diagnostics session clean BEFORE exiting so the next launch doesn't
-  // mistake this intentional quit for a crash. Awaited so it lands before exit.
-  await markCleanShutdown();
+  // Mark the diagnostics session clean and run a bounded analytics flush
+  // BEFORE exiting so intentional quits never look like crashes and short
+  // sessions deliver their final batch promptly.
+  await Promise.all([markCleanShutdown(), flushAnalyticsBeforeQuit()]);
   if (isTauri) {
     const { exit } = await import("@tauri-apps/plugin-process");
     await exit(0);
@@ -48,6 +50,7 @@ async function forceQuit(): Promise<void> {
  */
 async function closeThisWindow(): Promise<void> {
   if (!isTauri) {
+    sealAnalyticsSync();
     window.close();
     return;
   }
@@ -64,6 +67,7 @@ async function closeThisWindow(): Promise<void> {
     // it was the last one, Tauri exits the app by default anyway.
     console.warn("[quit] window enumeration failed; closing this window:", err);
   }
+  await flushAnalyticsBeforeQuit();
   await getCurrentWindow().destroy();
 }
 
@@ -196,6 +200,9 @@ export async function setupCloseHandler(): Promise<void> {
   const appWindow = getCurrentWindow();
 
   await appWindow.onCloseRequested(async (event) => {
+    // Seal any pending analytics synchronously so even a fast close without
+    // unsaved work persists the batch to localStorage for delivery.
+    sealAnalyticsSync();
     // No unsaved work: let the default close proceed (Tauri closes just this
     // window, or exits if it's the last one).
     if (!hasUnsavedWork(useAppStore.getState())) return;

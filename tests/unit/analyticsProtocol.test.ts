@@ -12,12 +12,15 @@ import {
   MAX_MESSAGE,
   bucket,
   buildLegacyPing,
+  classifyRunError,
   errorFingerprint,
   isValidEventName,
+  isValidId,
   legacyPlatform,
   sanitizeProps,
   scrubText,
   summarizeStack,
+  utf8ByteLength,
 } from "@/lib/analytics/protocol";
 
 describe("scrubText", () => {
@@ -45,6 +48,15 @@ describe("scrubText", () => {
     ["Wrote predictions.h5 and config.yaml", "Wrote <file> and <file>"],
     // Email
     ["contact jane.doe@university.edu for access", "contact <email> for access"],
+    // Quoted paths containing an apostrophe inside double quotes
+    ['Failed to open "/Users/O\'Brien/mouse_42.slp"', 'Failed to open "<path>"'],
+    // Relative multi-segment paths (while leaving numeric ratios / dates alone)
+    ["Error loading models/dr_smith_lab/mouse_42/training_config.yaml", "Error loading <path>"],
+    // Bare IPv4 / host:port
+    ["connect ECONNREFUSED 192.168.1.42:8000", "connect ECONNREFUSED <ip>"],
+    // Additional video/data extensions
+    ["Cannot open video patient_jane_smith.wmv", "Cannot open video <file>"],
+    ["Failed writing cohort_jane.zarr and backup.slp.tmp", "Failed writing <file> and <file>"],
   ];
 
   for (const [input, expected] of cases) {
@@ -248,5 +260,28 @@ describe("legacyPlatform", () => {
     const major = /^(Windows|macOS)-(\d+)/;
     expect(major.exec(legacyPlatform({ os: "macos", osVersion: "14.5", arch: "arm64" }))?.[2]).toBe("14");
     expect(major.exec(legacyPlatform({ os: "windows", osVersion: "11", arch: "x86_64" }))?.[2]).toBe("11");
+  });
+});
+
+describe("id validation, utf8ByteLength, and classifyRunError", () => {
+  it("rejects the 7-char 'unknown' fallback id and accepts UUIDs", () => {
+    expect(isValidId("unknown")).toBe(false);
+    expect(isValidId("short")).toBe(false);
+    expect(isValidId("0b7c1f5e-2a43-4f0e-8e0a-5c9d2b7a1e10")).toBe(true);
+  });
+
+  it("measures UTF-8 bytes rather than UTF-16 code units", () => {
+    expect(utf8ByteLength("abc")).toBe(3);
+    expect(utf8ByteLength("…")).toBe(3);
+    expect(utf8ByteLength("日本語")).toBe(9);
+  });
+
+  it("classifies run error messages into coarse safe buckets", () => {
+    expect(classifyRunError("CUDA out of memory. Tried to allocate 2.0 GiB")).toBe("oom");
+    expect(classifyRunError("CUDNN_STATUS_EXECUTION_FAILED")).toBe("cuda");
+    expect(classifyRunError("sleap-nn is not installed")).toBe("missing_env");
+    expect(classifyRunError("WebSocket ECONNREFUSED")).toBe("network");
+    expect(classifyRunError("No project loaded to train from")).toBe("validation");
+    expect(classifyRunError("Something totally unexpected")).toBe("other");
   });
 });

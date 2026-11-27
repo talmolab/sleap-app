@@ -13,9 +13,14 @@
  */
 
 import type { Labels } from "@talmolab/sleap-io.js";
-import { reportError, track } from "./index";
-import type { AnalyticsEvents, ProjectStage, RunOutcome } from "./events";
-import { bucket } from "./protocol";
+import { countPanel, reportError, track } from "./index";
+import type {
+  AnalyticsEvents,
+  ProjectStage,
+  RunOutcome,
+  VideoBackendKind,
+} from "./events";
+import { bucket, classifyRunError } from "./protocol";
 
 type Unsubscribe = () => void;
 
@@ -77,8 +82,9 @@ export interface ProjectCounts {
 export function projectOpenedProps(
   counts: ProjectCounts,
   stage: ProjectStage,
+  videoBackend?: VideoBackendKind,
 ): AnalyticsEvents["project_opened"] {
-  return {
+  const props: AnalyticsEvents["project_opened"] = {
     stage,
     videos: bucket(counts.videoCount),
     labeled_frames: bucket(counts.userLabeledFrameCount),
@@ -86,6 +92,71 @@ export function projectOpenedProps(
     tracks: bucket(counts.trackCount),
     skeleton_nodes: bucket(counts.skeletonNodeCount),
   };
+  if (videoBackend !== undefined) props.video_backend = videoBackend;
+  return props;
+}
+
+/** Classify a project's video backends into a single coarse family. Pure. */
+export function classifyVideoBackend(
+  videos: readonly { backend?: unknown; backendMetadata?: { type?: unknown } }[] | undefined | null,
+): VideoBackendKind {
+  if (!videos || videos.length === 0) return "none";
+  const kinds = new Set<VideoBackendKind>();
+  for (const video of videos) {
+    let backend = video?.backend as { constructor?: { name?: string }; inner?: unknown; backend?: unknown } | undefined;
+    // Unwrap wrapper backends (CropVideoBackend, GrayscaleVideoBackend) to reach the underlying decoder.
+    for (let depth = 0; depth < 3; depth++) {
+      const cname = backend?.constructor?.name;
+      if (cname === "CropVideoBackend" || cname === "GrayscaleVideoBackend") {
+        backend = (backend?.inner ?? backend?.backend ?? backend) as typeof backend;
+      } else {
+        break;
+      }
+    }
+    const name = String(
+      backend?.constructor?.name ?? video?.backendMetadata?.type ?? "",
+    ).toLowerCase();
+    if (!name || name === "object") {
+      kinds.add("other");
+    } else if (name.includes("avi")) {
+      kinds.add("avi");
+    } else if (name.includes("hdf5") || name.includes("h5")) {
+      kinds.add("hdf5");
+    } else if (name.includes("image")) {
+      kinds.add("image");
+    } else if (name.includes("seq")) {
+      kinds.add("seq");
+    } else if (name.includes("mp4") || name.includes("mediabunny") || name.includes("media") || name.includes("libav") || name.includes("webcodecs")) {
+      kinds.add("media");
+    } else {
+      kinds.add("other");
+    }
+  }
+  if (kinds.size === 0) return "none";
+  if (kinds.size === 1) return [...kinds][0];
+  return "mixed";
+}
+
+interface ConnectWatchState {
+  connectionStatus: string;
+  activeTransport: string | null;
+}
+
+/** Watch Connect worker link status transitions. Pure over a store interface. */
+export function watchConnect(
+  store: {
+    subscribe: (listener: (state: ConnectWatchState, previous: ConnectWatchState) => void) => Unsubscribe;
+  },
+  onEvent: (event: AnalyticsEvents["connect_worker"]) => void,
+): Unsubscribe {
+  return store.subscribe((state, previous) => {
+    if (state.connectionStatus === previous.connectionStatus) return;
+    if (state.connectionStatus === "connected") {
+      onEvent({ transport: state.activeTransport ?? "ws", outcome: "connected" });
+    } else if (state.connectionStatus === "error") {
+      onEvent({ transport: state.activeTransport ?? "ws", outcome: "error" });
+    }
+  });
 }
 
 /** How long after a project loads to measure it, so the count never competes with the load. */
@@ -111,7 +182,11 @@ async function measureProject(labels: Labels): Promise<AnalyticsEvents["project_
     predictedInstanceCount: predicted,
     trackCount: labels.tracks?.length ?? 0,
   };
-  return projectOpenedProps(counts, inferTutorialStage(counts) as ProjectStage);
+  return projectOpenedProps(
+    counts,
+    inferTutorialStage(counts) as ProjectStage,
+    classifyVideoBackend(labels.videos as readonly { backend?: unknown }[] | undefined),
+  );
 }
 
 // ── Wiring ───────────────────────────────────────────────────────────────────
@@ -139,11 +214,13 @@ export function watchErrors(target: Window = window): Unsubscribe {
 
 /** Subscribe to the app's stores. Returns a function that undoes all of it. */
 export async function watchStores(now: () => number = Date.now): Promise<Unsubscribe> {
-  const [{ useAppStore }, { useTrainingStore }, { useInferenceStore }] = await Promise.all([
-    import("@/stores/appStore"),
-    import("@/stores/trainingStore"),
-    import("@/stores/inferenceStore"),
-  ]);
+  const [{ useAppStore }, { useTrainingStore }, { useInferenceStore }, { useConnectStore }] =
+    await Promise.all([
+      import("@/stores/appStore"),
+      import("@/stores/trainingStore"),
+      import("@/stores/inferenceStore"),
+      import("@/stores/connectStore"),
+    ]);
 
   const onProject = (labels: Labels) => {
     setTimeout(() => {
@@ -163,6 +240,14 @@ export async function watchStores(now: () => number = Date.now): Promise<Unsubsc
     // reference means a project was opened, created or imported.
     if (state.labels !== previous.labels && state.labels) onProject(state.labels);
 
+    // Count newly opened sidebar panels (e.g. Label QC, Model Metrics, Bboxes).
+    if (state.sidebarOpenPanels !== previous.sidebarOpenPanels) {
+      const prevSet = new Set(previous.sidebarOpenPanels);
+      for (const panelId of state.sidebarOpenPanels) {
+        if (!prevSet.has(panelId)) countPanel(panelId);
+      }
+    }
+
     if (state.tutorialActive !== previous.tutorialActive) {
       const action = state.tutorialActive
         ? "started"
@@ -180,7 +265,12 @@ export async function watchStores(now: () => number = Date.now): Promise<Unsubsc
   const stopTraining = watchRun(
     useTrainingStore,
     now,
-    (state) => track("training_started", { remote: state._isRemote, models: state.models.length }),
+    (state) =>
+      track("training_started", {
+        remote: state._isRemote,
+        models: state.models.length,
+        model_type: state.config.modelType,
+      }),
     (state, outcome, duration) =>
       track("training_finished", {
         outcome,
@@ -188,19 +278,30 @@ export async function watchStores(now: () => number = Date.now): Promise<Unsubsc
         models: state.models.length,
         duration_s: duration,
         epochs: state.models.reduce((sum, model) => sum + (model.epoch ?? 0), 0),
+        model_type: state.config.modelType,
+        error_category: outcome === "error" ? classifyRunError(state.error) : null,
       }),
   );
 
   const stopInference = watchRun(
     useInferenceStore,
     now,
-    () => track("inference_started", {}),
-    (_state, outcome, duration) => track("inference_finished", { outcome, duration_s: duration }),
+    (state) => track("inference_started", { remote: state._isRemote }),
+    (state, outcome, duration) =>
+      track("inference_finished", {
+        outcome,
+        duration_s: duration,
+        remote: state._isRemote,
+        error_category: outcome === "error" ? classifyRunError(state.error) : null,
+      }),
   );
+
+  const stopConnect = watchConnect(useConnectStore, (event) => track("connect_worker", event));
 
   return () => {
     stopApp();
     stopTraining();
     stopInference();
+    stopConnect();
   };
 }

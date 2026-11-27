@@ -19,6 +19,7 @@ import {
 import {
   countCommand,
   countMenu,
+  countPanel,
   getAnalyticsClient,
   menuUsageKey,
   reportError,
@@ -26,7 +27,14 @@ import {
   track,
 } from "@/lib/analytics";
 import type { AnalyticsClient } from "@/lib/analytics/client";
-import { projectOpenedProps, runOutcome, watchErrors, watchRun } from "@/lib/analytics/instrument";
+import {
+  classifyVideoBackend,
+  projectOpenedProps,
+  runOutcome,
+  watchConnect,
+  watchErrors,
+  watchRun,
+} from "@/lib/analytics/instrument";
 import { sanitizeProps, LIMITS } from "@/lib/analytics/protocol";
 
 describe("consent", () => {
@@ -408,5 +416,58 @@ describe("watchErrors", () => {
     stop();
     window.dispatchEvent(new ErrorEvent("error", { message: "late" }));
     expect(errors).toEqual([]);
+  });
+});
+
+describe("video backend classification, panel usage, and Connect watcher", () => {
+  it("classifies project video backends cleanly", () => {
+    class Mp4BoxVideoBackend {}
+    class AviVideoBackend {}
+    class StreamingHdf5VideoBackend {}
+    expect(classifyVideoBackend([])).toBe("none");
+    expect(classifyVideoBackend([{ backend: new Mp4BoxVideoBackend() }])).toBe("media");
+    expect(classifyVideoBackend([{ backend: new AviVideoBackend() }])).toBe("avi");
+    expect(classifyVideoBackend([{ backend: new StreamingHdf5VideoBackend() }])).toBe("hdf5");
+    expect(
+      classifyVideoBackend([{ backend: new Mp4BoxVideoBackend() }, { backend: new AviVideoBackend() }]),
+    ).toBe("mixed");
+  });
+
+  it("counts sidebar panels under the p: prefix", () => {
+    const counted: string[] = [];
+    setAnalyticsClient({ count: (k: string) => counted.push(k) } as unknown as AnalyticsClient);
+    try {
+      countPanel("qc");
+      expect(counted).toEqual(["p:qc"]);
+    } finally {
+      setAnalyticsClient(null);
+    }
+  });
+
+  it("tracks Connect worker connected and error transitions", () => {
+    let state = { connectionStatus: "disconnected", activeTransport: null as string | null };
+    const listeners = new Set<(s: typeof state, p: typeof state) => void>();
+    const store = {
+      subscribe: (fn: (s: typeof state, p: typeof state) => void) => {
+        listeners.add(fn);
+        return () => listeners.delete(fn);
+      },
+      set: (patch: Partial<typeof state>) => {
+        const prev = state;
+        state = { ...state, ...patch };
+        for (const fn of listeners) fn(state, prev);
+      },
+    };
+    const events: unknown[] = [];
+    const stop = watchConnect(store, (e) => events.push(e));
+    store.set({ connectionStatus: "connecting", activeTransport: "iroh" });
+    store.set({ connectionStatus: "connected", activeTransport: "iroh" });
+    store.set({ connectionStatus: "error", activeTransport: "ws" });
+    stop();
+    store.set({ connectionStatus: "connected", activeTransport: "ws" });
+    expect(events).toEqual([
+      { transport: "iroh", outcome: "connected" },
+      { transport: "ws", outcome: "error" },
+    ]);
   });
 });

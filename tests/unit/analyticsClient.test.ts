@@ -560,3 +560,61 @@ describe("trackError", () => {
     expect(h.batches()[0].events).toHaveLength(25);
   });
 });
+
+describe("UTF-8 byte sizing and in-flight flush sealing", () => {
+  it("respects UTF-8 byte length for multi-byte strings so Rust/Python never 413", async () => {
+    const h = harness();
+    // Each CJK char is 1 UTF-16 code unit but 3 UTF-8 bytes.
+    const multibyte = "あ".repeat(250); // 750 bytes each
+    for (let i = 0; i < 120; i++) {
+      h.client.track("error", {
+        kind: "uncaught",
+        fp: `mb${i}`,
+        message: multibyte,
+        stack: "",
+        count: 1,
+        after: null,
+      });
+    }
+    for (let i = 0; i < 20 && (i === 0 || h.client.hasPending()); i++) await h.client.flush();
+    for (const batch of h.batches()) {
+      expect(new TextEncoder().encode(JSON.stringify(batch)).byteLength).toBeLessThanOrEqual(
+        LIMITS.maxBodyBytes,
+      );
+    }
+  });
+
+  it("seals newly tracked events synchronously even while another flush is in flight", async () => {
+    let releaseFirst!: (status: number) => void;
+    let calls = 0;
+    const h = harness({
+      transport: {
+        canLegacyPing: true,
+        post(_path, _body) {
+          calls++;
+          if (calls === 1) {
+            return new Promise<number>((resolve) => {
+              releaseFirst = resolve;
+            });
+          }
+          return Promise.resolve(200);
+        },
+      },
+    });
+
+    h.client.track("session_start", START);
+    const firstFlush = h.client.flush();
+
+    // While the first POST is in flight, a pagehide/quit tracks a heartbeat and calls flush().
+    h.client.track("heartbeat", { uptime_s: 30, active_s: 25 });
+    const secondFlush = h.client.flush({ keepalive: true });
+
+    // The second batch MUST already be sealed in localStorage before the first POST settles.
+    expect(h.storage.batchKeys()).toHaveLength(2);
+
+    releaseFirst(200);
+    await Promise.all([firstFlush, secondFlush]);
+    expect(calls).toBe(2);
+    expect(h.storage.batchKeys()).toEqual([]);
+  });
+});

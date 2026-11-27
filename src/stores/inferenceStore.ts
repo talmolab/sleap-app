@@ -204,6 +204,8 @@ interface InferenceState {
   minimized: boolean;
   outputPath: string | null;
   startedAt: number | null;
+  /** Whether the current/last inference run targeted a remote Connect worker. */
+  _isRemote: boolean;
   /**
    * A completed remote job's result(s), fetched but deliberately NOT yet
    * merged — the app only ever learns of remote completion while it's
@@ -264,6 +266,7 @@ const initialState = {
   minimized: false,
   outputPath: null as string | null,
   startedAt: null as number | null,
+  _isRemote: false,
   pendingRemoteMerge: null as PendingRemoteMerge | null,
 };
 
@@ -704,6 +707,7 @@ export const useInferenceStore = create<InferenceState>()((set) => ({
       minimized: false,
       outputPath: null,
       startedAt: Date.now(),
+      _isRemote: !!remoteOpts?.remote,
     });
 
     if (remoteOpts?.remote) {

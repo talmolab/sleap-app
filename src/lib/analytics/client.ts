@@ -37,6 +37,7 @@ import {
   isValidEventName,
   isValidKey,
   sanitizeProps,
+  utf8ByteLength,
   type LegacyPing,
   type Props,
   type WireBatch,
@@ -135,6 +136,8 @@ export class AnalyticsClient {
   private seq = 0;
   private suppressed = 0;
   private flushing: Promise<void> | null = null;
+  /** Set if `flush()` is called while a delivery is already in flight. */
+  private reflushNeeded = false;
   /** The service answered 404 to `/v2/events` this session. */
   private v2Unsupported = false;
   private legacyPingSent = false;
@@ -229,14 +232,24 @@ export class AnalyticsClient {
       events: list,
     });
 
-    // Stay under the body cap. Events are small, so this loop almost never
-    // runs; when it does, the overflow goes back to the front of the queue.
+    // Stay under the UTF-8 byte cap (matching Rust `body.len()` and Python
+    // `MAX_BODY_BYTES`). Overflow goes back to the front of the queue.
+    const maxBytes = LIMITS.maxBodyBytes - 256;
     let batch = envelope(events);
-    while (events.length > 1 && JSON.stringify(batch).length > LIMITS.maxBodyBytes - 256) {
+    while (events.length > 1 && utf8ByteLength(JSON.stringify(batch)) > maxBytes) {
       const keep = Math.ceil(events.length / 2);
       this.pending.unshift(...events.slice(keep));
       events = events.slice(0, keep);
       batch = envelope(events);
+    }
+    // If even a single event still exceeds the cap (e.g. dense multi-byte UTF-8
+    // strings), strip its props rather than sealing an unsendable batch.
+    if (utf8ByteLength(JSON.stringify(batch)) > maxBytes) {
+      batch = envelope([{ ...events[0], props: {} }]);
+      if (utf8ByteLength(JSON.stringify(batch)) > maxBytes) {
+        this.bumpDropped();
+        return false;
+      }
     }
 
     this.writeStored(batch.batch_id, { sealedAt: this.deps.now(), batch });
@@ -261,17 +274,38 @@ export class AnalyticsClient {
 
   /**
    * Seal what is pending and try to deliver every stored batch, oldest first.
-   * Concurrent calls share one run. Never throws.
+   *
+   * Sealing ALWAYS happens synchronously up front — even when a prior delivery
+   * is already in flight — so a `pagehide` / `visibilitychange` / quit call
+   * never loses newly tracked events if the page exits before the earlier POST
+   * settles. Concurrent callers share one delivery loop that re-drains if more
+   * batches were sealed mid-flight. Never throws.
    */
   flush(opts?: { keepalive?: boolean }): Promise<void> {
-    if (!this.flushing) {
-      this.flushing = this.deliver(opts)
-        .catch((error) => this.deps.log?.("flush failed", error))
-        .finally(() => {
-          this.flushing = null;
-        });
+    if (!this.deps.isEnabled()) {
+      this.discardAll();
+      return Promise.resolve();
     }
+    if (this.deps.canSend() && !this.v2Unsupported) {
+      this.seal();
+    }
+    if (this.flushing) {
+      this.reflushNeeded = true;
+      return this.flushing;
+    }
+    this.flushing = this.deliverLoop(opts)
+      .catch((error) => this.deps.log?.("flush failed", error))
+      .finally(() => {
+        this.flushing = null;
+      });
     return this.flushing;
+  }
+
+  private async deliverLoop(opts?: { keepalive?: boolean }): Promise<void> {
+    do {
+      this.reflushNeeded = false;
+      await this.deliver(opts);
+    } while (this.reflushNeeded && this.deps.isEnabled() && this.deps.canSend() && !this.v2Unsupported);
   }
 
   private async deliver(opts?: { keepalive?: boolean }): Promise<void> {

@@ -19,6 +19,7 @@
 //! fixed here, and the path must be one of two known endpoints, so this
 //! command cannot be used to make the app post to anywhere else.
 
+use std::sync::OnceLock;
 use std::time::Duration;
 
 use serde::Serialize;
@@ -28,7 +29,10 @@ use tauri_plugin_shell::ShellExt;
 const DEFAULT_BASE_URL: &str = "https://analytics.sleap.ai";
 
 /// Overrides the service URL, for running against a local
-/// talmolab/sleap-analytics-service (`uvicorn app.main:app`). Development only.
+/// talmolab/sleap-analytics-service (`uvicorn app.main:app`).
+/// In release builds, only loopback overrides (`http://127.0.0.1`,
+/// `http://localhost`, `http://[::1]`) are honored so an ambient environment
+/// variable cannot redirect analytics to an arbitrary third-party host.
 const BASE_URL_ENV: &str = "SLEAP_ANALYTICS_URL";
 
 /// The only paths this command will post to.
@@ -41,12 +45,52 @@ const MAX_BODY_BYTES: usize = 64 * 1024;
 /// leaves a request hanging for the life of the window.
 const NETWORK_TIMEOUT: Duration = Duration::from_secs(15);
 
-fn base_url() -> String {
-    std::env::var(BASE_URL_ENV)
-        .ok()
+static HTTP_CLIENT: OnceLock<Result<reqwest::Client, String>> = OnceLock::new();
+
+fn http_client() -> Result<&'static reqwest::Client, String> {
+    let entry = HTTP_CLIENT.get_or_init(|| {
+        reqwest::Client::builder()
+            .user_agent("sleap-app")
+            .timeout(NETWORK_TIMEOUT)
+            // Never follow redirects: prevents a 307/308 from forwarding the
+            // analytics body to another host.
+            .redirect(reqwest::redirect::Policy::none())
+            .build()
+            .map_err(|e| e.to_string())
+    });
+    entry.as_ref().map_err(Clone::clone)
+}
+
+fn is_loopback_url(url: &str) -> bool {
+    let rest = match url
+        .strip_prefix("http://")
+        .or_else(|| url.strip_prefix("https://"))
+    {
+        Some(r) => r,
+        None => return false,
+    };
+    let authority = rest.split('/').next().unwrap_or("");
+    if authority.contains('@') {
+        return false;
+    }
+    if let Some(after) = authority.strip_prefix("[::1]") {
+        return after.is_empty() || after.starts_with(':');
+    }
+    let host = authority.split(':').next().unwrap_or("");
+    host == "localhost" || host == "127.0.0.1"
+}
+
+fn resolve_base_url(override_raw: Option<&str>, allow_non_loopback: bool) -> String {
+    override_raw
         .map(|value| value.trim().trim_end_matches('/').to_string())
         .filter(|value| value.starts_with("https://") || value.starts_with("http://"))
+        .filter(|value| allow_non_loopback || is_loopback_url(value))
         .unwrap_or_else(|| DEFAULT_BASE_URL.to_string())
+}
+
+fn base_url() -> String {
+    let raw = std::env::var(BASE_URL_ENV).ok();
+    resolve_base_url(raw.as_deref(), cfg!(debug_assertions))
 }
 
 fn endpoint(base: &str, path: &str) -> Result<String, String> {
@@ -63,17 +107,15 @@ fn endpoint(base: &str, path: &str) -> Result<String, String> {
 /// frontend treats that the same as a 5xx and retries later. Any status the
 /// service did return, including 4xx, is an `Ok`: what to do about it is the
 /// frontend's decision (`classifyStatus` in `src/lib/analytics/client.ts`).
+/// An oversize body returns `Ok(413)` (not `Err`) so the frontend drops it
+/// immediately instead of head-of-line blocking the queue on retries.
 #[tauri::command]
 pub async fn analytics_post(path: String, body: String) -> Result<u16, String> {
     let url = endpoint(&base_url(), &path)?;
     if body.len() > MAX_BODY_BYTES {
-        return Err(format!("analytics body is {} bytes; the limit is {MAX_BODY_BYTES}", body.len()));
+        return Ok(413);
     }
-    let client = reqwest::Client::builder()
-        .user_agent("sleap-app")
-        .timeout(NETWORK_TIMEOUT)
-        .build()
-        .map_err(|e| e.to_string())?;
+    let client = http_client()?;
     let response = client
         .post(url)
         .header("Content-Type", "application/json")
@@ -108,27 +150,44 @@ fn normalize_arch(arch: &str) -> String {
 }
 
 /// `10` or `11` from the output of `cmd /C ver`, e.g.
-/// `Microsoft Windows [Version 10.0.22631.4460]`.
+/// `Microsoft Windows [Version 10.0.22631.4460]` or localized equivalents
+/// (`[version 10.0...]`, `[Versión 10.0...]`, `[版本 10.0...]`, `[Версия 10.0...]`).
 ///
 /// Windows 11 still reports major version 10; the build number is the only
 /// thing that tells them apart, and 22000 was the first Windows 11 build.
 /// The build number itself is dropped: it changes with every monthly update
 /// and adds nothing a support question needs.
 fn parse_windows_version(ver_output: &str) -> Option<String> {
-    let start = ver_output.find("Version ")? + "Version ".len();
-    let version: String = ver_output[start..]
-        .chars()
-        .take_while(|c| c.is_ascii_digit() || *c == '.')
-        .collect();
-    let mut parts = version.split('.');
-    let major: u32 = parts.next()?.parse().ok()?;
-    let _minor = parts.next();
-    let build: u32 = parts.next().and_then(|b| b.parse().ok()).unwrap_or(0);
-    if major == 10 && build >= 22000 {
-        Some("11".to_string())
-    } else {
-        Some(major.to_string())
+    // Prefer the bracketed version segment (`[...]`), falling back to the whole
+    // string, and scan for the first dotted triple `major.minor.build` without
+    // relying on the English word "Version".
+    let slice = match (ver_output.find('['), ver_output.rfind(']')) {
+        (Some(start), Some(end)) if start < end => &ver_output[start + 1..end],
+        _ => ver_output,
+    };
+    let bytes = slice.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i].is_ascii_digit() {
+            let start = i;
+            while i < bytes.len() && (bytes[i].is_ascii_digit() || bytes[i] == b'.') {
+                i += 1;
+            }
+            let token = slice[start..i].trim_matches('.');
+            let parts: Vec<&str> = token.split('.').collect();
+            if parts.len() >= 3 {
+                if let (Ok(major), Ok(build)) = (parts[0].parse::<u32>(), parts[2].parse::<u32>()) {
+                    if major == 10 && build >= 22000 {
+                        return Some("11".to_string());
+                    }
+                    return Some(major.to_string());
+                }
+            }
+        } else {
+            i += 1;
+        }
     }
+    None
 }
 
 /// `ubuntu-22.04` from the contents of `/etc/os-release` (`ID` and
@@ -199,12 +258,30 @@ mod tests {
     }
 
     #[test]
+    fn base_url_override_is_loopback_only_in_release_builds() {
+        assert_eq!(resolve_base_url(Some("http://127.0.0.1:8099/"), false), "http://127.0.0.1:8099");
+        assert_eq!(resolve_base_url(Some("http://localhost:8099"), false), "http://localhost:8099");
+        assert_eq!(resolve_base_url(Some("http://[::1]:8099"), false), "http://[::1]:8099");
+        assert_eq!(resolve_base_url(Some("https://evil.example"), false), DEFAULT_BASE_URL);
+        assert_eq!(resolve_base_url(Some("http://localhost.evil.example"), false), DEFAULT_BASE_URL);
+        assert_eq!(resolve_base_url(Some("http://127.0.0.1@evil.example"), false), DEFAULT_BASE_URL);
+        // Debug builds allow any http(s) override.
+        assert_eq!(resolve_base_url(Some("https://staging.example/"), true), "https://staging.example");
+    }
+
+    #[test]
     fn windows_11_is_told_apart_from_windows_10_by_build_number() {
         assert_eq!(parse_windows_version("\r\nMicrosoft Windows [Version 10.0.22631.4460]\r\n").as_deref(), Some("11"));
         assert_eq!(parse_windows_version("Microsoft Windows [Version 10.0.26100.2314]").as_deref(), Some("11"));
         assert_eq!(parse_windows_version("Microsoft Windows [Version 10.0.19045.5131]").as_deref(), Some("10"));
-        // Localized Windows translates the product name but keeps "Version".
         assert_eq!(parse_windows_version("Microsoft Windows [Version 6.3.9600]").as_deref(), Some("6"));
+        // Non-English Windows locales translate "Version".
+        assert_eq!(parse_windows_version("Microsoft Windows [version 10.0.22631.4460]").as_deref(), Some("11"));
+        assert_eq!(parse_windows_version("Microsoft Windows [Versión 10.0.19045.5131]").as_deref(), Some("10"));
+        assert_eq!(parse_windows_version("Microsoft Windows [版本 10.0.26100.2314]").as_deref(), Some("11"));
+        assert_eq!(parse_windows_version("Microsoft Windows [Версия 10.0.22621.1]").as_deref(), Some("11"));
+        assert_eq!(parse_windows_version("Microsoft Windows [Versione 10.0.19045.1]").as_deref(), Some("10"));
+        assert_eq!(parse_windows_version("Microsoft Windows [versão 10.0.22631.1]").as_deref(), Some("11"));
         assert_eq!(parse_windows_version("nothing useful"), None);
     }
 

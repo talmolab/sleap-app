@@ -85,11 +85,19 @@ The properties that matter, each explained at length in that repo's
 
 ### 3. A reader in the reporting repo (`app_stats.py`)
 
-Reads `event_batches`, drops duplicate deliveries by `batch_id`, explodes
-batches into events and writes `docs/app.json`: installs and sessions over
-time, versions, platforms, feature usage, run outcomes, top errors, and the
-onboarding funnel. `check_stats.py` also learns to recognize `/ping` rows whose
-`sleap_version` starts with `sleap-app/` and report them separately.
+Reads `event_batches` (incrementally via daily GCS archives under
+`app-batches/` when `ANALYTICS_ARCHIVE_BUCKET` / `PING_ARCHIVE_BUCKET` is set,
+falling back to a 400-day Firestore scan), drops duplicate deliveries by
+`batch_id`, explodes batches into events and writes public `docs/app.json`:
+installs and sessions over time (with `28d` / `90d` / `All` windows), normalized
+versions, platforms, accelerators, countries, feature usage (menus, commands,
+and panels), run outcomes, error-free session rate, and the onboarding funnel.
+Raw error messages, stacks, and sample Support IDs are written **only** to the
+private GCS bucket (`internal-reports/app-errors/latest.{json,html}`), never
+committed to git or published to `stats.sleap.ai`. `inspect_app.py` provides
+local error viewing plus Support ID lookup and deletion. `check_stats.py` also
+learns to recognize `/ping` rows whose `sleap_version` starts with `sleap-app/`
+and report them separately.
 
 ## Compatibility with the service as deployed today
 
@@ -170,20 +178,13 @@ as `[analytics] POST /v2/events → 200 (ok)`.
 ## Not done yet
 
 - **No rate limiting** on `/v2/events`. The 64 KiB body cap bounds a request,
-  not the number of requests.
-- **No retention policy** for `event_batches`. Decide one (a Firestore TTL on
-  `received_at` is the simple option) before the collection is large.
-- **No way to delete one install's data on request.** The Support ID makes it
-  possible to find; nothing automates it.
-- **The reader scans a trailing window nightly.** Fine at this scale; it should
-  become incremental before the collection reaches millions of documents.
-- **The desktop transport has no on-quit flush.** A batch sealed at quit is
-  delivered at the next launch.
+  not the number of requests. If Cloud Armor / External Load Balancer is added
+  in front of Cloud Run, set `TRUSTED_PROXY_HOPS=2` on the service (see its
+  `RUNBOOK.md`).
+- **No automated Firestore TTL policy** on `event_batches` yet (daily GCS
+  archiving + incremental reads are in place once the bucket variable is set).
 - **Legal review.** The notice and `docs/usage-data.md` describe what is
   collected accurately, but nobody has checked them against institutional or
   GDPR requirements.
-- **Instrumentation is shallow on purpose.** Panels opened, export formats,
-  remote-compute (Connect) usage and model types are the obvious next events;
-  add them to `events.ts` and `docs/usage-data.md` together.
-- **`deploy.yml` in the service has no production smoke for `/v2/events`.**
-  The image smoke test covers it against the Firestore emulator only.
+- **Export-format detail** beyond command counts (e.g., which export options
+  were chosen) can be added to `events.ts` and `docs/usage-data.md` together.

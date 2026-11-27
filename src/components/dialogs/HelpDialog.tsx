@@ -11,6 +11,8 @@
  * what they were running was the one place guaranteed to be wrong.
  */
 
+import { useState } from "react";
+import { Copy, Check } from "lucide-react";
 import {
   Dialog,
   DialogContent,
@@ -27,6 +29,19 @@ interface HelpDialogProps {
 }
 
 export function HelpDialog({ open, onOpenChange }: HelpDialogProps) {
+  const [copiedId, setCopiedId] = useState(false);
+  const supportId = getInstallId();
+
+  const handleCopySupportId = () => {
+    try {
+      void navigator.clipboard?.writeText(supportId);
+      setCopiedId(true);
+      setTimeout(() => setCopiedId(false), 1500);
+    } catch {
+      /* ignore clipboard failure */
+    }
+  };
+
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="sm:max-w-[360px]">
@@ -49,15 +64,29 @@ export function HelpDialog({ open, onOpenChange }: HelpDialogProps) {
             {/* The random per-install id that diagnostics bundles and usage
                 data carry. Quoting it in a bug report lets us find the errors
                 this install reported; it identifies the install, not a person. */}
-            <p
-              className="text-xs text-muted-foreground select-text"
+            <div
+              className="flex items-center gap-1.5 text-xs text-muted-foreground select-text"
               title="A random ID for this install. Include it when you report an issue so we can find the errors it reported."
             >
-              Support ID{" "}
+              <span>Support ID</span>
               <code data-testid="about-support-id" className="font-mono">
-                {getInstallId()}
+                {supportId}
               </code>
-            </p>
+              <button
+                type="button"
+                data-testid="copy-support-id"
+                onClick={handleCopySupportId}
+                aria-label="Copy Support ID"
+                title={copiedId ? "Copied" : "Copy Support ID"}
+                className="inline-flex items-center p-0.5 rounded hover:bg-accent/60 hover:text-foreground transition-colors"
+              >
+                {copiedId ? (
+                  <Check className="h-3.5 w-3.5 text-green-400" />
+                ) : (
+                  <Copy className="h-3.5 w-3.5" />
+                )}
+              </button>
+            </div>
           </div>
 
           <p className="text-muted-foreground">

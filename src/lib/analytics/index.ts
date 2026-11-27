@@ -21,16 +21,54 @@ import type { AnalyticsEventName, AnalyticsEvents } from "./events";
 import { errorFingerprint, scrubText, summarizeStack } from "./protocol";
 
 let client: AnalyticsClient | null = null;
+let quitFlusher: ((timeoutMs: number) => Promise<void>) | null = null;
 
 /** The last menu item or command that ran; attached to error reports. */
 let lastAction: string | null = null;
 
 export function setAnalyticsClient(next: AnalyticsClient | null): void {
   client = next;
+  if (!next) quitFlusher = null;
 }
 
 export function getAnalyticsClient(): AnalyticsClient | null {
   return client;
+}
+
+export function setQuitFlusher(fn: ((timeoutMs: number) => Promise<void>) | null): void {
+  quitFlusher = fn;
+}
+
+/**
+ * Synchronously seal any pending events to storage (safe to call from non-async
+ * unload/close paths where an awaited network request may not complete).
+ */
+export function sealAnalyticsSync(): void {
+  try {
+    client?.seal();
+  } catch {
+    /* never break unload */
+  }
+}
+
+/**
+ * Best-effort bounded flush before the desktop app exits. Seals immediately and
+ * waits up to `timeoutMs` for delivery so quitting never hangs on a dead network.
+ */
+export async function flushAnalyticsBeforeQuit(timeoutMs = 1_500): Promise<void> {
+  try {
+    if (quitFlusher) {
+      await quitFlusher(timeoutMs);
+    } else if (client) {
+      client.seal();
+      await Promise.race([
+        client.flush({ keepalive: true }),
+        new Promise<void>((r) => setTimeout(r, timeoutMs)),
+      ]);
+    }
+  } catch {
+    /* never block quit */
+  }
 }
 
 /** Record one event from the catalog in ./events.ts. */
@@ -68,6 +106,15 @@ export function countMenu(menuId: string): void {
 /** A command ran through the CommandContext (menu, shortcut or canvas gesture). */
 export function countCommand(commandName: string): void {
   countAction(`c:${commandName}`);
+}
+
+/** A sidebar panel was opened by the user. */
+export function countPanel(panelId: string): void {
+  try {
+    client?.count(`p:${panelId}`);
+  } catch {
+    /* never let instrumentation break the caller */
+  }
 }
 
 /**

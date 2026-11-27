@@ -31,13 +31,35 @@ export type ProjectStage =
  */
 export type RunOutcome = "completed" | "error" | "stopped" | "cancelled";
 
+/** Coarse reason a training or inference run failed (fixed vocabulary, never raw stderr). */
+export type RunErrorCategory =
+  | "oom"
+  | "cuda"
+  | "missing_env"
+  | "validation"
+  | "network"
+  | "other";
+
+/** Coarse video reader backend family for an opened project. */
+export type VideoBackendKind =
+  | "media"
+  | "avi"
+  | "hdf5"
+  | "image"
+  | "seq"
+  | "mixed"
+  | "none"
+  | "other";
+
 export interface AnalyticsEvents {
   /** Once per app window, when it starts. */
   session_start: {
-    /** No install id existed before this launch. */
+    /** No prior analytics session had been sent from this storage profile. */
     first_run: boolean;
-    /** The previous session ended without a clean shutdown (desktop only). */
+    /** The previous session ended without a clean shutdown (desktop primary window only). */
     prior_crash: boolean;
+    /** True for the primary (cold-launch) window and browser; false for desktop sibling windows. */
+    primary_window?: boolean;
   };
 
   /**
@@ -53,10 +75,10 @@ export interface AnalyticsEvents {
   };
 
   /**
-   * How many times each menu item and command ran since the last `usage`
-   * event. Keys are `m:<menu id>` (e.g. `m:file.save`) and `c:<command name>`
-   * (e.g. `c:AddInstance`) — identifiers defined in this codebase, never user
-   * data. This is what tells us which features are used and which are not.
+   * How many times each menu item, command, or sidebar panel ran since the last
+   * `usage` event. Keys are `m:<menu id>` (e.g. `m:file.save`), `c:<command name>`
+   * (e.g. `c:AddInstance`), and `p:<panel id>` (e.g. `p:qc`) — identifiers
+   * defined in this codebase, never user data.
    */
   usage: Record<string, number>;
 
@@ -68,6 +90,8 @@ export interface AnalyticsEvents {
     predicted_instances: string;
     tracks: string;
     skeleton_nodes: string;
+    /** Video backend family decoding the project's videos. */
+    video_backend?: VideoBackendKind;
   };
 
   training_started: {
@@ -75,6 +99,8 @@ export interface AnalyticsEvents {
     remote: boolean;
     /** Number of models in the run (2 for top-down). */
     models: number;
+    /** Model architecture family, e.g. `top_down`, `bottom_up`, `bbox`. */
+    model_type?: string;
   };
 
   training_finished: {
@@ -84,13 +110,31 @@ export interface AnalyticsEvents {
     duration_s: number;
     /** Epochs completed, summed over the run's models. */
     epochs: number;
+    /** Model architecture family, e.g. `top_down`, `bottom_up`, `bbox`. */
+    model_type?: string;
+    /** Coarse failure category when `outcome === "error"`. */
+    error_category?: RunErrorCategory | null;
   };
 
-  inference_started: Record<string, never>;
+  inference_started: {
+    /** Ran on a remote worker (Connect) rather than this machine. */
+    remote?: boolean;
+  };
 
   inference_finished: {
     outcome: RunOutcome;
     duration_s: number;
+    /** Ran on a remote worker (Connect) rather than this machine. */
+    remote?: boolean;
+    /** Coarse failure category when `outcome === "error"`. */
+    error_category?: RunErrorCategory | null;
+  };
+
+  /** A remote-worker (Connect) connection attempt succeeded or failed. */
+  connect_worker: {
+    /** Transport route used, e.g. `ws` or `iroh`. */
+    transport: string;
+    outcome: "connected" | "error";
   };
 
   /**
