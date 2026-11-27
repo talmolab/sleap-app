@@ -410,16 +410,19 @@ jobs:
           fi
 
           # Heredoc form: a base64 cert may wrap, and a multi-line value written as
-          # KEY=VALUE would corrupt the env file.
+          # KEY=VALUE would corrupt the env file. Notary credentials go under
+          # SLEAP_NOTARY_* so tauri-action skips premature notarization of the
+          # pre-QuickLook .app; bundle-macos-quicklook.sh notarizes & staples the
+          # final .app after embedding and inside-out signing both .appex bundles.
           {
             echo "APPLE_CERTIFICATE<<__SLEAP_EOF__"
             printf '%s\n' "$CERT"
             echo "__SLEAP_EOF__"
             echo "APPLE_CERTIFICATE_PASSWORD=$CERT_PASSWORD"
             echo "APPLE_SIGNING_IDENTITY=$IDENTITY"
-            echo "APPLE_ID=$NOTARY_APPLE_ID"
-            echo "APPLE_PASSWORD=$NOTARY_PASSWORD"
-            echo "APPLE_TEAM_ID=$NOTARY_TEAM_ID"
+            echo "SLEAP_NOTARY_APPLE_ID=$NOTARY_APPLE_ID"
+            echo "SLEAP_NOTARY_PASSWORD=$NOTARY_PASSWORD"
+            echo "SLEAP_NOTARY_TEAM_ID=$NOTARY_TEAM_ID"
           } >> "$GITHUB_ENV"
           echo "SLEAP_SIGNING_MODE=developer-id-notarized" >> "$GITHUB_ENV"
           echo "Developer ID signing + notarization enabled."
@@ -451,6 +454,30 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
 
+      # Embed the native universal Quick Look Preview + Thumbnail extensions into
+      # SLEAP.app/Contents/PlugIns/, re-sign inside-out (sandboxed .appex first,
+      # unsandboxed SLEAP.app last), notarize + staple SLEAP.app, and rebuild the
+      # .dmg and updater .tar.gz (+ .sig).
+      - name: Bundle and sign macOS Quick Look extensions
+        if: matrix.target == 'macos-universal'
+        shell: bash
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          B="${{ matrix.bundle-dir }}"
+          APP="$B/macos/SLEAP.app"
+          DMG="$(find "$B/dmg" -maxdepth 1 -type f -name '*.dmg' ! -name 'rw.*' | head -1)"
+          TGZ="$B/macos/SLEAP.app.tar.gz"
+          EXTRA=()
+          [ -n "$DMG" ] && EXTRA+=(--dmg "$DMG")
+          [ -f "$TGZ" ] && EXTRA+=(--updater-tgz "$TGZ")
+          if [ "${SLEAP_SIGNING_MODE:-adhoc}" = developer-id-notarized ]; then
+            EXTRA+=(--notarize)
+          fi
+          bash scripts/bundle-macos-quicklook.sh --app "$APP" --universal "${EXTRA[@]}"
+
       - name: Verify AppImage GStreamer plugins
         if: matrix.target == 'linux'
         shell: bash
@@ -460,10 +487,8 @@ jobs:
           [ -n "$APPIMAGE" ] || { echo "::error::no .AppImage under ${{ matrix.bundle-dir }}/appimage"; exit 1; }
           bash scripts/appimage-gstreamer.sh verify "$APPIMAGE"
 
-      # Tauri notarizes and staples the .app, then builds the .dmg around it. The
-      # disk image itself is left un-notarized, and Gatekeeper assesses the image
-      # too when a quarantined .dmg is opened -- so without this, a browser
-      # download still gets a prompt even though the app inside is notarized.
+      # Notarize and staple the rebuilt .dmg so Gatekeeper accepts browser downloads
+      # without a prompt.
       - name: Notarize and staple the .dmg
         if: matrix.target == 'macos-universal' && env.SLEAP_SIGNING_MODE == 'developer-id-notarized'
         shell: bash
@@ -477,9 +502,9 @@ jobs:
           # --wait blocks on Apple's service, which is usually ~1-5 min but has no
           # SLA; the timeout keeps a bad day from eating the job budget.
           xcrun notarytool submit "$DMG" \
-            --apple-id "$APPLE_ID" \
-            --password "$APPLE_PASSWORD" \
-            --team-id "$APPLE_TEAM_ID" \
+            --apple-id "$SLEAP_NOTARY_APPLE_ID" \
+            --password "$SLEAP_NOTARY_PASSWORD" \
+            --team-id "$SLEAP_NOTARY_TEAM_ID" \
             --wait --timeout 30m
 
           xcrun stapler staple "$DMG"
@@ -583,6 +608,25 @@ jobs:
             *arm64*) ;;
             *) echo "::error::no arm64 slice"; exit 1 ;;
           esac
+
+          # Verify both Quick Look extensions are embedded, universal, and sandboxed,
+          # and that SLEAP.app exports the org.sleap.slp UTI.
+          grep -Fq "org.sleap.slp" "$APP/Contents/Info.plist" \
+            || { echo "::error::SLEAP.app/Contents/Info.plist does not declare org.sleap.slp UTI"; exit 1; }
+          for ext_name in SLEAPQuickLook SLEAPQuickLookThumbnail; do
+            EXT="$APP/Contents/PlugIns/${ext_name}.appex"
+            [ -d "$EXT" ] || { echo "::error::missing Quick Look extension $EXT"; exit 1; }
+            codesign --verify --strict --verbose=2 "$EXT"
+            EXT_ARCHS="$(lipo -archs "$EXT/Contents/MacOS/${ext_name}")"
+            echo "${ext_name} slices: $EXT_ARCHS"
+            case "$EXT_ARCHS" in *x86_64*) ;; *) echo "::error::${ext_name} missing x86_64 slice"; exit 1 ;; esac
+            case "$EXT_ARCHS" in *arm64*) ;; *) echo "::error::${ext_name} missing arm64 slice"; exit 1 ;; esac
+            EXT_ENT="$(codesign -d --entitlements - "$EXT" 2>&1 || true)"
+            case "$EXT_ENT" in
+              *"com.apple.security.app-sandbox"*) ;;
+              *) echo "::error::${ext_name} missing com.apple.security.app-sandbox entitlement"; exit 1 ;;
+            esac
+          done
 
           # 2. The .app a tester actually drags out of the .dmg.
           DMG="$(find "$B/dmg" -maxdepth 1 -type f -name '*.dmg' ! -name 'rw.*' | head -1)"
