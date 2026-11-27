@@ -96,41 +96,127 @@ export function projectOpenedProps(
   return props;
 }
 
-/** Classify a project's video backends into a single coarse family. Pure. */
+/** Constructor shape accepted for `instanceof` checks, including classes with private constructors. */
+type ClassLike = { readonly prototype: object };
+
+/** Known backend constructors passed from dynamic imports so `instanceof` survives minification. */
+export interface KnownVideoBackendClasses {
+  avi?: readonly ClassLike[];
+  hdf5?: readonly ClassLike[];
+  image?: readonly ClassLike[];
+  seq?: readonly ClassLike[];
+  media?: readonly ClassLike[];
+}
+
+export interface VideoLike {
+  backend?: unknown;
+  backendMetadata?: { type?: unknown; dataset?: unknown; sourceFilename?: unknown };
+  filename?: string | readonly string[];
+}
+
+function classifyBackendName(raw: unknown): VideoBackendKind | null {
+  if (typeof raw !== "string") return null;
+  const name = raw.toLowerCase();
+  if (!name || name === "object") return null;
+  if (name.includes("avi")) return "avi";
+  if (name.includes("hdf5") || name.includes("h5")) return "hdf5";
+  if (name.includes("image")) return "image";
+  if (name.includes("seq")) return "seq";
+  if (
+    name.includes("mp4") ||
+    name.includes("mediabunny") ||
+    name.includes("media") ||
+    name.includes("libav") ||
+    name.includes("webcodecs")
+  ) {
+    return "media";
+  }
+  return null;
+}
+
+function classifyFilenameExtension(filename: unknown): VideoBackendKind | null {
+  if (Array.isArray(filename)) return filename.length > 0 ? "image" : null;
+  if (typeof filename !== "string" || !filename) return null;
+  const clean = filename.split(/[?#]/, 1)[0].toLowerCase();
+  const dot = clean.lastIndexOf(".");
+  if (dot < 0) return null;
+  const ext = clean.slice(dot + 1);
+  if (ext === "avi") return "avi";
+  if (ext === "h5" || ext === "hdf5" || ext === "slp") return "hdf5";
+  if (ext === "seq") return "seq";
+  if (ext === "png" || ext === "jpg" || ext === "jpeg" || ext === "tif" || ext === "tiff" || ext === "bmp" || ext === "webp") {
+    return "image";
+  }
+  if (ext === "mp4" || ext === "m4v" || ext === "mov" || ext === "mkv" || ext === "webm") {
+    return "media";
+  }
+  return null;
+}
+
+function matchesAny(obj: unknown, ctors?: readonly ClassLike[]): boolean {
+  if (!obj || typeof obj !== "object" || !ctors) return false;
+  for (const Ctor of ctors) {
+    if (typeof Ctor === "function" && obj instanceof (Ctor as new (...args: never[]) => unknown)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+/**
+ * Classify a project's video backends into a single coarse family. Pure.
+ *
+ * Production Vite builds minify class names (`constructor.name` becomes e.g. `"gt"`),
+ * so classification prefers `instanceof` (via `knownClasses`), serialized
+ * `backendMetadata.type` / `dataset`, and local filename extension (never transmitted)
+ * before falling back to `constructor.name`.
+ */
 export function classifyVideoBackend(
-  videos: readonly { backend?: unknown; backendMetadata?: { type?: unknown } }[] | undefined | null,
+  videos: readonly VideoLike[] | undefined | null,
+  knownClasses?: KnownVideoBackendClasses,
 ): VideoBackendKind {
   if (!videos || videos.length === 0) return "none";
   const kinds = new Set<VideoBackendKind>();
   for (const video of videos) {
-    let backend = video?.backend as { constructor?: { name?: string }; inner?: unknown; backend?: unknown } | undefined;
-    // Unwrap wrapper backends (CropVideoBackend, GrayscaleVideoBackend) to reach the underlying decoder.
-    for (let depth = 0; depth < 3; depth++) {
-      const cname = backend?.constructor?.name;
-      if (cname === "CropVideoBackend" || cname === "GrayscaleVideoBackend") {
-        backend = (backend?.inner ?? backend?.backend ?? backend) as typeof backend;
+    let backend = video?.backend as
+      | { constructor?: { name?: string }; inner?: unknown; backend?: unknown }
+      | undefined
+      | null;
+    // Unwrap wrapper backends (CropVideoBackend, GrayscaleVideoBackend) structurally so
+    // unwrapping still works when Vite minifies class names.
+    for (let depth = 0; depth < 4 && backend && typeof backend === "object"; depth++) {
+      const next =
+        backend.inner && typeof backend.inner === "object"
+          ? backend.inner
+          : backend.backend && typeof backend.backend === "object"
+            ? backend.backend
+            : null;
+      if (next && next !== backend) {
+        backend = next as typeof backend;
       } else {
         break;
       }
     }
-    const name = String(
-      backend?.constructor?.name ?? video?.backendMetadata?.type ?? "",
-    ).toLowerCase();
-    if (!name || name === "object") {
-      kinds.add("other");
-    } else if (name.includes("avi")) {
-      kinds.add("avi");
-    } else if (name.includes("hdf5") || name.includes("h5")) {
-      kinds.add("hdf5");
-    } else if (name.includes("image")) {
-      kinds.add("image");
-    } else if (name.includes("seq")) {
-      kinds.add("seq");
-    } else if (name.includes("mp4") || name.includes("mediabunny") || name.includes("media") || name.includes("libav") || name.includes("webcodecs")) {
-      kinds.add("media");
-    } else {
-      kinds.add("other");
+
+    let kind: VideoBackendKind | null = null;
+    if (knownClasses && backend) {
+      if (matchesAny(backend, knownClasses.avi)) kind = "avi";
+      else if (matchesAny(backend, knownClasses.hdf5)) kind = "hdf5";
+      else if (matchesAny(backend, knownClasses.image)) kind = "image";
+      else if (matchesAny(backend, knownClasses.seq)) kind = "seq";
+      else if (matchesAny(backend, knownClasses.media)) kind = "media";
     }
+    if (!kind) kind = classifyBackendName(video?.backendMetadata?.type);
+    if (!kind && typeof video?.backendMetadata?.dataset === "string" && video.backendMetadata.dataset) {
+      kind = "hdf5";
+    }
+    if (!kind) kind = classifyBackendName(backend?.constructor?.name);
+    if (!kind) {
+      kind =
+        classifyFilenameExtension(video?.backendMetadata?.sourceFilename) ??
+        classifyFilenameExtension(video?.filename);
+    }
+    kinds.add(kind ?? "other");
   }
   if (kinds.size === 0) return "none";
   if (kinds.size === 1) return [...kinds][0];
@@ -163,16 +249,17 @@ export function watchConnect(
 const PROJECT_MEASURE_DELAY_MS = 3_000;
 
 async function measureProject(labels: Labels): Promise<AnalyticsEvents["project_opened"]> {
-  const [{ countUserLabeledFrames }, { PredictedInstance }, { inferTutorialStage }] =
+  const [{ countUserLabeledFrames }, io, { inferTutorialStage }, rawHdf5] =
     await Promise.all([
       import("@/stores/trainingStore"),
       import("@talmolab/sleap-io.js"),
       import("@/lib/diagnostics/collectDiagnostics"),
+      import("@/lib/rawHdf5Video"),
     ]);
   let predicted = 0;
   for (const frame of labels.labeledFrames ?? []) {
     for (const instance of frame.instances ?? []) {
-      if (instance instanceof PredictedInstance) predicted++;
+      if (instance instanceof io.PredictedInstance) predicted++;
     }
   }
   const counts: ProjectCounts = {
@@ -182,10 +269,17 @@ async function measureProject(labels: Labels): Promise<AnalyticsEvents["project_
     predictedInstanceCount: predicted,
     trackCount: labels.tracks?.length ?? 0,
   };
+  const knownClasses: KnownVideoBackendClasses = {
+    avi: [io.AviVideoBackend],
+    hdf5: [io.StreamingHdf5VideoBackend, rawHdf5.RawHdf5VideoBackend],
+    image: [io.ImageVideoBackend],
+    seq: [io.SeqVideoBackend],
+    media: [io.Mp4BoxVideoBackend, io.WorkerMp4BoxBackend, io.MediaBunnyVideoBackend],
+  };
   return projectOpenedProps(
     counts,
     inferTutorialStage(counts) as ProjectStage,
-    classifyVideoBackend(labels.videos as readonly { backend?: unknown }[] | undefined),
+    classifyVideoBackend(labels.videos as readonly VideoLike[] | undefined, knownClasses),
   );
 }
 
