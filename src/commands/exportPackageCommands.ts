@@ -61,7 +61,13 @@
  * `"all+suggestions"` alongside the io embed-fix dep bump (both land together).
  */
 
-import type { Labels, Video } from "@talmolab/sleap-io.js";
+import type {
+  Labels,
+  SlpVersion,
+  SlpWriteOptions,
+  Video,
+} from "@talmolab/sleap-io.js";
+import type { UnlabeledAs } from "@/lib/slpFormatStatus";
 import { ExportCancelled, saveSlpToBytes } from "@talmolab/sleap-io.js";
 import { loadSlp } from "@/lib/slpRead";
 import type { Command } from "./types";
@@ -273,6 +279,26 @@ export function packageImageParam(
   return normalizePackageImage(image.format, image.quality);
 }
 
+/**
+ * Extract explicit SLP layout options (`slpVersion` and `unlabeledAs`) from
+ * package command params. Leaves keys undefined when absent or `"auto"` so the
+ * default path writes identically to before.
+ */
+export function packageSlpFormatParam(
+  params: Record<string, unknown> | undefined,
+): { slpVersion?: SlpVersion; unlabeledAs?: UnlabeledAs } {
+  const rawVer = params?.slpVersion;
+  const slpVersion: SlpVersion | undefined =
+    rawVer === "v2" || rawVer === "v3" || rawVer === "auto" ? rawVer : undefined;
+  const rawUnlabeled = params?.unlabeledAs;
+  const unlabeledAs: UnlabeledAs | undefined =
+    slpVersion === "v2" &&
+    (rawUnlabeled === "absent" || rawUnlabeled === "error")
+      ? rawUnlabeled
+      : undefined;
+  return { slpVersion, unlabeledAs };
+}
+
 /** Is the streaming desktop write (worker + native file writes) available? */
 export async function canStreamPackage(): Promise<boolean> {
   return (
@@ -357,6 +383,10 @@ export async function exportLabelsPackage(
     suggestedName?: string;
     /** Frame format (default PNG, written exactly as before the option). */
     image?: PackageImageOptions;
+    /** Explicit SLP layout (`"auto"` / `"v2"` / `"v3"`). */
+    slpVersion?: SlpVersion;
+    /** How unlabeled points are handled when `slpVersion === "v2"`. */
+    unlabeledAs?: UnlabeledAs;
   } = {}
 ): Promise<string | null> {
   if (!labels) return null;
@@ -448,13 +478,22 @@ async function exportLabelsPackageNow(
   labels: Labels,
   filename: string | null,
   level: ExportPackageLevel,
-  options: { suggestedName?: string; image?: PackageImageOptions }
+  options: {
+    suggestedName?: string;
+    image?: PackageImageOptions;
+    slpVersion?: SlpVersion;
+    unlabeledAs?: UnlabeledAs;
+  }
 ): Promise<string | null> {
 
   const mode = embedModeForLevel(level);
   const image = options.image;
+  const slpVersion = options.slpVersion;
+  const unlabeledAs = slpVersion === "v2" ? options.unlabeledAs : undefined;
   const suggestedName = options.suggestedName ?? derivePackageFilename(filename);
   const filter = { name: "SLEAP Labels Package", ext: "slp" };
+  const labelsWithLayout = labels as unknown as { _slpLayout?: unknown };
+  const prevLayout = labelsWithLayout._slpLayout;
   try {
     // Restrict the package to the frames this level means (predicted-only frames
     // are dropped for user/training) BEFORE serializing — `embed` alone would
@@ -481,12 +520,15 @@ async function exportLabelsPackageNow(
         await prepareVideosForFrameReads(embedVideos);
         // Frames of local video files come from ffmpeg (native, all cores);
         // anything ffmpeg can't read is decoded and encoded in the app.
-        await saveEmbeddedPkgStreaming(exportLabels, destPath, null, {
+        const streamOpts = {
           embed: mode,
           onProgress,
           frameReader: ffmpegFrameReader(),
           image,
-        });
+          ...(slpVersion ? { slpVersion } : {}),
+          ...(unlabeledAs ? { unlabeledAs } : {}),
+        };
+        await saveEmbeddedPkgStreaming(exportLabels, destPath, null, streamOpts);
         // A video with no open decoder can't be embedded and stays a link.
         return embedVideos.some((v) => !v.backend);
       });
@@ -512,7 +554,14 @@ async function exportLabelsPackageNow(
       }
       const unembedded = await withEmbedProgress(false, async (onProgress) => {
         await prepareVideosForFrameReads(embedVideos);
-        await exportNewPkgOpfs(exportLabels, destHandle, { embed: mode, onProgress, image });
+        const opfsOpts = {
+          embed: mode,
+          onProgress,
+          image,
+          ...(slpVersion ? { slpVersion } : {}),
+          ...(unlabeledAs ? { unlabeledAs } : {}),
+        };
+        await exportNewPkgOpfs(exportLabels, destHandle, opfsOpts);
         return embedVideos.some((v) => !v.backend);
       });
       toastExported("Labels package exported", destHandle.name, false);
@@ -525,10 +574,10 @@ async function exportLabelsPackageNow(
     // save.
     const bytes = await withEmbedProgress(true, async (onProgress) => {
       await prepareVideosForFrameReads(embedVideos);
-      return saveSlpToBytes(
-        exportLabels,
-        withImageFormat({ embed: mode, onProgress }, image)
-      );
+      const writeOpts: SlpWriteOptions = withImageFormat({ embed: mode, onProgress }, image);
+      if (slpVersion) writeOpts.slpVersion = slpVersion;
+      if (unlabeledAs) writeOpts.unlabeledAs = unlabeledAs;
+      return saveSlpToBytes(exportLabels, writeOpts);
     });
     const saved = await saveBytesFile(bytes, suggestedName, filter);
     if (!saved) return null; // user cancelled the dialog/picker
@@ -559,6 +608,10 @@ async function exportLabelsPackageNow(
     toast.error("Failed to export labels package", { description: msg });
     console.error("[ExportLabelsPackage] Failed to export:", err);
     return null;
+  } finally {
+    // Exporting a package in an explicit layout (especially at level "full",
+    // where exportLabels === labels) must not alter the open project's layout.
+    labelsWithLayout._slpLayout = prevLayout;
   }
 }
 
@@ -569,6 +622,7 @@ export const ExportUserLabelsPackageCommand: Command = {
   async execute(ctx: CommandContext, params?: Record<string, unknown>) {
     await exportLabelsPackage(ctx.state.labels, ctx.state.filename, "user", {
       image: packageImageParam(params),
+      ...packageSlpFormatParam(params),
     });
   },
 };
@@ -580,6 +634,7 @@ export const ExportTrainingPackageCommand: Command = {
   async execute(ctx: CommandContext, params?: Record<string, unknown>) {
     await exportLabelsPackage(ctx.state.labels, ctx.state.filename, "training", {
       image: packageImageParam(params),
+      ...packageSlpFormatParam(params),
     });
   },
 };
@@ -591,6 +646,7 @@ export const ExportFullPackageCommand: Command = {
   async execute(ctx: CommandContext, params?: Record<string, unknown>) {
     await exportLabelsPackage(ctx.state.labels, ctx.state.filename, "full", {
       image: packageImageParam(params),
+      ...packageSlpFormatParam(params),
     });
   },
 };

@@ -38,7 +38,15 @@ import {
   refuseEditIfViewOnly,
   SlpOpenCancelled,
 } from "../../lib/slpAccess";
-import { summarizeMatch, type MatchPreview } from "../../lib/mergeProject";
+import {
+  describeSkeletonMergeDiff,
+  enumerateUnifiedConflicts,
+  summarizeMatch,
+  type MatchPreview,
+  type SkeletonMergeDiff,
+  type SkeletonMergeMode,
+} from "../../lib/mergeProject";
+import type { UnmappedNodeFill } from "@/lib/skeletonIO";
 import { getPlatform } from "../../platform/index";
 import { ConflictReview } from "./ConflictReview";
 import {
@@ -50,6 +58,7 @@ import {
   DialogFooter,
 } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
+import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
 import { Separator } from "@/components/ui/separator";
 import {
   Tooltip,
@@ -92,6 +101,9 @@ export function MergeProjectDialog() {
   const [donor, setDonor] = useState<Labels | null>(null);
   const [donorName, setDonorName] = useState("");
   const [preview, setPreview] = useState<MatchPreview | null>(null);
+  const [skeletonDiff, setSkeletonDiff] = useState<SkeletonMergeDiff | null>(null);
+  const [skeletonMode, setSkeletonMode] = useState<SkeletonMergeMode>("unify");
+  const [unmapped, setUnmapped] = useState<UnmappedNodeFill>("unlabeled");
   const [conflicts, setConflicts] = useState<Conflict[]>([]);
   const [defaultChoice, setDefaultChoice] = useState<ConflictChoice>("both");
   const [choices, setChoices] = useState<Record<string, ConflictChoice>>({});
@@ -112,6 +124,9 @@ export function MergeProjectDialog() {
     setDonor(null);
     setDonorName("");
     setPreview(null);
+    setSkeletonDiff(null);
+    setSkeletonMode("unify");
+    setUnmapped("unlabeled");
     setConflicts([]);
     setDefaultChoice("both");
     setChoices({});
@@ -150,13 +165,29 @@ export function MergeProjectDialog() {
         const match = await labels.match(donorLabels, MERGE_INTO_PROJECT_MATCHERS);
         if (stale()) return;
         const previewSummary = summarizeMatch(match);
+        const diff = describeSkeletonMergeDiff(labels, donorLabels, match);
+        const initialMode: SkeletonMergeMode = diff ? diff.defaultMode : "unify";
         setDonor(donorLabels);
         setPreview(previewSummary);
-        // Enumerate real per-instance conflicts (only meaningful if not blocked).
-        if (!previewSummary.skeletonBlocked) {
+        setSkeletonDiff(diff);
+        setSkeletonMode(initialMode);
+        setUnmapped("unlabeled");
+        // Enumerate real per-instance conflicts (for matching skeletons, or for
+        // a unified skeleton preview when reconciling differing skeletons).
+        if (!diff) {
           const found = await enumerateConflicts(labels, donorLabels);
           if (stale()) return;
           setConflicts(found);
+        } else if (diff.canUnify && initialMode === "unify") {
+          const found = await enumerateUnifiedConflicts(
+            labels,
+            donorLabels,
+            "unlabeled",
+          );
+          if (stale()) return;
+          setConflicts(found);
+        } else {
+          setConflicts([]);
         }
       } catch (e) {
         if (!stale()) setError(donorLoadError(e, sourceName(source)));
@@ -238,6 +269,22 @@ export function MergeProjectDialog() {
     }
   }, [open, seedPath, setSeedPath, startQueue]);
 
+  const handleSkeletonModeChange = useCallback(
+    async (nextMode: SkeletonMergeMode) => {
+      setSkeletonMode(nextMode);
+      setChoices({});
+      if (!labels || !donor || !skeletonDiff) return;
+      const seq = loadSeq.current;
+      if (nextMode === "unify" && skeletonDiff.canUnify) {
+        const found = await enumerateUnifiedConflicts(labels, donor, unmapped);
+        if (seq === loadSeq.current) setConflicts(found);
+      } else {
+        setConflicts([]);
+      }
+    },
+    [labels, donor, skeletonDiff, unmapped],
+  );
+
   const handleMerge = useCallback(async () => {
     if (!donor) return;
     setBusy("merging");
@@ -249,6 +296,9 @@ export function MergeProjectDialog() {
       await commandContext.execute(MergeConflictsCommand, {
         other: donor,
         resolutions,
+        skeletonMode: skeletonDiff ? skeletonMode : undefined,
+        unmapped:
+          skeletonDiff && skeletonMode === "unify" ? unmapped : undefined,
       });
       setBusy(null);
       await advance();
@@ -256,12 +306,20 @@ export function MergeProjectDialog() {
       setError(errMsg(e));
       setBusy(null);
     }
-  }, [donor, conflicts, choices, defaultChoice, advance]);
+  }, [
+    donor,
+    conflicts,
+    choices,
+    defaultChoice,
+    skeletonDiff,
+    skeletonMode,
+    unmapped,
+    advance,
+  ]);
 
-  const blocked = preview?.skeletonBlocked ?? false;
   const multi = queue.length > 1;
   const isLast = queuePos >= queue.length - 1;
-  const canMerge = !!donor && !blocked && busy === null;
+  const canMerge = !!donor && busy === null;
   const hasConflicts = conflicts.length > 0;
   const stats = useMemo(
     () => (donor ? mergeStats(donor, conflicts) : null),
@@ -331,8 +389,13 @@ export function MergeProjectDialog() {
               />
               <PreviewRow
                 label="Skeleton"
-                text={preview.skeletonBlocked ? "⚠ differs" : "✓ matches"}
-                warn={preview.skeletonBlocked}
+                text={preview.skeletonDiffers ? "⚠ differs" : "✓ matches"}
+                detail={
+                  skeletonDiff?.canUnify
+                    ? `${skeletonDiff.sharedNodes.length} shared · ${skeletonDiff.baseOnlyNodes.length} base-only · ${skeletonDiff.donorOnlyNodes.length} incoming-only`
+                    : undefined
+                }
+                warn={preview.skeletonDiffers}
               />
               <PreviewRow
                 label="Tracks"
@@ -342,14 +405,109 @@ export function MergeProjectDialog() {
           </>
         )}
 
-        {blocked && (
-          <p className="text-sm text-red-600 dark:text-red-400">
-            The incoming file's skeleton doesn't match this project's, so it can't
-            be merged. Open it as its own project, or reconcile the skeletons first.
-          </p>
+        {skeletonDiff && (
+          <>
+            <Separator />
+            <div
+              className="space-y-2.5 text-xs"
+              data-testid="merge-skeleton-reconciliation"
+            >
+              <div className="font-medium text-foreground">
+                Skeleton reconciliation
+              </div>
+              <RadioGroup
+                value={skeletonMode}
+                onValueChange={(v) =>
+                  void handleSkeletonModeChange(v as SkeletonMergeMode)
+                }
+                className="space-y-1.5"
+                aria-label="Skeleton merge mode"
+              >
+                {skeletonDiff.canUnify && (
+                  <label
+                    htmlFor="merge-skel-unify"
+                    className="flex items-start gap-2 cursor-pointer"
+                  >
+                    <RadioGroupItem
+                      value="unify"
+                      id="merge-skel-unify"
+                      className="mt-0.5"
+                    />
+                    <div>
+                      <div className="font-medium text-foreground">
+                        Unify skeletons (union of {skeletonDiff.unionNodeCount}{" "}
+                        {skeletonDiff.unionNodeCount === 1 ? "node" : "nodes"})
+                      </div>
+                      <div className="text-muted-foreground">
+                        Combines both skeletons into one and remaps instances by
+                        node name.
+                      </div>
+                    </div>
+                  </label>
+                )}
+                <label
+                  htmlFor="merge-skel-separate"
+                  className="flex items-start gap-2 cursor-pointer"
+                >
+                  <RadioGroupItem
+                    value="separate"
+                    id="merge-skel-separate"
+                    className="mt-0.5"
+                  />
+                  <div>
+                    <div className="font-medium text-foreground">
+                      Keep as separate skeletons
+                    </div>
+                    <div className="text-muted-foreground">
+                      Adds the incoming skeleton alongside this project&apos;s
+                      (multi-skeleton project).
+                    </div>
+                  </div>
+                </label>
+              </RadioGroup>
+
+              {skeletonDiff.canUnify && skeletonMode === "unify" && (
+                <div
+                  className="space-y-1.5 rounded-md border border-border/60 bg-muted/30 p-2.5"
+                  data-testid="merge-skeleton-unmapped"
+                >
+                  <div className="font-medium text-foreground">
+                    Nodes missing from one side
+                  </div>
+                  <RadioGroup
+                    value={unmapped}
+                    onValueChange={(v) => setUnmapped(v as UnmappedNodeFill)}
+                    className="space-y-1"
+                    aria-label="Unmapped merge nodes"
+                  >
+                    <label
+                      htmlFor="merge-unmapped-unlabeled"
+                      className="flex items-center gap-2 cursor-pointer"
+                    >
+                      <RadioGroupItem
+                        value="unlabeled"
+                        id="merge-unmapped-unlabeled"
+                      />
+                      <span>Mark as Unlabeled (SLP 3.0)</span>
+                    </label>
+                    <label
+                      htmlFor="merge-unmapped-absent"
+                      className="flex items-center gap-2 cursor-pointer"
+                    >
+                      <RadioGroupItem
+                        value="absent"
+                        id="merge-unmapped-absent"
+                      />
+                      <span>Mark as Absent (SLP 2.x)</span>
+                    </label>
+                  </RadioGroup>
+                </div>
+              )}
+            </div>
+          </>
         )}
 
-        {preview && !blocked && (
+        {preview && (
           <>
             <Separator />
             {hasConflicts && stats ? (

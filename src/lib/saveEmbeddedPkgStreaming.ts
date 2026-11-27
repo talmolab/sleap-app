@@ -49,6 +49,7 @@ import {
   type SlpWriteOptions,
   type AppendEncodedVideosOptions,
 } from "@talmolab/sleap-io.js";
+import type { UnlabeledAs } from "@/lib/slpFormatStatus";
 import {
   withNativeWriteHandle,
   writeOpen,
@@ -93,6 +94,9 @@ export interface SaveEmbeddedPkgStreamingOptions {
   /** Target SLP layout for the structure write (`"auto"` by default, preserving
    * format 3.0 natively; `"v2"` writes an explicit 2.x copy for legacy tools). */
   slpVersion?: SlpVersion;
+  /** How to handle unlabeled points when writing the 2.x layout (`"absent"` or
+   * `"error"`). Ignored unless `slpVersion === "v2"`. */
+  unlabeledAs?: UnlabeledAs;
 }
 
 /** Fresh, collision-resistant random suffix for a temp file name. */
@@ -351,9 +355,11 @@ async function saveEmbeddedPkgStreamingNow(
       // embedded image data. Small (KB-MB), so writing it whole to a byte
       // buffer first (rather than streaming) is fine.
       const baseStructureOpts = withImageFormat({ embed: embedMode }, options?.image);
-      const structureOpts =
+      const structureOpts: SlpWriteOptions =
         options?.slpVersion === "v2"
-          ? legacyV2WriteOptions(baseStructureOpts)
+          ? options.unlabeledAs
+            ? { ...baseStructureOpts, slpVersion: "v2", unlabeledAs: options.unlabeledAs }
+            : legacyV2WriteOptions(baseStructureOpts)
           : options?.slpVersion
             ? { ...baseStructureOpts, slpVersion: options.slpVersion }
             : baseStructureOpts;

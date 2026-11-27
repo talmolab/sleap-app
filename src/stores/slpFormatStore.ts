@@ -11,12 +11,20 @@
  * - `merge`: the same, for a file merged into the open project.
  * - `allow-edit`: a view-only project is about to be made editable (from the
  *   banner, or when the user saves or exports it). Shows the same list.
+ * - `upgrade-on-save`: an existing on-disk SLP 2.x file now contains SLP 3.0
+ *   features (unlabeled nodes or metadata) and is about to be overwritten.
+ *   Asks once whether to save as SLP 3.0, Save As a new file, or export a 2.x
+ *   copy instead.
+ *
+ * Also holds the open state of the `SaveSlpCopyDialog` (`File ▸ Export ▸ SLP
+ * Copy…` and the StatusBar format popover) so format-lifecycle UI does not
+ * require coupling into `appStore`.
  *
  * Promise-based like {@link import("@/stores/choiceStore").choiceDialog}: one
  * prompt at a time; a new one supersedes a pending one (answered `null`).
  */
 import { create } from "zustand";
-import type { Format3Summary } from "@talmolab/sleap-io.js";
+import type { Format3Summary, SlpVersion } from "@talmolab/sleap-io.js";
 import type { AllowEditAction } from "@/lib/slpAccess";
 
 export type SlpFormatPrompt =
@@ -42,10 +50,27 @@ export type SlpFormatPrompt =
       summary: Format3Summary;
       /** What the user was doing when asked, if anything. */
       action?: AllowEditAction;
+    }
+  | {
+      kind: "upgrade-on-save";
+      fileName: string;
+      summary: Format3Summary;
     };
 
-/** `view`/`keep` (or `edit`) for the open choice, `keep`/`edit` to merge or allow editing, `ok` to dismiss a refusal. */
-export type SlpFormatAnswer = "view" | "keep" | "edit" | "ok" | null;
+/**
+ * `view`/`keep` (or `edit`) for the open choice, `keep`/`edit` to merge or
+ * allow editing, `ok` to dismiss a refusal, or `upgrade-v3`/`save-as`/
+ * `export-v2` for the one-time 2.x -> 3.0 overwrite confirmation.
+ */
+export type SlpFormatAnswer =
+  | "view"
+  | "keep"
+  | "edit"
+  | "ok"
+  | "upgrade-v3"
+  | "save-as"
+  | "export-v2"
+  | null;
 
 interface SlpFormatStore {
   prompt: SlpFormatPrompt | null;
@@ -55,9 +80,15 @@ interface SlpFormatStore {
    * Environment section.
    */
   welcomeEnvironmentRequestSeq: number;
+  /** Open state for the `File ▸ Export ▸ SLP Copy…` dialog. */
+  saveSlpCopyDialogOpen: boolean;
+  /** Initial target layout when `SaveSlpCopyDialog` opens. */
+  saveSlpCopyInitialVersion: SlpVersion;
   ask: (prompt: SlpFormatPrompt) => Promise<SlpFormatAnswer>;
   respond: (answer: SlpFormatAnswer) => void;
   requestWelcomeEnvironment: () => void;
+  openSaveSlpCopyDialog: (initialVersion?: SlpVersion) => void;
+  setSaveSlpCopyDialogOpen: (open: boolean) => void;
 }
 
 let resolver: ((answer: SlpFormatAnswer) => void) | null = null;
@@ -65,6 +96,8 @@ let resolver: ((answer: SlpFormatAnswer) => void) | null = null;
 export const useSlpFormatStore = create<SlpFormatStore>((set) => ({
   prompt: null,
   welcomeEnvironmentRequestSeq: 0,
+  saveSlpCopyDialogOpen: false,
+  saveSlpCopyInitialVersion: "auto",
   ask: (prompt) =>
     new Promise<SlpFormatAnswer>((resolve) => {
       resolver?.(null);
@@ -81,6 +114,12 @@ export const useSlpFormatStore = create<SlpFormatStore>((set) => ({
     set((s) => ({
       welcomeEnvironmentRequestSeq: s.welcomeEnvironmentRequestSeq + 1,
     })),
+  openSaveSlpCopyDialog: (initialVersion = "auto") =>
+    set({
+      saveSlpCopyDialogOpen: true,
+      saveSlpCopyInitialVersion: initialVersion,
+    }),
+  setSaveSlpCopyDialogOpen: (open) => set({ saveSlpCopyDialogOpen: open }),
 }));
 
 /** Show an SLP format prompt; resolves the answer, or null on Cancel / dismiss. */

@@ -35,7 +35,13 @@ import {
   buildSerializableEmbedPlan,
   appendEncodedVideos,
 } from "@talmolab/sleap-io.js";
-import type { EmbedOption, Labels, SlpWriteOptions } from "@talmolab/sleap-io.js";
+import type {
+  EmbedOption,
+  Labels,
+  SlpVersion,
+  SlpWriteOptions,
+} from "@talmolab/sleap-io.js";
+import type { UnlabeledAs } from "@/lib/slpFormatStatus";
 import { withImageFormat, type PackageImageOptions } from "@/lib/packageImageFormat";
 
 // Same derivation as loadProject.ts / saveEmbeddedPkgStreaming.ts: h5wasm served
@@ -96,7 +102,8 @@ export async function saveEmbeddedPkgOpfs(
   labels: Labels,
   source: FileSystemFileHandle | File,
   destHandle: FileSystemFileHandle,
-  onProgress?: (done: number, total: number) => void
+  onProgress?: (done: number, total: number) => void,
+  formatOptions?: { slpVersion?: SlpVersion; unlabeledAs?: UnlabeledAs }
 ): Promise<string> {
   // Re-read the source FRESH: a File snapshot captured at open time may be stale
   // by now (the native Save dialog stole focus, time elapsed, or it lives on a
@@ -106,7 +113,12 @@ export async function saveEmbeddedPkgOpfs(
   const sourceFile = "getFile" in source ? await source.getFile() : source;
 
   // 1. Small structure (labels/metadata, no embedded images).
-  const structureBytes = await saveSlpStructureToBytes(labels, { embed: false });
+  const structureOpts: SlpWriteOptions = { embed: false };
+  if (formatOptions?.slpVersion) structureOpts.slpVersion = formatOptions.slpVersion;
+  if (formatOptions?.slpVersion === "v2" && formatOptions?.unlabeledAs) {
+    structureOpts.unlabeledAs = formatOptions.unlabeledAs;
+  }
+  const structureBytes = await saveSlpStructureToBytes(labels, structureOpts);
 
   // Plan the raw-copy of already-embedded images. Throws if any video would need
   // the encode (new-embed) path — out of scope for this re-save writer.
@@ -165,12 +177,19 @@ export async function exportNewPkgOpfs(
     onProgress?: SlpWriteOptions["onProgress"];
     /** The package's frame format; absent or PNG writes as before. */
     image?: PackageImageOptions;
+    /** Target SLP layout (`"auto"` / `"v2"` / `"v3"`). */
+    slpVersion?: SlpVersion;
+    /** How unlabeled points are handled when `slpVersion === "v2"`. */
+    unlabeledAs?: UnlabeledAs;
   }
 ): Promise<string> {
-  const structureBytes = await saveSlpStructureToBytes(
-    labels,
-    withImageFormat({ embed: options.embed }, options.image)
-  );
+  const baseStructureOpts = withImageFormat({ embed: options.embed }, options.image);
+  const structureOpts: SlpWriteOptions = { ...baseStructureOpts };
+  if (options.slpVersion) structureOpts.slpVersion = options.slpVersion;
+  if (options.slpVersion === "v2" && options.unlabeledAs) {
+    structureOpts.unlabeledAs = options.unlabeledAs;
+  }
+  const structureBytes = await saveSlpStructureToBytes(labels, structureOpts);
   const plan = await buildSerializableEmbedPlan(
     labels,
     options.embed,

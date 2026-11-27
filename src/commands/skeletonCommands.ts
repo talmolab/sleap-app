@@ -15,7 +15,7 @@ import {
   SKELETON_TEMPLATES,
   type SkeletonTemplate,
 } from "../lib/skeletonTemplates";
-import { remapInstancePoints } from "../lib/skeletonIO";
+import { remapInstancePoints, type UnmappedNodeFill } from "../lib/skeletonIO";
 import { dirtyFrameTracker } from "../lib/autosaveDirty";
 import { sameSkeletonStructure } from "../lib/skeletonStructure";
 import { copyPoint } from "@/lib/slpFormat";
@@ -68,6 +68,21 @@ export function instanceUsesSkeleton(
 ): boolean {
   if (!labels || labels.skeletons.length <= 1) return true;
   return inst.skeleton === skeleton;
+}
+
+/** Count existing instances in `labels` that belong to `skeleton`. */
+export function countInstancesForSkeleton(
+  labels: Labels | null,
+  skeleton: Skeleton | null,
+): number {
+  if (!labels || !skeleton) return 0;
+  let count = 0;
+  for (const lf of labels.labeledFrames) {
+    for (const inst of lf.instances) {
+      if (instanceUsesSkeleton(labels, inst, skeleton)) count += 1;
+    }
+  }
+  return count;
 }
 
 /**
@@ -227,7 +242,7 @@ function restoreSkeletonSnapshot(
  * Also adds a corresponding NaN point to every existing instance so that
  * point arrays stay aligned with the skeleton node list.
  *
- * Params: { name: string }
+ * Params: { name: string, unmapped?: "unlabeled" | "absent" }
  */
 export const AddNodeCommand: Command = {
   name: "AddNode",
@@ -239,6 +254,8 @@ export const AddNodeCommand: Command = {
 
     const name = params?.name as string | undefined;
     if (!name?.trim()) return;
+    const unmapped: UnmappedNodeFill =
+      params?.unmapped === "unlabeled" ? "unlabeled" : "absent";
 
     // Snapshot before mutation
     const before = beginSkeletonEdit(ctx);
@@ -294,15 +311,22 @@ export const AddNodeCommand: Command = {
           // columnar-backed snapshot array, so an in-place `.push()` is dropped.
           // Element writes go through proxies, but structural changes must set
           // `inst.points` to a fresh array.
-          inst.points = [
-            ...inst.points.map(clonePoint),
-            {
-              xy: [NaN, NaN] as [number, number],
-              visible: false,
-              complete: false,
-              name: newNode.name,
-            },
-          ];
+          const addedPoint =
+            unmapped === "unlabeled"
+              ? {
+                  xy: [NaN, NaN] as [number, number],
+                  visible: false,
+                  complete: false,
+                  labeled: false,
+                  name: newNode.name,
+                }
+              : {
+                  xy: [NaN, NaN] as [number, number],
+                  visible: false,
+                  complete: false,
+                  name: newNode.name,
+                };
+          inst.points = [...inst.points.map(clonePoint), addedPoint];
         }
       }
     }
@@ -607,6 +631,8 @@ export const LoadSkeletonTemplateCommand: Command = {
  * Params:
  *   - `newSkeleton: Skeleton`  — the parsed skeleton to import.
  *   - `linkMap?: Map<string,string>` — newName → oldName explicit links (rename).
+ *   - `unmapped?: "unlabeled" | "absent"` — how newly added (unlinked) nodes are
+ *     populated on existing instances (default `"absent"`).
  */
 export const OpenSkeletonCommand: Command = {
   name: "OpenSkeleton",
@@ -620,6 +646,8 @@ export const OpenSkeletonCommand: Command = {
     if (!newSkeleton) return;
     const linkMap =
       (params?.linkMap as Map<string, string> | undefined) ?? new Map();
+    const unmapped: UnmappedNodeFill =
+      params?.unmapped === "unlabeled" ? "unlabeled" : "absent";
 
     const before = beginSkeletonEdit(ctx);
 
@@ -666,7 +694,7 @@ export const OpenSkeletonCommand: Command = {
     for (const lf of labels.labeledFrames) {
       for (const inst of lf.instances) {
         if (!instanceUsesSkeleton(labels, inst, skeleton)) continue;
-        inst.points = remapInstancePoints(inst, oldNodes, newNodes, linkMap);
+        inst.points = remapInstancePoints(inst, oldNodes, newNodes, linkMap, unmapped);
         inst.skeleton = skeleton;
       }
     }
@@ -775,14 +803,32 @@ function storeSkeletonUndo(
  * Used by the skeleton undo interceptor.
  */
 const skeletonUndoMap = new WeakMap<object, SkeletonSnapshot>();
+const installedUndoContexts = new WeakSet<CommandContext>();
+
+/**
+ * Attach a pre-mutation skeleton snapshot to an existing `CommandContext`
+ * undo snapshot (e.g. for `MergeConflictsCommand` when unifying skeletons in
+ * place). Ensures the skeleton undo/redo interceptor is installed on `ctx`.
+ */
+export function attachSkeletonUndoToSnapshot(
+  ctx: CommandContext,
+  snapshot: object,
+  skeleton: Skeleton | null = ctx.state.skeleton,
+): void {
+  installSkeletonUndoInterceptor(ctx);
+  skeletonUndoMap.set(snapshot, takeSkeletonSnapshot(ctx, skeleton));
+}
 
 /**
  * Install a skeleton-aware undo/redo interceptor on the CommandContext.
  *
- * This wraps the undo() and redo() methods to also restore skeleton state
- * when skeleton-related commands are undone/redone.
+ * Idempotent per `CommandContext`: wraps `undo()` and `redo()` at most once
+ * so commands that mutate skeleton structure in place can safely ensure it is
+ * installed even before `SkeletonPanel` mounts.
  */
 export function installSkeletonUndoInterceptor(ctx: CommandContext): void {
+  if (installedUndoContexts.has(ctx)) return;
+  installedUndoContexts.add(ctx);
   const originalUndo = ctx.undo.bind(ctx);
   const originalRedo = ctx.redo.bind(ctx);
 
