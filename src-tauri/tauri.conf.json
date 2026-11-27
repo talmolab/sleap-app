@@ -44,7 +44,18 @@
         ],
         "name": "SLEAP Project",
         "description": "SLEAP labeling project",
-        "role": "Editor"
+        "role": "Editor",
+        "rank": "Owner",
+        "contentTypes": [
+          "org.sleap.slp"
+        ],
+        "exportedType": {
+          "identifier": "org.sleap.slp",
+          "conformsTo": [
+            "public.data",
+            "public.content"
+          ]
+        }
       }
     ],
     "createUpdaterArtifacts": true,

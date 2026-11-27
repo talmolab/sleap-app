@@ -8,6 +8,7 @@ dist/
 # No trailing slash: also ignores a stray `target` symlink/file, not just the dir
 # (a self-referential `src-tauri/target` symlink was once committed by mistake).
 src-tauri/target
+src-tauri/macos/quicklook/slp-ql-core/target
 src-tauri/gen/schemas
 
 # Environment and secrets

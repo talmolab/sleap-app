@@ -16,7 +16,11 @@
  * the image source. Only the pure path derivation is unit-tested; the OPFS
  * read/write leaves are manual-E2E-verified (happy-dom has no OPFS).
  */
-import { saveSlpStructureToBytes, type Labels } from "@talmolab/sleap-io.js";
+import {
+  saveSlpStructureToBytes,
+  type Labels,
+  type SlpWriteOptions,
+} from "@talmolab/sleap-io.js";
 import { type JournalStore, baseBakPath } from "@/lib/incrementalAutosave";
 
 /**
@@ -44,7 +48,8 @@ export function newDraftPath(projectName?: string): string {
 
 /** Serialize the current labels as a bare-bones (imageless) `.slp` — the draft. */
 export async function serializeLabelsDraft(labels: Labels): Promise<Uint8Array> {
-  return saveSlpStructureToBytes(labels, { embed: false });
+  const opts = { embed: false, preview: false } as SlpWriteOptions;
+  return saveSlpStructureToBytes(labels, opts);
 }
 
 /**

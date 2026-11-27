@@ -26,6 +26,7 @@ import {
   tempPathFor,
 } from "@/lib/saveEmbeddedPkgStreaming";
 import { saveLabelsInPlace } from "@/lib/saveLabelsInPlace";
+import { ensureProjectPreviewFrame } from "@/lib/previewCapture";
 import {
   shouldStreamEmbeddedSave,
   decideBrowserSaveAction,
@@ -105,6 +106,10 @@ async function saveBrowserInMemory(
   forceDialog: boolean
 ): Promise<InMemorySaveResult | null> {
   const store = useAppStore.getState();
+  await ensureProjectPreviewFrame(labels, {
+    currentVideo: store.video,
+    currentFrameIdx: store.frameIdx,
+  });
   const bytes = await saveSlpToBytes(labels);
   const blob = new Blob([bytes], { type: "application/octet-stream" });
 
@@ -372,6 +377,12 @@ export async function saveProjectAsSlp(
             await saveEmbeddedPkgStreaming(labels, existingPath, sourcePath);
           } else {
             console.log(`[save] Saving via in-memory backend (Tauri, in-place): ${existingPath}`);
+            if (!hasEmbeddedImages) {
+              await ensureProjectPreviewFrame(labels, {
+                currentVideo: store.video,
+                currentFrameIdx: store.frameIdx,
+              });
+            }
             const bytes = await saveSlpToBytes(labels);
             if (hasEmbeddedImages) {
               // Never truncate the embedded original in place — write+rename atomically.
@@ -399,6 +410,12 @@ export async function saveProjectAsSlp(
           await saveEmbeddedPkgStreaming(labels, savePath, sourcePath);
         } else {
           console.log(`[save] Saving via in-memory backend (Tauri, Save As): ${savePath}`);
+          if (!hasEmbeddedImages) {
+            await ensureProjectPreviewFrame(labels, {
+              currentVideo: store.video,
+              currentFrameIdx: store.frameIdx,
+            });
+          }
           const bytes = await saveSlpToBytes(labels);
           if (hasEmbeddedImages) {
             // Never truncate an embedded destination in place — write+rename atomically.
@@ -685,6 +702,12 @@ export async function saveSlpCopy(
           unlabeledAs,
         });
       } else {
+        if (!hasEmbeddedImages) {
+          await ensureProjectPreviewFrame(labels, {
+            currentVideo: store.video,
+            currentFrameIdx: store.frameIdx,
+          });
+        }
         const bytes = await saveSlpToBytes(labels, writeOpts);
         if (hasEmbeddedImages) {
           await writeSlpBytesAtomic(platform, savePath, bytes);
@@ -730,6 +753,12 @@ export async function saveSlpCopy(
     }
 
     store.setLoading(true, "Exporting SLP copy...");
+    if (!hasEmbeddedImages) {
+      await ensureProjectPreviewFrame(labels, {
+        currentVideo: store.video,
+        currentFrameIdx: store.frameIdx,
+      });
+    }
     const bytes = await saveSlpToBytes(labels, writeOpts);
     const blob = new Blob([bytes], { type: "application/octet-stream" });
 

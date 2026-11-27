@@ -1,0 +1,25 @@
+[package]
+name = "slp-ql-core"
+version = "0.1.0"
+edition = "2021"
+description = "Pure-Rust HDF5 reader for SLEAP .slp Quick Look previews"
+
+[lib]
+name = "slp_ql_core"
+crate-type = ["staticlib", "rlib"]
+
+[[bin]]
+name = "slp-inspect"
+path = "src/bin/inspect.rs"
+
+[dependencies]
+# Pure-Rust HDF5 decoder — no C dependencies, no rayon threadpool overhead in appex
+hdf5-reader = { version = "0.13.0", default-features = false, features = ["lz4"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+
+[profile.release]
+opt-level = "s"
+lto = true
+codegen-units = 1
+strip = "debuginfo"
