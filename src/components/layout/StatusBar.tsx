@@ -3,12 +3,18 @@
  * Includes UI scale controls on the right side.
  */
 
-import { useMemo } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { PredictedInstance } from "@talmolab/sleap-io.js";
 import { useAppStore } from "../../stores/appStore";
+import { useSlpAccessNonce, useSlpFormatStore } from "@/stores/slpFormatStore";
 import { Badge } from "@/components/ui/badge";
 import { Separator } from "@/components/ui/separator";
 import { Button } from "@/components/ui/button";
+import {
+  Popover,
+  PopoverContent,
+  PopoverTrigger,
+} from "@/components/ui/popover";
 import {
   Tooltip,
   TooltipContent,
@@ -18,8 +24,14 @@ import {
 import { Crosshair, Minus, Pencil, Plus } from "lucide-react";
 import { isTauri } from "../../platform/index";
 import { computeStatusStats, formatLabeledCount, instancesToShowCount } from "@/lib/statusStats";
+import {
+  describeFormat3Features,
+  inspectProjectFormat,
+  maybeNotifyFormat3Upgrade,
+} from "@/lib/slpFormatStatus";
 import { useShortcut } from "@/lib/shortcutPrefs";
 import { formatShortcut } from "@/lib/formatShortcut";
+import { cn } from "@/lib/utils";
 
 export function StatusBar() {
   const filename = useAppStore((s) => s.filename);
@@ -40,8 +52,27 @@ export function StatusBar() {
   const frameRange = useAppStore((s) => s.frameRange);
   const labelingMode = useAppStore((s) => s.labelingMode);
   const showInstances = useAppStore((s) => s.showInstances);
+  const slpAccessNonce = useSlpAccessNonce((s) => s.nonce);
+  const [formatPopoverOpen, setFormatPopoverOpen] = useState(false);
 
   const platformLabel = isTauri ? "Tauri FS" : "Browser";
+
+  // Live SLP format status (SLP 2.x vs SLP 3.0 vs pending upgrade). Keyed on
+  // edits, dirty flag, and format access changes — NOT frameIdx — so frame
+  // stepping never re-scans the project.
+  const formatStatus = useMemo(
+    () => inspectProjectFormat(labels),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [labels, editSeq, hasChanges, slpAccessNonce]
+  );
+
+  // One-time non-blocking info toast when a 2.x project first acquires
+  // SLP 3.0-only data during an editing session.
+  useEffect(() => {
+    if (labels && formatStatus?.pendingUpgradeFromV2) {
+      maybeNotifyFormat3Upgrade(labels, formatStatus);
+    }
+  }, [labels, formatStatus]);
 
   // videoRevision dep: a deferred backend opening corrects video.shape[0] to the
   // true source count; re-read it so the status bar shows the real frame total.
@@ -185,9 +216,99 @@ export function StatusBar() {
         )}
       </div>
 
-      {/* Right: platform indicator, interaction mode + UI scale controls */}
+      {/* Right: format status pill, platform indicator, interaction mode + UI scale controls */}
       <TooltipProvider delayDuration={300}>
         <div className="flex items-center gap-0.5 shrink-0">
+          {filename && formatStatus && (
+            <>
+              <Popover open={formatPopoverOpen} onOpenChange={setFormatPopoverOpen}>
+                <PopoverTrigger asChild>
+                  <button
+                    type="button"
+                    data-testid="status-slp-format-pill"
+                    title="View SLP file format details and export options"
+                    className={cn(
+                      "inline-flex items-center h-4 px-1.5 rounded-sm border text-[10px] font-normal leading-none whitespace-nowrap cursor-pointer transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
+                      formatStatus.pendingUpgradeFromV2 || formatStatus.viewOnly
+                        ? "border-amber-500/60 bg-amber-500/10 text-amber-600 dark:text-amber-400 hover:bg-amber-500/20"
+                        : formatStatus.willWriteFormat3
+                          ? "border-sky-500/50 bg-sky-500/10 text-sky-700 dark:text-sky-300 hover:bg-sky-500/20"
+                          : "border-border text-muted-foreground hover:text-foreground hover:bg-accent"
+                    )}
+                  >
+                    {formatStatus.pillLabel}
+                  </button>
+                </PopoverTrigger>
+                <PopoverContent
+                  side="top"
+                  align="end"
+                  className="w-80 p-3 text-xs space-y-2.5"
+                  data-testid="status-slp-format-popover"
+                >
+                  <div className="space-y-0.5">
+                    <div className="font-medium text-foreground">
+                      {formatStatus.pillLabel}
+                    </div>
+                    <p className="text-muted-foreground">
+                      {formatStatus.viewOnly
+                        ? "Opened View only. Nothing is written until you allow editing."
+                        : formatStatus.pendingUpgradeFromV2
+                          ? "Opened from SLP 2.x; saving will upgrade this project to SLP 3.0."
+                          : formatStatus.willWriteFormat3
+                            ? "Project saves in SLP format 3.0."
+                            : "Project saves in the SLP 2.x layout."}
+                    </p>
+                  </div>
+
+                  <Separator />
+
+                  <div className="space-y-1">
+                    <div className="font-medium text-foreground">
+                      SLP 3.0 features in project
+                    </div>
+                    {(() => {
+                      const features = describeFormat3Features(formatStatus.summary);
+                      if (features.length === 0) {
+                        return (
+                          <p className="text-muted-foreground">
+                            None (no unlabeled nodes, metadata, or carried columns).
+                          </p>
+                        );
+                      }
+                      return (
+                        <ul className="list-disc pl-4 space-y-0.5 text-muted-foreground">
+                          {features.map((f) => (
+                            <li key={f}>{f}</li>
+                          ))}
+                        </ul>
+                      );
+                    })()}
+                  </div>
+
+                  <p className="text-[11px] text-muted-foreground leading-snug">
+                    SLP 2.x opens in SLEAP 1.x and all sleap-io versions. SLP 3.0 requires
+                    SLEAP 0.2+ or sleap-io &gt;= 0.10.
+                  </p>
+
+                  <div className="flex justify-end pt-0.5">
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="xs"
+                      data-testid="status-export-slp-copy"
+                      onClick={() => {
+                        setFormatPopoverOpen(false);
+                        useSlpFormatStore.getState().openSaveSlpCopyDialog("auto");
+                      }}
+                    >
+                      Export SLP Copy…
+                    </Button>
+                  </div>
+                </PopoverContent>
+              </Popover>
+              <Separator orientation="vertical" className="h-3.5 mx-0.5" />
+            </>
+          )}
           <Tooltip>
             <TooltipTrigger asChild>
               <Badge

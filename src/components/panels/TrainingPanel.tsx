@@ -28,6 +28,7 @@ import { ErrorOutput } from "@/components/monitors/ErrorOutput";
 import { DryRunResult } from "@/components/panels/DryRunResult";
 import { BboxTrainingFields } from "@/components/panels/BboxTrainingFields";
 import { useAppStore } from "@/stores/appStore";
+import { useEnvironmentStore } from "@/stores/environmentStore";
 import { isTauri } from "@/platform/index";
 import { getBaselineProfilesForHead, slotToHeadType } from "@/lib/trainingProfiles";
 import { computeInstanceSizeStats, hasUserLabeledInstances, recommendBackboneProfile, recommendCentroidScale, resolveEffectiveCropSize, detectVideoChannels, estimateHeadGpuMemory, estimateHeadCacheMemory, formatBytes, formatParamCount, type GpuMemoryLevel } from "@/lib/modelStats";
@@ -350,6 +351,8 @@ function ConfigSlot({
 
   const headType = slotToHeadType(modelType, slot);
   const baselineProfiles = getBaselineProfilesForHead(headType);
+  const sleapNnExtras = useEnvironmentStore((s) => s.extras);
+  const backbonesMissing = sleapNnExtras !== null && !sleapNnExtras.backbones;
   const forThisHead = discoveredModels.filter((m) => headTypeMatches(headType, m));
 
   // Which dropdown item the current configFile actually corresponds to — a
@@ -430,11 +433,19 @@ function ConfigSlot({
             <SelectValue placeholder="Select training config file..." />
           </SelectTrigger>
           <SelectContent>
-            {baselineProfiles.map((p) => (
-              <SelectItem key={p.filename} value={p.filename}>
-                {p.label}
-              </SelectItem>
-            ))}
+            {baselineProfiles.map((p) => {
+              const needsBackbones = Boolean(p.requiresBackbones) && backbonesMissing;
+              return (
+                <SelectItem
+                  key={p.filename}
+                  value={p.filename}
+                  disabled={needsBackbones && configFile?.filename !== p.filename}
+                >
+                  {p.label}
+                  {needsBackbones ? " (install Pretrained backbones extra)" : ""}
+                </SelectItem>
+              );
+            })}
             {forThisHead.map((run) => (
               <SelectItem key={run.path} value={run.path}>
                 [Trained] {run.runName ?? run.path}

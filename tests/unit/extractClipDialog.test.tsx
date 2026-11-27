@@ -5,10 +5,9 @@
  * the options to the command. Without a range, Extract is disabled. The
  * package variant offers the frame format, as Export Labels Package does.
  */
-import { describe, it, expect, beforeEach, afterEach, vi } from "../bun-test";
+import { describe, it, expect, beforeEach, vi } from "../bun-test";
 import { render, screen, fireEvent, waitFor } from "@testing-library/react";
 import { useAppStore } from "@/stores/appStore";
-import { __setJpegFramesSupported } from "@/lib/slpFormatCompat";
 
 const events: Array<{ name: string; params?: unknown; dialogOpen: unknown }> = [];
 vi.mock("@/commands/CommandContext", () => ({
@@ -38,7 +37,6 @@ beforeEach(() => {
     packageJpegQuality: 95,
   });
 });
-afterEach(() => __setJpegFramesSupported(null));
 
 describe("ExtractClipDialog", () => {
   it("shows the range, then runs the clip command with the fps, closed first", async () => {
@@ -69,7 +67,6 @@ describe("ExtractClipDialog", () => {
   });
 
   it("runs the package command with JPEG frames when chosen, and remembers it", async () => {
-    __setJpegFramesSupported(true);
     useAppStore.getState().setExtractClipDialog("package");
     render(<ExtractClipDialog />);
     fireEvent.click(screen.getByRole("radio", { name: "JPEG" }));

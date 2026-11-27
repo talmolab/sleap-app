@@ -1,6 +1,6 @@
 /**
  * Unit and component tests for the unified SLP format refusal flow in
- * `SlpFormatDialog`, `useSlpFormatStore`, and `slpAccess` / `slpFormatCompat`
+ * `SlpFormatDialog`, `useSlpFormatStore`, and `slpAccess` / `slpFormat`
  * in Web mode.
  *
  * See `slpFormatRefusalDialogDesktop.test.tsx` for Desktop (`isTauri = true`)
@@ -17,7 +17,7 @@ vi.mock("@/platform/index", () => ({
   getPlatform: async () => ({ isTauri: false }),
 }));
 
-const { isSlpFormatError } = await import("@/lib/slpFormatCompat");
+const { isSlpFormatError } = await import("@/lib/slpFormat");
 const {
   handleSlpFormatError,
   legacyCopyCommand,
@@ -204,5 +204,32 @@ describe("SlpFormatDialog refusal UI and Web actions", () => {
       "_blank",
       "noopener,noreferrer",
     );
+  });
+
+  it("renders native 3.0 unread-tables choice dialog with View only vs Edit (drop unread tables)", () => {
+    const answerPromise = useSlpFormatStore.getState().ask({
+      kind: "open",
+      fileName: "with_events.slp",
+      summary: {
+        formatId: 3,
+        unlabeledPoints: 1,
+        unlabeledUserPoints: 1,
+        unlabeledPredictedPoints: 0,
+        metadataKeys: { instances: ["annotator"], frames: [], bboxes: [] },
+        unknownColumns: [],
+        unreadTables: ["event_types", "events"],
+        lossless: false,
+      },
+    });
+
+    render(<SlpFormatDialog />);
+    const dialog = screen.getByTestId("slp-format-dialog");
+    expect(dialog.textContent).toContain("with_events.slp");
+    expect(dialog.textContent).toContain("SLP format 3.0");
+    expect(dialog.textContent).toContain("Saving writes SLP format 3.0");
+    expect(screen.getByTestId("slp-format-drops").textContent).toContain("event_types, events");
+    expect(screen.getByRole("button", { name: "View only" })).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Edit (drop unread tables)" }));
+    return expect(answerPromise).resolves.toBe("keep");
   });
 });

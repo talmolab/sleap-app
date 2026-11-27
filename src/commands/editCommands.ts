@@ -22,7 +22,14 @@ import {
   copySourceMark,
   isUnlabeledPoint,
   markPointLabeled,
-} from "@/lib/slpFormatCompat";
+  type RecordMetadata,
+} from "@/lib/slpFormat";
+import {
+  applyPointState,
+  hasPointCoords,
+  POINT_STATES,
+  type PointState,
+} from "@/lib/pointState";
 import {
   showLabelingHint,
   hintIfFirstInstance,
@@ -856,8 +863,12 @@ export const ToggleNodeVisibility: Command = {
     if (!lf || !Array.isArray(nodes)) return;
 
     const points = (nodes as { instanceIdx: number; nodeIdx: number }[])
-      .map(({ instanceIdx, nodeIdx }) => lf.instances[instanceIdx]?.points[nodeIdx])
-      .filter((p) => p !== undefined);
+      .map(({ instanceIdx, nodeIdx }) => {
+        const inst = lf.instances[instanceIdx];
+        if (!inst || inst instanceof PredictedInstance) return undefined;
+        return inst.points[nodeIdx];
+      })
+      .filter((p): p is NonNullable<typeof p> => p !== undefined && hasPointCoords(p));
     if (points.length === 0) return;
 
     const visibleCount = points.filter((p) => p.visible).length;
@@ -866,6 +877,120 @@ export const ToggleNodeVisibility: Command = {
       point.visible = makeVisible;
       // Showing a node labels it (a visible node is always labelled).
       if (makeVisible) markPointLabeled(point);
+    }
+
+    ctx.state.markChanged();
+    ctx.state.touchFrame();
+    ctx.state.bumpOverlayVersion();
+  },
+};
+
+/**
+ * Set one or more user keypoints on the current frame to an explicit SLP 3.0
+ * point state: `"visible"`, `"occluded"`, `"absent"`, or `"unlabeled"`.
+ *
+ * Params:
+ *   nodes: { instanceIdx: number; nodeIdx: number }[] - target nodes on the
+ *     current labeled frame (predicted instances are skipped).
+ *   state: PointState - target state. `"visible"` and `"occluded"` require
+ *     finite coordinates; `"absent"` clears coords with `labeled = true`;
+ *     `"unlabeled"` clears coords with `labeled = false`.
+ */
+export const SetPointState: Command = {
+  name: "SetPointState",
+  topics: [UpdateTopic.Frame, UpdateTopic.Instance],
+  execute(ctx: CommandContext, params?: Record<string, unknown>) {
+    const lf = ctx.state.labeledFrame;
+    const nodes = params?.nodes;
+    const state = params?.state as PointState | undefined;
+    if (!lf || !Array.isArray(nodes) || !state || !POINT_STATES.includes(state)) return;
+
+    let applied = 0;
+    for (const entry of nodes as { instanceIdx: number; nodeIdx: number }[]) {
+      const inst = lf.instances[entry.instanceIdx];
+      if (!inst || inst instanceof PredictedInstance) continue;
+      const point = inst.points[entry.nodeIdx];
+      if (!point) continue;
+      if (applyPointState(point, state)) applied++;
+    }
+    if (applied === 0) return;
+
+    ctx.state.markChanged();
+    ctx.state.touchFrame();
+    ctx.state.bumpOverlayVersion();
+  },
+};
+
+/** Sanitize a record metadata dictionary to trimmed keys and valid scalar values. */
+function sanitizeMetadata(input: unknown): RecordMetadata {
+  if (!input || typeof input !== "object" || Array.isArray(input)) return {};
+  const out: RecordMetadata = {};
+  for (const [rawKey, value] of Object.entries(input as Record<string, unknown>)) {
+    const key = rawKey.trim();
+    if (!key) continue;
+    if (
+      typeof value === "string" ||
+      typeof value === "boolean" ||
+      (typeof value === "number" && Number.isFinite(value))
+    ) {
+      out[key] = value;
+    }
+  }
+  return out;
+}
+
+/**
+ * Replace the SLP 3.0 scalar metadata dictionary on the current frame, an
+ * instance on the current frame, or a bounding box on the current frame.
+ *
+ * Params:
+ *   target: "frame" | "instance" | "bbox"
+ *   index?: number - required for "bbox"; optional for "instance" (defaults to
+ *     selected instance)
+ *   metadata: RecordMetadata | null - new key-value map (null/empty clears all)
+ */
+export const SetRecordMetadata: Command = {
+  name: "SetRecordMetadata",
+  topics: [UpdateTopic.Frame, UpdateTopic.Instance],
+  execute(ctx: CommandContext, params?: Record<string, unknown>) {
+    const { labels, video, frameIdx } = ctx.state;
+    const target = params?.target;
+    if (!labels || !video) return;
+    if (target !== "frame" && target !== "instance" && target !== "bbox") return;
+
+    const nextMeta = sanitizeMetadata(params?.metadata);
+    const hasEntries = Object.keys(nextMeta).length > 0;
+    const frames = labels.find({ video, frameIdx });
+    let lf: LabeledFrame | null = frames[0] ?? null;
+
+    if (target === "frame") {
+      if (!lf) {
+        if (!hasEntries) return;
+        lf = new LabeledFrame({ video, frameIdx });
+        lf.metadata = nextMeta;
+        labels.append(lf);
+        ctx.state.setLabeledFrame(lf);
+      } else {
+        lf.metadata = nextMeta;
+        // Keep the frame object in labels.labeledFrames (matching DeleteBbox)
+        // so incremental autosave journals the clearing, while updating the
+        // store's labeledFrame view to reflect frameHasContent.
+        ctx.state.setLabeledFrame(frameHasContent(lf) ? lf : null);
+      }
+    } else if (target === "instance") {
+      if (!lf) return;
+      const idx = typeof params?.index === "number" ? params.index : undefined;
+      const inst =
+        idx !== undefined ? lf.instances[idx] : ctx.state.instance;
+      if (!inst || !lf.instances.includes(inst)) return;
+      inst.metadata = nextMeta;
+    } else {
+      if (!lf) return;
+      const idx = params?.index;
+      if (typeof idx !== "number" || !Number.isInteger(idx)) return;
+      const box = lf.bboxes[idx];
+      if (!box) return;
+      box.metadata = nextMeta;
     }
 
     ctx.state.markChanged();

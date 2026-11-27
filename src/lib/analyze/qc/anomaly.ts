@@ -31,7 +31,7 @@ import { makeQCConfig, type QcConfig } from "./config";
 import { topIssue, confidence, issueForFeature, DIRECTIONAL_FEATURES } from "./explain";
 import type { AttributionEntry } from "./baseline";
 import { withUnlabeledNodes, type Pose } from "./util";
-import { isUnlabeledPoint } from "@/lib/slpFormatCompat";
+import { isUnlabeledPoint } from "@/lib/slpFormat";
 
 /**
  * An instance's pose for the QC engine: `[x, y]` per node, NaN where not

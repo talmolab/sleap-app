@@ -15,7 +15,7 @@
  */
 
 export type ExportFormat = "onnx" | "tensorrt" | "both";
-export type ExportPrecision = "fp32" | "fp16" | "tf32";
+export type ExportPrecision = "fp32" | "fp16" | "bf16" | "tf32";
 
 export interface BuildExportArgsOptions {
   /** Trained-model run DIRECTORIES to export (one, or two for a top-down bundle). */
@@ -29,6 +29,11 @@ export interface BuildExportArgsOptions {
    * ignores it), so an ONNX-only run stays flag-clean. Defaults to fp16.
    */
   precision?: ExportPrecision;
+  /**
+   * Export centered_instance network alone (`--network-only`, sleap-nn >= 0.4)
+   * so it can be paired with an exported box detector in `sleap-nn predict`.
+   */
+  networkOnly?: boolean;
 }
 
 /**
@@ -40,11 +45,15 @@ export function buildExportArgs({
   outputDir,
   format,
   precision = "fp16",
+  networkOnly = false,
 }: BuildExportArgsOptions): string[] {
   const args = ["export", ...modelPaths, "--output", outputDir, "--format", format];
   // --precision is a TensorRT build knob; ONNX export ignores it.
   if (format !== "onnx") {
     args.push("--precision", precision);
+  }
+  if (networkOnly) {
+    args.push("--network-only");
   }
   return args;
 }

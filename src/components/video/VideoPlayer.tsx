@@ -43,7 +43,7 @@ import {
 } from "../../canvas/SkeletonRenderer";
 import { instanceVisible, instanceShowsNonVisible } from "@/lib/instanceVisibility";
 import { formatShortcut } from "@/lib/formatShortcut";
-import { eventMatchesAction } from "@/lib/shortcutPrefs";
+import { currentShortcut, eventMatchesAction } from "@/lib/shortcutPrefs";
 import { useQcVisibility } from "@/hooks/useQcVisibility";
 import { useQcFrameFlags } from "@/hooks/useQcFrameFlags";
 import { useQcStore } from "@/stores/qcStore";
@@ -81,6 +81,7 @@ import {
   MarkInstanceComplete,
   BeginEdit,
   ToggleNodeVisibility,
+  SetPointState,
   DeletePredictionsByArea,
   DuplicateInstance,
   AddNodeCommand,
@@ -154,7 +155,12 @@ import { Film, Frame, Hand, ImageOff, MousePointer2, SquareDashed, Tag, ZoomIn }
 import { renderProposalGhosts } from "@/canvas/proposalGhost";
 import { useProposalGhosts } from "@/hooks/useProposalGhosts";
 import { refuseEditIfViewOnly } from "@/lib/slpAccess";
-import { isUnlabeledPoint, markPointLabeled } from "@/lib/slpFormatCompat";
+import { isUnlabeledPoint, isViewOnlyLabels, markPointLabeled } from "@/lib/slpFormat";
+import {
+  getPointState,
+  nextUnplacedNodeForward,
+  type PointState,
+} from "@/lib/pointState";
 
 /**
  * First unused `node_${k}` name (k = 0, 1, 2, …) for a fresh builder node, so
@@ -747,6 +753,79 @@ export function VideoPlayer() {
         commandContext.execute(ToggleNodeVisibility, {
           nodes: [{ instanceIdx: hoveredNode.instanceIdx, nodeIdx: hoveredNode.nodeIdx }],
         });
+      }
+    };
+    window.addEventListener("keydown", handler);
+    return () => window.removeEventListener("keydown", handler);
+  }, [selectedNodes, hoveredNode]);
+
+  // Mark node Unlabeled (U) or Absent (Shift+U) — works in both active node
+  // placement mode (mark current target and advance forward) and normal
+  // selection/hover mode (mark selected or hovered user nodes).
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      let targetState: PointState | null = null;
+      if (eventMatchesAction(e, "mark node unlabeled")) {
+        targetState = "unlabeled";
+      } else if (eventMatchesAction(e, "mark node absent")) {
+        targetState = "absent";
+      }
+      if (!targetState) return;
+
+      const tag = (e.target as HTMLElement)?.tagName;
+      if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") return;
+      if ((e.target as HTMLElement)?.isContentEditable) return;
+
+      const store = useAppStore.getState();
+      const lf = store.labeledFrame;
+      if (!lf) return;
+
+      // Active placement mode: mark the active placement node and step forward.
+      if (
+        store.labelingMode === "place" &&
+        store.instance &&
+        !(store.instance instanceof PredictedInstance) &&
+        store.placementNodeIdx !== null
+      ) {
+        const instanceIdx = lf.instances.indexOf(store.instance);
+        const nodeIdx = store.placementNodeIdx;
+        if (instanceIdx < 0 || nodeIdx < 0 || nodeIdx >= store.instance.points.length) return;
+        e.preventDefault();
+        const blocked = isViewOnlyLabels(store.labels);
+        void commandContext.execute(SetPointState, {
+          nodes: [{ instanceIdx, nodeIdx }],
+          state: targetState,
+        });
+        if (blocked) return;
+        const nextIdx = nextUnplacedNodeForward(store.instance.points, nodeIdx);
+        if (nextIdx !== -1) {
+          store.set("placementNodeIdx", nextIdx);
+        } else {
+          store.exitPlacementMode();
+        }
+        return;
+      }
+
+      // Normal mode: selected nodes first, else hovered node.
+      if (selectedNodes.size > 0) {
+        e.preventDefault();
+        const targets = [...selectedNodes].map(parseNodeKey);
+        void commandContext.execute(SetPointState, {
+          nodes: targets,
+          state: targetState,
+        });
+        if (!isViewOnlyLabels(store.labels)) {
+          setSelectedNodes(new Set());
+        }
+      } else if (hoveredNode) {
+        e.preventDefault();
+        void commandContext.execute(SetPointState, {
+          nodes: [{ instanceIdx: hoveredNode.instanceIdx, nodeIdx: hoveredNode.nodeIdx }],
+          state: targetState,
+        });
+        if (!isViewOnlyLabels(store.labels)) {
+          setHoveredNode(null);
+        }
       }
     };
     window.addEventListener("keydown", handler);
@@ -2699,20 +2778,39 @@ export function VideoPlayer() {
     [containerSize, frameDims, baseScale, offsetX, offsetY]
   );
 
+  // Track prior (instance, frameIdx) so entering placement mode with an
+  // explicit target node (e.g. "Place on canvas" in InstancesPanel) keeps that
+  // target instead of overwriting it with the first NaN node.
+  const prevPlacementContextRef = useRef<{ instance: unknown; frameIdx: number }>({
+    instance: null,
+    frameIdx: -1,
+  });
+
   // Auto-exit placement mode when instance is deselected or frame changes
   useEffect(() => {
+    const prev = prevPlacementContextRef.current;
+    const contextChanged = prev.instance !== selectedInstance || prev.frameIdx !== frameIdx;
+    prevPlacementContextRef.current = { instance: selectedInstance, frameIdx };
+
     if (labelingMode !== "place") return;
     if (!selectedInstance) {
       useAppStore.getState().exitPlacementMode();
       return;
     }
+    const target = useAppStore.getState().placementNodeIdx;
     // Label QC Review picks its own target (the flag's node): keep it while
-    // it is unplaced. Otherwise reset to the first unplaced node of the new
-    // instance.
+    // it is unplaced. Likewise keep an explicit target chosen on the same
+    // instance & frame (e.g. clicking "Place on canvas" in InstancesPanel).
     if (useQcStore.getState().reviewOpen) {
-      const target = useAppStore.getState().placementNodeIdx;
       const targetXy = target !== null ? selectedInstance.points[target]?.xy : undefined;
       if (targetXy && (isNaN(targetXy[0]) || isNaN(targetXy[1]))) return;
+    } else if (
+      !contextChanged &&
+      target !== null &&
+      target >= 0 &&
+      target < selectedInstance.points.length
+    ) {
+      return;
     }
     // Reset placement target to first unplaced node of new instance
     const firstNaN = selectedInstance.points.findIndex(
@@ -4141,7 +4239,7 @@ export function VideoPlayer() {
             >
               <div className="font-medium">{nodeName}</div>
               <div style={{ color: rgbToCSS(statusColor) }}>
-                <strong>{isPredicted ? "predicted" : "user"}</strong> · {point.visible ? "visible" : "not visible"}
+                <strong>{isPredicted ? "predicted" : "user"}</strong> · {point.visible ? "visible" : "occluded"}
                 {/* #341: translate the red/green node-color convention inline,
                     here rather than a one-shot toast, so it's discoverable
                     every time — not just once, and not just if the toast
@@ -4152,13 +4250,13 @@ export function VideoPlayer() {
               <div className="text-white/70">
                 x: {point.xy[0].toFixed(1)}, y: {point.xy[1].toFixed(1)}
               </div>
-              {/* #341: same reasoning as above — teach the right-click-to-toggle
-                  mechanic wherever it's actually relevant (any hidden node on a
-                  user instance, not just ones auto-hidden by converting a
-                  prediction with missing detections). */}
-              {!isPredicted && !point.visible && (
+              {!isPredicted && (
                 <div className="text-white/40 text-[10px] mt-0.5">
-                  right-click to toggle visible
+                  {formatShortcut(currentShortcut("toggle node visibility")) || "V"}: {point.visible ? "occlude" : "show"}
+                  {" · "}
+                  {formatShortcut(currentShortcut("mark node unlabeled")) || "U"}: unlabeled
+                  {" · "}
+                  {formatShortcut(currentShortcut("mark node absent")) || "Shift+U"}: absent
                 </div>
               )}
               {nodeScore !== undefined && (
@@ -4349,19 +4447,25 @@ export function VideoPlayer() {
         )}
 
         {/* Node placement indicator */}
-        {isPlacingNodes && selectedInstance && placementNodeIdx !== null && (
-          <Badge
-            variant="default"
-            className="absolute top-2 left-1/2 -translate-x-1/2 pointer-events-none rounded-md"
-          >
-            Place: {
-              selectedInstance.skeleton.nodes[placementNodeIdx]?.name ?? `node ${placementNodeIdx}`
-            }
-            {" "}[{placementNodeIdx + 1}/{selectedInstance.points.length}]
-            {" "}({selectedInstance.points.filter((p) => !isNaN(p.xy[0])).length} placed)
-            {` · ${formatShortcut("Tab")}/${formatShortcut("Shift+Tab")} to cycle · Esc to exit`}
-          </Badge>
-        )}
+        {isPlacingNodes && selectedInstance && placementNodeIdx !== null && (() => {
+          const targetPt = selectedInstance.points[placementNodeIdx];
+          const targetState = targetPt ? getPointState(targetPt) : "absent";
+          const unlabeledKey = formatShortcut(currentShortcut("mark node unlabeled")) || "U";
+          const absentKey = formatShortcut(currentShortcut("mark node absent")) || "Shift+U";
+          return (
+            <Badge
+              variant="default"
+              className="absolute top-2 left-1/2 -translate-x-1/2 pointer-events-none rounded-md"
+            >
+              Place: {
+                selectedInstance.skeleton.nodes[placementNodeIdx]?.name ?? `node ${placementNodeIdx}`
+              }
+              {" "}[{placementNodeIdx + 1}/{selectedInstance.points.length}]
+              {" "}({targetState} · {selectedInstance.points.filter((p) => !isNaN(p.xy[0])).length} placed)
+              {` · ${formatShortcut("Tab")}/${formatShortcut("Shift+Tab")} cycle · ${unlabeledKey} unlabeled · ${absentKey} absent · Esc exit`}
+            </Badge>
+          );
+        })()}
 
         {/* Selection count indicator */}
         {selectedNodes.size > 0 && !isPlacingNodes && (
@@ -4562,6 +4666,20 @@ export function VideoPlayer() {
             commandContext.execute(ToggleNodeVisibility, {
               nodes: [...selectedNodes].map(parseNodeKey),
             });
+          }}
+          onSetSelectedNodesState={(state) => {
+            const store = useAppStore.getState();
+            if (!store.labeledFrame) return;
+            commandContext.execute(SetPointState, {
+              nodes: [...selectedNodes].map(parseNodeKey),
+              state,
+            });
+            if (
+              (state === "absent" || state === "unlabeled") &&
+              !isViewOnlyLabels(store.labels)
+            ) {
+              setSelectedNodes(new Set());
+            }
           }}
           onClose={() => setContextMenu(null)}
         />

@@ -1,18 +1,26 @@
 /**
- * How the app handles SLP files it cannot read, SLP format 3.0 files (read,
- * but saved only in the older 2.x layout), and projects opened View only.
+ * How the app handles SLP files it cannot read, SLP format 3.0 files (read and
+ * saved natively in format 3.0; files holding tables this version does not
+ * read ask View only vs Edit at open time), and projects opened View only.
  *
  * - A refused file gets its own dialog ({@link showSlpRefusal}), not the
  *   generic load-failure toast.
- * - A format 3.0 file asks at open time ({@link askFormat3Access}): View only,
- *   or Edit with the list of what saving in the 2.x layout drops.
+ * - A format 3.0 file whose tables are all supported opens directly for native
+ *   format 3.0 editing (`"keep"`). A format 3.0 file with unread tables asks at
+ *   open time ({@link askFormat3Access}): View only, or Edit (saving writes
+ *   format 3.0 and drops the unread tables listed in the dialog).
  * - A View only project cannot be edited (commands and canvas edits are
  *   refused, see {@link refuseEditIfViewOnly}) and nothing writes it
  *   ({@link ensureWritable} before every save and export, and sleap-io.js's
  *   writers refuse it too). The banner and the save/export prompts offer to
- *   allow editing, which shows the same list first.
+ *   allow editing, which shows the same list first and switches access to
+ *   `"keep"` (native format 3.0).
  */
-import type { Labels } from "@talmolab/sleap-io.js";
+import type {
+  Format3Access,
+  Format3Summary,
+  Labels,
+} from "@talmolab/sleap-io.js";
 import { useAppStore } from "@/stores/appStore";
 import { askSlpFormat, useSlpAccessNonce } from "@/stores/slpFormatStore";
 import { toast } from "@/lib/notify";
@@ -25,11 +33,8 @@ import {
   isUnlabeledPoint,
   isViewOnlyLabels,
   setSourceAccess,
-  sourceFormatOf,
-  type Format3Access,
-  type Format3Summary,
   type SlpFormatErrorLike,
-} from "@/lib/slpFormatCompat";
+} from "@/lib/slpFormat";
 
 /** `3` → "3.0", `2.8` → "2.8": SLP formats are named this way. */
 export function formatLabel(formatId: number | null): string {
@@ -81,6 +86,17 @@ export function describeFormat3Drops(summary: Format3Summary): string[] {
     drops.push(`Parts of the file this version doesn't read: ${unread.join(", ")}`);
   }
   return drops;
+}
+
+/**
+ * What saving a format 3.0 file natively in format 3.0 (`access: "keep"`)
+ * drops, one line per kind. Unlabeled nodes and metadata are preserved in
+ * format 3.0; only parts of the file this version does not read are dropped.
+ */
+export function describeFormat3KeepDrops(summary: Format3Summary): string[] {
+  const unread = summary.unreadTables ?? [];
+  if (unread.length === 0) return [];
+  return [`Parts of the file this version doesn't read: ${unread.join(", ")}`];
 }
 
 /**
@@ -278,7 +294,7 @@ export async function askFormat3Access(
     summary,
   });
   if (answer === "view" && purpose === "open") return "view";
-  if (answer === "edit") return "edit";
+  if (answer === "keep" || answer === "edit") return "keep";
   return null;
 }
 
@@ -286,9 +302,10 @@ export async function askFormat3Access(
 export type Format3Policy = "ask" | "merge" | Format3Access;
 
 /**
- * Run a read, handling what sleap-io.js refuses: a format 3.0 file asks
- * (per `policy`) and is read again with the answer; any other refusal shows
- * its dialog. Refusals and a cancelled choice rethrow, marked reported.
+ * Run a read, handling what sleap-io.js refuses: a format 3.0 file with unread
+ * tables asks (per `policy`) and is read again with the answer; any other
+ * refusal shows its dialog. Refusals and a cancelled choice rethrow, marked
+ * reported.
  */
 export async function readWithFormatChoice<T>(
   read: (access: Format3Access | undefined) => Promise<T>,
@@ -296,8 +313,10 @@ export async function readWithFormatChoice<T>(
   fileName: string | undefined,
   refusal: "dialog" | "throw" = "dialog",
 ): Promise<T> {
+  const fixed: Format3Access | undefined =
+    policy === "keep" || policy === "view" || policy === "edit" ? policy : undefined;
   try {
-    return await read(policy === "view" || policy === "edit" ? policy : undefined);
+    return await read(fixed);
   } catch (err) {
     if (isSlpFormat3ChoiceError(err) && (policy === "ask" || policy === "merge")) {
       const name = displayFileName(fileName ?? err.labelsPath);
@@ -365,7 +384,7 @@ export function isProjectViewOnly(): boolean {
  * return true. `action` names what the user was doing ("save", "export").
  */
 export async function allowEditing(labels: Labels, action?: AllowEditAction): Promise<boolean> {
-  const sf = sourceFormatOf(labels);
+  const sf = labels.sourceFormat;
   if (!sf || sf.access !== "view") return true;
   const answer = await askSlpFormat({
     kind: "allow-edit",
@@ -373,8 +392,8 @@ export async function allowEditing(labels: Labels, action?: AllowEditAction): Pr
     summary: sf.summary,
     action,
   });
-  if (answer !== "edit") return false;
-  setSourceAccess(labels, "edit");
+  if (answer !== "keep" && answer !== "edit") return false;
+  setSourceAccess(labels, "keep");
   useSlpAccessNonce.getState().bump();
   return true;
 }

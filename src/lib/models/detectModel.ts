@@ -18,7 +18,10 @@ export type ModelHead =
   | "centered_instance"
   | "bottomup"
   | "multi_class_bottomup"
-  | "multi_class_topdown";
+  | "multi_class_topdown"
+  | "bbox_centernet"
+  | "bbox_ssd"
+  | "bbox_detr";
 
 /**
  * The active head type of a sleap-nn model, from the text of its

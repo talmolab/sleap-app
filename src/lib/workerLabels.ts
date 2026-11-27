@@ -271,12 +271,12 @@ export async function loadWorkerLabels(
   });
   try {
     return await readSlpStreaming(source, {
-      // Never edited or written back to the worker. The wizard may send a 2.x
-      // copy of it to the worker when videos are re-pointed (and says first
-      // that nodes not labeled train as hidden), so an SLP format 3.0 file
-      // opens for editing without asking. A file the reader refuses is
-      // reported by the caller (the wizard shows the error).
-      format3: "edit",
+      // Read-only inspection on the worker (`userInstancesOnly: true` requires
+      // `format3: "view"` on SLP format 3.0 files). If the wizard later needs
+      // to send a re-pointed copy, `NewJobWizard` opts in explicitly on the
+      // throwaway copy built by `buildRemoteLabelsPayload`. A file the reader
+      // refuses is reported by the caller (the wizard shows the error).
+      format3: "view",
       refusal: "throw",
       openVideos: false,
       // Only the labels: never download pred_points, which is most of a

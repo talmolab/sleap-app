@@ -18,7 +18,7 @@ import {
   hasOutOfRangePoints,
 } from "@/lib/analyze/labelQcRules";
 import { withUnlabeledNodes } from "@/lib/analyze/qc/util";
-import { isUnlabeledPoint, type PointLike } from "@/lib/slpFormatCompat";
+import { isUnlabeledPoint, type PointLike } from "@/lib/slpFormat";
 import { unbranchedSkeletonChains, chainOrderStats } from "@/lib/analyze/labelQcGeometry";
 import {
   buildChiralityModel,

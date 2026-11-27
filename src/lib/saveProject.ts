@@ -5,9 +5,19 @@
  * using the File System Access API when available, with anchor fallback.
  */
 
-import type { Labels } from "@talmolab/sleap-io.js";
+import type {
+  Labels,
+  SlpVersion,
+  SlpWriteOptions,
+} from "@talmolab/sleap-io.js";
+import type { UnlabeledAs } from "@/lib/slpFormatStatus";
 import { saveSlpToBytes } from "@talmolab/sleap-io.js";
 import { useAppStore } from "../stores/appStore";
+import {
+  askSlpFormat,
+  useSlpAccessNonce,
+  useSlpFormatStore,
+} from "@/stores/slpFormatStore";
 import { toast } from "@/lib/notify";
 import type { PlatformAPI } from "../platform/index";
 import { getPlatform } from "../platform/index";
@@ -36,8 +46,18 @@ import { recordDraftSave, deleteDraftEntry } from "@/lib/draftManifest";
 import { removeTauriDraft } from "@/lib/tauriDraft";
 import { isSameSaveTarget } from "@/lib/saveTargetGuard";
 import { shouldOverwriteOpenedFile } from "@/lib/browserSaveTarget";
-import { markSavedInLegacyLayout, withLegacyLayout } from "@/lib/slpFormatCompat";
-import { ensureWritable, handleViewOnlyWriteError } from "@/lib/slpAccess";
+import { markSavedInLegacyLayout } from "@/lib/slpFormat";
+import {
+  displayFileName,
+  ensureWritable,
+  handleViewOnlyWriteError,
+} from "@/lib/slpAccess";
+import {
+  deriveSlpCopyFilename,
+  inspectProjectFormat,
+  markFormat3UpgradeConfirmed,
+  needsFormat3UpgradeConfirm,
+} from "@/lib/slpFormatStatus";
 
 /**
  * Human-readable byte size for the save progress text (e.g. "3.8 GB", "742 MB").
@@ -85,7 +105,7 @@ async function saveBrowserInMemory(
   forceDialog: boolean
 ): Promise<InMemorySaveResult | null> {
   const store = useAppStore.getState();
-  const bytes = await saveSlpToBytes(labels, withLegacyLayout());
+  const bytes = await saveSlpToBytes(labels);
   const blob = new Blob([bytes], { type: "application/octet-stream" });
 
   if ("showSaveFilePicker" in window) {
@@ -229,6 +249,47 @@ export async function saveProjectAsSlp(
   // A project opened View only is never written: ask to allow editing first
   // (which lists what saving in the 2.x layout drops), else save nothing.
   if (!(await ensureWritable(labels, "save"))) return;
+
+  const platform = await getPlatform();
+
+  // One-time confirmation before overwriting an existing on-disk SLP 2.x file
+  // with SLP 3.0 content (unlabeled nodes or metadata). Leaving the loading
+  // overlay off while prompting keeps the dialog interactive and clear.
+  const willOverwriteExisting =
+    !forceDialog &&
+    (platform.isTauri
+      ? !!store.projectPath
+      : !!store.projectFileHandle &&
+        "showSaveFilePicker" in window &&
+        decideBrowserSaveAction({
+          hasEmbeddedImages: labels.videos.some((v) => v.hasEmbeddedImages),
+          hasSource: !!(store.projectFileHandle ?? store.projectFile),
+          isOpfsSupported: isOpfsSaveSupported(),
+          estimatedOutputBytes: store.projectFile?.size ?? null,
+          forceDialog,
+        }) === "in-memory");
+
+  if (needsFormat3UpgradeConfirm(labels, willOverwriteExisting)) {
+    const status = inspectProjectFormat(labels);
+    if (status) {
+      const answer = await askSlpFormat({
+        kind: "upgrade-on-save",
+        fileName: displayFileName(store.projectPath ?? filename ?? store.filename),
+        summary: status.summary,
+      });
+      if (answer === null) return;
+      if (answer === "export-v2") {
+        useSlpFormatStore.getState().openSaveSlpCopyDialog("v2");
+        return;
+      }
+      if (answer === "save-as") {
+        forceDialog = true;
+      } else if (answer === "upgrade-v3") {
+        markFormat3UpgradeConfirmed(labels);
+      }
+    }
+  }
+
   store.setLoading(true, "Saving project...");
 
   const saveName = filename
@@ -239,8 +300,6 @@ export async function saveProjectAsSlp(
   let projectFileRewritten = false;
 
   try {
-    const platform = await getPlatform();
-
     if (platform.isTauri) {
       const existingPath = !forceDialog ? store.projectPath : null;
       // The currently-open project's on-disk path — the streaming writer reads
@@ -313,7 +372,7 @@ export async function saveProjectAsSlp(
             await saveEmbeddedPkgStreaming(labels, existingPath, sourcePath);
           } else {
             console.log(`[save] Saving via in-memory backend (Tauri, in-place): ${existingPath}`);
-            const bytes = await saveSlpToBytes(labels, withLegacyLayout());
+            const bytes = await saveSlpToBytes(labels);
             if (hasEmbeddedImages) {
               // Never truncate the embedded original in place — write+rename atomically.
               await writeSlpBytesAtomic(platform, existingPath, bytes);
@@ -340,7 +399,7 @@ export async function saveProjectAsSlp(
           await saveEmbeddedPkgStreaming(labels, savePath, sourcePath);
         } else {
           console.log(`[save] Saving via in-memory backend (Tauri, Save As): ${savePath}`);
-          const bytes = await saveSlpToBytes(labels, withLegacyLayout());
+          const bytes = await saveSlpToBytes(labels);
           if (hasEmbeddedImages) {
             // Never truncate an embedded destination in place — write+rename atomically.
             await writeSlpBytesAtomic(platform, savePath, bytes);
@@ -366,8 +425,8 @@ export async function saveProjectAsSlp(
         void removeTauriDraft(tauriDraft);
         store.set("labelsDraftPath", null);
       }
-      // The project's file (saved over, or the Save As target, now its path)
-      // is in the 2.x layout.
+      // Mark rewritten so an explicit 2.x downgrade (`access === "edit"`) clears
+      // `sourceFormat`; native format 3.0 saves (`access === "keep"`) retain it.
       projectFileRewritten = true;
     } else {
       // Browser save (EDL model): for a LARGE embedded pkg.slp the LABELS are the
@@ -515,10 +574,16 @@ export async function saveProjectAsSlp(
     // does set it) rather than actually reflecting the freshly-saved project.
     store.set("filename", displayName.split(/[\\/]/).pop() ?? displayName);
     store.clearChanges();
-    // Labels opened for editing from an SLP format 3.0 file now live in a 2.x
-    // file: say so, so the in-place save patches it again next time. Their
-    // records keep their marks, so later saves drop the same fields silently.
-    if (projectFileRewritten) markSavedInLegacyLayout(labels);
+    // If the user explicitly opened a format 3.0 file in 2.x downgrade mode
+    // (`access === "edit"`), clear `sourceFormat` now that the file is in 2.x.
+    // Native format 3.0 files (`access === "keep"`) retain `sourceFormat`.
+    if (projectFileRewritten) {
+      markSavedInLegacyLayout(labels);
+      if (inspectProjectFormat(labels)?.willWriteFormat3) {
+        markFormat3UpgradeConfirmed(labels);
+      }
+      useSlpAccessNonce.getState().bump();
+    }
     toast.success("Project saved", { description: displayName });
   } catch (err) {
     // sleap-io.js refused labels opened View only (nothing was written).
@@ -527,6 +592,183 @@ export async function saveProjectAsSlp(
     toast.error("Failed to save project", { description: msg });
     console.error("[saveProjectAsSlp] Failed to save:", err);
   } finally {
+    store.setLoading(false);
+  }
+}
+
+export interface SaveSlpCopyOptions {
+  /** Target SLP layout (`"auto"`, `"v2"`, or `"v3"`). */
+  slpVersion: SlpVersion;
+  /** How unlabeled points are handled when `slpVersion === "v2"`. */
+  unlabeledAs?: UnlabeledAs;
+}
+
+/**
+ * Export a standalone `.slp` copy in an explicit SLP format (`auto` / `v2` / `v3`)
+ * without modifying the active project's path, filename, dirty flag, or
+ * remembered `_slpLayout`.
+ *
+ * Returns the written path / filename, or `null` if cancelled or refused as
+ * View only. Throws on writer errors (including `unlabeledAs: "error"`
+ * refusals) so callers such as `SaveSlpCopyDialog` can display them inline.
+ */
+export async function saveSlpCopy(
+  labels: Labels,
+  filename: string | null | undefined,
+  options: SaveSlpCopyOptions,
+): Promise<string | null> {
+  if (!(await ensureWritable(labels, "export"))) return null;
+
+  const status = inspectProjectFormat(labels);
+  const unlabeledAs: UnlabeledAs | undefined =
+    options.slpVersion === "v2" ? (options.unlabeledAs ?? "absent") : undefined;
+
+  // Fail fast before opening a save dialog when the user explicitly chose to
+  // refuse SLP 2.x export if unlabeled points exist.
+  if (
+    options.slpVersion === "v2" &&
+    unlabeledAs === "error" &&
+    (status?.summary.unlabeledPoints ?? 0) > 0
+  ) {
+    const n = status!.summary.unlabeledPoints;
+    throw new Error(
+      `Cannot export SLP 2.x copy: this project has ${n} unlabeled ${
+        n === 1 ? "node" : "nodes"
+      }. Choose "Save unlabeled as absent" or export as SLP 3.0.`,
+    );
+  }
+
+  const writeOpts: SlpWriteOptions = { slpVersion: options.slpVersion };
+  if (unlabeledAs) writeOpts.unlabeledAs = unlabeledAs;
+
+  const suggestedName = deriveSlpCopyFilename(
+    filename,
+    options.slpVersion,
+    status?.willWriteFormat3 ?? false,
+  );
+
+  const store = useAppStore.getState();
+  const labelsWithLayout = labels as unknown as { _slpLayout?: unknown };
+  const prevLayout = labelsWithLayout._slpLayout;
+
+  try {
+    const platform = await getPlatform();
+    const hasEmbeddedImages = labels.videos.some((v) => v.hasEmbeddedImages);
+
+    if (platform.isTauri) {
+      const savePath = await platform.showSaveDialog({
+        filters: [{ name: "SLEAP Labels", extensions: ["slp"] }],
+        defaultName: suggestedName,
+      });
+      if (!savePath) return null;
+
+      store.setLoading(true, "Exporting SLP copy...");
+      const sourcePath = store.projectPath;
+      let estimatedOutputBytes: number | null = null;
+      if (hasEmbeddedImages && sourcePath) {
+        try {
+          estimatedOutputBytes = await fileSize(sourcePath);
+        } catch {
+          estimatedOutputBytes = null;
+        }
+      }
+      const useStreaming = shouldStreamEmbeddedSave({
+        isTauri: true,
+        hasEmbeddedImages,
+        hasSourcePath: !!sourcePath,
+        estimatedOutputBytes,
+      });
+
+      if (useStreaming && sourcePath) {
+        await saveEmbeddedPkgStreaming(labels, savePath, sourcePath, {
+          slpVersion: options.slpVersion,
+          unlabeledAs,
+        });
+      } else {
+        const bytes = await saveSlpToBytes(labels, writeOpts);
+        if (hasEmbeddedImages) {
+          await writeSlpBytesAtomic(platform, savePath, bytes);
+        } else {
+          await platform.writeFile(savePath, bytes);
+        }
+      }
+      return savePath;
+    }
+
+    // Browser path: OPFS streaming for large embedded packages, else in-memory.
+    const source = store.projectFileHandle ?? store.projectFile;
+    const estimatedOutputBytes = store.projectFile?.size ?? null;
+    const action = decideBrowserSaveAction({
+      hasEmbeddedImages,
+      hasSource: !!source,
+      isOpfsSupported: isOpfsSaveSupported(),
+      estimatedOutputBytes,
+      forceDialog: true,
+    });
+
+    if (action === "compile-export" && source) {
+      let destHandle: FileSystemFileHandle;
+      try {
+        destHandle = await pickSlpSaveDestination(suggestedName);
+      } catch (err) {
+        if (err instanceof DOMException && err.name === "AbortError") return null;
+        throw err;
+      }
+      if (await isSameSaveTarget(source, destHandle)) {
+        throw new Error(
+          "Choose a different filename so the currently open project file is not overwritten.",
+        );
+      }
+      store.setLoading(true, "Exporting SLP copy...");
+      return await saveEmbeddedPkgOpfs(
+        labels,
+        source,
+        destHandle,
+        undefined,
+        { slpVersion: options.slpVersion, unlabeledAs },
+      );
+    }
+
+    store.setLoading(true, "Exporting SLP copy...");
+    const bytes = await saveSlpToBytes(labels, writeOpts);
+    const blob = new Blob([bytes], { type: "application/octet-stream" });
+
+    if ("showSaveFilePicker" in window) {
+      let handle: FileSystemFileHandle;
+      try {
+        handle = await (
+          window as unknown as {
+            showSaveFilePicker: (opts: unknown) => Promise<FileSystemFileHandle>;
+          }
+        ).showSaveFilePicker({
+          types: [
+            {
+              description: "SLEAP Labels",
+              accept: { "application/octet-stream": [".slp"] },
+            },
+          ],
+          suggestedName,
+        });
+      } catch (err) {
+        if (err instanceof DOMException && err.name === "AbortError") return null;
+        throw err;
+      }
+      const writable = await handle.createWritable();
+      await writable.write(blob);
+      await writable.close();
+      return handle.name;
+    }
+
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = suggestedName;
+    a.click();
+    setTimeout(() => URL.revokeObjectURL(url), 0);
+    return suggestedName;
+  } finally {
+    // Exporting a side copy must never change the open project's remembered layout.
+    labelsWithLayout._slpLayout = prevLayout;
     store.setLoading(false);
   }
 }

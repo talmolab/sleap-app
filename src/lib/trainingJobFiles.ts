@@ -271,7 +271,7 @@ export function buildTrainingJobFiles(inputs: TrainingJobInputs): TrainingJobFil
           dataPath,
           outputPath,
           suppressVideoIndex: own != null,
-          subcommand: "track",
+          subcommand: "predict",
           ...extra,
         }).filter((a) => a !== "--gui");
         lines.push({ args, dataPath, outputPath, type: own ? "video" : "labels" });

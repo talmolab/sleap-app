@@ -54,6 +54,7 @@ describe("Centroid Only: models, checks and flags", () => {
     expect(centroidOnlyProblem({ remote: true, sleapNnVersion: "0.3.5" })).toMatch(/worker/);
     expect(centroidOnlyProblem({ remote: false, sleapNnVersion: "0.3.4" })).toMatch(/0\.3\.5 or newer \(installed: 0\.3\.4\)/);
     expect(centroidOnlyProblem({ remote: false, sleapNnVersion: "0.3.5" })).toBeNull();
+    expect(centroidOnlyProblem({ remote: false, sleapNnVersion: "0.4.0a0" })).toBeNull();
     expect(centroidOnlyProblem({ remote: false, sleapNnVersion: "0.3.6.dev1+g123" })).toBeNull();
     // Unknown version: let it run (sleap-nn reports its own error).
     expect(centroidOnlyProblem({ remote: false, sleapNnVersion: null })).toBeNull();

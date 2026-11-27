@@ -21,7 +21,7 @@
  * are manual/tauri-pilot-verified, like the browser OPFS leaves).
  */
 
-import type { Format3Summary } from "@/lib/slpFormatCompat";
+import type { DraftSourceFormat } from "@/lib/slpFormat";
 
 /** Minimal filesystem surface the manifest core needs; injected so it can be
  *  unit-tested with an in-memory fake (happy-dom has no Tauri fs). Mirrors the
@@ -67,7 +67,7 @@ export interface TauriDraftManifestEntry {
    *  opened for editing and not yet saved): its format and what saving drops.
    *  Restored onto the recovered labels so the in-place save and local jobs
    *  never patch or read that file as it is. Absent otherwise. */
-  sourceFormat?: { formatId: number; summary: Format3Summary };
+  sourceFormat?: DraftSourceFormat;
 }
 
 /** Schema version, so a future format change can be detected/migrated. */

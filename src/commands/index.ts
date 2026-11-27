@@ -106,6 +106,8 @@ export {
   AddInstancesFromAllPredictionsInProject,
   BeginEdit,
   ToggleNodeVisibility,
+  SetPointState,
+  SetRecordMetadata,
   MoveInstance,
   RotateInstance,
 } from "./editCommands";

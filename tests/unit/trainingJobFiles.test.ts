@@ -147,7 +147,7 @@ describe("training config files", () => {
     const lines = fileText(job, "inference-script.sh").split("\n").filter((l) => l.startsWith("sleap-nn"));
     expect(lines).toHaveLength(1);
     const line = lines[0];
-    expect(line).toContain("sleap-nn track --data_path /data/proj.slp");
+    expect(line).toContain("sleap-nn predict --data_path /data/proj.slp");
     expect(line).toContain(
       "--model_paths models/261116_120000.centroid.n=1 --model_paths models/261116_120000.centered_instance.n=1",
     );

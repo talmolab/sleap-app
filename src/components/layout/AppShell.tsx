@@ -43,6 +43,7 @@ import { useQuickVideoChecks } from "@/hooks/useQuickVideoChecks";
 import { ConfirmDialog } from "../dialogs/ConfirmDialog";
 import { ChoiceDialog } from "../dialogs/ChoiceDialog";
 import { SlpFormatDialog } from "../dialogs/SlpFormatDialog";
+import { SaveSlpCopyDialog } from "../dialogs/SaveSlpCopyDialog";
 import { ViewOnlyBanner } from "./ViewOnlyBanner";
 import { PromptDialog } from "../dialogs/PromptDialog";
 import { SelectToFrameDialog } from "../dialogs/SelectToFrameDialog";
@@ -352,6 +353,7 @@ export function AppShell() {
       <ConfirmDialog />
       <ChoiceDialog />
       <SlpFormatDialog />
+      <SaveSlpCopyDialog />
       <PromptDialog />
       <TranscodeConfirmDialog />
       <TranscodeProgressDialog />

@@ -25,6 +25,7 @@ import {
   looksLikeMetrics,
   summarizeMetrics,
   parseTimestampFromRunName,
+  parseTrainingConfig,
   joinPath,
   runDirName,
   type MetricsFsAccess,
@@ -340,5 +341,39 @@ describe("distanceAxisMax", () => {
   it("returns a floor of 5 when there is no finite data", () => {
     expect(distanceAxisMax([[null, null]])).toBe(5);
     expect(distanceAxisMax([])).toBe(5);
+  });
+});
+
+describe("parseTrainingConfig — sleap-nn 0.4 bbox_detr and pretrained backbones", () => {
+  it("labels bbox_detr and dinov2_windowed / pretrained backbones cleanly", () => {
+    const detrInfo = parseTrainingConfig(`
+model_config:
+  backbone_config:
+    dinov2_windowed:
+      weights: facebook/dinov2-small
+      max_stride: 32
+  head_configs:
+    bbox_detr:
+      detr:
+        output_stride: 16
+trainer_config:
+  run_name: 261126_120000.bbox_detr.n=10
+`);
+    expect(detrInfo.headKey).toBe("bbox_detr");
+    expect(detrInfo.modelType).toBe("Box Detector (DETR)");
+    expect(detrInfo.architecture).toBe("DINOv2 Windowed (facebook/dinov2-small), max stride: 32");
+
+    const pretrainedInfo = parseTrainingConfig(`
+model_config:
+  backbone_config:
+    pretrained:
+      model_name: facebook/dinov2-base
+      max_stride: 16
+  head_configs:
+    centered_instance:
+      confmaps:
+        output_stride: 4
+`);
+    expect(pretrainedInfo.architecture).toBe("Pretrained (facebook/dinov2-base), max stride: 16");
   });
 });

@@ -6,6 +6,7 @@
  */
 import type { TrackJobSpec } from "@/lib/sleapConnect";
 import type { InferenceConfig } from "@/stores/inferenceStore";
+import { normalizeIntegralRefinement } from "@/platform/inferenceArgs";
 
 export interface RemoteTrackSpecContext {
   /** Worker-side labels/data path. */
@@ -56,13 +57,15 @@ function sampleRandom(totalFrames: number, count: number, random: () => number):
 
 /** Model/tracking/filter fields common to every track spec of a run. */
 function trackOptionFields(config: InferenceConfig) {
+  const refinement = normalizeIntegralRefinement(config.integralRefinement);
+  const remoteRefinement = refinement === "none" ? ("none" as const) : ("integral" as const);
   return {
     model_paths: config.modelPaths,
     batch_size: config.batchSize,
     peak_threshold: config.peakThreshold,
     max_instances: config.maxInstances ?? undefined,
-    integral_refinement: config.integralRefinement ? ("integral" as const) : ("none" as const),
-    integral_patch_size: config.integralRefinement ? config.integralPatchSize : undefined,
+    integral_refinement: remoteRefinement,
+    integral_patch_size: remoteRefinement !== "none" ? config.integralPatchSize : undefined,
     ...(config.pipeline === "bottom-up" || config.pipeline === "bottom-up-id"
       ? {
           n_points: config.nPoints,

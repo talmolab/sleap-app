@@ -1,8 +1,8 @@
 /**
- * A `.slp` in a format the pinned sleap-io.js cannot read (format 3.0, or a
+ * A `.slp` in a format the pinned sleap-io.js cannot read (format >= 4.0, or a
  * required feature it doesn't know) is refused by the library with
  * `SlpFormatError`, instead of loading as an empty project. These tests run the
- * real library on a format 3.0 fixture and check what the app does with the
+ * real library on a format 4.0 fixture and check what the app does with the
  * refusal on each way a `.slp` comes in:
  *
  * - opening a project by path (desktop: Open, Open With, drag-and-drop, which
@@ -16,16 +16,8 @@
  *   the read rejects with the library's message, which both callers handle;
  * - importing a skeleton from a `.slp`: the same, naming the user's file.
  *
- * Under bun these run sleap-io.js's main-thread reader; in the app's WebView,
- * reads go through its Worker-based streaming reader, which runs the same
- * format check (sleap-io.js tests that reader itself).
- *
- * The browser's File-based twins (loadProjectFromFile, loadLabelsFromSlpFile)
- * share these catch blocks but can't run here: under bun, sleap-io.js reads
- * only paths and bytes, and rejects a File before looking at it.
- *
- * Fixture: tests/fixtures/format3_minimal.slp, copied from sleap-io.js
- * (tests/data/slp/format3_minimal.slp, written by Python sleap-io 0.10).
+ * Also verifies that a supported format 3.0 file (`format3_minimal.slp`) opens
+ * cleanly without refusal on sleap-io.js 0.6.0+.
  */
 
 import { describe, it, expect, beforeEach, vi } from "../bun-test";
@@ -52,11 +44,16 @@ import { useAppStore } from "@/stores/appStore";
 import { useSlpFormatStore } from "@/stores/slpFormatStore";
 import { toast } from "@/lib/notify";
 
+const FORMAT4 = join(import.meta.dir, "../fixtures/format4_stub.slp");
 const FORMAT3 = join(import.meta.dir, "../fixtures/format3_minimal.slp");
 const V2 = join(import.meta.dir, "../fixtures/minimal_instance.slp");
 
 type Mock = { mock: { calls: unknown[][] }; mockClear: () => void };
 const toastError = toast.error as unknown as Mock;
+
+function format4Bytes(): Uint8Array {
+  return new Uint8Array(readFileSync(FORMAT4));
+}
 
 function format3Bytes(): Uint8Array {
   return new Uint8Array(readFileSync(FORMAT3));
@@ -69,9 +66,9 @@ beforeEach(() => {
   (toast.success as unknown as Mock).mockClear();
 });
 
-describe("a format 3.0 .slp is refused cleanly", () => {
+describe("an unsupported format >= 4.0 .slp is refused cleanly", () => {
   it("open by path (desktop): opens the refusal modal, no error toast, nothing loaded", async () => {
-    const ok = await loadProjectFromPath(FORMAT3, async () => format3Bytes());
+    const ok = await loadProjectFromPath(FORMAT4, async () => format4Bytes());
     expect(ok).toBe(false);
 
     expect(toastError.mock.calls.length).toBe(0);
@@ -79,9 +76,9 @@ describe("a format 3.0 .slp is refused cleanly", () => {
     expect(prompt).not.toBeNull();
     expect(prompt?.kind).toBe("refused");
     if (prompt?.kind === "refused") {
-      expect(prompt.fileName).toBe("format3_minimal.slp");
-      expect(prompt.formatId).toBe(3);
-      expect(prompt.detail).toContain("SLP format 3.0");
+      expect(prompt.fileName).toBe("format4_stub.slp");
+      expect(prompt.formatId).toBe(4);
+      expect(prompt.detail).toContain("SLP format 4.0");
     }
 
     const s = useAppStore.getState();
@@ -102,7 +99,7 @@ describe("a format 3.0 .slp is refused cleanly", () => {
     expect(labelsBefore).not.toBeNull();
     expect(before.projectPath).toBe(V2);
 
-    expect(await loadProjectFromPath(FORMAT3, async () => format3Bytes())).toBe(false);
+    expect(await loadProjectFromPath(FORMAT4, async () => format4Bytes())).toBe(false);
 
     const after = useAppStore.getState();
     expect(after.labels).toBe(labelsBefore);
@@ -113,8 +110,8 @@ describe("a format 3.0 .slp is refused cleanly", () => {
     const prompt = useSlpFormatStore.getState().prompt;
     expect(prompt?.kind).toBe("refused");
     if (prompt?.kind === "refused") {
-      expect(prompt.fileName).toBe("format3_minimal.slp");
-      expect(prompt.formatId).toBe(3);
+      expect(prompt.fileName).toBe("format4_stub.slp");
+      expect(prompt.formatId).toBe(4);
     }
   });
 
@@ -131,37 +128,46 @@ describe("a format 3.0 .slp is refused cleanly", () => {
   });
 
   it("Merge into Project / overlay reads reject with SlpFormatError", async () => {
-    const err = await loadLabelsFromSlpPath(FORMAT3, async () => format3Bytes()).then(
+    const err = await loadLabelsFromSlpPath(FORMAT4, async () => format4Bytes()).then(
       () => null,
       (e: unknown) => e,
     );
     expect(err).toBeInstanceOf(SlpFormatError);
-    expect((err as Error).message).toContain("format3_minimal.slp");
-    expect((err as Error).message).toContain("SLP format 3.0");
+    expect((err as Error).message).toContain("format4_stub.slp");
+    expect((err as Error).message).toContain("SLP format 4.0");
   });
 
   it("a prediction overlay file comes back not usable, with the message as the reason", async () => {
     const result = await loadAndAnalyze(
-      FORMAT3,
+      FORMAT4,
       { path: "video.mp4", frameCount: null, height: null, width: null },
       [],
       {
-        loadPath: (p) => loadLabelsFromSlpPath(p, async () => format3Bytes()),
+        loadPath: (p) => loadLabelsFromSlpPath(p, async () => format4Bytes()),
         loadFile: () => Promise.reject(new Error("not used")),
       },
     );
     expect(result.ok).toBe(false);
-    expect((result as { reason: string }).reason).toContain("SLP format 3.0");
+    expect((result as { reason: string }).reason).toContain("SLP format 4.0");
   });
 
   it("skeleton import from a .slp rejects with the library's message", async () => {
-    const err = await parseSkeletonFile("format3_minimal.slp", format3Bytes()).then(
+    const err = await parseSkeletonFile("format4_stub.slp", format4Bytes()).then(
       () => null,
       (e: unknown) => e,
     );
     expect(err).toBeInstanceOf(SlpFormatError);
     // Names the user's file, not the reader's default "slp-data.slp".
-    expect((err as Error).message).toContain("'format3_minimal.slp'");
-    expect((err as Error).message).toContain("SLP format 3.0");
+    expect((err as Error).message).toContain("'format4_stub.slp'");
+    expect((err as Error).message).toContain("SLP format 4.0");
+  });
+
+  it("a supported format 3.0 .slp opens directly without refusal", async () => {
+    const ok = await loadProjectFromPath(FORMAT3, async () => format3Bytes());
+    expect(ok).toBe(true);
+    expect(useSlpFormatStore.getState().prompt).toBeNull();
+    expect(toastError.mock.calls.length).toBe(0);
+    expect(useAppStore.getState().labels?.sourceFormat?.formatId).toBe(3);
+    expect(useAppStore.getState().labels?.sourceFormat?.access).toBe("keep");
   });
 });

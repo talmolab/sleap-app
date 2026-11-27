@@ -9,7 +9,7 @@
  * on the user's last choice.
  */
 
-import { useCallback, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { useAppStore } from "../../stores/appStore";
 import { commandContext } from "../../commands/CommandContext";
 import {
@@ -20,6 +20,7 @@ import {
   type ExportPackageLevel,
 } from "../../commands/exportPackageCommands";
 import type { Command } from "../../commands/types";
+import { inspectProjectFormat } from "@/lib/slpFormatStatus";
 import {
   Dialog,
   DialogContent,
@@ -29,6 +30,11 @@ import {
 import { Button } from "@/components/ui/button";
 import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
 import { PackageImageFormatFields, usePackageImageChoice } from "./PackageImageFormatFields";
+import {
+  DEFAULT_SLP_FORMAT_CHOICE,
+  SlpFormatFields,
+  type SlpFormatExportChoice,
+} from "./SlpFormatFields";
 
 interface ExportPackageDialogProps {
   open: boolean;
@@ -70,9 +76,23 @@ export function ExportPackageDialog({
   onOpenChange,
 }: ExportPackageDialogProps) {
   const labels = useAppStore((s) => s.labels);
+  const editSeq = useAppStore((s) => s.editSeq);
   const [level, setLevel] = useState<ExportPackageLevel>("training");
   const image = usePackageImageChoice(open);
   const { choice, valid, remember } = image;
+  const [slpFormat, setSlpFormat] = useState<SlpFormatExportChoice>(
+    DEFAULT_SLP_FORMAT_CHOICE,
+  );
+
+  useEffect(() => {
+    if (open) setSlpFormat(DEFAULT_SLP_FORMAT_CHOICE);
+  }, [open]);
+
+  const formatStatus = useMemo(
+    () => (open ? inspectProjectFormat(labels) : null),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [open, labels, editSeq],
+  );
 
   const handleExport = useCallback(async () => {
     if (!valid) return;
@@ -80,8 +100,15 @@ export function ExportPackageDialog({
     // Close first, as PyQt does: the export's progress overlay (with Cancel)
     // sits below dialogs, so an open dialog would hide it for the whole export.
     onOpenChange(false);
-    await commandContext.execute(COMMAND_BY_LEVEL[level], { image: choice });
-  }, [level, choice, valid, remember, onOpenChange]);
+    const params: Record<string, unknown> = { image: choice };
+    if (slpFormat.slpVersion !== "auto") {
+      params.slpVersion = slpFormat.slpVersion;
+      if (slpFormat.slpVersion === "v2") {
+        params.unlabeledAs = slpFormat.unlabeledAs;
+      }
+    }
+    await commandContext.execute(COMMAND_BY_LEVEL[level], params);
+  }, [level, choice, valid, remember, slpFormat, onOpenChange]);
 
   if (!labels) return null;
 
@@ -138,6 +165,15 @@ export function ExportPackageDialog({
           value={choice}
           onChange={image.setChoice}
           idPrefix="pkg"
+        />
+
+        <SlpFormatFields
+          value={slpFormat}
+          onChange={setSlpFormat}
+          summary={formatStatus?.summary ?? null}
+          effectiveAutoVersion={formatStatus?.willWriteFormat3 ? "v3" : "v2"}
+          idPrefix="pkg-slp"
+          collapsible
         />
 
         <div className="flex justify-end gap-2">

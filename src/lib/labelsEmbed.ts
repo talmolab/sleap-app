@@ -14,8 +14,8 @@
  * `collectEncodedFrames` (`src/codecs/slp/write.ts`).
  */
 import { saveSlpToBytes, type Labels } from "@talmolab/sleap-io.js";
-import { withLegacyLayout } from "@/lib/slpFormatCompat";
+import { legacyV2WriteOptions } from "@/lib/slpFormat";
 
 export async function serializeLabelsEmbedded(labels: Labels): Promise<Uint8Array> {
-  return saveSlpToBytes(labels, withLegacyLayout({ embed: true }));
+  return saveSlpToBytes(labels, legacyV2WriteOptions({ embed: true }));
 }

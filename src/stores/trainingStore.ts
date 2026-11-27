@@ -226,7 +226,7 @@ export const SHARED_BBOX_HYPERPARAMS = ["bboxSource", "bboxPadding"] as const;
 export const BBOX_REMOTE_UNSUPPORTED =
   "Box detector models train on this computer only for now: remote workers aren't supported yet.";
 
-export type Backbone = "unet" | "convnext" | "swint";
+export type Backbone = "unet" | "convnext" | "swint" | "pretrained" | "dinov2_windowed";
 
 /** Size variant of a ConvNeXt/SwinT backbone — sleap-nn's `model_type`.
  *  ConvNeXt has all four; SwinT has no "large". */
@@ -1040,7 +1040,7 @@ export function buildPostTrainingInferenceConfig(opts: {
     runtime: opts.runtime ?? "auto",
     maxInstances: post.maxInstances,
     peakThreshold: 0.2,
-    integralRefinement: true,
+    integralRefinement: "auto",
     integralPatchSize: 5,
     nPoints: 10,
     maxEdgeLengthRatio: 0.25,
@@ -1079,6 +1079,49 @@ export function buildPostTrainingInferenceConfig(opts: {
     filterMinInstanceScore: null,
     filterMinCentroidDistance: null,
   };
+}
+
+/**
+ * Plan the `sleap-nn export` invocation(s) for a post-training export.
+ *
+ * In sleap-nn 0.4, a bounding-box detector + box-crop centered-instance pair
+ * (`top_down_bbox`) cannot be exported as one combined bundle — each stage
+ * must be exported separately (with `--network-only` on the centered-instance
+ * stage) and both exported directories passed to `sleap-nn predict`. Every
+ * other pipeline exports in a single call.
+ */
+export function planPostTrainingExports(
+  modelType: ModelType,
+  pipelinePaths: readonly string[],
+  baseOutputDir: string,
+  format: import("@/platform/exportArgs").ExportFormat,
+  precision: import("@/platform/exportArgs").ExportPrecision = "fp16",
+): import("@/platform/exportArgs").BuildExportArgsOptions[] {
+  if (modelType === "top_down_bbox" && pipelinePaths.length >= 2) {
+    return [
+      {
+        modelPaths: [pipelinePaths[0]],
+        outputDir: `${baseOutputDir}/detector`,
+        format,
+        precision,
+      },
+      {
+        modelPaths: [pipelinePaths[1]],
+        outputDir: `${baseOutputDir}/pose`,
+        format,
+        precision,
+        networkOnly: true,
+      },
+    ];
+  }
+  return [
+    {
+      modelPaths: [...pipelinePaths],
+      outputDir: baseOutputDir,
+      format,
+      precision,
+    },
+  ];
 }
 
 // ── YAML override helper ─────────────────────────────────────────
@@ -1429,11 +1472,13 @@ export function applyHyperparamsToYaml(
       if (isBboxHeadKey(headName)) {
         // A detector's stride lives on its sub-heads (CenterNet's center/size/
         // offset, which sleap-nn requires to share one stride; SSD's finest
-        // pyramid level). It has no anchor part, and a key written directly
-        // on the head would be rejected as unknown.
-        for (const leaf of Object.values(head)) {
-          if (leaf && typeof leaf === "object") {
-            (leaf as Record<string, unknown>).output_stride = hp.outputStride;
+        // pyramid level). bbox_detr's token stride is coupled to its backbone
+        // patch_size and preserved from the YAML preset. None have anchor_part.
+        if (headName !== "bbox_detr") {
+          for (const leaf of Object.values(head)) {
+            if (leaf && typeof leaf === "object") {
+              (leaf as Record<string, unknown>).output_stride = hp.outputStride;
+            }
           }
         }
         continue;
@@ -1456,18 +1501,23 @@ export function applyHyperparamsToYaml(
     }
   }
 
-  // Backbone. sleap-nn builds whichever `backbone_config` key is non-null, so
-  // the chosen backbone gets a full block and the other two are nulled —
-  // otherwise picking ConvNeXt/SwinT on a baseline profile (which ships
-  // `unet: {...}, convnext: null, swint: null`) silently trains a UNet.
+  // Backbone. sleap-nn's BackboneConfig is `@oneof` (only one key may be
+  // non-null): preserve `pretrained` / `dinov2_windowed` blocks verbatim when
+  // active, and null out every inactive backbone key (including `pretrained` /
+  // `dinov2_windowed` when present) so switching backbones never leaves two
+  // active backbones in the YAML.
   const backboneConfig = (model.backbone_config ?? {}) as Record<string, unknown>;
   const activeBackbone: Backbone = hp.backbone || "unet";
   const existingBlock = backboneConfig[activeBackbone];
   const block: Record<string, unknown> =
     existingBlock && typeof existingBlock === "object" ? (existingBlock as Record<string, unknown>) : {};
-  if (activeBackbone === "unet") {
+  if (activeBackbone === "pretrained" || activeBackbone === "dinov2_windowed") {
+    // External HuggingFace / timm / RF-DETR windowed DINOv2 backbones: keep
+    // all YAML fields (model_name, weights, vit_decoder, out_indices, etc.)
+    // intact rather than overwriting them with UNet/ConvNeXt defaults.
+  } else if (activeBackbone === "unet") {
     if (block !== existingBlock) {
-      // Switching back to UNet on a config that shipped as ConvNeXt/SwinT.
+      // Switching back to UNet on a config that shipped as another backbone.
       Object.assign(block, UNET_BLOCK_DEFAULTS, {
         output_stride: minHeadOutputStride(headConfigs) ?? hp.outputStride,
       });
@@ -1500,6 +1550,13 @@ export function applyHyperparamsToYaml(
   }
   for (const key of ["unet", "convnext", "swint"] as const) {
     backboneConfig[key] = key === activeBackbone ? block : null;
+  }
+  for (const key of ["pretrained", "dinov2_windowed"] as const) {
+    if (key === activeBackbone) {
+      backboneConfig[key] = block;
+    } else if (key in backboneConfig) {
+      backboneConfig[key] = null;
+    }
   }
   model.backbone_config = backboneConfig;
 
@@ -1985,6 +2042,8 @@ export const useTrainingStore = create<TrainingState>()((set, get) => ({
         "unet": "unet",
         "convnext": "convnext",
         "swint": "swint",
+        "pretrained": "pretrained",
+        "dinov2_windowed": "dinov2_windowed",
       };
 
       // Extract early stopping config
@@ -2319,16 +2378,21 @@ export const useTrainingStore = create<TrainingState>()((set, get) => ({
     let { config } = get();
     // A job that uses the open project (its labels, or predictions merged back
     // into it): a View only project asks to allow editing first (Cancel stops
-    // the job), and when the training data is built from the project, nodes
-    // not labeled are announced as hidden (the job reads a 2.x copy).
+    // the job), and when the job reads a 2.x downgrade copy (remote worker, or
+    // local sleap-nn < 0.4.0a0 / unknown), nodes not labeled are announced as
+    // hidden. Local sleap-nn >= 0.4.0a0 reads SLP 3.0 natively (node_loss_mask).
     if (remoteOpts?.labelsSource !== "worker-file") {
-      const [{ confirmJobFromProject }, { useAppStore }] = await Promise.all([
-        import("@/lib/slpAccess"),
-        import("@/stores/appStore"),
-      ]);
-      const buildsFromProject = remoteOpts
+      const [{ confirmJobFromProject }, { useAppStore }, { localSleapNnSupportsSlp3 }] =
+        await Promise.all([
+          import("@/lib/slpAccess"),
+          import("@/stores/appStore"),
+          import("@/lib/jobLabelsFile"),
+        ]);
+      const readsOpenProject = remoteOpts
         ? true
         : (await localTrainingLabelsPath(config)) === useAppStore.getState().projectPath;
+      const buildsFromProject =
+        readsOpenProject && (Boolean(remoteOpts) || !(await localSleapNnSupportsSlp3()));
       if (!(await confirmJobFromProject("training", { buildsFromProject }))) return;
     }
 
@@ -3203,39 +3267,53 @@ export const useTrainingStore = create<TrainingState>()((set, get) => ({
         // ── Post-training model export (ONNX / TensorRT) ──────
         // Auto-export the trained model to a portable runtime when the user picked a
         // format in the Training config Output section. On failure we keep going with
-        // the PyTorch checkpoint (exportDir stays null → inference falls back to it).
+        // the PyTorch checkpoint (exportedModelPaths stays null → inference falls back to it).
         const exportFormat = localOpts?.exportFormat;
-        let exportDir: string | null = null;
+        let exportedModelPaths: string[] | null = null;
         if (exportFormat && exportFormat !== "none" && pipelinePaths.length > 0) {
           const { runExport } = await import("@/platform/backend");
           // This project's models/exported — not next to the first model,
           // which may be a reused one from another project's folder.
           const outputDir = `${modelDir}/exported`;
-          // List the run dirs being bundled so a top-down export reads clearly as
-          // both heads (e.g. "centroid.n=1 + centered_instance.n=1"), not centroid-only.
-          const exportRunNames = pipelinePaths
-            .map((d) => d.replace(/[/\\]+$/, "").split(/[/\\]/).pop())
-            .join(" + ");
-          set((s) => ({ log: appendLog(s.log, `— Exporting trained model to ${exportFormat.toUpperCase()} (${exportRunNames}) → ${outputDir}...`) }));
+          const exportJobs = planPostTrainingExports(
+            config.modelType,
+            pipelinePaths,
+            outputDir,
+            exportFormat,
+            "fp16",
+          );
           const exportLogEvent = (event: import("@/platform/backend").ProcessEvent) => {
             if (event.event === "stdout" || event.event === "stderr") {
               const line = event.data.line;
               if (line.trim()) set((s) => ({ log: appendLog(s.log, line) }));
             }
           };
-          const exportResult = await runExport(
-            { modelPaths: pipelinePaths, outputDir, format: exportFormat, precision: "fp16" },
-            exportLogEvent,
-          );
-          if (exportResult.success) {
-            exportDir = outputDir;
-            set((s) => ({ log: appendLog(s.log, `— Export complete: ${outputDir}`) }));
+          let allExported = true;
+          for (const job of exportJobs) {
+            const exportRunNames = job.modelPaths
+              .map((d) => d.replace(/[/\\]+$/, "").split(/[/\\]/).pop())
+              .join(" + ");
+            set((s) => ({
+              log: appendLog(
+                s.log,
+                `— Exporting trained model to ${exportFormat.toUpperCase()} (${exportRunNames}) → ${job.outputDir}...`,
+              ),
+            }));
+            const exportResult = await runExport(job, exportLogEvent);
+            if (!exportResult.success) {
+              allExported = false;
+              break;
+            }
+          }
+          if (allExported) {
+            exportedModelPaths = exportJobs.map((j) => j.outputDir);
+            set((s) => ({ log: appendLog(s.log, `— Export complete: ${exportedModelPaths!.join(", ")}`) }));
           } else {
             set((s) => ({ log: appendLog(s.log, "— Export failed — continuing with the PyTorch model.") }));
           }
         }
-        // Whether post-training inference should target the exported model.
-        const useExported = !!exportDir && !!localOpts?.useExportedForInference;
+        // Whether post-training inference should target the exported model(s).
+        const useExported = !!exportedModelPaths && !!localOpts?.useExportedForInference;
         const exportRuntime: "onnx" | "tensorrt" = exportFormat === "tensorrt" ? "tensorrt" : "onnx";
         // Exported ONNX must NOT run on the CoreML EP — onnxruntime resolves "auto"
         // → mps → CoreML on macOS, which fails on these dynamic-shape models
@@ -3263,7 +3341,7 @@ export const useTrainingStore = create<TrainingState>()((set, get) => ({
         }
         if (inferenceTarget && resolvedTarget && !("skip" in resolvedTarget)) {
           set((s) => ({
-            log: appendLog(s.log, `— Running inference (${inferenceTarget}) with ${useExported ? `exported model: ${exportDir}` : `models: ${pipelinePaths.join(", ")}`}...`),
+            log: appendLog(s.log, `— Running inference (${inferenceTarget}) with ${useExported ? `exported model: ${exportedModelPaths!.join(", ")}` : `models: ${pipelinePaths.join(", ")}`}...`),
           }));
 
           const { runInference } = await import("@/platform/backend");
@@ -3275,7 +3353,7 @@ export const useTrainingStore = create<TrainingState>()((set, get) => ({
 
           const inferenceConfig = buildPostTrainingInferenceConfig({
             modelType: config.modelType,
-            modelPaths: useExported ? [exportDir!] : pipelinePaths,
+            modelPaths: useExported ? exportedModelPaths! : pipelinePaths,
             inferenceTarget: resolvedTarget.frameRange,
             videoIndex: resolvedTarget.videoIndex,
             sampleCount: localOpts?.sampleCount,
@@ -3476,13 +3554,17 @@ export const useTrainingStore = create<TrainingState>()((set, get) => ({
     const slots = slotsToTrain(getConfigSlots(config.modelType), config.configs);
     if (slots.length === 0) return;
     // A dry run of a project whose file is still in SLP format 3.0 reads a
-    // 2.x copy of it (as a real run does), which a View only project can't
-    // write until editing is allowed.
+    // 2.x copy only when local sleap-nn is < 0.4.0a0 (or unknown), which a
+    // View only project can't write until editing is allowed.
     {
       const { useAppStore } = await import("@/stores/appStore");
-      const { projectFileIsFormat3 } = await import("@/lib/jobLabelsFile");
+      const { projectFileIsFormat3, localSleapNnSupportsSlp3 } = await import("@/lib/jobLabelsFile");
       const { labels, projectPath } = useAppStore.getState();
-      if ((await localTrainingLabelsPath(config)) === projectPath && projectFileIsFormat3(labels)) {
+      if (
+        (await localTrainingLabelsPath(config)) === projectPath &&
+        projectFileIsFormat3(labels) &&
+        !(await localSleapNnSupportsSlp3())
+      ) {
         const { ensureWritable } = await import("@/lib/slpAccess");
         if (!(await ensureWritable(labels, "check"))) return;
       }

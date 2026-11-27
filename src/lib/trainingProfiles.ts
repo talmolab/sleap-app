@@ -10,6 +10,7 @@ import baselineMultiClassBottomup from "@/assets/training_profiles/baseline.mult
 import baselineMultiClassTopdown from "@/assets/training_profiles/baseline.multi_class_topdown.yaml?raw";
 import baselineBboxCenternet from "@/assets/training_profiles/baseline.bbox_centernet.yaml?raw";
 import baselineBboxSsd from "@/assets/training_profiles/baseline.bbox_ssd.yaml?raw";
+import baselineBboxDetr from "@/assets/training_profiles/baseline.bbox_detr.yaml?raw";
 import baselineMediumRfTopdownBbox from "@/assets/training_profiles/baseline_medium_rf.topdown_bbox.yaml?raw";
 import baselineLargeRfTopdownBbox from "@/assets/training_profiles/baseline_large_rf.topdown_bbox.yaml?raw";
 import type { ModelType } from "@/stores/trainingStore";
@@ -21,6 +22,8 @@ export interface BaselineProfile {
   /** Display label for config-picker dropdowns, e.g. "Preset: Centered Instance (Medium RF)". */
   label: string;
   content: string;
+  /** True when the preset needs sleap-nn's `[backbones]` extra (`timm`, `transformers`). */
+  requiresBackbones?: boolean;
 }
 
 export const BASELINE_PROFILES: BaselineProfile[] = [
@@ -38,6 +41,7 @@ export const BASELINE_PROFILES: BaselineProfile[] = [
   // (CenterNet first, so it's the default).
   { filename: "baseline.bbox_centernet.yaml", headType: "bbox", label: "Preset: Box Detector (CenterNet)", content: baselineBboxCenternet },
   { filename: "baseline.bbox_ssd.yaml", headType: "bbox", label: "Preset: Box Detector (SSD)", content: baselineBboxSsd },
+  { filename: "baseline.bbox_detr.yaml", headType: "bbox", label: "Preset: Box Detector (DETR)", content: baselineBboxDetr, requiresBackbones: true },
   { filename: "baseline_medium_rf.topdown_bbox.yaml", headType: "centered_instance_bbox", label: "Preset: Centered Instance, Box Crops (Medium RF)", content: baselineMediumRfTopdownBbox },
   { filename: "baseline_large_rf.topdown_bbox.yaml", headType: "centered_instance_bbox", label: "Preset: Centered Instance, Box Crops (Large RF)", content: baselineLargeRfTopdownBbox },
 ];

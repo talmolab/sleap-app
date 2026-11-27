@@ -15,7 +15,15 @@ import {
   useInferenceStore,
   useSkeletonInferenceSettingsStore,
 } from "../../stores/inferenceStore";
-import { centroidOutputFor, type InferenceConfig, type PipelineType } from "@/stores/inferenceStore";
+import {
+  centroidOutputFor,
+  normalizeIntegralRefinement,
+  type InferenceConfig,
+  type InferencePrecision,
+  type InferenceSlpVersion,
+  type IntegralRefinementMethod,
+  type PipelineType,
+} from "@/stores/inferenceStore";
 import { centroidOnlyProblem } from "@/lib/centroidOnly";
 import { INFERENCE_DEFAULTS as DEFAULTS } from "@/lib/inferenceDefaults";
 import { describeClip, normalizeClip } from "@/lib/postTrainingTarget";
@@ -649,8 +657,16 @@ function InferencePanelContent() {
   const [maxInstances, setMaxInstances] = useState<number | null>(DEFAULTS.maxInstances);
   const [noMaxInstances, setNoMaxInstances] = useState(true);
   const [peakThreshold, setPeakThreshold] = useState(DEFAULTS.peakThreshold);
-  const [integralRefinement, setIntegralRefinement] = useState(DEFAULTS.integralRefinement);
+  const [integralRefinement, setIntegralRefinement] = useState<IntegralRefinementMethod>(
+    normalizeIntegralRefinement(DEFAULTS.integralRefinement),
+  );
   const [integralPatchSize, setIntegralPatchSize] = useState(DEFAULTS.integralPatchSize);
+  const [precision, setPrecision] = useState<InferencePrecision>(DEFAULTS.precision ?? "32");
+  const [uploadBatches, setUploadBatches] = useState(DEFAULTS.uploadBatches ?? false);
+  const [flipTest, setFlipTest] = useState(DEFAULTS.flipTest ?? false);
+  const [rescore, setRescore] = useState(DEFAULTS.rescore ?? false);
+  const [bboxNmsIou, setBboxNmsIou] = useState<number | null>(DEFAULTS.bboxNmsIou ?? null);
+  const [slpVersion, setSlpVersion] = useState<InferenceSlpVersion>(DEFAULTS.slpVersion ?? "auto");
   const [nPoints, setNPoints] = useState(DEFAULTS.nPoints);
   const [maxEdgeLengthRatio, setMaxEdgeLengthRatio] = useState(DEFAULTS.maxEdgeLengthRatio);
   const [distPenaltyWeight, setDistPenaltyWeight] = useState(DEFAULTS.distPenaltyWeight);
@@ -990,8 +1006,14 @@ function InferencePanelContent() {
         if (v != null) setMaxInstances(v);
       },
       peakThreshold: (v) => v != null && setPeakThreshold(v),
-      integralRefinement: (v) => v != null && setIntegralRefinement(v),
+      integralRefinement: (v) => v != null && setIntegralRefinement(normalizeIntegralRefinement(v)),
       integralPatchSize: (v) => v != null && setIntegralPatchSize(v),
+      precision: (v) => v && setPrecision(v),
+      uploadBatches: (v) => v != null && setUploadBatches(v),
+      flipTest: (v) => v != null && setFlipTest(v),
+      rescore: (v) => v != null && setRescore(v),
+      bboxNmsIou: (v) => setBboxNmsIou(v ?? null),
+      slpVersion: (v) => v && setSlpVersion(v),
       nPoints: (v) => v != null && setNPoints(v),
       maxEdgeLengthRatio: (v) => v != null && setMaxEdgeLengthRatio(v),
       distPenaltyWeight: (v) => v != null && setDistPenaltyWeight(v),
@@ -1083,6 +1105,7 @@ function InferencePanelContent() {
       maxInstances: noMaxInstances ? null : maxInstances,
       peakThreshold,
       integralRefinement, integralPatchSize,
+      precision, uploadBatches, flipTest, rescore, bboxNmsIou, slpVersion,
       nPoints, maxEdgeLengthRatio, distPenaltyWeight, minLineScores,
       // Track-only implies tracking is always on, regardless of the
       // (hidden, in this mode) "Enable tracking" checkbox's own state.
@@ -1827,8 +1850,14 @@ function InferencePanelContent() {
           if (activeRunKey) resetSkeletonSettings(activeRunKey);
           setPeakThreshold(DEFAULTS.peakThreshold);
           setMaxInstances(DEFAULTS.maxInstances); setNoMaxInstances(DEFAULTS.maxInstances === null);
-          setIntegralRefinement(DEFAULTS.integralRefinement);
+          setIntegralRefinement(normalizeIntegralRefinement(DEFAULTS.integralRefinement));
           setIntegralPatchSize(DEFAULTS.integralPatchSize);
+          setPrecision(DEFAULTS.precision ?? "32");
+          setUploadBatches(DEFAULTS.uploadBatches ?? false);
+          setFlipTest(DEFAULTS.flipTest ?? false);
+          setRescore(DEFAULTS.rescore ?? false);
+          setBboxNmsIou(DEFAULTS.bboxNmsIou ?? null);
+          setSlpVersion(DEFAULTS.slpVersion ?? "auto");
           setNPoints(DEFAULTS.nPoints);
           setMaxEdgeLengthRatio(DEFAULTS.maxEdgeLengthRatio);
           setDistPenaltyWeight(DEFAULTS.distPenaltyWeight);
@@ -1869,6 +1898,7 @@ function InferencePanelContent() {
         values={{
           peakThreshold, maxInstances: noMaxInstances ? null : maxInstances,
           integralRefinement, integralPatchSize,
+          precision, uploadBatches, flipTest, rescore, bboxNmsIou, slpVersion,
           nPoints, maxEdgeLengthRatio, distPenaltyWeight, minLineScores,
           trackerMethod, similarityMethod, matchingMethod,
           trackingWindowSize, maxTracks: noMaxTracks ? null : maxTracks, connectSingleBreaks, robust,
@@ -1911,6 +1941,12 @@ function InferencePanelContent() {
           if ("maxInstances" in updates) { setMaxInstances(updates.maxInstances!); setNoMaxInstances(updates.maxInstances === null); }
           if ("integralRefinement" in updates) setIntegralRefinement(updates.integralRefinement!);
           if ("integralPatchSize" in updates) setIntegralPatchSize(updates.integralPatchSize!);
+          if ("precision" in updates) setPrecision(updates.precision!);
+          if ("uploadBatches" in updates) setUploadBatches(updates.uploadBatches!);
+          if ("flipTest" in updates) setFlipTest(updates.flipTest!);
+          if ("rescore" in updates) setRescore(updates.rescore!);
+          if ("bboxNmsIou" in updates) setBboxNmsIou(updates.bboxNmsIou!);
+          if ("slpVersion" in updates) setSlpVersion(updates.slpVersion!);
           if ("nPoints" in updates) setNPoints(updates.nPoints!);
           if ("maxEdgeLengthRatio" in updates) setMaxEdgeLengthRatio(updates.maxEdgeLengthRatio!);
           if ("distPenaltyWeight" in updates) setDistPenaltyWeight(updates.distPenaltyWeight!);

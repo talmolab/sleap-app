@@ -159,6 +159,7 @@ export function ExportModelDialog() {
                 <SelectTrigger className="h-8 w-40 text-sm"><SelectValue /></SelectTrigger>
                 <SelectContent>
                   <SelectItem value="fp16">fp16</SelectItem>
+                  <SelectItem value="bf16">bf16</SelectItem>
                   <SelectItem value="fp32">fp32</SelectItem>
                   <SelectItem value="tf32">tf32</SelectItem>
                 </SelectContent>

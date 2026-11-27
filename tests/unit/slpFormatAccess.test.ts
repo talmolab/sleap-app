@@ -21,6 +21,11 @@ import {
   PredictedInstance,
   Skeleton,
   Video,
+  setSourceAccess,
+  type Format3Access,
+  type Format3Summary,
+  type RecordMetadata,
+  type SlpSourceFormat,
 } from "@talmolab/sleap-io.js";
 import {
   copyMetadata,
@@ -32,17 +37,14 @@ import {
   isSlpViewOnlyError,
   isUnlabeledPoint,
   isViewOnlyLabels,
+  legacyV2WriteOptions,
   markPointLabeled,
   markSavedInLegacyLayout,
   metadataOf,
-  setSourceAccess,
-  withFormat3,
-  withLegacyLayout,
-  type Format3Summary,
-  type SlpSourceFormat,
-} from "@/lib/slpFormatCompat";
+} from "@/lib/slpFormat";
 import {
   describeFormat3Drops,
+  describeFormat3KeepDrops,
   ensureWritable,
   isReportedSlpError,
   legacyCopyCommand,
@@ -68,6 +70,7 @@ const SUMMARY: Format3Summary = {
   unlabeledPredictedPoints: 1,
   metadataKeys: { instances: ["annotator"], frames: ["note"], bboxes: [] },
   unknownColumns: ["points/extra"],
+  unreadTables: [],
   lossless: false,
 };
 
@@ -91,7 +94,7 @@ function answerNextPrompt(answer: SlpFormatAnswer): SlpFormatPrompt[] {
   return seen;
 }
 
-function viewOnlyLabels(access: "view" | "edit" = "view"): Labels {
+function viewOnlyLabels(access: Format3Access = "view"): Labels {
   const skeleton = new Skeleton({ nodes: ["a", "b"] });
   const video = new Video({ filename: "v.mp4" });
   const inst = new Instance({
@@ -106,8 +109,13 @@ function viewOnlyLabels(access: "view" | "edit" = "view"): Labels {
     videos: [video],
     skeletons: [skeleton],
   });
-  const sf: SlpSourceFormat = { formatId: 3, access, summary: SUMMARY, labelsPath: "/data/x.slp" };
-  (labels as unknown as { sourceFormat: SlpSourceFormat }).sourceFormat = sf;
+  const sf: SlpSourceFormat = Object.freeze({
+    formatId: 3,
+    access,
+    summary: SUMMARY,
+    labelsPath: "/data/x.slp",
+  });
+  labels.sourceFormat = sf;
   return labels;
 }
 
@@ -136,11 +144,13 @@ describe("error detection (shim)", () => {
     expect(isSlpViewOnlyError(new Error("x"))).toBe(false);
   });
 
-  it("adds the reader and writer options without dropping the caller's", () => {
-    expect(withFormat3({ openVideos: false }, "view") as unknown).toEqual({ openVideos: false, format3: "view" });
-    expect(withFormat3({ openVideos: false }, undefined)).toEqual({ openVideos: false });
-    expect(withLegacyLayout({ embed: "user" }) as unknown).toEqual({ embed: "user", unlabeledAs: "absent" });
-    expect(withLegacyLayout() as unknown).toEqual({ unlabeledAs: "absent" });
+  it("adds explicit 2.x legacy write options without dropping the caller's", () => {
+    expect(legacyV2WriteOptions({ embed: "user" })).toEqual({
+      embed: "user",
+      slpVersion: "v2",
+      unlabeledAs: "absent",
+    });
+    expect(legacyV2WriteOptions()).toEqual({ slpVersion: "v2", unlabeledAs: "absent" });
   });
 });
 
@@ -170,11 +180,11 @@ describe("points and metadata (shim)", () => {
 
   it("copies metadata as a new object, and ignores records without any", () => {
     const src = { metadata: { annotator: "someone", n: 2 } };
-    const dst = copyMetadata(src, {} as { metadata?: Record<string, unknown> });
+    const dst = copyMetadata(src, {} as { metadata?: RecordMetadata });
     expect(dst.metadata).toEqual({ annotator: "someone", n: 2 });
     expect(dst.metadata).not.toBe(src.metadata);
     expect(metadataOf({ metadata: {} })).toBeNull();
-    expect(copyMetadata({}, {} as { metadata?: unknown }).metadata).toBeUndefined();
+    expect(copyMetadata({}, {} as { metadata?: RecordMetadata }).metadata).toBeUndefined();
   });
 });
 
@@ -200,9 +210,15 @@ describe("dialog text", () => {
         unlabeledPredictedPoints: 0,
         metadataKeys: { instances: [], frames: [], bboxes: [] },
         unknownColumns: [],
+        unreadTables: [],
         lossless: true,
       }),
     ).toEqual([]);
+    // Native format 3.0 saves (`access: "keep"`) only drop unreadTables.
+    expect(describeFormat3KeepDrops(SUMMARY)).toEqual([]);
+    expect(describeFormat3KeepDrops({ ...SUMMARY, unreadTables: ["event_types", "events"] })).toEqual([
+      "Parts of the file this version doesn't read: event_types, events",
+    ]);
   });
 
   it("says which tool reads a refused file, and how to save a copy", () => {
@@ -254,8 +270,8 @@ describe("readWithFormatChoice", () => {
     expect(toastError).not.toHaveBeenCalled();
   });
 
-  it("merging offers only Merge or Cancel", async () => {
-    const prompts = answerNextPrompt("edit");
+  it("merging offers only Merge or Cancel and opens in native 3.0 keep mode", async () => {
+    const prompts = answerNextPrompt("keep");
     const calls: Array<string | undefined> = [];
     await readWithFormatChoice(
       async (access) => {
@@ -267,7 +283,7 @@ describe("readWithFormatChoice", () => {
       "donor.slp",
     );
     expect(prompts[0].kind).toBe("merge");
-    expect(calls).toEqual([undefined, "edit"]);
+    expect(calls).toEqual([undefined, "keep"]);
   });
 
   it("passes a fixed choice straight to the reader, without asking", async () => {
@@ -314,17 +330,22 @@ describe("View only projects", () => {
     expect(declined[0]).toMatchObject({ kind: "allow-edit", action: "save", fileName: "x.slp" });
     expect(isViewOnlyLabels(labels)).toBe(true);
 
-    answerNextPrompt("edit");
+    answerNextPrompt("keep");
     expect(await ensureWritable(labels, "save")).toBe(true);
     expect(isViewOnlyLabels(labels)).toBe(false);
-    // Labels opened for editing never ask.
+    expect(labels.sourceFormat?.access).toBe("keep");
+    // Labels opened for native 3.0 or 2.x editing never ask.
+    expect(await ensureWritable(viewOnlyLabels("keep"), "save")).toBe(true);
     expect(await ensureWritable(viewOnlyLabels("edit"), "save")).toBe(true);
   });
 
-  it("a save of edit-loaded labels clears sourceFormat; view-only labels keep it", () => {
+  it("a save of edit-loaded labels clears sourceFormat; keep and view-only labels keep it", () => {
     const edited = viewOnlyLabels("edit");
     markSavedInLegacyLayout(edited);
-    expect((edited as unknown as { sourceFormat: unknown }).sourceFormat).toBeNull();
+    expect(edited.sourceFormat).toBeNull();
+    const kept = viewOnlyLabels("keep");
+    markSavedInLegacyLayout(kept);
+    expect(kept.sourceFormat?.access).toBe("keep");
     const viewed = viewOnlyLabels("view");
     markSavedInLegacyLayout(viewed);
     expect(isViewOnlyLabels(viewed)).toBe(true);
@@ -332,9 +353,10 @@ describe("View only projects", () => {
 
   it("setSourceAccess switches the labels' access without mutating the old source format", () => {
     const labels = viewOnlyLabels();
-    const sf = (labels as unknown as { sourceFormat: SlpSourceFormat }).sourceFormat;
-    setSourceAccess(labels, "edit");
+    const sf = labels.sourceFormat!;
+    setSourceAccess(labels, "keep");
     expect(isViewOnlyLabels(labels)).toBe(false);
+    expect(labels.sourceFormat?.access).toBe("keep");
     expect(sf.access).toBe("view"); // sleap-io.js freezes these: never mutated
   });
 

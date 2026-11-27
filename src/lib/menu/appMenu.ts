@@ -9,6 +9,7 @@
 import type { NavigationDomain } from "@/stores/appStore";
 import { useAppStore } from "@/stores/appStore";
 import { useExportStore } from "@/stores/exportStore";
+import { useSlpFormatStore } from "@/stores/slpFormatStore";
 import { PANELS } from "@/components/layout/panelRegistry";
 import { DEFAULT_SHORTCUTS } from "@/lib/shortcuts";
 import { getDocsUrl } from "@/lib/docsUrl";
@@ -255,6 +256,7 @@ function fileMenu(s: MenuSnapshot): TopMenu {
           ],
         },
         { kind: "item", id: "file.export.nwb", label: "NWB (ndx-pose)...", run: exec(ExportNwbCommand) },
+        { kind: "item", id: "file.export.slpCopy", label: "SLP Copy...", run: () => useSlpFormatStore.getState().openSaveSlpCopyDialog("auto") },
         { kind: "item", id: "file.export.pkg", label: "Labels Package (.pkg.slp)...", run: () => store().setExportPackageDialogOpen(true) },
         { kind: "item", id: "file.export.jsonPackage", label: "JSON Package...", run: exec(ExportPackageCommand) },
         { kind: "item", id: "file.export.clip", label: "Labeled Clip (Video)...", run: () => store().setExportClipDialogOpen(true) },

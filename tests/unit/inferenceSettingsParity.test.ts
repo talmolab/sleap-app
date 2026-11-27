@@ -125,7 +125,20 @@ describe("post-training inference settings", () => {
 
 describe("remembered Inference panel settings", () => {
   it("round-trips the settings, target and custom range; never model paths, video or track-only", () => {
-    const saved = settingsToSave(config({ peakThreshold: 0.35, maxInstances: 2, tracking: true, trackOnly: true, pipeline: "bottom-up" }), {
+    const saved = settingsToSave(config({
+      peakThreshold: 0.35,
+      maxInstances: 2,
+      tracking: true,
+      trackOnly: true,
+      pipeline: "bottom-up",
+      integralRefinement: "dark",
+      precision: "bf16-encoder",
+      uploadBatches: true,
+      flipTest: true,
+      rescore: true,
+      bboxNmsIou: 0.45,
+      slpVersion: "v3",
+    }), {
       target: "clip",
       customStart: "10",
       customEnd: "20",
@@ -134,10 +147,22 @@ describe("remembered Inference panel settings", () => {
     expect(back.peakThreshold).toBe(0.35);
     expect(back.maxInstances).toBe(2);
     expect(back.pipeline).toBe("bottom-up");
+    expect(back.integralRefinement).toBe("dark");
+    expect(back.precision).toBe("bf16-encoder");
+    expect(back.uploadBatches).toBe(true);
+    expect(back.flipTest).toBe(true);
+    expect(back.rescore).toBe(true);
+    expect(back.bboxNmsIou).toBe(0.45);
+    expect(back.slpVersion).toBe("v3");
     expect([back.target, back.customStart, back.customEnd]).toEqual(["clip", "10", "20"]);
     expect("trackOnly" in back).toBe(false);
     expect("modelPaths" in back).toBe(false);
     expect("videoIndex" in back).toBe(false);
+  });
+
+  it("migrates legacy boolean integralRefinement (true -> auto, false -> none)", () => {
+    expect(sanitizeSavedInferenceSettings({ integralRefinement: true }).integralRefinement).toBe("auto");
+    expect(sanitizeSavedInferenceSettings({ integralRefinement: false }).integralRefinement).toBe("none");
   });
 
   it("drops unknown keys and wrongly typed values", () => {

@@ -37,7 +37,9 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Slider } from "@/components/ui/slider";
-import { LayoutGrid, ListFilter } from "lucide-react";
+import { LayoutGrid, ListFilter, Tag } from "lucide-react";
+import { metadataOf } from "@/lib/slpFormat";
+import { formatMetadataPreview } from "@/components/common/MetadataEditor";
 
 /**
  * Fallback row height (px) used for windowing before the first real row is
@@ -66,6 +68,7 @@ export const COLUMNS = [
   { key: "low",     label: "Low",    type: "number",  align: "right",  defaultVisible: false, tooltip: "Predictions with score below threshold" },
   { key: "score",   label: "Score",  type: "score",   align: "right",  defaultVisible: true,  tooltip: "Mean prediction score (0-1)" },
   { key: "recent",  label: "Recent", type: "number",  align: "right",  defaultVisible: false, tooltip: "Recently interacted frame" },
+  { key: "meta",    label: "Meta",   type: "string",  align: "left",   defaultVisible: false, tooltip: "Frame metadata (SLP 3.0)" },
 ] as const;
 
 type ColumnKey = (typeof COLUMNS)[number]["key"];
@@ -90,6 +93,8 @@ export interface FrameRowData {
   low: number;
   score: number | null;
   recent: number | null;
+  meta: string;
+  metaCount: number;
 }
 
 /** Render a single cell value based on column key. */
@@ -144,6 +149,23 @@ function renderCell(row: FrameRowData, key: ColumnKey) {
         <TableCell key={key} className="py-0.5 px-2 text-xs text-center">
           {row.recent !== null && (
             <span className="inline-block w-2 h-2 rounded-full bg-blue-500" title={`Rank: ${row.recent}`} />
+          )}
+        </TableCell>
+      );
+    case "meta":
+      return (
+        <TableCell
+          key={key}
+          className="py-0.5 px-2 text-xs max-w-[120px] truncate"
+          title={row.meta || undefined}
+        >
+          {row.metaCount > 0 ? (
+            <span className="inline-flex items-center gap-1 text-muted-foreground">
+              <Tag className="h-2.5 w-2.5 shrink-0" />
+              <span className="tabular-nums">{row.metaCount}</span>
+            </span>
+          ) : (
+            <span className="text-muted-foreground">&mdash;</span>
           )}
         </TableCell>
       );
@@ -459,6 +481,8 @@ export function FramesPanel() {
   const [visibleCols, setVisibleCols] = useState<Set<ColumnKey>>(
     () => new Set(COLUMNS.filter((c) => c.defaultVisible).map((c) => c.key))
   );
+  const metaManuallyToggledRef = useRef(false);
+  const editSeq = useAppStore((s) => s.editSeq);
 
   // --- Fixed-height row virtualization (#160) -----------------------------
   // Only a windowed subset of rows is rendered; top/bottom spacer rows stand
@@ -503,7 +527,8 @@ export function FramesPanel() {
         (lf) =>
           lf.instances.length > 0 ||
           isUserLabeledFrame(lf) ||
-          (lf.bboxes ?? []).some((b) => b.isPredicted),
+          (lf.bboxes ?? []).some((b) => b.isPredicted) ||
+          metadataOf(lf) !== null,
       )
       .map((lf) => {
       const userInstances = lf.userInstances;
@@ -523,6 +548,8 @@ export function FramesPanel() {
       const key = `${vidIdx}:${lf.frameIdx}`;
       const stackIdx = interactionStack.lastIndexOf(key);
       const recent = stackIdx !== -1 ? interactionStack.length - stackIdx : null;
+      const frameMeta = metadataOf(lf);
+      const metaCount = frameMeta ? Object.keys(frameMeta).length : 0;
 
       return {
         video: lf.video,
@@ -538,9 +565,25 @@ export function FramesPanel() {
         low: predicted.filter((pi) => pi.score < 0.5).length,
         score,
         recent,
+        meta: formatMetadataPreview(frameMeta),
+        metaCount,
       };
     });
-  }, [labels, interactionStack]);
+    // editSeq is an intentional invalidation signal for in-place frame edits.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [labels, interactionStack, editSeq]);
+
+  // Automatically reveal the subtle Meta column when any frame carries
+  // metadata, unless the user explicitly toggled it in the column picker.
+  const hasAnyFrameMeta = useMemo(
+    () => rows.some((r) => r.metaCount > 0),
+    [rows],
+  );
+  useEffect(() => {
+    if (hasAnyFrameMeta && !metaManuallyToggledRef.current) {
+      setVisibleCols((prev) => (prev.has("meta") ? prev : new Set([...prev, "meta"])));
+    }
+  }, [hasAnyFrameMeta]);
 
   const searchFiltered = useMemo(() => {
     if (!searchText) return rows;
@@ -745,6 +788,7 @@ export function FramesPanel() {
                     type="checkbox"
                     checked={visibleCols.has(col.key)}
                     onChange={() => {
+                      if (col.key === "meta") metaManuallyToggledRef.current = true;
                       setVisibleCols((prev) => {
                         const next = new Set(prev);
                         if (next.has(col.key)) {

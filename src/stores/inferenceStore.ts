@@ -45,6 +45,19 @@ export type PipelineType =
    */
   | "centroid";
 
+import {
+  normalizeIntegralRefinement,
+  type InferencePrecision,
+  type InferenceSlpVersion,
+  type IntegralRefinementMethod,
+} from "@/platform/inferenceArgs";
+export {
+  normalizeIntegralRefinement,
+  type InferencePrecision,
+  type InferenceSlpVersion,
+  type IntegralRefinementMethod,
+};
+
 export interface InferenceConfig {
   // Pipeline
   pipeline: PipelineType;
@@ -81,9 +94,21 @@ export interface InferenceConfig {
   maxInstances: number | null;
   peakThreshold: number;
 
-  // Bottom-up advanced
-  integralRefinement: boolean;
+  // Peak refinement & bottom-up advanced
+  integralRefinement: IntegralRefinementMethod | boolean;
   integralPatchSize: number;
+  /** Forward-pass autocast precision (sleap-nn >= 0.4.0a0, CUDA checkpoints). */
+  precision?: InferencePrecision;
+  /** Upload batches to GPU before resizing/cropping (`--upload_batches`, CUDA). */
+  uploadBatches?: boolean;
+  /** Horizontal flip test-time augmentation (`--flip_test`, centered-instance). */
+  flipTest?: boolean;
+  /** COCO/mmpose instance rescoring (`--rescore`). */
+  rescore?: boolean;
+  /** Class-wise IoU NMS threshold for box detectors (`--bbox_nms_iou`). */
+  bboxNmsIou?: number | null;
+  /** Output .slp file layout (`--slp_version`, sleap-nn >= 0.4.0a0). */
+  slpVersion?: InferenceSlpVersion;
   nPoints: number;
   maxEdgeLengthRatio: number;
   distPenaltyWeight: number;
@@ -648,11 +673,16 @@ export const useInferenceStore = create<InferenceState>()((set) => ({
     }
     // The predictions come back into the project: a View only project asks
     // to allow editing first (Cancel stops the job). A local job reads a
-    // 2.x copy of the project, so nodes not labeled are announced as hidden;
-    // a remote one reads its own file on the worker.
+    // 2.x copy of the project only when sleap-nn is < 0.4.0a0 (or unknown),
+    // in which case nodes not labeled are announced as hidden; local sleap-nn
+    // >= 0.4.0a0 reads SLP 3.0 natively, and a remote job reads its own file.
     {
-      const { confirmJobFromProject } = await import("@/lib/slpAccess");
-      if (!(await confirmJobFromProject("inference", { buildsFromProject: !remoteOpts?.remote }))) {
+      const [{ confirmJobFromProject }, { localSleapNnSupportsSlp3 }] = await Promise.all([
+        import("@/lib/slpAccess"),
+        import("@/lib/jobLabelsFile"),
+      ]);
+      const buildsFromProject = !remoteOpts?.remote && !(await localSleapNnSupportsSlp3());
+      if (!(await confirmJobFromProject("inference", { buildsFromProject }))) {
         return;
       }
     }
