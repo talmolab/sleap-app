@@ -4,7 +4,7 @@
  *
  * Not a second canvas: VideoPlayer always renders its canvas inside this
  * frame, which only adds a header (position, score, ordering tabs) and a
- * footer (issue, Prev / Delete instance / Ignore / Next) while
+ * footer (issue, one-click fixes, Prev / Delete instance / Ignore / Next) while
  * `qcStore.reviewOpen`. So dragging nodes, V, ⌘Z and zoom all work as usual.
  * Claude's proposal for the instance on screen, if any, shows as a footer row
  * (ClaudeSuggestion) and a ghost pose on the canvas.
@@ -30,9 +30,18 @@ import {
   useQcStore,
   type QcReviewOrder,
 } from "@/stores/qcStore";
-import { commandContext, DeleteSelectedInstance, MarkQcFlagOk } from "@/commands";
+import {
+  AddInstance,
+  commandContext,
+  DeleteSelectedInstance,
+  MarkQcFlagOk,
+  MergeInstance,
+  SetNodes,
+  SwapSymmetricNodes,
+} from "@/commands";
 import { QC_KIND_LABEL, SOFT_QC_KINDS } from "@/lib/analyze/labelQc";
-import { qcIssueText } from "@/lib/qcReview";
+import { qcFixes, qcIssueText, type QcFix } from "@/lib/qcReview";
+import { outOfRangeNodes } from "@/lib/analyze/labelQcRules";
 import { formatShortcut } from "@/lib/formatShortcut";
 import { shortcutText } from "@/lib/shortcutPrefs";
 import { useQcView } from "@/hooks/useQcView";
@@ -266,7 +275,7 @@ function UnplacedHint() {
 }
 
 function ReviewFooter() {
-  const { entry } = useCurrentEntry();
+  const { entry, videoIdx, frameIdx } = useCurrentEntry();
   const lf = useAppStore((s) => s.labeledFrame);
   const selected = useAppStore((s) => s.instance);
   const skeleton = useAppStore((s) => s.skeleton);
@@ -278,6 +287,15 @@ function ReviewFooter() {
   const instIdx = selected && lf ? lf.userInstances.indexOf(selected) : -1;
   const flagged = entry?.anomalies.find(({ a }) => a.instIdx === instIdx);
   const rules = entry?.rules.filter((r) => r.instanceIdx === instIdx) ?? [];
+  const openRules =
+    entry?.rules.filter((r) => r.instanceIdx === undefined || !entry.ok.includes(r.instanceIdx)) ?? [];
+  const frameRule = openRules.find((r) => r.instanceIdx === undefined);
+  // Rule findings aren't re-checked after an edit, and their instance indices
+  // may have shifted (a merge or delete), so their fixes go once the frame is
+  // edited. The anomaly is re-scored live, so its Swap L/R stays accurate.
+  const edited = useQcStore((s) => s.editedFrames.has(qcFrameKey(videoIdx, frameIdx)));
+  const fixes = qcFixes(edited ? [] : openRules, instIdx, flagged?.v.flagged ? flagged.a : null);
+  const showTypicalPose = useQcStore((s) => s.showTypicalPose);
   const ignorable = !!entry && instIdx >= 0 && !entry.ok.includes(instIdx) && (!!flagged || rules.length > 0);
   // Re-scored after an edit and no longer flagged (rules aren't re-checked).
   const looksOk = !!flagged?.a.rescored && !flagged.v.flagged && rules.length === 0;
@@ -287,9 +305,11 @@ function ReviewFooter() {
       ? qcIssueText(flagged.a, flagged.v, (selected?.skeleton ?? skeleton)?.nodeNames ?? [])
       : rules[0]
         ? rules[0].message
-        : entry
-          ? "Select a flagged instance (outlined in red)."
-          : "No flags on this frame.";
+        : frameRule
+          ? frameRule.message
+          : entry
+            ? "Select a flagged instance (outlined in red)."
+            : "No flags on this frame.";
 
   const chip = (label: string, score: number | null, cut: number | null) =>
     score != null && (
@@ -313,13 +333,13 @@ function ReviewFooter() {
             "flex min-w-0 items-center gap-1.5 truncate",
             looksOk
               ? "text-green-500"
-              : flagged || rules.length > 0
+              : flagged || rules.length > 0 || frameRule
                 ? "text-foreground"
                 : "text-muted-foreground",
           )}
           title={looksOk ? `${issue}. ${RESCORED_TITLE}` : issue}
         >
-          {(flagged || rules.length > 0) && (
+          {(flagged || rules.length > 0 || frameRule) && (
             <span
               className={cn("h-2 w-2 shrink-0 rounded-full", looksOk ? "bg-green-500" : "bg-red-500")}
               aria-hidden
@@ -358,7 +378,10 @@ function ReviewFooter() {
           ‹ Prev
         </Button>
         <div className="flex flex-1 flex-col items-center gap-1">
-          <div className="flex items-center gap-2">
+          <div className="flex flex-wrap items-center justify-center gap-2">
+            {fixes.map((fix) => (
+              <FixButton key={fix.kind} fix={fix} />
+            ))}
             <Button
               size="sm"
               variant="outline"
@@ -379,6 +402,21 @@ function ReviewFooter() {
             >
               Ignore
             </Button>
+            <Button
+              size="sm"
+              variant="outline"
+              className={cn(
+                "h-7",
+                showTypicalPose && "border-teal-400/60 bg-teal-400/10 text-teal-300 hover:text-teal-300",
+              )}
+              aria-pressed={showTypicalPose}
+              onClick={() => {
+                useQcStore.getState().setShowTypicalPose(!showTypicalPose);
+              }}
+              title="Draw the project's typical pose fitted onto the selected instance, to see which node is off"
+            >
+              Typical pose
+            </Button>
           </div>
           <span className="text-[10px] text-muted-foreground">
             drag a point to fix it · scroll to zoom · 0 refit · V hide node ·{" "}
@@ -395,5 +433,57 @@ function ReviewFooter() {
         </Button>
       </div>
     </div>
+  );
+}
+
+const FIX_LABEL: Record<QcFix["kind"], { label: string; title: string }> = {
+  swap: { label: "Swap L/R", title: "Swap every left/right node pair of this instance" },
+  merge: {
+    label: "Merge duplicate",
+    title: "Merge the other instance of the duplicate pair into this one (its nodes fill this one's missing ones)",
+  },
+  hideOutside: { label: "Hide outside points", title: "Mark the points outside the frame not visible" },
+  addInstance: { label: "Add instance", title: "This frame has fewer instances than usual: add one" },
+};
+
+/** One fix for what's flagged on screen. One undo step each. */
+function FixButton({ fix }: { fix: QcFix }) {
+  const apply = () => {
+    const { labeledFrame: lf, instance, video } = useAppStore.getState();
+    switch (fix.kind) {
+      case "swap":
+        commandContext.execute(SwapSymmetricNodes);
+        break;
+      case "merge": {
+        const donor = lf?.userInstances[fix.otherInstIdx];
+        if (instance && donor) commandContext.execute(MergeInstance, { survivor: instance, donor });
+        break;
+      }
+      case "hideOutside": {
+        const shape = (video as unknown as { shape: number[] | null } | null)?.shape;
+        if (!instance || !shape) break;
+        const out = outOfRangeNodes(instance.numpy(), shape[2], shape[1]);
+        if (out.length > 0) {
+          commandContext.execute(SetNodes, { nodes: Object.fromEntries(out.map((i) => [i, null])) });
+        }
+        break;
+      }
+      case "addInstance":
+        commandContext.execute(AddInstance);
+        break;
+    }
+  };
+  const { label, title } = FIX_LABEL[fix.kind];
+  return (
+    <Button
+      size="sm"
+      variant="outline"
+      className="h-7 border-emerald-500/50 text-emerald-400 hover:bg-emerald-500/10 hover:text-emerald-400"
+      onClick={apply}
+      title={title}
+      data-testid={`qc-fix-${fix.kind}`}
+    >
+      {label}
+    </Button>
   );
 }

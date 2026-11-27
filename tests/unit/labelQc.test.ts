@@ -48,6 +48,33 @@ describe("runLabelQc", () => {
     expect(fs.find((f) => f.kind === "negative_frame")).toMatchObject({ frameIdx: 5 });
   });
 
+  it("doesn't flag an empty negative frame as incomplete (#489)", () => {
+    const fs = runLabelQc(
+      mockLabels(null, [
+        frame(0, [clean(0, 0), clean(50, 50)]),
+        frame(1, [clean(0, 0), clean(50, 50)]),
+        frame(2, [], true),
+      ]),
+    );
+    expect(fs).toEqual([]);
+  });
+
+  it("leaves negative frames out of the per-video median (#489)", () => {
+    // Median over all 5 frames would be 0 (three empty negatives), hiding the
+    // 1-instance frame. Over the two positive frames it is 1.5 → frame 1 flags.
+    const fs = runLabelQc(
+      mockLabels(null, [
+        frame(0, [clean(0, 0), clean(50, 50)]),
+        frame(1, [clean(0, 0)]),
+        frame(2, [], true),
+        frame(3, [], true),
+        frame(4, [], true),
+      ]),
+    );
+    const inc = fs.filter((f) => f.kind === "incomplete_frame");
+    expect(inc.map((f) => f.frameIdx)).toEqual([1]);
+  });
+
   it("flags an incomplete frame (fewer instances than the per-video median)", () => {
     const fs = runLabelQc(
       mockLabels(null, [

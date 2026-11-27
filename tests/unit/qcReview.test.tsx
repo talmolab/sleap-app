@@ -398,6 +398,56 @@ describe("review mode", () => {
     expect(useAppStore.getState().labels!.labeledFrames.some((f) => f.frameIdx === 7 && f.instances.length === 2)).toBe(true);
   });
 
+  // Why: a duplicate is fixed by merging the pair, not by hand; the button must merge the right two and undo in one step.
+  it("Merge duplicate merges the other instance of the pair into the selected one", async () => {
+    useQcStore.setState({ findings: [{ ...rule(7, "duplicate", 0), otherInstanceIdx: 1 }] });
+    const lf = lfAt(7);
+    const [keep, donor] = lf.userInstances;
+    useAppStore.setState({ frameIdx: 7, labeledFrame: lf, instance: keep });
+    useQcStore.setState({ reviewOpen: true });
+    render(
+      <QcReviewFrame>
+        <div />
+      </QcReviewFrame>,
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Merge duplicate" }));
+    expect(lfAt(7).instances).toEqual([keep]);
+    expect(lfAt(7).instances).not.toContain(donor);
+    // The finding is stale now (its indices may point at other instances): no second Merge.
+    expect(screen.queryByRole("button", { name: "Merge duplicate" })).toBeNull();
+    await commandContext.undo();
+    expect(lfAt(7).instances.length).toBe(2);
+  });
+
+  // Why: an incomplete frame has no instance to select, so the frame's own message and Add instance must still show.
+  it("shows a frame-level finding and Add instance with nothing selected", () => {
+    useQcStore.setState({ findings: [{ ...rule(7, "incomplete_frame"), message: "1 instance(s); expected ~2" }] });
+    useAppStore.setState({ frameIdx: 7, labeledFrame: lfAt(7), instance: null });
+    useQcStore.setState({ reviewOpen: true });
+    render(
+      <QcReviewFrame>
+        <div />
+      </QcReviewFrame>,
+    );
+    expect(screen.getByText("1 instance(s); expected ~2")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Add instance" })).toBeTruthy();
+  });
+
+  it("Typical pose toggles the ghost on and off", () => {
+    useAppStore.setState({ frameIdx: 3, labeledFrame: lfAt(3), instance: lfAt(3).userInstances[0] });
+    useQcStore.setState({ reviewOpen: true, showTypicalPose: false });
+    render(
+      <QcReviewFrame>
+        <div />
+      </QcReviewFrame>,
+    );
+    const btn = screen.getByRole("button", { name: "Typical pose" });
+    expect(btn.getAttribute("aria-pressed")).toBe("false");
+    fireEvent.click(btn);
+    expect(useQcStore.getState().showTypicalPose).toBe(true);
+    expect(btn.getAttribute("aria-pressed")).toBe("true");
+  });
+
   it("shows the canvas overlay with the Label QC panel closed", () => {
     useAppStore.setState({ frameIdx: 3, labeledFrame: lfAt(3), instance: lfAt(3).userInstances[0] });
     const { result } = renderHook(() => useQcFrameFlags());
