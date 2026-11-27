@@ -20,7 +20,7 @@
  */
 
 import { useEffect, useMemo, useState } from "react";
-import type { SkeletonDiff } from "@/lib/skeletonIO";
+import type { SkeletonDiff, UnmappedNodeFill } from "@/lib/skeletonIO";
 import {
   Dialog,
   DialogContent,
@@ -45,6 +45,7 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { Button } from "@/components/ui/button";
+import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
 
 export interface ReplaceSkeletonDialogProps {
   open: boolean;
@@ -53,8 +54,12 @@ export interface ReplaceSkeletonDialogProps {
   diff: SkeletonDiff;
   /** Display name of the imported skeleton (optional, for the message). */
   newSkeletonName?: string;
-  /** Called with the link map `newName -> oldName` when Replace is confirmed. */
-  onConfirm: (linkMap: Map<string, string>) => void;
+  /** Existing instances belonging to the skeleton being replaced. */
+  existingInstanceCount?: number;
+  /** Smart default for unlinked added nodes (e.g. `"unlabeled"` on SLP 3.0). */
+  defaultUnmapped?: UnmappedNodeFill;
+  /** Called with the link map `newName -> oldName` and unmapped-node fill mode when Replace is confirmed. */
+  onConfirm: (linkMap: Map<string, string>, unmapped: UnmappedNodeFill) => void;
 }
 
 /**
@@ -146,11 +151,14 @@ export function ReplaceSkeletonDialog({
   onOpenChange,
   diff,
   newSkeletonName,
+  existingInstanceCount = 0,
+  defaultUnmapped = "absent",
   onConfirm,
 }: ReplaceSkeletonDialogProps) {
   // newName -> chosen oldName ("" = unlinked). Only added-node rows are editable
   // (kept/rename rows auto-link to themselves and render as a static label).
   const [selections, setSelections] = useState<Map<string, string>>(new Map());
+  const [unmapped, setUnmapped] = useState<UnmappedNodeFill>(defaultUnmapped);
   const [error, setError] = useState<string | null>(null);
 
   // Self-heal across `diff` changes: if the caller keeps this dialog mounted and
@@ -159,13 +167,18 @@ export function ReplaceSkeletonDialog({
   // never bleed into the next link map.
   useEffect(() => {
     setSelections(new Map());
+    setUnmapped(defaultUnmapped);
     setError(null);
-  }, [diff]);
+  }, [diff, defaultUnmapped, open]);
 
   const rows = useMemo(() => newSkeletonNodes(diff), [diff]);
   const renameSet = useMemo(
     () => new Set(diff.renameNodes),
     [diff.renameNodes],
+  );
+  const unlinkedAddedCount = useMemo(
+    () => diff.addNodes.filter((name) => !(selections.get(name) ?? "")).length,
+    [diff.addNodes, selections],
   );
 
   const handleSelect = (newNode: string, value: string) => {
@@ -191,7 +204,7 @@ export function ReplaceSkeletonDialog({
       setError(e instanceof Error ? e.message : String(e));
       return; // keep dialog open so the user can fix the conflict
     }
-    onConfirm(linkMap);
+    onConfirm(linkMap, unmapped);
     onOpenChange(false);
   };
 
@@ -302,6 +315,43 @@ export function ReplaceSkeletonDialog({
                 })}
               </TableBody>
             </Table>
+          </div>
+        )}
+
+        {existingInstanceCount > 0 && unlinkedAddedCount > 0 && (
+          <div
+            className="space-y-1.5 rounded-md border border-border/60 bg-muted/30 p-2.5 text-xs"
+            data-testid="replace-skeleton-unmapped"
+          >
+            <div className="font-medium text-foreground">
+              Unmapped nodes ({unlinkedAddedCount} added across{" "}
+              {existingInstanceCount} existing{" "}
+              {existingInstanceCount === 1 ? "instance" : "instances"})
+            </div>
+            <RadioGroup
+              value={unmapped}
+              onValueChange={(v) => setUnmapped(v as UnmappedNodeFill)}
+              className="space-y-1"
+              aria-label="Unmapped added nodes"
+            >
+              <label
+                htmlFor="replace-unmapped-unlabeled"
+                className="flex items-center gap-2 cursor-pointer"
+              >
+                <RadioGroupItem
+                  value="unlabeled"
+                  id="replace-unmapped-unlabeled"
+                />
+                <span>Mark as Unlabeled (SLP 3.0)</span>
+              </label>
+              <label
+                htmlFor="replace-unmapped-absent"
+                className="flex items-center gap-2 cursor-pointer"
+              >
+                <RadioGroupItem value="absent" id="replace-unmapped-absent" />
+                <span>Mark as Absent (SLP 2.x)</span>
+              </label>
+            </RadioGroup>
           </div>
         )}
 

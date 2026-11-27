@@ -24,6 +24,7 @@ import {
   refusalReason,
   SLEAP_APP_RELEASES_PAGE_URL,
 } from "@/lib/slpAccess";
+import { describeFormat3Features } from "@/lib/slpFormatStatus";
 import { isTauri } from "@/platform/index";
 import { useAppStore } from "@/stores/appStore";
 import type { Format3Summary } from "@talmolab/sleap-io.js";
@@ -142,7 +143,35 @@ function title(prompt: SlpFormatPrompt): string {
       return `Merge SLP format ${formatLabel(prompt.summary.formatId)} file`;
     case "allow-edit":
       return prompt.action ? "This file is open View only" : "Allow editing?";
+    case "upgrade-on-save":
+      return `Upgrade ${prompt.fileName} to SLP 3.0?`;
   }
+}
+
+function UpgradeOnSaveBody({ summary }: { summary: Format3Summary }) {
+  const features = describeFormat3Features(summary);
+  return (
+    <div className="flex flex-col gap-3 text-sm">
+      {features.length > 0 && (
+        <div className="space-y-1">
+          <p className="text-muted-foreground">
+            This project now includes SLP 3.0 features that the 2.x layout cannot store:
+          </p>
+          <ul className="list-disc space-y-0.5 pl-5 text-sm" data-testid="slp-upgrade-features">
+            {features.map((f) => (
+              <li key={f}>{f}</li>
+            ))}
+          </ul>
+        </div>
+      )}
+      <p className="text-muted-foreground">
+        Saving as <span className="font-medium text-foreground">SLP 3.0</span> preserves all data,
+        but requires <span className="font-medium text-foreground">SLEAP 0.2+</span> or{" "}
+        <span className="font-medium text-foreground">sleap-io &gt;= 0.10</span>. Earlier versions
+        of SLEAP (1.x) cannot open SLP 3.0 files.
+      </p>
+    </div>
+  );
 }
 
 export function SlpFormatDialog() {
@@ -164,6 +193,11 @@ export function SlpFormatDialog() {
               {prompt.kind === "refused" ? (
                 <DialogDescription className="sr-only">
                   This file uses an SLP format that cannot be opened in this version of SLEAP.
+                </DialogDescription>
+              ) : prompt.kind === "upgrade-on-save" ? (
+                <DialogDescription>
+                  <span className="font-medium text-foreground">{prompt.fileName}</span>{" "}
+                  was opened from an SLP 2.x file. Overwriting it will upgrade the file to SLP 3.0.
                 </DialogDescription>
               ) : (
                 <DialogDescription>
@@ -207,6 +241,10 @@ export function SlpFormatDialog() {
                 <p>{allowEditText(prompt.action).message}</p>
                 <DropList summary={prompt.summary} />
               </div>
+            )}
+
+            {prompt.kind === "upgrade-on-save" && (
+              <UpgradeOnSaveBody summary={prompt.summary} />
             )}
 
             <div className="flex flex-wrap justify-end gap-2 pt-1">
@@ -256,6 +294,36 @@ export function SlpFormatDialog() {
                     <Button size="sm" onClick={() => respond("keep")}>
                       {allowEditText(prompt.action).button}
                     </Button>
+                  )}
+                  {prompt.kind === "upgrade-on-save" && (
+                    <>
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        data-testid="slp-upgrade-export-v2"
+                        onClick={() => respond("export-v2")}
+                      >
+                        Save 2.x Copy (Drop 3.0 Data)
+                      </Button>
+                      <Button
+                        type="button"
+                        variant="secondary"
+                        size="sm"
+                        data-testid="slp-upgrade-save-as"
+                        onClick={() => respond("save-as")}
+                      >
+                        Save As New File…
+                      </Button>
+                      <Button
+                        type="button"
+                        size="sm"
+                        data-testid="slp-upgrade-v3"
+                        onClick={() => respond("upgrade-v3")}
+                      >
+                        Save as SLP 3.0
+                      </Button>
+                    </>
                   )}
                 </>
               )}

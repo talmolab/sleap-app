@@ -279,7 +279,7 @@ describe("Merge into Project: several files, one at a time", () => {
     expect(frameIdxs(labels)).toEqual([0, 1, 20]);
   });
 
-  it("a file with a different skeleton is blocked but can be skipped", async () => {
+  it("a file with a different skeleton offers reconciliation and can still be skipped", async () => {
     const labels = openProject();
     const other = await slpFile("other.slp", [30], ["nose", "ear", "tail"]);
     const b = await slpFile("b.slp", [20]);
@@ -287,14 +287,16 @@ describe("Merge into Project: several files, one at a time", () => {
 
     await pickFiles([other, b]);
     await waitForPreviewOf("other.slp");
-    expect(screen.getByText(/skeleton doesn't match/)).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: /^Merge/ })).toBeDisabled();
+    expect(screen.getByTestId("merge-skeleton-reconciliation")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /^Merge/ })).not.toBeDisabled();
 
     await click("Skip this file");
     await waitForPreviewOf("b.slp");
     await click(/^Merge/);
     await waitFor(() => expect(isOpen()).toBe(false));
     expect(frameIdxs(labels)).toEqual([0, 1, 20]);
+    expect(labels.skeletons).toHaveLength(1);
+    expect(labels.skeletons[0].nodeNames).toEqual(NODES);
   });
 
   it("previews each file against the project as merged so far", async () => {

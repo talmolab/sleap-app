@@ -21,6 +21,7 @@ import {
   RenameNodeCommand,
   LoadSkeletonTemplateCommand,
   OpenSkeletonCommand,
+  countInstancesForSkeleton,
   installSkeletonUndoInterceptor,
 } from "../../commands/skeletonCommands";
 import {
@@ -34,7 +35,9 @@ import {
   serializeSkeletonYaml,
   serializeSkeletonJson,
   type SkeletonDiff,
+  type UnmappedNodeFill,
 } from "../../lib/skeletonIO";
+import { defaultUnmappedForLabels } from "@/lib/slpFormatStatus";
 import { downloadFile } from "../../lib/exportUtils";
 import { getPlatform } from "../../platform/index";
 import { toast } from "@/lib/notify";
@@ -77,6 +80,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
+import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
 
 // Install skeleton undo interceptor once on module load
 let interceptorInstalled = false;
@@ -189,6 +193,7 @@ function TemplatePreview({
 }
 
 export function SkeletonPanel() {
+  const labels = useAppStore((s) => s.labels);
   const skeleton = useAppStore((s) => s.skeleton);
   // A video (i.e. a frame to draw on) is required to launch the visual builder.
   const video = useAppStore((s) => s.video);
@@ -207,12 +212,14 @@ export function SkeletonPanel() {
   // disabled and the node/edge counts wrong.
   useAppStore((s) => s.skeleton?.nodes.length ?? 0);
   useAppStore((s) => s.skeleton?.edges.length ?? 0);
+  useAppStore((s) => s.editSeq);
   const [selectedNodeIdx, setSelectedNodeIdx] = useState<number | null>(null);
   const [selectedEdgeIdx, setSelectedEdgeIdx] = useState<number | null>(null);
 
   // Dialog state for add node
   const [addNodeOpen, setAddNodeOpen] = useState(false);
   const [newNodeName, setNewNodeName] = useState("");
+  const [addNodeUnmapped, setAddNodeUnmapped] = useState<UnmappedNodeFill>("absent");
 
   // Dialog state for delete node confirmation
   const [deleteNodeOpen, setDeleteNodeOpen] = useState(false);
@@ -288,6 +295,7 @@ export function SkeletonPanel() {
   const nodes = skeleton.nodes ?? [];
   const edges = skeleton.edges ?? [];
   const symmetries = skeleton.symmetries ?? [];
+  const existingInstanceCount = countInstancesForSkeleton(labels, skeleton);
   // Nodes not already part of a symmetry (each node can be in at most one).
   const symmetricNames = new Set(
     symmetries.flatMap((s) => [s.at(0).name, s.at(1).name])
@@ -298,7 +306,10 @@ export function SkeletonPanel() {
     if (!newNodeName.trim()) return;
     // Validate no duplicate names
     if (nodes.some((n) => n.name === newNodeName.trim())) return;
-    commandContext.execute(AddNodeCommand, { name: newNodeName.trim() });
+    commandContext.execute(AddNodeCommand, {
+      name: newNodeName.trim(),
+      unmapped: existingInstanceCount > 0 ? addNodeUnmapped : "absent",
+    });
     setSelectedNodeIdx(nodes.length); // will be the new last index after add
     setNewNodeName("");
     setAddNodeOpen(false);
@@ -427,9 +438,14 @@ export function SkeletonPanel() {
   /** Apply a parsed skeleton to the project (optionally with a rename link map). */
   const applyImport = async (
     newSkeleton: Skeleton,
-    linkMap?: Map<string, string>
+    linkMap?: Map<string, string>,
+    unmapped?: UnmappedNodeFill
   ) => {
-    await commandContext.execute(OpenSkeletonCommand, { newSkeleton, linkMap });
+    await commandContext.execute(OpenSkeletonCommand, {
+      newSkeleton,
+      linkMap,
+      unmapped,
+    });
     setSelectedNodeIdx(null);
     setSelectedEdgeIdx(null);
     toast.success("Loaded skeleton", {
@@ -506,9 +522,12 @@ export function SkeletonPanel() {
   };
 
   /** Confirm the Replace dialog: apply the import with the chosen link map. */
-  const handleReplaceConfirm = async (linkMap: Map<string, string>) => {
+  const handleReplaceConfirm = async (
+    linkMap: Map<string, string>,
+    unmapped: UnmappedNodeFill
+  ) => {
     if (pendingImport) {
-      await applyImport(pendingImport.newSkeleton, linkMap);
+      await applyImport(pendingImport.newSkeleton, linkMap, unmapped);
     }
     setPendingImport(null);
     setReplaceDialogOpen(false);
@@ -702,6 +721,7 @@ export function SkeletonPanel() {
               size="xs"
               onClick={() => {
                 setNewNodeName(`node_${nodes.length}`);
+                setAddNodeUnmapped(defaultUnmappedForLabels(labels));
                 setAddNodeOpen(true);
               }}
             >
@@ -841,6 +861,44 @@ export function SkeletonPanel() {
                 A node with this name already exists.
               </p>
             )}
+          {existingInstanceCount > 0 && (
+            <div
+              className="space-y-1.5 rounded-md border border-border/60 bg-muted/30 p-2.5 text-xs"
+              data-testid="add-node-unmapped"
+            >
+              <div className="font-medium text-foreground">
+                On {existingInstanceCount} existing{" "}
+                {existingInstanceCount === 1 ? "instance" : "instances"}:
+              </div>
+              <RadioGroup
+                value={addNodeUnmapped}
+                onValueChange={(v) => setAddNodeUnmapped(v as UnmappedNodeFill)}
+                className="space-y-1"
+                aria-label="New node state on existing instances"
+              >
+                <label
+                  htmlFor="add-node-unmapped-unlabeled"
+                  className="flex items-center gap-2 cursor-pointer"
+                >
+                  <RadioGroupItem
+                    value="unlabeled"
+                    id="add-node-unmapped-unlabeled"
+                  />
+                  <span>Mark new node as Unlabeled (SLP 3.0)</span>
+                </label>
+                <label
+                  htmlFor="add-node-unmapped-absent"
+                  className="flex items-center gap-2 cursor-pointer"
+                >
+                  <RadioGroupItem
+                    value="absent"
+                    id="add-node-unmapped-absent"
+                  />
+                  <span>Mark as Absent (SLP 2.x)</span>
+                </label>
+              </RadioGroup>
+            </div>
+          )}
           <DialogFooter>
             <Button
               variant="outline"
@@ -1144,6 +1202,8 @@ export function SkeletonPanel() {
           }}
           diff={pendingImport.diff}
           newSkeletonName={pendingImport.newSkeleton.name}
+          existingInstanceCount={existingInstanceCount}
+          defaultUnmapped={defaultUnmappedForLabels(labels)}
           onConfirm={handleReplaceConfirm}
         />
       )}

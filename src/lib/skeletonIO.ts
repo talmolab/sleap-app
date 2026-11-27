@@ -24,6 +24,13 @@ import type { Skeleton, Instance, Node } from "@talmolab/sleap-io.js";
 import { distinctSkeletonCount } from "./skeletonStructure";
 
 /**
+ * How unmapped / newly-added nodes are populated on existing instances:
+ *   - `"unlabeled"` (SLP 3.0): `{ xy: [NaN, NaN], visible: false, complete: false, labeled: false }`
+ *   - `"absent"`    (SLP 2.x): `{ xy: [NaN, NaN], visible: false, complete: false }` (`labeled: true`)
+ */
+export type UnmappedNodeFill = "unlabeled" | "absent";
+
+/**
  * Diff of node NAMES between the current ("old") and the imported ("new")
  * skeleton. Port of `OpenSkeleton.compare_skeletons`.
  */
@@ -260,12 +267,15 @@ export async function parseSkeletonFile(
  * has `newNodes.length` entries, in `newNodes` order.
  *
  * @param linkMap newName → oldName explicit links from the replace dialog.
+ * @param unmapped How truly added (unlinked) nodes are filled (`"absent"` by default,
+ *   or `"unlabeled"` to mark them `labeled: false` for SLP 3.0).
  */
 export function remapInstancePoints(
   instance: Instance,
   oldNodes: Node[],
   newNodes: Node[],
   linkMap: Map<string, string>,
+  unmapped: UnmappedNodeFill = "absent",
 ): Instance["points"] {
   // Map old node NAME → its point (aligned by index to oldNodes).
   const oldByName = new Map<string, Instance["points"][number]>();
@@ -288,6 +298,16 @@ export function remapInstancePoints(
       // only) silently drops them all. Mirrors `clonePoints` in editCommands.
       // (copyPoint also keeps a node's `labeled` flag.)
       return copyPoint(src, { score: src.score, name: newNode.name });
+    }
+
+    if (unmapped === "unlabeled") {
+      return {
+        xy: [NaN, NaN] as [number, number],
+        visible: false,
+        complete: false,
+        labeled: false,
+        name: newNode.name,
+      };
     }
 
     return {

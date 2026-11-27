@@ -14,7 +14,13 @@ import { UpdateTopic } from "../types";
 import type { Command } from "./types";
 import type { CommandContext } from "./CommandContext";
 import { toast } from "@/lib/notify";
-import { mergeResultSummary } from "@/lib/mergeProject";
+import {
+  mergeResultSummary,
+  reconcileSkeletonsInPlace,
+  type SkeletonMergeMode,
+} from "@/lib/mergeProject";
+import type { UnmappedNodeFill } from "@/lib/skeletonIO";
+import { attachSkeletonUndoToSnapshot } from "@/commands/skeletonCommands";
 import {
   applyConflictResolutions,
   type ResolvedConflict,
@@ -24,7 +30,12 @@ export const MergeConflictsCommand: Command = {
   // Same user-facing name as A2 so the undo/redo toast + Edit-menu label read
   // "Merge Into Project" regardless of which apply path ran.
   name: "MergeIntoProject",
-  topics: [UpdateTopic.Labels, UpdateTopic.Frame, UpdateTopic.Instance],
+  topics: [
+    UpdateTopic.Labels,
+    UpdateTopic.Skeleton,
+    UpdateTopic.Frame,
+    UpdateTopic.Instance,
+  ],
   skipAutoSnapshot: true,
   async execute(ctx: CommandContext, params?: Record<string, unknown>) {
     const { labels } = ctx.state;
@@ -35,11 +46,28 @@ export const MergeConflictsCommand: Command = {
 
     const resolutions =
       (params?.resolutions as ResolvedConflict[] | undefined) ?? [];
+    const skeletonMode = params?.skeletonMode as SkeletonMergeMode | undefined;
+    const unmapped: UnmappedNodeFill =
+      params?.unmapped === "absent" ? "absent" : "unlabeled";
 
     const snapshot = ctx.takeAllFramesSnapshot("MergeIntoProject");
+    let unified = false;
+    if (
+      skeletonMode === "unify" &&
+      labels.skeletons.length === 1 &&
+      donor.skeletons.length === 1
+    ) {
+      attachSkeletonUndoToSnapshot(ctx, snapshot, labels.skeletons[0]);
+      reconcileSkeletonsInPlace(labels, donor, unmapped);
+      unified = true;
+    }
+
     const result = await applyConflictResolutions(labels, donor, resolutions);
     ctx.pushUndoSnapshot(snapshot);
     ctx.state.markChanged();
+    if (unified || skeletonMode === "separate") {
+      ctx.state.bumpOverlayVersion();
+    }
 
     toast.success(mergeResultSummary(result));
   },
