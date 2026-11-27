@@ -794,6 +794,55 @@ describe("getVideoPathCandidates (relative-path resolution, #188)", () => {
     const candidates = getVideoPathCandidates(video, "/data/proj/session.slp");
     expect(candidates).toContain("/data/proj/clip.mp4");
   });
+
+  it("finds videos in an ancestor directory when predictions live in a child output folder", () => {
+    const video = new Video({
+      filename: "/home/user/projects/experiment/session/00-56-24.mp4",
+      openBackend: false,
+    });
+    const candidates = getVideoPathCandidates(
+      video,
+      "/Volumes/share/projects/experiment/session/predictions_out/00-56-24.predictions.slp"
+    );
+    expect(candidates).toContain(
+      "/Volumes/share/projects/experiment/session/00-56-24.mp4"
+    );
+  });
+});
+
+describe("resolveExternalVideos (desktop local-path backend guard)", () => {
+  it("discards a hanging non-URL fetch backend on desktop instead of deadlocking", async () => {
+    const video = new Video({
+      filename: "/home/user/projects/proj/clip.mp4",
+      openBackend: false,
+    });
+    let closed = false;
+    // Simulates Mp4BoxVideoBackend stuck awaiting a bogus Vite dev-server fetch.
+    video.backend = {
+      filename: "/home/user/projects/proj/clip.mp4",
+      ready: new Promise(() => {
+        /* intentionally never settles */
+      }),
+      getFrame: async () => null,
+      close: () => {
+        closed = true;
+      },
+    } as unknown as VideoBackend;
+
+    const labels = new Labels();
+    labels.addVideo(video);
+
+    await resolveExternalVideos(labels, {
+      projectPath: "/Volumes/share/projects/proj/out/preds.slp",
+      exists: async (p) => p === "/Volumes/share/projects/proj/clip.mp4",
+      readFile: async () => new Uint8Array(),
+      lazy: true,
+    });
+
+    expect(closed).toBe(true);
+    expect(video.filename).toBe("/Volumes/share/projects/proj/clip.mp4");
+    expect(isVideoMissing(video)).toBe(false);
+  });
 });
 
 describe("computePrefixSwap (locate-one-relocate-siblings, #188)", () => {

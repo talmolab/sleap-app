@@ -10,6 +10,7 @@ import { X } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useAppStore } from "@/stores/appStore";
 import { useEnvironmentStore } from "@/stores/environmentStore";
+import { resolveSleapNnStatus } from "@/lib/sleapNnVersion";
 import { isTauri } from "@/platform/index";
 
 export interface EnvironmentUpdateStatusInput {
@@ -124,13 +125,25 @@ export function useEnvironmentUpdateStatus() {
   const sleapNnTool = useEnvironmentStore((s) =>
     s.tools.find((t) => t.name === "sleap-nn")
   );
+  const sleapNnChannel = useEnvironmentStore((s) => s.sleapNnChannel);
+  const pypiVersions = useEnvironmentStore((s) => s.pypiVersions);
+  const extras = useEnvironmentStore((s) => s.extras);
+
+  const sleapNnStatus = resolveSleapNnStatus({
+    tool: sleapNnTool,
+    channel: sleapNnChannel,
+    pypi: pypiVersions,
+    installedSleapIoVersion: extras?.sleapIoVersion,
+  });
 
   const { available, title, label, showSetupNudge } =
     computeEnvironmentUpdateStatus({
       isTauri,
       uvAvailable: uv === null ? null : uv.available,
       sleapNnInstalled: !!sleapNnTool,
-      sleapNnUpdateAvailable: sleapNnTool?.updateAvailable ?? false,
+      sleapNnUpdateAvailable:
+        sleapNnStatus.sleapNnUpdateAvailable ||
+        sleapNnStatus.sleapIoUpdateAvailable,
       packagesSetupNudgeDismissed,
       stableUpdateAvailable,
       stableUpdateVersion,

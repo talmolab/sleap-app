@@ -7,7 +7,7 @@
 //! cross-platform behavior and streaming support.
 
 use crate::RunningProcess;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -751,6 +751,9 @@ pub struct SleapNnExtras {
     pub backbones: bool,
     /// Python `major.minor.micro` version of the installed sleap-nn venv.
     pub python_version: Option<String>,
+    /// Installed `sleap-io` version inside sleap-nn's venv (e.g. `"0.10.0a0"`),
+    /// read from distribution metadata without importing `sleap_io`.
+    pub sleap_io_version: Option<String>,
     /// Whether TensorRT is installable on this platform at all. sleap-nn marks
     /// both tensorrt deps `sys_platform == 'linux' or sys_platform == 'win32'`,
     /// so on macOS the extra resolves to NOTHING and asking for it would
@@ -761,21 +764,28 @@ pub struct SleapNnExtras {
 }
 
 /// Reports which extras' modules are importable, WITHOUT importing them:
-/// `find_spec` only resolves the module on disk, so this stays fast (no torch,
-/// no onnxruntime init) and can refresh on its own while the much slower
+/// `find_spec` only resolves the module on disk and `importlib.metadata.version`
+/// reads `.dist-info/METADATA`, so this stays fast (no torch, no onnxruntime
+/// init, no sleap_io import) and can refresh on its own while the much slower
 /// accelerator probe is still running.
 const EXTRAS_PROBE_SCRIPT: &str = "\
-import json, sys, importlib.util as u
-def has(m):
+import json, sys, importlib.util as u, importlib.metadata as m
+def has(mod):
     try:
-        return u.find_spec(m) is not None
+        return u.find_spec(mod) is not None
     except Exception:
         return False
+def dist_ver(pkg):
+    try:
+        return m.version(pkg)
+    except Exception:
+        return None
 print(json.dumps({
     'onnx': has('onnx') and has('onnxruntime'),
     'tensorrt': has('tensorrt') and has('torch_tensorrt'),
     'backbones': has('timm') and has('transformers'),
     'python_version': f'{sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}',
+    'sleap_io_version': dist_ver('sleap-io'),
 }))
 ";
 
@@ -818,6 +828,12 @@ fn parse_extras_json(stdout: &str) -> SleapNnExtras {
     extras.backbones = v.get("backbones").and_then(|b| b.as_bool()).unwrap_or(false);
     extras.python_version = v
         .get("python_version")
+        .and_then(|s| s.as_str())
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(String::from);
+    extras.sleap_io_version = v
+        .get("sleap_io_version")
         .and_then(|s| s.as_str())
         .map(str::trim)
         .filter(|s| !s.is_empty())
@@ -868,6 +884,132 @@ pub async fn detect_sleap_nn_extras<R: Runtime>(app: AppHandle<R>) -> SleapNnExt
             "Timed out after {}s checking sleap-nn's extras.",
             EXTRAS_PROBE_TIMEOUT.as_secs()
         )),
+    }
+}
+
+/// Non-yanked versions published on PyPI for `sleap-nn` and `sleap-io`.
+///
+/// Returned as raw version lists so the frontend (`src/lib/sleapNnVersion.ts`)
+/// stays the single source of truth for PEP 440 ordering, channel filtering
+/// (`stable` vs `prerelease`), and version caps (`<0.5` / `<0.11`).
+///
+/// Why this exists alongside `uv tool list --outdated`:
+/// 1. `uv tool list --outdated` ignores pre-releases for stable tools and cannot
+///    report target versions for a channel the user hasn't installed yet (or
+///    when `sleap-nn` isn't installed at all).
+/// 2. `uv tool list --outdated` only checks the top-level tool (`sleap-nn`),
+///    never `--with` companions such as `sleap-io`.
+#[derive(Debug, Clone, Default, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PyPiPackageVersions {
+    pub sleap_nn: Vec<String>,
+    pub sleap_io: Vec<String>,
+    pub error: Option<String>,
+}
+
+const PYPI_CHECK_TIMEOUT: Duration = Duration::from_secs(10);
+
+#[derive(Deserialize)]
+struct PyPiReleaseFile {
+    #[serde(default)]
+    yanked: bool,
+}
+
+#[derive(Deserialize)]
+struct PyPiProjectResponse {
+    #[serde(default)]
+    releases: HashMap<String, Vec<PyPiReleaseFile>>,
+}
+
+/// Extract every release key from a PyPI `/pypi/<pkg>/json` response that has
+/// at least one non-yanked file.
+fn parse_pypi_releases(body: &str) -> Result<Vec<String>, String> {
+    let parsed: PyPiProjectResponse =
+        serde_json::from_str(body).map_err(|e| format!("Invalid PyPI JSON: {}", e))?;
+    let mut versions: Vec<String> = parsed
+        .releases
+        .into_iter()
+        .filter_map(|(ver, files)| {
+            let trimmed = ver.trim();
+            if trimmed.is_empty() {
+                return None;
+            }
+            if files.iter().any(|f| !f.yanked) {
+                Some(trimmed.to_string())
+            } else {
+                None
+            }
+        })
+        .collect();
+    versions.sort();
+    Ok(versions)
+}
+
+async fn fetch_pypi_versions(client: &reqwest::Client, package: &str) -> Result<Vec<String>, String> {
+    let url = format!("https://pypi.org/pypi/{}/json", package);
+    let resp = client
+        .get(&url)
+        .send()
+        .await
+        .map_err(|e| format!("PyPI request for {} failed: {}", package, e))?;
+    if !resp.status().is_success() {
+        return Err(format!("PyPI returned HTTP {} for {}", resp.status(), package));
+    }
+    let body = resp
+        .text()
+        .await
+        .map_err(|e| format!("Failed reading PyPI body for {}: {}", package, e))?;
+    parse_pypi_releases(&body)
+}
+
+/// Query PyPI for available non-yanked versions of `sleap-nn` and `sleap-io`.
+/// Best-effort: returns an `error` field rather than rejecting so the caller
+/// can fall back cleanly when offline.
+#[tauri::command]
+pub async fn check_sleap_nn_versions() -> PyPiPackageVersions {
+    let client = match reqwest::Client::builder()
+        .user_agent("sleap-app")
+        .timeout(PYPI_CHECK_TIMEOUT)
+        .build()
+    {
+        Ok(c) => c,
+        Err(e) => {
+            return PyPiPackageVersions {
+                error: Some(e.to_string()),
+                ..Default::default()
+            }
+        }
+    };
+
+    let (nn_res, io_res) = tokio::join!(
+        fetch_pypi_versions(&client, "sleap-nn"),
+        fetch_pypi_versions(&client, "sleap-io"),
+    );
+
+    let mut errors = Vec::new();
+    let sleap_nn = match nn_res {
+        Ok(v) => v,
+        Err(e) => {
+            errors.push(e);
+            Vec::new()
+        }
+    };
+    let sleap_io = match io_res {
+        Ok(v) => v,
+        Err(e) => {
+            errors.push(e);
+            Vec::new()
+        }
+    };
+
+    PyPiPackageVersions {
+        sleap_nn,
+        sleap_io,
+        error: if errors.is_empty() {
+            None
+        } else {
+            Some(errors.join("; "))
+        },
     }
 }
 
@@ -2258,23 +2400,49 @@ mod tests {
     #[test]
     fn test_parse_extras_both_present() {
         let e = parse_extras_json(
-            r#"{"onnx":true,"tensorrt":true,"backbones":true,"python_version":"3.12.7"}"#,
+            r#"{"onnx":true,"tensorrt":true,"backbones":true,"python_version":"3.12.7","sleap_io_version":"0.10.0a0"}"#,
         );
         assert!(e.onnx);
         assert!(e.tensorrt);
         assert!(e.backbones);
         assert_eq!(e.python_version.as_deref(), Some("3.12.7"));
+        assert_eq!(e.sleap_io_version.as_deref(), Some("0.10.0a0"));
         assert!(e.error.is_none());
     }
 
     #[test]
     fn test_parse_extras_none_present() {
-        let e = parse_extras_json(r#"{"onnx":false,"tensorrt":false,"backbones":false}"#);
+        let e = parse_extras_json(
+            r#"{"onnx":false,"tensorrt":false,"backbones":false,"sleap_io_version":"  "}"#,
+        );
         assert!(!e.onnx);
         assert!(!e.tensorrt);
         assert!(!e.backbones);
         assert_eq!(e.python_version, None);
+        assert_eq!(e.sleap_io_version, None);
         assert!(e.error.is_none());
+    }
+
+    // -- PyPI releases parser --
+
+    #[test]
+    fn test_parse_pypi_releases_filters_yanked_and_empty() {
+        let body = r#"{
+            "releases": {
+                "0.3.5": [{"yanked": false}],
+                "0.4.0a0": [{"yanked": true}, {"yanked": false}],
+                "0.4.0a1": [{"yanked": true}],
+                "0.4.0a2": [],
+                "0.4.0": [{}]
+            }
+        }"#;
+        let versions = parse_pypi_releases(body).expect("valid PyPI JSON");
+        assert_eq!(versions, vec!["0.3.5", "0.4.0", "0.4.0a0"]);
+    }
+
+    #[test]
+    fn test_parse_pypi_releases_rejects_invalid_json() {
+        assert!(parse_pypi_releases("not json").is_err());
     }
 
     // The common post-`installExportExtra(false)` state: export support only.

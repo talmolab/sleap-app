@@ -12,6 +12,7 @@ import {
   detectGpu,
   detectAccelerator as detectAcceleratorCmd,
   detectSleapNnExtras,
+  checkSleapNnVersions,
   listUvTools,
   listPythonInterpreters,
   listDownloadablePythons,
@@ -23,6 +24,7 @@ import {
   updateUv as updateUvCmd,
   installUv as installUvCmd,
   type AcceleratorInfo,
+  type PyPiPackageVersions,
   type SleapNnExtras,
   type UvInfo,
   type UvTool,
@@ -34,17 +36,31 @@ import { isTauri } from "../platform/index";
 import { toast } from "@/lib/notify";
 import { openExternal } from "@/lib/openExternal";
 import {
+  DEFAULT_SLEAP_NN_CHANNEL,
   SLEAP_NN_PYTHON_SPEC,
-  SLEAP_NN_VERSION_SPECIFIER,
-  capSleapNnUpdate,
   exportExtras,
+  isPep440Prerelease,
   isPythonVersionCompatible,
   isSleapNnVersionBelowCap,
+  reconcileSleapNnTool,
   sleapNnInstallSpec,
   sleapNnUvExtraArgs,
+  sleapNnVersionSpecifier,
+  type SleapNnChannel,
 } from "@/lib/sleapNnVersion";
 
 const SLEAP_NN_RELEASES_URL = "https://github.com/talmolab/sleap-nn/releases/tag";
+
+/** Best-effort PyPI check; tolerates offline/error/partial test mocks. */
+async function safeCheckSleapNnVersions(): Promise<PyPiPackageVersions | null> {
+  if (typeof checkSleapNnVersions !== "function") return null;
+  try {
+    const res = await checkSleapNnVersions();
+    return res ?? null;
+  } catch {
+    return null;
+  }
+}
 
 // De-dupes concurrent callers of checkSleapNnUpdateAndNotify (e.g. App.tsx's
 // startup check racing loadProject.ts's post-load check for a project opened
@@ -60,8 +76,18 @@ export interface EnvironmentState {
   // Detection results (re-detected on launch)
   uv: UvInfo | null;
   tools: UvTool[];
+  /** Unadjusted `listUvTools()` snapshot so toggling `sleapNnChannel` recomputes immediately. */
+  rawTools: UvTool[];
   interpreters: PythonInterpreter[];
   downloadable: PythonInterpreter[];
+
+  /** Release channel preference for `sleap-nn` (`stable` vs `prerelease`). Persisted. */
+  sleapNnChannel: SleapNnChannel;
+  /** Whether the user has explicitly picked `sleapNnChannel` in the dropdown. Persisted. */
+  sleapNnChannelExplicitlySet: boolean;
+  /** Latest non-yanked PyPI version lists for `sleap-nn` and `sleap-io`. */
+  pypiVersions: PyPiPackageVersions | null;
+  pypiVersionsStatus: DetectionStatus;
 
   // Which accelerator the INSTALLED sleap-nn can actually use, straight from
   // the torch in its own venv. Never persisted: it describes the machine + the
@@ -98,6 +124,8 @@ export interface EnvironmentState {
 
   // Actions
   refresh: () => Promise<void>;
+  fetchPypiVersions: () => Promise<PyPiPackageVersions | null>;
+  setSleapNnChannel: (channel: SleapNnChannel) => void;
   detectAccelerator: () => Promise<void>;
   detectExtras: () => Promise<void>;
   selectPython: (path: string) => Promise<void>;
@@ -121,6 +149,13 @@ export interface EnvironmentState {
     backbones?: boolean;
   }) => Promise<void>;
   doUpgradeTool: (pkg: string) => Promise<void>;
+  /**
+   * Switch an installed `sleap-nn` tool onto the currently selected
+   * `sleapNnChannel` (e.g. moving from `0.4.0a0` back to `stable` `0.3.5`).
+   * Uses `--force` so `uv` cleanly replaces the tool venv even when moving to
+   * an older version, while preserving detected optional extras.
+   */
+  doSwitchSleapNnChannel: () => Promise<void>;
   doReinstallTool: (pkg: string) => Promise<void>;
   /**
    * Replace a `sleap-rtc` uv tool (the SLEAP Connect worker's PyPI name up
@@ -138,6 +173,8 @@ export interface EnvironmentState {
 const PERSISTED_KEYS: (keyof EnvironmentState)[] = [
   "selectedPythonPath",
   "lastNotifiedSleapNnVersion",
+  "sleapNnChannel",
+  "sleapNnChannelExplicitlySet",
 ];
 
 export const useEnvironmentStore = create<EnvironmentState>()(
@@ -146,8 +183,13 @@ export const useEnvironmentStore = create<EnvironmentState>()(
       // Detection results
       uv: null,
       tools: [],
+      rawTools: [],
       interpreters: [],
       downloadable: [],
+      sleapNnChannel: DEFAULT_SLEAP_NN_CHANNEL,
+      sleapNnChannelExplicitlySet: false,
+      pypiVersions: null,
+      pypiVersionsStatus: "idle",
       accelerator: null,
       acceleratorStatus: "idle",
       extras: null,
@@ -181,6 +223,7 @@ export const useEnvironmentStore = create<EnvironmentState>()(
           if (!uvInfo.available) {
             set({
               tools: [],
+              rawTools: [],
               interpreters: [],
               downloadable: [],
               accelerator: null,
@@ -192,18 +235,36 @@ export const useEnvironmentStore = create<EnvironmentState>()(
             return;
           }
 
-          // Run discovery in parallel
-          const [uvTools, pythons, downloadablePythons] = await Promise.all([
-            listUvTools(),
-            listPythonInterpreters(),
-            listDownloadablePythons(),
-          ]);
+          // Run discovery in parallel (including best-effort PyPI version lookup)
+          const [uvTools, pythons, downloadablePythons, pypi] =
+            await Promise.all([
+              listUvTools(),
+              listPythonInterpreters(),
+              listDownloadablePythons(),
+              safeCheckSleapNnVersions(),
+            ]);
           console.log("[env] tools:", uvTools);
           console.log("[env] interpreters:", pythons);
           console.log("[env] downloadable:", downloadablePythons);
+          if (pypi) console.log("[env] PyPI versions:", pypi);
 
+          const installedNn = uvTools.find((t) => t.name === "sleap-nn");
+          let channel = get().sleapNnChannel;
+          if (
+            !get().sleapNnChannelExplicitlySet &&
+            installedNn?.version &&
+            isPep440Prerelease(installedNn.version)
+          ) {
+            channel = "prerelease";
+          }
+
+          const nextPypi = pypi ?? get().pypiVersions;
           set({
-            tools: uvTools.map(capSleapNnUpdate),
+            sleapNnChannel: channel,
+            rawTools: uvTools,
+            pypiVersions: nextPypi,
+            pypiVersionsStatus: "done",
+            tools: uvTools.map((t) => reconcileSleapNnTool(t, channel, nextPypi)),
             interpreters: pythons,
             downloadable: downloadablePythons,
           });
@@ -247,6 +308,37 @@ export const useEnvironmentStore = create<EnvironmentState>()(
           const msg = err instanceof Error ? err.message : String(err);
           console.error("[env] Detection failed:", err);
           set({ detectionStatus: "error", detectionError: msg });
+        }
+      },
+
+      fetchPypiVersions: async () => {
+        set({ pypiVersionsStatus: "checking" });
+        const pypi = await safeCheckSleapNnVersions();
+        const channel = get().sleapNnChannel;
+        const baseTools =
+          get().rawTools.length > 0 ? get().rawTools : get().tools;
+        set({
+          pypiVersions: pypi ?? get().pypiVersions,
+          pypiVersionsStatus: "done",
+          tools: baseTools.map((t) =>
+            reconcileSleapNnTool(t, channel, pypi ?? get().pypiVersions)
+          ),
+        });
+        return pypi;
+      },
+
+      setSleapNnChannel: (channel: SleapNnChannel) => {
+        const { rawTools, tools, pypiVersions } = get();
+        const baseTools = rawTools.length > 0 ? rawTools : tools;
+        set({
+          sleapNnChannel: channel,
+          sleapNnChannelExplicitlySet: true,
+          tools: baseTools.map((t) =>
+            reconcileSleapNnTool(t, channel, pypiVersions)
+          ),
+        });
+        if (isTauri && !pypiVersions) {
+          void get().fetchPypiVersions();
         }
       },
 
@@ -294,6 +386,7 @@ export const useEnvironmentStore = create<EnvironmentState>()(
               tensorrt: false,
               backbones: false,
               pythonVersion: null,
+              sleapIoVersion: null,
               tensorrtSupported: false,
               error: msg,
             },
@@ -377,11 +470,12 @@ export const useEnvironmentStore = create<EnvironmentState>()(
 
           // For sleap-nn, detect GPU and install with appropriate torch extra
           if (pkg === "sleap-nn") {
+            const channel = get().sleapNnChannel;
             const gpu = await detectGpu();
             console.log("[env] Detected GPU type:", gpu);
             const torchExtra = gpu === "cuda" ? "torch-cuda130" : "torch-cpu";
-            installPkg = sleapNnInstallSpec([torchExtra]);
-            extraArgs = sleapNnUvExtraArgs();
+            installPkg = sleapNnInstallSpec([torchExtra], channel);
+            extraArgs = sleapNnUvExtraArgs([], channel);
             const selectedVersion = selectedPythonPath
               ? (interpreters.find((i) => i.path === selectedPythonPath)?.version ??
                 pythonCheck?.version ??
@@ -394,14 +488,14 @@ export const useEnvironmentStore = create<EnvironmentState>()(
               set((state) => ({
                 installLog: [
                   ...state.installLog,
-                  `[env] Selected Python ${selectedVersion} is outside ${SLEAP_NN_PYTHON_SPEC} required by sleap-nn 0.4 → using ${SLEAP_NN_PYTHON_SPEC}`,
+                  `[env] Selected Python ${selectedVersion} is outside ${SLEAP_NN_PYTHON_SPEC} required by sleap-nn → using ${SLEAP_NN_PYTHON_SPEC}`,
                 ],
               }));
             }
             set((state) => ({
               installLog: [
                 ...state.installLog,
-                `[env] GPU: ${gpu} → installing ${installPkg}`,
+                `[env] GPU: ${gpu} (${channel}) → installing ${installPkg}`,
               ],
             }));
           }
@@ -468,6 +562,7 @@ export const useEnvironmentStore = create<EnvironmentState>()(
         };
 
         try {
+          const channel = get().sleapNnChannel;
           const gpu = await detectGpu();
           const torchExtra = gpu === "cuda" ? "torch-cuda130" : "torch-cpu";
           // `uv tool install` REPLACES the tool env — it can't add or drop an
@@ -475,7 +570,7 @@ export const useEnvironmentStore = create<EnvironmentState>()(
           // forces a reinstall. That's also what makes unchecking work: the
           // omitted extra simply isn't in the new env. The torch backend has
           // to be restated for the same reason, or it would be dropped.
-          const installPkg = sleapNnInstallSpec([torchExtra, ...extras]);
+          const installPkg = sleapNnInstallSpec([torchExtra, ...extras], channel);
           let pythonArg: string | null = selectedPythonPath ?? SLEAP_NN_PYTHON_SPEC;
           const selectedVersion = selectedPythonPath
             ? (interpreters.find((i) => i.path === selectedPythonPath)?.version ??
@@ -487,14 +582,14 @@ export const useEnvironmentStore = create<EnvironmentState>()(
             set((state) => ({
               installLog: [
                 ...state.installLog,
-                `[env] Selected Python ${selectedVersion} is outside ${SLEAP_NN_PYTHON_SPEC} required by sleap-nn 0.4 → using ${SLEAP_NN_PYTHON_SPEC}`,
+                `[env] Selected Python ${selectedVersion} is outside ${SLEAP_NN_PYTHON_SPEC} required by sleap-nn → using ${SLEAP_NN_PYTHON_SPEC}`,
               ],
             }));
           }
           set((state) => ({
             installLog: [
               ...state.installLog,
-              `[env] GPU: ${gpu} → installing ${installPkg}`,
+              `[env] GPU: ${gpu} (${channel}) → installing ${installPkg}`,
             ],
           }));
           await installUvToolCmd(
@@ -502,7 +597,7 @@ export const useEnvironmentStore = create<EnvironmentState>()(
             pythonArg,
             true,
             onEvent,
-            sleapNnUvExtraArgs()
+            sleapNnUvExtraArgs([], channel)
           );
           await get().refresh();
         } catch (err) {
@@ -535,6 +630,7 @@ export const useEnvironmentStore = create<EnvironmentState>()(
 
         try {
           if (pkg === "sleap-nn") {
+            const channel = get().sleapNnChannel;
             // `uv tool upgrade` follows the version range recorded when the
             // tool was installed, and installs made before the cap recorded
             // none, so it would move them past the cap. Re-run the install
@@ -546,7 +642,7 @@ export const useEnvironmentStore = create<EnvironmentState>()(
               // from a button that says Update.
               throw new Error(
                 `sleap-nn ${current.version} is newer than this version of the ` +
-                  `app installs (${SLEAP_NN_VERSION_SPECIFIER}), so there is ` +
+                  `app installs (${sleapNnVersionSpecifier(channel)}), so there is ` +
                   "nothing to update to. Reinstall installs the newest " +
                   "supported version."
               );
@@ -573,12 +669,12 @@ export const useEnvironmentStore = create<EnvironmentState>()(
               );
             }
             const torchExtra = gpu === "cuda" ? "torch-cuda130" : "torch-cpu";
-            const installPkg = sleapNnInstallSpec([
-              torchExtra,
-              ...exportExtras(installed),
-            ]);
+            const installPkg = sleapNnInstallSpec(
+              [torchExtra, ...exportExtras(installed)],
+              channel
+            );
             // Keep the interpreter the env already has when it satisfies
-            // sleap-nn 0.4's Python requirement (`>=3.11,<3.14`). If upgrading
+            // sleap-nn's Python requirement (`>=3.11,<3.14`). If upgrading
             // an older venv on Python 3.10 (or 3.14+), switch to `>=3.11,<3.14`
             // so the upgrade does not fail with a Python-version mismatch.
             let upgradePython: string | null = null;
@@ -597,7 +693,7 @@ export const useEnvironmentStore = create<EnvironmentState>()(
             set((state) => ({
               installLog: [
                 ...state.installLog,
-                `[env] GPU: ${gpu} → updating ${installPkg}`,
+                `[env] GPU: ${gpu} (${channel}) → updating ${installPkg}`,
                 "[env] Extras or install options added outside the app are not kept.",
               ],
             }));
@@ -606,11 +702,94 @@ export const useEnvironmentStore = create<EnvironmentState>()(
               upgradePython,
               false,
               onEvent,
-              sleapNnUvExtraArgs(["--upgrade"])
+              sleapNnUvExtraArgs(["--upgrade"], channel)
             );
           } else {
             await upgradeUvToolCmd(pkg, onEvent);
           }
+          await get().refresh();
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err);
+          set((state) => ({
+            installStatus: "error",
+            installLog: [...state.installLog, `Error: ${msg}`],
+          }));
+        }
+      },
+
+      doSwitchSleapNnChannel: async () => {
+        const {
+          selectedPythonPath,
+          interpreters,
+          pythonCheck,
+          extras: lastGood,
+          sleapNnChannel: channel,
+        } = get();
+        set({
+          installStatus: "installing",
+          installTarget: `sleap-nn (${channel} channel)`,
+          installLog: [],
+        });
+
+        const onEvent = (event: ProcessEvent) => {
+          if (event.event === "stdout" || event.event === "stderr") {
+            set((state) => ({
+              installLog: [...state.installLog, event.data.line],
+            }));
+          } else if (event.event === "finished") {
+            set({
+              installStatus: event.data.success ? "done" : "error",
+            });
+          }
+        };
+
+        try {
+          const [gpu, probed] = await Promise.all([
+            detectGpu(),
+            detectSleapNnExtras().catch(() => null),
+          ]);
+          const installed =
+            probed && !probed.error
+              ? probed
+              : lastGood && !lastGood.error
+                ? lastGood
+                : null;
+          const torchExtra = gpu === "cuda" ? "torch-cuda130" : "torch-cpu";
+          const preserved = installed ? exportExtras(installed) : [];
+          const installPkg = sleapNnInstallSpec(
+            [torchExtra, ...preserved],
+            channel
+          );
+          const extraArgs = sleapNnUvExtraArgs([], channel);
+
+          let pythonArg: string | null = selectedPythonPath;
+          const selectedVersion = selectedPythonPath
+            ? (interpreters.find((i) => i.path === selectedPythonPath)?.version ??
+              pythonCheck?.version ??
+              null)
+            : null;
+          if (!selectedPythonPath) {
+            pythonArg = SLEAP_NN_PYTHON_SPEC;
+          } else if (
+            selectedVersion &&
+            !isPythonVersionCompatible(selectedVersion)
+          ) {
+            pythonArg = SLEAP_NN_PYTHON_SPEC;
+            set((state) => ({
+              installLog: [
+                ...state.installLog,
+                `[env] Selected Python ${selectedVersion} is outside ${SLEAP_NN_PYTHON_SPEC} required by sleap-nn → using ${SLEAP_NN_PYTHON_SPEC}`,
+              ],
+            }));
+          }
+          set((state) => ({
+            installLog: [
+              ...state.installLog,
+              `[env] GPU: ${gpu} (${channel}) → switching to ${installPkg}`,
+            ],
+          }));
+
+          await installUvToolCmd(installPkg, pythonArg, true, onEvent, extraArgs);
           await get().refresh();
         } catch (err) {
           const msg = err instanceof Error ? err.message : String(err);
@@ -647,6 +826,7 @@ export const useEnvironmentStore = create<EnvironmentState>()(
           let pythonArg: string | null = selectedPythonPath;
 
           if (pkg === "sleap-nn") {
+            const channel = get().sleapNnChannel;
             const [gpu, probed] = await Promise.all([
               detectGpu(),
               detectSleapNnExtras().catch(() => null),
@@ -659,8 +839,8 @@ export const useEnvironmentStore = create<EnvironmentState>()(
                   : null;
             const torchExtra = gpu === "cuda" ? "torch-cuda130" : "torch-cpu";
             const preserved = installed ? exportExtras(installed) : [];
-            installPkg = sleapNnInstallSpec([torchExtra, ...preserved]);
-            extraArgs = sleapNnUvExtraArgs();
+            installPkg = sleapNnInstallSpec([torchExtra, ...preserved], channel);
+            extraArgs = sleapNnUvExtraArgs([], channel);
             const selectedVersion = selectedPythonPath
               ? (interpreters.find((i) => i.path === selectedPythonPath)?.version ??
                 pythonCheck?.version ??
@@ -673,14 +853,14 @@ export const useEnvironmentStore = create<EnvironmentState>()(
               set((state) => ({
                 installLog: [
                   ...state.installLog,
-                  `[env] Selected Python ${selectedVersion} is outside ${SLEAP_NN_PYTHON_SPEC} required by sleap-nn 0.4 → using ${SLEAP_NN_PYTHON_SPEC}`,
+                  `[env] Selected Python ${selectedVersion} is outside ${SLEAP_NN_PYTHON_SPEC} required by sleap-nn → using ${SLEAP_NN_PYTHON_SPEC}`,
                 ],
               }));
             }
             set((state) => ({
               installLog: [
                 ...state.installLog,
-                `[env] GPU: ${gpu} → reinstalling ${installPkg}`,
+                `[env] GPU: ${gpu} (${channel}) → reinstalling ${installPkg}`,
               ],
             }));
           }
@@ -821,13 +1001,32 @@ export const useEnvironmentStore = create<EnvironmentState>()(
 
         sleapNnCheckInFlight = (async () => {
           try {
-            const [uvInfo, listedTools] = await Promise.all([
+            const [uvInfo, listedTools, pypi] = await Promise.all([
               detectUv(),
               listUvTools(),
+              safeCheckSleapNnVersions(),
             ]);
-            // An update at or above the sleap-nn cap is not announced.
-            const uvTools = listedTools.map(capSleapNnUpdate);
-            set({ uv: uvInfo, tools: uvTools });
+            const installedNn = listedTools.find((t) => t.name === "sleap-nn");
+            let channel = get().sleapNnChannel;
+            if (
+              !get().sleapNnChannelExplicitlySet &&
+              installedNn?.version &&
+              isPep440Prerelease(installedNn.version)
+            ) {
+              channel = "prerelease";
+            }
+            const nextPypi = pypi ?? get().pypiVersions;
+            // An update at or above the sleap-nn cap (or a channel downgrade) is not announced.
+            const uvTools = listedTools.map((t) =>
+              reconcileSleapNnTool(t, channel, nextPypi)
+            );
+            set({
+              uv: uvInfo,
+              sleapNnChannel: channel,
+              rawTools: listedTools,
+              pypiVersions: nextPypi,
+              tools: uvTools,
+            });
 
             const tool = uvTools.find((t) => t.name === "sleap-nn");
             if (!tool?.updateAvailable || !tool.latestVersion) return;

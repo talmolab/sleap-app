@@ -169,6 +169,8 @@ async function createTauriPlatform(): Promise<PlatformAPI> {
   // Dynamic imports so these don't fail in browser mode
   const { readFile, writeFile, exists } = await import("@tauri-apps/plugin-fs");
   const { open, save } = await import("@tauri-apps/plugin-dialog");
+  const { invoke } = await import("@tauri-apps/api/core");
+  const { sleapCmd } = await import("@/lib/sleapPlugin");
 
   return {
     isTauri: true,
@@ -220,7 +222,11 @@ async function createTauriPlatform(): Promise<PlatformAPI> {
     },
 
     async exists(path: string): Promise<boolean> {
-      return await exists(path);
+      try {
+        return await invoke<boolean>(sleapCmd("path_exists"), { path });
+      } catch {
+        return await exists(path);
+      }
     },
   };
 }

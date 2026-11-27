@@ -9,6 +9,7 @@ import { describe, it, expect, vi, beforeEach } from "../bun-test";
 import {
   SLEAP_IO_WITH_SPEC,
   SLEAP_NN_PYTHON_SPEC,
+  SLEAP_NN_STABLE_SPECIFIER,
   SLEAP_NN_VERSION_CAP,
   SLEAP_NN_VERSION_FLOOR,
   SLEAP_NN_VERSION_SPECIFIER,
@@ -16,15 +17,25 @@ import {
   comparePep440Versions,
   exportExtras,
   installedSleapNnVersion,
+  isPep440Prerelease,
   isPythonVersionCompatible,
   isSleapNnVersionBelowCap,
   isSleapNnVersionBelowFloor,
   parseSleapNnVersion,
+  pickLatestSleapIoVersion,
+  pickLatestSleapNnVersion,
+  reconcileSleapNnTool,
+  resolveSleapNnStatus,
   sleapNnInstallSpec,
   sleapNnSupportsSlp3,
   sleapNnUvExtraArgs,
 } from "@/lib/sleapNnVersion";
-import type { PythonInterpreter, SleapNnExtras, UvTool } from "@/platform/backend";
+import type {
+  PyPiPackageVersions,
+  PythonInterpreter,
+  SleapNnExtras,
+  UvTool,
+} from "@/platform/backend";
 
 type Event = { event: string; data: { line?: string; success?: boolean } };
 
@@ -36,11 +47,13 @@ let installedExtras: SleapNnExtras = {
   tensorrt: false,
   backbones: false,
   pythonVersion: "3.12.7",
+  sleapIoVersion: "0.10.0a0",
   tensorrtSupported: true,
   error: null,
 };
 let listedTools: UvTool[] = [];
 let listedInterpreters: PythonInterpreter[] = [];
+let mockPypiVersions: PyPiPackageVersions | null = null;
 
 vi.mock("@/platform/index", () => ({ isTauri: true }));
 vi.mock("@/lib/notify", () => ({
@@ -74,6 +87,8 @@ vi.mock("@/platform/backend", () => ({
     error: null,
   }),
   detectSleapNnExtras: async () => installedExtras,
+  checkSleapNnVersions: async () =>
+    mockPypiVersions ?? { sleapNn: [], sleapIo: [], error: null },
   listUvTools: async () => listedTools,
   listPythonInterpreters: async () => listedInterpreters,
   listDownloadablePythons: async () => [],
@@ -115,6 +130,10 @@ async function store() {
   useEnvironmentStore.setState({
     refresh: async () => {},
     tools: listedTools,
+    rawTools: listedTools,
+    sleapNnChannel: "prerelease",
+    sleapNnChannelExplicitlySet: false,
+    pypiVersions: mockPypiVersions,
     interpreters: listedInterpreters,
     extras: null,
     selectedPythonPath: null,
@@ -144,11 +163,13 @@ beforeEach(() => {
     tensorrt: false,
     backbones: false,
     pythonVersion: "3.12.7",
+    sleapIoVersion: "0.10.0a0",
     tensorrtSupported: true,
     error: null,
   };
   listedTools = [];
   listedInterpreters = [];
+  mockPypiVersions = null;
 });
 
 describe("sleapNnInstallSpec & sleapNnUvExtraArgs", () => {
@@ -544,5 +565,140 @@ describe("the update check", () => {
     await s.getState().checkSleapNnUpdateAndNotify();
     expect(toasts).toEqual(["sleap-nn v0.4.0 is available"]);
     expect(s.getState().tools[0].latestVersion).toBe("0.4.0");
+  });
+});
+
+describe("sleap-nn channel toggle, pre-release detection, and PyPI/sleap-io tracking", () => {
+  it("classifies PEP 440 pre-releases from the version string alone", () => {
+    expect(isPep440Prerelease("0.4.0a0")).toBe(true);
+    expect(isPep440Prerelease("0.4.0b1")).toBe(true);
+    expect(isPep440Prerelease("0.4.0rc0")).toBe(true);
+    expect(isPep440Prerelease("0.4.0.dev0")).toBe(true);
+    expect(isPep440Prerelease("0.10.0a0")).toBe(true);
+    expect(isPep440Prerelease("0.3.5")).toBe(false);
+    expect(isPep440Prerelease("0.4.0")).toBe(false);
+    expect(isPep440Prerelease("0.4.0.post1")).toBe(false);
+    expect(isPep440Prerelease("0.9.6")).toBe(false);
+    expect(isPep440Prerelease(null)).toBe(false);
+  });
+
+  it("builds stable channel install specs without --with sleap-io", () => {
+    expect(SLEAP_NN_STABLE_SPECIFIER).toBe("<0.5");
+    expect(sleapNnInstallSpec(["torch-cpu"], "stable")).toBe(
+      "sleap-nn[torch-cpu]<0.5"
+    );
+    expect(sleapNnUvExtraArgs([], "stable")).toEqual(["--torch-backend=auto"]);
+    expect(sleapNnUvExtraArgs(["--upgrade"], "stable")).toEqual([
+      "--upgrade",
+      "--torch-backend=auto",
+    ]);
+  });
+
+  it("picks the right latest PyPI sleap-nn and sleap-io versions per channel", () => {
+    const nnVersions = ["0.3.4", "0.3.5", "0.4.0a0", "0.4.0a1", "0.5.0a0", "0.5.0"];
+    expect(pickLatestSleapNnVersion(nnVersions, "stable")).toBe("0.3.5");
+    expect(pickLatestSleapNnVersion(nnVersions, "prerelease")).toBe("0.4.0a1");
+    expect(pickLatestSleapNnVersion([...nnVersions, "0.4.0"], "stable")).toBe("0.4.0");
+    expect(pickLatestSleapNnVersion([...nnVersions, "0.4.0"], "prerelease")).toBe("0.4.0");
+
+    const ioVersions = ["0.9.5", "0.9.6", "0.10.0a0", "0.10.0a1", "0.10.0", "0.11.0a0"];
+    // sleap-nn 0.3.5 cannot install sleap-io 0.10.x, so cap at <0.10
+    expect(pickLatestSleapIoVersion(ioVersions, "stable", "0.3.5")).toBe("0.9.6");
+    // sleap-nn 0.4.0 on stable picks stable 0.10.0 (<0.11)
+    expect(pickLatestSleapIoVersion(ioVersions, "stable", "0.4.0")).toBe("0.10.0");
+    // pre-release channel picks newest <0.11 including alphas
+    expect(
+      pickLatestSleapIoVersion(["0.9.6", "0.10.0a0", "0.10.0a1"], "prerelease", "0.4.0a0")
+    ).toBe("0.10.0a1");
+  });
+
+  it("reconciles PyPI updates, channel downgrades, and --with sleap-io updates", () => {
+    const pypi: PyPiPackageVersions = {
+      sleapNn: ["0.3.5", "0.4.0a0", "0.4.0a1"],
+      sleapIo: ["0.9.6", "0.10.0a0", "0.10.0a1"],
+      error: null,
+    };
+
+    // Newer alpha on prerelease channel
+    const nnAlpha = reconcileSleapNnTool(
+      tool({ version: "0.4.0a0", updateAvailable: false, latestVersion: "0.4.0a0" }),
+      "prerelease",
+      pypi
+    );
+    expect(nnAlpha.updateAvailable).toBe(true);
+    expect(nnAlpha.latestVersion).toBe("0.4.0a1");
+
+    // Switching from 0.4.0a0 to stable (0.3.5) is a channel switch, NOT an update toast
+    const nnToStable = reconcileSleapNnTool(
+      tool({ version: "0.4.0a0", updateAvailable: false, latestVersion: "0.4.0a0" }),
+      "stable",
+      pypi
+    );
+    expect(nnToStable.updateAvailable).toBe(false);
+    const switchStatus = resolveSleapNnStatus({
+      tool: nnToStable,
+      channel: "stable",
+      pypi,
+      installedSleapIoVersion: "0.10.0a0",
+    });
+    expect(switchStatus.isSwitchDowngrade).toBe(true);
+    expect(switchStatus.sleapNnUpdateAvailable).toBe(false);
+    expect(switchStatus.targetVersion).toBe("0.3.5");
+    expect(switchStatus.installedIsPrerelease).toBe(true);
+
+    // sleap-nn is up to date at 0.4.0a1, but bundled sleap-io 0.10.0a0 -> 0.10.0a1
+    const ioUpdateStatus = resolveSleapNnStatus({
+      tool: tool({ version: "0.4.0a1", updateAvailable: false, latestVersion: "0.4.0a1" }),
+      channel: "prerelease",
+      pypi,
+      installedSleapIoVersion: "0.10.0a0",
+    });
+    expect(ioUpdateStatus.sleapNnUpdateAvailable).toBe(false);
+    expect(ioUpdateStatus.sleapIoUpdateAvailable).toBe(true);
+    expect(ioUpdateStatus.targetSleapIoVersion).toBe("0.10.0a1");
+
+    // sleap-nn 0.3.5 + sleap-io 0.9.6 on stable does NOT flag sleap-io 0.10.0 as compatible
+    const stable035Status = resolveSleapNnStatus({
+      tool: tool({ version: "0.3.5", updateAvailable: false, latestVersion: "0.3.5" }),
+      channel: "stable",
+      pypi: { sleapNn: ["0.3.5", "0.4.0a0"], sleapIo: ["0.9.6", "0.10.0"], error: null },
+      installedSleapIoVersion: "0.9.6",
+    });
+    expect(stable035Status.sleapNnUpdateAvailable).toBe(false);
+    expect(stable035Status.sleapIoUpdateAvailable).toBe(false);
+  });
+
+  it("installs and switches channels in environmentStore without nagging on stable", async () => {
+    mockPypiVersions = {
+      sleapNn: ["0.3.5", "0.4.0a0"],
+      sleapIo: ["0.9.6", "0.10.0a0"],
+      error: null,
+    };
+    listedTools = [
+      tool({ version: "0.3.5", updateAvailable: false, latestVersion: "0.3.5" }),
+    ];
+    const s = await store();
+    s.getState().setSleapNnChannel("stable");
+    expect(s.getState().sleapNnChannel).toBe("stable");
+    expect(s.getState().sleapNnChannelExplicitlySet).toBe(true);
+    expect(s.getState().tools[0].updateAvailable).toBe(false);
+
+    // Startup update check on stable does not toast about 0.4.0a0
+    await s.getState().checkSleapNnUpdateAndNotify();
+    expect(toasts).toEqual([]);
+
+    // Fresh install on stable omits --with sleap-io
+    await s.getState().doInstallTool("sleap-nn");
+    expect(calls).toEqual([
+      `install sleap-nn[torch-cpu]<0.5 --python ${SLEAP_NN_PYTHON_SPEC} --torch-backend=auto`,
+    ]);
+
+    // Switching from 0.4.0a0 back to stable forces reinstall & keeps extras
+    calls.length = 0;
+    installedExtras = { ...installedExtras, onnx: true, backbones: true };
+    await s.getState().doSwitchSleapNnChannel();
+    expect(calls).toEqual([
+      `install sleap-nn[torch-cpu,export,backbones]<0.5 --python ${SLEAP_NN_PYTHON_SPEC} --force --torch-backend=auto`,
+    ]);
   });
 });

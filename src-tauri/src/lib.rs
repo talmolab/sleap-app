@@ -49,6 +49,17 @@ fn read_image_file(path: String) -> Result<tauri::ipc::Response, String> {
         .map_err(|e| format!("read_image_file({path}): {e}"))
 }
 
+/// Fast native path existence check (`std::path::Path::exists`) off the UI
+/// thread, bypassing `@tauri-apps/plugin-fs`'s per-call scope validation (which
+/// adds multi-second latency per probe on SMB/network mounts during video
+/// path resolution).
+#[tauri::command]
+async fn path_exists(path: String) -> bool {
+    tauri::async_runtime::spawn_blocking(move || std::path::Path::new(&path).exists())
+        .await
+        .unwrap_or(false)
+}
+
 /// Persistent read-handle cache: `path -> open File`. `read_range` used to
 /// `File::open` on EVERY range request; on an NFS/SMB mount each `open()` is a
 /// network round-trip, and the video reader issues many range reads per seek, so
@@ -658,6 +669,7 @@ fn sleap_plugin<R: tauri::Runtime>() -> tauri::plugin::TauriPlugin<R> {
             resolve_open,
             window_set_file,
             read_image_file,
+            path_exists,
             reveal_in_file_manager,
             open_in_default_app,
             open_preferences_directory,
@@ -666,6 +678,7 @@ fn sleap_plugin<R: tauri::Runtime>() -> tauri::plugin::TauriPlugin<R> {
             environment::detect_gpu,
             environment::detect_accelerator,
             environment::detect_sleap_nn_extras,
+            environment::check_sleap_nn_versions,
             environment::gpu_stats,
             environment::check_wandb_auth,
             environment::list_uv_tools,
