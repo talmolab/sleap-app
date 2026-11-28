@@ -4,6 +4,7 @@
  */
 import { describe, it, expect } from "../bun-test";
 import { runNativeMenuItem, toAccelerator, toNativeSpec, type NativeNode } from "@/lib/menu/nativeMenu";
+import { currentAppMenu } from "@/lib/menu/useAppMenu";
 import type { AppMenu } from "@/lib/menu/types";
 
 const calls: string[] = [];
@@ -38,9 +39,17 @@ const MENU: AppMenu = [
     ],
   },
   { kind: "menu", id: "predict", label: "Predict", items: [{ kind: "item", id: "predict.training", label: "Training...", run: () => {} }] },
-  { kind: "action", id: "connect", label: "Connect", searchGroup: "Predict", run: () => void calls.push("connect") },
-  { kind: "action", id: "tutorial", label: "Start Tutorial", searchGroup: "Help", run: () => {} },
-  { kind: "menu", id: "help", label: "Help", items: [{ kind: "item", id: "help.about", label: "About", run: () => {} }] },
+  { kind: "action", id: "customAction", label: "Custom Action", searchGroup: "Help", run: () => void calls.push("customAction") },
+  {
+    kind: "menu",
+    id: "help",
+    label: "Help",
+    items: [
+      { kind: "item", id: "help.docs", label: "Documentation", run: () => {} },
+      { kind: "item", id: "help.tutorial", label: "Start Tutorial", run: () => {} },
+      { kind: "item", id: "help.about", label: "About", run: () => {} },
+    ],
+  },
 ];
 
 const byId = (nodes: NativeNode[], id: string): NativeNode | undefined => {
@@ -100,22 +109,44 @@ describe("toNativeSpec", () => {
     expect(byId(go, "go.count")).toMatchObject({ kind: "item", label: "3 frames", enabled: false });
   });
 
-  it("puts Start Tutorial at the top of Help, and no second Connect in Predict", () => {
-    const predict = spec.menus.find((m) => m.id === "predict")!.items;
+  it("preserves Help order (Documentation first, Start Tutorial after) without injecting extra action copies", () => {
     const help = spec.menus.find((m) => m.id === "help")!.items;
+    expect(help[0]).toMatchObject({ id: "help.docs", label: "Documentation" });
+    expect(help[1]).toMatchObject({ id: "help.tutorial", label: "Start Tutorial" });
+    expect(byId(help, "customAction")).toBeUndefined();
+  });
+
+  it("builds the real app menu cleanly with Documentation first in Help and Open View Panel in View", () => {
+    const appSpec = toNativeSpec(currentAppMenu());
+    expect(appSpec.menus.map((m) => m.id)).toEqual([
+      "file", "go", "view", "labels", "analyze", "tracks", "predict", "help",
+    ]);
+    const help = appSpec.menus.find((m) => m.id === "help")!.items;
+    expect(help[0]).toMatchObject({ id: "help.docs", label: "Documentation" });
+    expect(help[1]).toMatchObject({ id: "help.tutorial", label: "Start Tutorial" });
+    expect(byId(help, "help.hints")).toMatchObject({ kind: "check", label: "Show Hints During Labeling" });
+    expect(byId(help, "tutorial")).toBeUndefined();
+
+    const labels = appSpec.menus.find((m) => m.id === "labels")!.items;
+    expect(byId(labels, "labels.hints")).toBeUndefined();
+
+    const predict = appSpec.menus.find((m) => m.id === "predict")!.items;
+    expect(byId(predict, "predict.connect")).toBeDefined();
     expect(byId(predict, "connect")).toBeUndefined();
-    expect(help[0]).toMatchObject({ id: "tutorial", label: "Start Tutorial" });
+
+    const view = appSpec.menus.find((m) => m.id === "view")!.items;
+    expect(view[0]).toMatchObject({ id: "view.openPanel", label: "Open View Panel" });
   });
 });
 
 describe("runNativeMenuItem", () => {
-  it("runs items, radio choices and the in-window buttons by id", () => {
+  it("runs items, radio choices and top-level actions by id", () => {
     calls.length = 0;
     expect(runNativeMenuItem(MENU, "file.save")).toBe(true);
     expect(runNativeMenuItem(MENU, "go.domain=labeled")).toBe(true);
-    expect(runNativeMenuItem(MENU, "connect")).toBe(true);
+    expect(runNativeMenuItem(MENU, "customAction")).toBe(true);
     expect(runNativeMenuItem(MENU, "file.quit")).toBe(true); // from the application menu
-    expect(calls).toEqual(["save", "domain=labeled", "connect", "quit"]);
+    expect(calls).toEqual(["save", "domain=labeled", "customAction", "quit"]);
   });
 
   it("ignores disabled items and ids it doesn't know (system items)", () => {

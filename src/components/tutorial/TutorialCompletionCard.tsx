@@ -84,7 +84,7 @@ export function TutorialCompletionCard() {
           </>
         )}
         <li>
-          Restart this tutorial anytime from Start Tutorial in the menu bar.
+          Restart this tutorial anytime from Help → Start Tutorial.
         </li>
       </ul>
       <div className="mt-3 flex items-center justify-end gap-2">

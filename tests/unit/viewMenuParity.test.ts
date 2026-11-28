@@ -1,13 +1,13 @@
 /**
- * View-menu parity with PyQt SLEAP: zoom modes (Fit View to Selection as a
- * toggle, Actual Size), Show Mean Node Score, Bold Lines and the trail
- * options (Trail Node, Fade Older Trail Segments, Trail Opacity, Trail Width).
+ * View-menu parity with PyQt SLEAP: Open View Panel shortcut, zoom modes
+ * (Fit View to Selection as a toggle, Actual Size), and view preference
+ * defaults/persistence (the fine-grained display/style/trail controls moved
+ * to the View panel — see `viewPanel.test.tsx`).
  */
 import { describe, it, expect, beforeEach } from "../bun-test";
-import { Skeleton } from "@talmolab/sleap-io.js";
 import { useAppStore, PERSISTED_KEYS } from "@/stores/appStore";
 import { currentAppMenu } from "@/lib/menu/useAppMenu";
-import type { MenuNode, MenuRadioNode, TopMenu } from "@/lib/menu/types";
+import type { MenuNode, TopMenu } from "@/lib/menu/types";
 
 beforeEach(() => {
   useAppStore.setState(useAppStore.getInitialState());
@@ -40,13 +40,16 @@ async function click(id: string) {
   await n.run();
 }
 
-function radio(id: string): MenuRadioNode {
-  const n = node(id);
-  if (n.kind !== "radio") throw new Error(`${id} is not a radio group`);
-  return n;
-}
-
 describe("View menu wording and order", () => {
+  it("puts Open View Panel first to jump straight to style, color, and trail settings", async () => {
+    const labels = view().flatMap((n) => ("label" in n ? [n.label] : []));
+    expect(labels[0]).toBe("Open View Panel");
+    useAppStore.setState({ sidebarCollapsed: true, sidebarOpenPanels: [] });
+    await click("view.openPanel");
+    expect(useAppStore.getState().sidebarCollapsed).toBe(false);
+    expect(useAppStore.getState().sidebarOpenPanels).toContain("view");
+  });
+
   // PyQt users look for these exact labels, in this order.
   it("has PyQt's three zoom modes together, then a one-shot Zoom to Selection", () => {
     const labels = view().flatMap((n) => ("label" in n ? [n.label] : []));
@@ -56,19 +59,6 @@ describe("View menu wording and order", () => {
       "Fit View to Selection",
       "Actual Size (1:1)",
       "Zoom to Selection",
-    ]);
-  });
-
-  // The trail submenus sit together, in PyQt's order, with Trail Width added last.
-  it("groups the trail options after Trail Length", () => {
-    const labels = view().flatMap((n) => ("label" in n ? [n.label] : []));
-    const i = labels.indexOf("Trail Length");
-    expect(labels.slice(i, i + 5)).toEqual([
-      "Trail Length",
-      "Trail Node",
-      "Fade Older Trail Segments",
-      "Trail Opacity",
-      "Trail Width",
     ]);
   });
 });
@@ -125,55 +115,6 @@ describe("zoom modes", () => {
     useAppStore.getState().setZoomMode("actualSize", true);
     useAppStore.getState().resetView();
     expect(useAppStore.getState().actualSize).toBe(false);
-  });
-});
-
-describe("display toggles", () => {
-  // Each new check item flips its own preference and shows it checked.
-  it("Show Mean Node Score, Bold Lines and Fade Older Trail Segments toggle", async () => {
-    for (const [id, key] of [
-      ["view.showMeanNodeScore", "showMeanNodeScore"],
-      ["view.boldLines", "boldLines"],
-      ["view.trailFade", "trailFade"],
-    ] as const) {
-      const before = useAppStore.getState()[key];
-      expect(node(id)).toMatchObject({ kind: "check", checked: before });
-      await click(id);
-      expect(useAppStore.getState()[key]).toBe(!before);
-      expect(node(id)).toMatchObject({ checked: !before });
-    }
-  });
-});
-
-describe("trail options", () => {
-  // The Trail Node list comes from the project's skeleton, like PyQt's.
-  it("Trail Node offers Centroid plus each skeleton node", () => {
-    useAppStore.setState({ skeleton: new Skeleton({ nodes: ["head", "thorax", "tail"] }) });
-    const r = radio("view.trailNode.value");
-    expect(r.options.map((o) => o.label)).toEqual(["Centroid", "head", "thorax", "tail"]);
-    expect(r.value).toBe("centroid");
-    r.select("thorax");
-    expect(useAppStore.getState().trailNode).toBe("thorax");
-    expect(radio("view.trailNode.value").value).toBe("thorax");
-  });
-
-  // A node remembered from another project shows (and draws) as Centroid.
-  it("a node the skeleton doesn't have shows Centroid checked", () => {
-    useAppStore.setState({
-      skeleton: new Skeleton({ nodes: ["head"] }),
-      trailNode: "abdomen",
-    });
-    expect(radio("view.trailNode.value").value).toBe("centroid");
-  });
-
-  // Opacity and width store numbers, not strings, for the renderer.
-  it("Trail Opacity and Trail Width store numbers", () => {
-    radio("view.trailAlpha.value").select("0.5");
-    radio("view.trailWidth.value").select("2");
-    expect(useAppStore.getState().trailAlpha).toBe(0.5);
-    expect(useAppStore.getState().trailWidth).toBe(2);
-    expect(radio("view.trailAlpha.value").value).toBe("0.5");
-    expect(radio("view.trailWidth.value").value).toBe("2");
   });
 });
 

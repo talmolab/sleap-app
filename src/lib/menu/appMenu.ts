@@ -13,7 +13,6 @@ import { useSlpFormatStore } from "@/stores/slpFormatStore";
 import { PANELS } from "@/components/layout/panelRegistry";
 import { DEFAULT_SHORTCUTS } from "@/lib/shortcuts";
 import { getDocsUrl } from "@/lib/docsUrl";
-import { PALETTES } from "@/lib/colorPalettes";
 import { QC_MODE_CHOICES } from "@/lib/instanceVisibility";
 import { toast } from "@/lib/notify";
 import { PredictedInstance } from "@talmolab/sleap-io.js";
@@ -131,31 +130,9 @@ export interface MenuSnapshot {
   qcDisplayMode: string;
   showLabels: boolean;
   showEdges: boolean;
-  showBboxes: boolean;
-  showCentroids: boolean;
-  showPoseBboxes: boolean;
   bboxDrawMode: boolean;
-  showCrosshair: boolean;
   showInset: boolean;
-  temporalLoupe: boolean;
-  edgeStyle: string;
-  markerSize: number;
-  poseOpacity: number;
-  nodeLabelSize: number;
-  trailLength: number;
-  /** `"centroid"` or a node name. */
-  trailNode: string;
-  /** Node names of the project skeleton, for View ▸ Trail Node. */
-  trailNodeOptions: string[];
-  trailAlpha: number;
-  trailFade: boolean;
-  trailWidth: number;
-  boldLines: boolean;
-  showMeanNodeScore: boolean;
-  palette: string;
-  distinctlyColor: string;
   colorPredicted: boolean;
-  showTrackScore: boolean;
   scrubProxyEnabled: boolean;
   hiddenPanels: string[];
   instanceInitMethod: string;
@@ -375,10 +352,6 @@ function goMenu(s: MenuSnapshot): TopMenu {
 
 function viewMenu(s: MenuSnapshot): TopMenu {
   const toggle = (key: Parameters<ReturnType<typeof store>["toggle"]>[0]) => () => store().toggle(key);
-  const set = <K extends Parameters<ReturnType<typeof store>["set"]>[0]>(key: K) =>
-    (v: string) => store().set(key, v as never);
-  const setNum = <K extends Parameters<ReturnType<typeof store>["set"]>[0]>(key: K) =>
-    (v: string) => store().set(key, Number(v) as never);
   const sub = (id: string, label: string, node: MenuNode): MenuNode => ({
     kind: "submenu",
     id: `view.${id}`,
@@ -389,8 +362,19 @@ function viewMenu(s: MenuSnapshot): TopMenu {
     kind: "menu",
     id: "view",
     label: "View",
-    scroll: true,
     items: [
+      {
+        kind: "item",
+        id: "view.openPanel",
+        label: "Open View Panel",
+        title: "Open the View panel for overlay, style, color, trail, and intensity settings",
+        run: () => {
+          const st = store();
+          if (st.hiddenPanels.includes("view")) st.togglePanelVisibility("view");
+          st.openPanel("view");
+        },
+      },
+      SEP,
       { kind: "check", id: "view.sidePanel", label: "Side Panel", checked: !s.sidebarCollapsed, run: toggle("sidebarCollapsed") },
       {
         kind: "check",
@@ -452,6 +436,9 @@ function viewMenu(s: MenuSnapshot): TopMenu {
         checked: s.showNonVisibleNodes,
         run: toggle("showNonVisibleNodes"),
       },
+      { kind: "check", id: "view.showLabels", label: "Show Node Names", shortcut: DEFAULT_SHORTCUTS["show labels"], checked: s.showLabels, run: toggle("showLabels") },
+      { kind: "check", id: "view.showEdges", label: "Show Edges", checked: s.showEdges, run: toggle("showEdges") },
+      { kind: "check", id: "view.colorPredicted", label: "Color Predicted Instances", checked: s.colorPredicted, run: toggle("colorPredicted") },
       sub(
         "display",
         "Display",
@@ -462,127 +449,7 @@ function viewMenu(s: MenuSnapshot): TopMenu {
           (v) => store().setQcDisplayMode(v as Parameters<ReturnType<typeof store>["setQcDisplayMode"]>[0]),
         ),
       ),
-      { kind: "check", id: "view.showLabels", label: "Show Node Names", shortcut: DEFAULT_SHORTCUTS["show labels"], checked: s.showLabels, run: toggle("showLabels") },
-      { kind: "check", id: "view.showEdges", label: "Show Edges", checked: s.showEdges, run: toggle("showEdges") },
-      { kind: "check", id: "view.showMeanNodeScore", label: "Show Mean Node Score", checked: s.showMeanNodeScore, run: toggle("showMeanNodeScore") },
-      { kind: "check", id: "view.showBboxes", label: "Show Bounding Boxes", checked: s.showBboxes, run: toggle("showBboxes") },
-      { kind: "check", id: "view.showCentroids", label: "Show Centroids", checked: s.showCentroids, run: toggle("showCentroids") },
-      { kind: "check", id: "view.showPoseBboxes", label: "Show Boxes Around Poses", checked: s.showPoseBboxes, run: toggle("showPoseBboxes") },
-      { kind: "check", id: "view.crosshair", label: "Crosshair When Zoomed", checked: s.showCrosshair, run: toggle("showCrosshair") },
       { kind: "check", id: "view.magnifier", label: "Magnifier When Moving Nodes", checked: s.showInset, run: toggle("showInset") },
-      { kind: "check", id: "view.temporalLoupe", label: "Play Neighboring Frames in Magnifier", checked: s.temporalLoupe, run: toggle("temporalLoupe") },
-      SEP,
-      sub("edgeStyle", "Edge Style", radio("view.edgeStyle.value", s.edgeStyle, [["Line", "Line"], ["Wedge", "Wedge"]], set("edgeStyle"))),
-      // PyQt keeps this in preferences.yaml only ("bold lines").
-      { kind: "check", id: "view.boldLines", label: "Bold Lines", checked: s.boldLines, run: toggle("boldLines") },
-      SEP,
-      sub(
-        "markerSize",
-        "Node Marker Size",
-        radio(
-          "view.markerSize.value",
-          String(s.markerSize),
-          [["2", "Small (2)"], ["4", "Medium (4)"], ["6", "Large (6)"], ["8", "Extra Large (8)"]],
-          setNum("markerSize"),
-        ),
-      ),
-      sub(
-        "poseOpacity",
-        "Pose Opacity",
-        radio(
-          "view.poseOpacity.value",
-          String(s.poseOpacity),
-          [["100", "100%"], ["75", "75%"], ["50", "50%"], ["25", "25%"]],
-          setNum("poseOpacity"),
-        ),
-      ),
-      SEP,
-      sub(
-        "nodeLabelSize",
-        "Node Label Size",
-        radio(
-          "view.nodeLabelSize.value",
-          String(s.nodeLabelSize),
-          [["8", "Small (8)"], ["10", "Medium (10)"], ["12", "Large (12)"], ["14", "Extra Large (14)"]],
-          setNum("nodeLabelSize"),
-        ),
-      ),
-      SEP,
-      sub(
-        "trailLength",
-        "Trail Length",
-        radio(
-          "view.trailLength.value",
-          String(s.trailLength),
-          [
-            ["0", "Off"],
-            ["10", "Short (10)"],
-            ["50", "Medium (50)"],
-            ["100", "Long (100)"],
-            ["250", "Very Long (250)"],
-            ["500", "Maximum (500)"],
-          ],
-          setNum("trailLength"),
-        ),
-      ),
-      sub(
-        "trailNode",
-        "Trail Node",
-        radio(
-          "view.trailNode.value",
-          // A node missing from this skeleton falls back to the centroid.
-          s.trailNodeOptions.includes(s.trailNode) ? s.trailNode : "centroid",
-          [["centroid", "Centroid"], ...s.trailNodeOptions.map((n): [string, string] => [n, n])],
-          set("trailNode"),
-        ),
-      ),
-      { kind: "check", id: "view.trailFade", label: "Fade Older Trail Segments", checked: s.trailFade, run: toggle("trailFade") },
-      sub(
-        "trailAlpha",
-        "Trail Opacity",
-        radio(
-          "view.trailAlpha.value",
-          String(s.trailAlpha),
-          [["0.25", "25%"], ["0.5", "50%"], ["0.75", "75%"], ["1", "100%"]],
-          setNum("trailAlpha"),
-        ),
-      ),
-      // PyQt keeps this in preferences.yaml only ("trail width").
-      sub(
-        "trailWidth",
-        "Trail Width",
-        radio(
-          "view.trailWidth.value",
-          String(s.trailWidth),
-          [["1", "1 px"], ["2", "2 px"], ["3", "3 px"], ["4", "4 px"], ["6", "6 px"], ["8", "8 px"]],
-          setNum("trailWidth"),
-        ),
-      ),
-      SEP,
-      sub(
-        "palette",
-        "Color Palette",
-        radio("view.palette.value", s.palette, Object.keys(PALETTES).map((name) => [name, name]), set("palette")),
-      ),
-      SEP,
-      sub(
-        "distinctlyColor",
-        "Apply Distinct Colors To",
-        radio(
-          "view.distinctlyColor.value",
-          s.distinctlyColor,
-          [
-            ["auto", "Auto (Node / Track)"],
-            ["track", "Tracks"],
-            ["instance", "Instances"],
-            ["node", "Nodes"],
-            ["edge", "Edges"],
-          ],
-          set("distinctlyColor"),
-        ),
-      ),
-      { kind: "check", id: "view.colorPredicted", label: "Color Predicted Instances", checked: s.colorPredicted, run: toggle("colorPredicted") },
-      { kind: "check", id: "view.trackScores", label: "Show Track Scores", checked: s.showTrackScore, run: toggle("showTrackScore") },
       SEP,
       {
         kind: "check",
@@ -655,7 +522,6 @@ function labelsMenu(s: MenuSnapshot): TopMenu {
           ),
         ],
       },
-      { kind: "check", id: "labels.hints", label: "Show Hints During Labeling", checked: s.showLabelingHints, run: () => store().toggle("showLabelingHints") },
       {
         kind: "item",
         id: "labels.deleteInstance",
@@ -1058,11 +924,14 @@ function helpMenu(s: MenuSnapshot): TopMenu {
     id: "help",
     label: "Help",
     items: [
-      { kind: "item", id: "help.searchMenus", label: "Search Menus...", run: () => store().setMenuSearchDialogOpen(true) },
-      SEP,
-      { kind: "item", id: "help.shortcuts", label: "Keyboard Shortcuts...", run: () => store().setShortcutsDialogOpen(true) },
-      { kind: "item", id: "help.labelingTips", label: "Labeling Tips...", run: () => store().setLabelingTipsDialogOpen(true) },
       { kind: "item", id: "help.docs", label: "Documentation", run: () => openExternal(getDocsUrl()) },
+      { kind: "item", id: "help.tutorial", label: "Start Tutorial", run: () => void requestStartTutorial() },
+      { kind: "item", id: "help.labelingTips", label: "Labeling Tips...", run: () => store().setLabelingTipsDialogOpen(true) },
+      { kind: "check", id: "help.hints", label: "Show Hints During Labeling", checked: s.showLabelingHints, run: () => store().toggle("showLabelingHints") },
+      SEP,
+      { kind: "item", id: "help.searchMenus", label: "Search Menus...", run: () => store().setMenuSearchDialogOpen(true) },
+      { kind: "item", id: "help.shortcuts", label: "Keyboard Shortcuts...", run: () => store().setShortcutsDialogOpen(true) },
+      SEP,
       { kind: "item", id: "help.whatsNew", label: "New in SLEAP App", run: () => openExternal(`${getDocsUrl()}whats-new/`) },
       { kind: "item", id: "help.reportIssue", label: "Report Issue", run: () => openExternal("https://github.com/talmolab/sleap-app/issues") },
       { kind: "item", id: "help.diagnostics", label: "Collect Diagnostics...", run: () => store().setDiagnosticsDialogOpen(true) },
@@ -1136,11 +1005,6 @@ function menuDefinition(s: MenuSnapshot): AppMenu {
     analyzeMenu(s),
     tracksMenu(s),
     predictMenu(s),
-    // Also a button in the in-window bar, like Start Tutorial: the Connect
-    // window works with or without a project, so it's kept in sight. (It's
-    // in Predict too, which is where Search Menus and the native menu list it.)
-    { kind: "action", id: "connect", label: "Connect", searchGroup: "Predict", run: () => store().setConnectWindowOpen(true) },
-    { kind: "action", id: "tutorial", label: "Start Tutorial", searchGroup: "Help", run: () => void requestStartTutorial() },
     helpMenu(s),
   ];
 }

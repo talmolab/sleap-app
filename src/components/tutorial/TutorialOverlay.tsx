@@ -433,7 +433,7 @@ export function TutorialOverlay() {
     const ok = await confirmDialog({
       title: "Exit the tutorial?",
       message:
-        "Your project and anything you've done in it stay as they are. Start Tutorial in the menu bar starts over from the first step.",
+        "Your project and anything you've done in it stay as they are. Help → Start Tutorial starts over from the first step.",
       confirmLabel: "Exit tutorial",
       cancelLabel: "Keep going",
     });

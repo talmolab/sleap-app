@@ -64,13 +64,18 @@ function Toggle({
     | "showInstances"
     | "showLabels"
     | "showEdges"
+    | "showTrackScore"
+    | "showMeanNodeScore"
     | "showBboxes"
     | "showCentroids"
     | "showPoseBboxes"
     | "poseBboxIncludePredicted"
     | "showNonVisibleNodes"
+    | "boldLines"
+    | "showCrosshair"
     | "colorPredicted"
     | "showInset"
+    | "trailFade"
     | "temporalLoupe"
     | "neighborFramesEarlier"
     | "neighborFramesLater";
@@ -195,12 +200,15 @@ function SliderRow({
   max,
   step = 1,
   suffix = "",
+  formatValue,
   disabled = false,
 }: {
   label: string;
   disabled?: boolean;
   /** Shown after the value, e.g. "%". */
   suffix?: string;
+  /** Custom value formatter (overrides value + suffix). */
+  formatValue?: (value: number) => string;
   storeKey:
     | "markerSize"
     | "poseOpacity"
@@ -208,6 +216,8 @@ function SliderRow({
     | "insetSize"
     | "insetZoom"
     | "trailLength"
+    | "trailAlpha"
+    | "trailWidth"
     | "temporalWindow";
   min: number;
   max: number;
@@ -216,24 +226,26 @@ function SliderRow({
   const value = useAppStore((s) => s[storeKey]) as number;
   const set = useAppStore((s) => s.set);
   const bumpOverlay = useAppStore((s) => s.bumpOverlayVersion);
+  const displayValue = formatValue ? formatValue(value) : `${value}${suffix}`;
 
   return (
     <div className={cn("space-y-1", disabled && "opacity-50")}>
       <div className="flex items-center justify-between">
         <span className="text-xs text-muted-foreground">{label}</span>
         <span className="text-xs tabular-nums text-foreground min-w-6 text-right">
-          {value}
-          {suffix}
+          {displayValue}
         </span>
       </div>
       <Slider
+        aria-label={label}
         min={min}
         max={max}
         step={step}
         disabled={disabled}
         value={[value]}
         onValueChange={([v]) => {
-          set(storeKey, v);
+          const next = step < 1 ? Math.round(v * 100) / 100 : v;
+          set(storeKey, next);
           bumpOverlay();
         }}
       />
@@ -426,7 +438,8 @@ export function ViewPanel() {
   const edgeStyle = useAppStore((s) => s.edgeStyle);
   const palette = useAppStore((s) => s.palette);
   const distinctlyColor = useAppStore((s) => s.distinctlyColor);
-  const trailShade = useAppStore((s) => s.trailShade);
+  const skeleton = useAppStore((s) => s.skeleton);
+  const trailNode = useAppStore((s) => s.trailNode);
   const temporalLoupe = useAppStore((s) => s.temporalLoupe);
   const neighborFramesEarlier = useAppStore((s) => s.neighborFramesEarlier);
   const neighborFramesLater = useAppStore((s) => s.neighborFramesLater);
@@ -434,6 +447,9 @@ export function ViewPanel() {
   const rotation = useAppStore((s) => s.rotation);
   const set = useAppStore((s) => s.set);
   const bumpOverlay = useAppStore((s) => s.bumpOverlayVersion);
+
+  const trailNodeOptions = skeleton?.nodes?.map((n) => n.name) ?? [];
+  const effectiveTrailNode = trailNodeOptions.includes(trailNode) ? trailNode : "centroid";
 
   return (
     <div className="flex flex-col">
@@ -483,8 +499,10 @@ export function ViewPanel() {
       {/* Overlay visibility */}
       <Section title="Overlay">
         <Toggle label="Show instances" storeKey="showInstances" />
-        <Toggle label="Show labels" storeKey="showLabels" />
+        <Toggle label="Show node names" storeKey="showLabels" />
         <Toggle label="Show edges" storeKey="showEdges" />
+        <Toggle label="Show track scores" storeKey="showTrackScore" />
+        <Toggle label="Show mean node score" storeKey="showMeanNodeScore" />
         <Toggle label="Show bounding boxes" storeKey="showBboxes" />
         <Toggle label="Show centroids" storeKey="showCentroids" />
         <Toggle label="Show boxes around poses" storeKey="showPoseBboxes" />
@@ -513,9 +531,11 @@ export function ViewPanel() {
             </SelectContent>
           </Select>
         </div>
+        <Toggle label="Bold lines" storeKey="boldLines" />
         <SliderRow label="Marker size" storeKey="markerSize" min={1} max={20} />
         <SliderRow label="Label size" storeKey="nodeLabelSize" min={0} max={20} />
         <SliderRow label="Pose opacity" storeKey="poseOpacity" min={10} max={100} step={5} suffix="%" />
+        <Toggle label="Crosshair when zoomed" storeKey="showCrosshair" />
         <Toggle label="Show magnifier" storeKey="showInset" />
         <SliderRow label="Inset size" storeKey="insetSize" min={100} max={800} step={10} />
         <SliderRow label="Inset zoom" storeKey="insetZoom" min={1} max={20} />
@@ -583,26 +603,51 @@ export function ViewPanel() {
 
       {/* Trail settings */}
       <Section title="Trail">
-        <SliderRow label="Trail length" storeKey="trailLength" min={0} max={50} />
+        <SliderRow
+          label="Trail length"
+          storeKey="trailLength"
+          min={0}
+          max={500}
+          formatValue={(v) => (v === 0 ? "Off" : String(v))}
+        />
         <div className="space-y-1">
-          <span className="text-xs text-muted-foreground">Trail shade</span>
+          <span className="text-xs text-muted-foreground">Trail node</span>
           <Select
-            value={trailShade}
+            value={effectiveTrailNode}
             onValueChange={(v) => {
-              set("trailShade", v);
+              set("trailNode", v);
               bumpOverlay();
             }}
           >
-            <SelectTrigger size="sm" className="h-7 text-xs w-full">
+            <SelectTrigger size="sm" className="h-7 text-xs w-full" aria-label="Trail node">
               <SelectValue />
             </SelectTrigger>
             <SelectContent>
-              <SelectItem value="Normal">Normal</SelectItem>
-              <SelectItem value="Light">Light</SelectItem>
-              <SelectItem value="Dark">Dark</SelectItem>
+              <SelectItem value="centroid">Centroid</SelectItem>
+              {trailNodeOptions.map((name) => (
+                <SelectItem key={name} value={name}>
+                  {name}
+                </SelectItem>
+              ))}
             </SelectContent>
           </Select>
         </div>
+        <Toggle label="Fade older trail segments" storeKey="trailFade" />
+        <SliderRow
+          label="Trail opacity"
+          storeKey="trailAlpha"
+          min={0.05}
+          max={1}
+          step={0.05}
+          formatValue={(v) => `${Math.round(v * 100)}%`}
+        />
+        <SliderRow
+          label="Trail width"
+          storeKey="trailWidth"
+          min={1}
+          max={10}
+          suffix=" px"
+        />
       </Section>
 
       {/* Neighboring frames, shown in the magnifier without leaving this one */}
