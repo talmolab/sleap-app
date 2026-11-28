@@ -1,11 +1,14 @@
 import { describe, it, expect } from "../bun-test";
+import { Instance, Skeleton } from "@talmolab/sleap-io.js";
 import {
   renderInstances,
   hitTestNode,
   hitTestInstance,
   nodesInRect,
+  UNLABELED_NODE_COLOR,
   type RenderedInstance,
 } from "@/canvas/SkeletonRenderer";
+import { instanceGeometry } from "@/canvas/instanceGeometry";
 
 /** Minimal CanvasRenderingContext2D spy — counts arc() calls (one per drawn node). */
 function mockCtx() {
@@ -367,5 +370,50 @@ describe("renderInstances poseOpacity (#278)", () => {
     renderInstances(ctx, [twoNodes]);
 
     expect(ctx.__at.arc.every((a) => a === 1)).toBe(true);
+  });
+});
+
+describe("SLP 3.0 placed unlabeled nodes rendering and hit-testing", () => {
+  it("instanceGeometry preserves finite coords with labeled=false and keeps NaN for unplaced unlabeled nodes", () => {
+    const sk = new Skeleton({ nodes: ["a", "b", "c"], name: "s" });
+    const instModel = new Instance({
+      skeleton: sk,
+      points: [
+        { xy: [10, 20], visible: true, complete: true },
+        { xy: [30, 40], visible: false, complete: false, labeled: false },
+        { xy: [Number.NaN, Number.NaN], visible: false, complete: false, labeled: false },
+      ],
+    });
+    const geo = instanceGeometry(instModel, null);
+    expect(geo.nodes[0]).toMatchObject({ x: 10, y: 20, visible: true, labeled: true });
+    expect(geo.nodes[1]).toMatchObject({ x: 30, y: 40, visible: false, labeled: false });
+    expect(Number.isNaN(geo.nodes[2].x)).toBe(true);
+    expect(geo.nodes[2].labeled).toBe(false);
+  });
+
+  it("renders a placed unlabeled node with distinct muted gray styling and skips unplaced NaN nodes", () => {
+    const ctx = mockCtxRecordingStyles();
+    const withUnlabeled = inst({
+      nodes: [
+        { x: 10, y: 20, visible: false, labeled: false, complete: false, name: "a" },
+        { x: Number.NaN, y: Number.NaN, visible: false, labeled: false, complete: false, name: "b" },
+      ],
+      showNonVisible: true,
+    });
+    renderInstances(ctx, [withUnlabeled], { showInstances: true, showLabels: true });
+    const expectedGrayPrefix = `rgba(${UNLABELED_NODE_COLOR.join(", ")},`;
+    expect(ctx.__styles.strokeStyle.some((s) => String(s).startsWith(expectedGrayPrefix))).toBe(true);
+  });
+
+  it("hitTestNode hits placed unlabeled nodes (when showNonVisible is true) and skips unplaced NaN nodes", () => {
+    const withUnlabeled = inst({
+      nodes: [
+        { x: 10, y: 20, visible: false, labeled: false, complete: false, name: "a" },
+        { x: Number.NaN, y: Number.NaN, visible: false, labeled: false, complete: false, name: "b" },
+      ],
+      showNonVisible: true,
+    });
+    expect(hitTestNode([withUnlabeled], 10, 20, 10)).toEqual({ instanceIdx: 0, nodeIdx: 0 });
+    expect(hitTestNode([{ ...withUnlabeled, showNonVisible: false }], 10, 20, 10)).toBeNull();
   });
 });

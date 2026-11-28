@@ -17,6 +17,8 @@ import type { EdgeStyle } from "../types";
 export const COMPLETE_COLOR: RGB = [80, 194, 159]; // greenish
 export const INCOMPLETE_COLOR: RGB = [232, 45, 32]; // redish
 export const MISSING_LABEL_COLOR: RGB = [128, 128, 128];
+export const UNLABELED_NODE_COLOR: RGB = [156, 163, 175]; // muted gray
+export const OCCLUDED_STATUS_COLOR: RGB = [245, 158, 11]; // amber
 
 // A predicted node's FILL is always flat gray, matching PyQt SLEAP's QtNode
 // (`self.brush = QBrush(QColor(128, 128, 128, 128))` for predicted points) --
@@ -35,9 +37,28 @@ export interface RenderedNode {
   x: number;
   y: number;
   visible: boolean;
+  /** False for SLP 3.0 unlabeled points (`labeled=false, visible=false`). Defaults to true. */
+  labeled?: boolean;
   complete: boolean;
   name: string;
   score?: number;
+}
+
+/** True when a rendered node represents an SLP 3.0 unlabeled (don't supervise) point. */
+function isNodeUnlabeled(node: RenderedNode): boolean {
+  return node.labeled === false && !node.visible;
+}
+
+/** True when a rendered node has finite canvas coordinates. */
+function isNodePlaced(node: RenderedNode): boolean {
+  return !Number.isNaN(node.x) && !Number.isNaN(node.y);
+}
+
+/** Visual base marker radius (screen px) for a rendered node by its point state. */
+function nodeMarkerRadius(node: RenderedNode, markerSize: number): number {
+  if (node.visible) return markerSize;
+  if (isNodeUnlabeled(node)) return markerSize * 0.75;
+  return markerSize / 2;
 }
 
 export interface RenderedEdge {
@@ -247,7 +268,7 @@ function renderInstance(
     edges.forEach((edge, edgeIdx) => {
       const src = nodes[edge.srcIdx];
       const dst = nodes[edge.dstIdx];
-      if (!src || !dst) return;
+      if (!src || !dst || !isNodePlaced(src) || !isNodePlaced(dst)) return;
       if (!src.visible && !opts.showNonVisibleNodes) return;
       if (!dst.visible && !opts.showNonVisibleNodes) return;
 
@@ -264,6 +285,7 @@ function renderInstance(
   // Draw nodes
   nodes.forEach((node, nIdx) => {
     if (opts.showNodes === false || opts.solidPoses) return;
+    if (!isNodePlaced(node)) return;
     if (!node.visible && !opts.showNonVisibleNodes) return;
     const nodeColor = instance.nodeColors?.[nIdx] ?? color;
     renderNode(ctx, node, nodeColor, isPredicted, opts);
@@ -273,6 +295,7 @@ function renderInstance(
   // Draw node labels (skip for predicted unless colorPredicted is on)
   if (opts.showLabels && (!isPredicted || opts.colorPredicted || opts.solidPoses)) {
     nodes.forEach((node) => {
+      if (!isNodePlaced(node)) return;
       if (!node.visible && (!opts.showNonVisibleNodes || opts.solidPoses)) return;
       renderNodeLabel(ctx, node, isPredicted, opts);
     });
@@ -331,14 +354,42 @@ function renderNode(
   isPredicted: boolean,
   opts: RenderOptions
 ): void {
-  const radius = node.visible
-    ? opts.markerSize
-    : opts.markerSize / 2;
-
-  ctx.beginPath();
-  traceMarker(ctx, node.x, node.y, radius / opts.zoom, opts.markerShape);
+  const radius = nodeMarkerRadius(node, opts.markerSize);
+  const r = radius / opts.zoom;
   // A cross has no inside to fill, so its strokes are drawn as wide as an edge.
   const outline = (lineScale(opts) * (opts.markerShape === "cross" ? 2 : 1)) / opts.zoom;
+
+  if (!isPredicted && isNodeUnlabeled(node)) {
+    // Unlabeled (don't supervise): muted gray dashed ring with a small inner ×
+    // so it is immediately distinct from both visible (filled) and occluded
+    // (solid thin colored hollow ring) while remaining easy to hover and toggle.
+    ctx.save();
+    ctx.beginPath();
+    traceMarker(ctx, node.x, node.y, r, opts.markerShape);
+    ctx.fillStyle = "rgba(0, 0, 0, 0.25)";
+    if (opts.markerShape !== "cross") ctx.fill();
+    ctx.strokeStyle = rgbToCSS(UNLABELED_NODE_COLOR, 0.9);
+    ctx.lineWidth = 0.85 * outline;
+    ctx.setLineDash([2.5 / opts.zoom, 2 / opts.zoom]);
+    ctx.stroke();
+
+    // Inner × mark
+    const arm = r * 0.45;
+    ctx.setLineDash([]);
+    ctx.beginPath();
+    ctx.moveTo(node.x - arm, node.y - arm);
+    ctx.lineTo(node.x + arm, node.y + arm);
+    ctx.moveTo(node.x + arm, node.y - arm);
+    ctx.lineTo(node.x - arm, node.y + arm);
+    ctx.strokeStyle = rgbToCSS(UNLABELED_NODE_COLOR, 0.95);
+    ctx.lineWidth = Math.max(0.75 * outline, 1 / opts.zoom);
+    ctx.stroke();
+    ctx.restore();
+    return;
+  }
+
+  ctx.beginPath();
+  traceMarker(ctx, node.x, node.y, r, opts.markerShape);
 
   if (isPredicted) {
     // Node marker stroke: track/instance color when colorPredicted is on,
@@ -357,7 +408,7 @@ function renderNode(
     ctx.fill();
     ctx.stroke();
   } else {
-    // Non-visible: hollow marker, thin border
+    // Occluded (non-visible, labeled): hollow marker, thin colored border
     ctx.strokeStyle = rgbToCSS(color);
     ctx.lineWidth = 0.5 * outline;
     ctx.fillStyle = "transparent";
@@ -374,25 +425,32 @@ function renderLineEdge(
   opts: RenderOptions
 ): void {
   // An edge touching a non-visible node reads as "inferred/occluded" --
-  // dashed and dimmer than a fully-detected edge.
+  // dashed and dimmer than a fully-detected edge. An edge touching an
+  // unlabeled node is fainter and dotted so it stays visually linked to its
+  // instance without looking supervised.
+  const touchesUnlabeled = !isPredicted && (isNodeUnlabeled(src) || isNodeUnlabeled(dst));
   const touchesInvisible = !src.visible || !dst.visible;
   const alpha = isPredicted
     ? touchesInvisible ? 0.25 : 0.5
-    : touchesInvisible ? 0.4 : 0.8;
+    : touchesUnlabeled
+      ? 0.22
+      : touchesInvisible ? 0.4 : 0.8;
 
   ctx.save();
   // Predicted edges are dashed (on top of the existing thinner + dimmer styling)
   // so predictions read as clearly tentative next to solid user labels (#288).
   // Occluded user edges are dashed too, but predicted stays distinguishable by
   // its thinner 1px stroke. An intentional step past strict PyQt parity.
-  if (touchesInvisible || isPredicted) {
+  if (touchesUnlabeled) {
+    ctx.setLineDash([2 / opts.zoom, 4 / opts.zoom]);
+  } else if (touchesInvisible || isPredicted) {
     ctx.setLineDash([4 / opts.zoom, 3 / opts.zoom]);
   }
   ctx.beginPath();
   ctx.moveTo(src.x, src.y);
   ctx.lineTo(dst.x, dst.y);
-  ctx.strokeStyle = rgbToCSS(color, alpha);
-  ctx.lineWidth = ((isPredicted ? 1 : 2) * lineScale(opts)) / opts.zoom;
+  ctx.strokeStyle = rgbToCSS(touchesUnlabeled ? UNLABELED_NODE_COLOR : color, alpha);
+  ctx.lineWidth = ((isPredicted || touchesUnlabeled ? 1 : 2) * lineScale(opts)) / opts.zoom;
   ctx.stroke();
   ctx.restore();
 }
@@ -418,10 +476,13 @@ function renderWedgeEdge(
 
   // A wedge (filled shape) can't be dashed, so an edge touching a non-visible
   // node just renders dimmer than a fully-detected one.
+  const touchesUnlabeled = !isPredicted && (isNodeUnlabeled(src) || isNodeUnlabeled(dst));
   const touchesInvisible = !src.visible || !dst.visible;
   const alpha = isPredicted
     ? touchesInvisible ? 0.15 : 0.3
-    : touchesInvisible ? 0.3 : 0.6;
+    : touchesUnlabeled
+      ? 0.15
+      : touchesInvisible ? 0.3 : 0.6;
 
   ctx.beginPath();
   ctx.moveTo(src.x + nx * srcWidth, src.y + ny * srcWidth);
@@ -429,7 +490,7 @@ function renderWedgeEdge(
   ctx.lineTo(dst.x - nx * dstWidth, dst.y - ny * dstWidth);
   ctx.lineTo(src.x - nx * srcWidth, src.y - ny * srcWidth);
   ctx.closePath();
-  ctx.fillStyle = rgbToCSS(color, alpha);
+  ctx.fillStyle = rgbToCSS(touchesUnlabeled ? UNLABELED_NODE_COLOR : color, alpha);
   ctx.fill();
 }
 
@@ -450,6 +511,11 @@ function renderNodeLabel(
   if (isPredicted) {
     labelColor = PREDICTED_LABEL_COLOR;
     bold = false;
+  } else if (isNodeUnlabeled(node)) {
+    labelColor = UNLABELED_NODE_COLOR;
+    bold = false;
+    italic = true;
+    showMissingBg = true;
   } else if (!node.visible) {
     labelColor = MISSING_LABEL_COLOR;
     bold = true;
@@ -493,7 +559,9 @@ function renderSelectionBox(
   color: RGB,
   opts: RenderOptions
 ): void {
-  const visibleNodes = nodes.filter((n) => n.visible || opts.showNonVisibleNodes);
+  const visibleNodes = nodes.filter(
+    (n) => isNodePlaced(n) && (n.visible || opts.showNonVisibleNodes)
+  );
   if (visibleNodes.length === 0) return;
 
   const xs = visibleNodes.map((n) => n.x);
@@ -604,7 +672,7 @@ export function hitTestNode(
     for (let j = 0; j < inst.nodes.length; j++) {
       const node = inst.nodes[j];
       if (!node.visible && !inst.showNonVisible) continue;
-      if (!node.visible && isNaN(node.x)) continue; // truly unplaced
+      if (!isNodePlaced(node)) continue; // truly unplaced
       const dx = node.x - canvasX;
       const dy = node.y - canvasY;
       const dist = Math.sqrt(dx * dx + dy * dy);
@@ -730,7 +798,7 @@ export function renderSelectedNodeHighlights(
     if (!node || isNaN(node.x)) continue;
     if (!node.visible && !inst.showNonVisible) continue;
 
-    const baseRadius = node.visible ? opts.markerSize : opts.markerSize / 2;
+    const baseRadius = nodeMarkerRadius(node, opts.markerSize);
     const radius = (baseRadius + 3) / opts.zoom;
     ctx.beginPath();
     ctx.arc(node.x, node.y, radius, 0, Math.PI * 2);
@@ -750,10 +818,10 @@ export function renderHoveredNodeHighlight(
   opts: RenderOptions
 ): void {
   const node = instances[instanceIdx]?.nodes[nodeIdx];
-  if (!node || isNaN(node.x)) return;
+  if (!node || !isNodePlaced(node)) return;
 
   const color = instances[instanceIdx].color;
-  const baseRadius = node.visible ? opts.markerSize : opts.markerSize / 2;
+  const baseRadius = nodeMarkerRadius(node, opts.markerSize);
   const radius = (baseRadius + 2) / opts.zoom;
 
   ctx.beginPath();

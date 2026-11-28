@@ -201,18 +201,28 @@ describe("InstancesPanel interactive 4-state nodes & metadata", () => {
     expect(screen.getByLabelText("State for right_ear: absent")).toHaveTextContent("absent");
     expect(screen.getByLabelText("State for tail_base: unlabeled")).toHaveTextContent("unlabeled");
 
-    // Click nose -> Mark Unlabeled
+    // Click nose -> Mark Unlabeled (preserves coords, so Visible/Occluded remain enabled!)
     fireEvent.click(screen.getByLabelText("State for nose: visible"));
     await act(async () => {
       fireEvent.click(screen.getByRole("button", { name: "Unlabeled" }));
     });
     expect(getPointState(inst.points[0])).toBe("unlabeled");
+    expect(inst.points[0].xy).toEqual([10, 20]);
     await waitFor(() =>
       expect(screen.getByLabelText("State for nose: unlabeled")).toHaveTextContent("unlabeled"),
     );
 
-    // Click tail_base -> Place on canvas targets nodeIdx=3 directly
+    // Can switch placed unlabeled node straight back to Visible without re-placing
+    fireEvent.click(screen.getByLabelText("State for nose: unlabeled"));
+    expect(screen.getByRole("button", { name: "Visible" })).not.toBeDisabled();
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "Visible" }));
+    });
+    expect(getPointState(inst.points[0])).toBe("visible");
+
+    // Click tail_base (unplaced NaN) -> Place on canvas targets nodeIdx=3 directly
     fireEvent.click(screen.getByLabelText("State for tail_base: unlabeled"));
+    expect(screen.getByRole("button", { name: "Visible" })).toBeDisabled();
     fireEvent.click(screen.getByRole("button", { name: "Place on canvas" }));
     expect(useAppStore.getState().labelingMode).toBe("place");
     expect(useAppStore.getState().placementNodeIdx).toBe(3);
@@ -307,14 +317,17 @@ describe("ContextMenu 4-state node actions", () => {
       />,
     );
 
-    expect(screen.getByText("Mark Node Non-Visible")).toBeInTheDocument();
-    expect(screen.getByText("Mark Node Absent")).toBeInTheDocument();
+    expect(screen.getByText("Cycle Node State (→ Occluded)")).toBeInTheDocument();
+    expect(screen.getByText("Mark Node Visible")).toBeInTheDocument();
+    expect(screen.getByText("Mark Node Occluded")).toBeInTheDocument();
     expect(screen.getByText("Mark Node Unlabeled")).toBeInTheDocument();
+    expect(screen.getByText("Mark Node Absent")).toBeInTheDocument();
 
     await act(async () => {
       fireEvent.click(screen.getByText("Mark Node Unlabeled"));
     });
     expect(getPointState(inst.points[0])).toBe("unlabeled");
+    expect(inst.points[0].xy).toEqual([10, 20]);
     expect(onClose).toHaveBeenCalled();
   });
 });
@@ -387,5 +400,72 @@ describe("VideoPlayer U / Shift+U in placement mode", () => {
     expect(getPointState(inst.points[3])).toBe("absent");
     expect(useAppStore.getState().labelingMode).toBe("select");
     expect(useAppStore.getState().placementNodeIdx).toBeNull();
+  });
+
+  it("cycles a hovered/right-clicked node visible -> occluded -> unlabeled -> visible without losing coordinates, and U toggles unlabeled <-> visible", async () => {
+    const { inst } = setupStoreWithFourStates();
+    const { VideoPlayer } = await import("@/components/video/VideoPlayer");
+    const { container } = render(<VideoPlayer />);
+
+    const canvases = container.querySelectorAll("canvas");
+    const overlay = canvases[2] as HTMLCanvasElement;
+    const containerDiv = overlay.parentElement as HTMLDivElement;
+    const rect = {
+      left: 0,
+      top: 0,
+      right: 640,
+      bottom: 480,
+      width: 640,
+      height: 480,
+      x: 0,
+      y: 0,
+      toJSON: () => ({}),
+    } as DOMRect;
+    overlay.getBoundingClientRect = () => rect;
+    containerDiv.getBoundingClientRect = () => rect;
+
+    // Hover node 0 at (10, 20): tooltip shows supervision semantics & next cycle hint.
+    await act(async () => {
+      fireEvent.mouseMove(overlay, { clientX: 10, clientY: 20 });
+    });
+    const tip = screen.getByTestId("node-hover-tooltip");
+    expect(tip).toHaveTextContent("visible (supervise present)");
+    expect(tip).toHaveTextContent("occluded");
+
+    // Right-click cycles visible -> occluded -> unlabeled -> visible, keeping [10, 20].
+    await act(async () => {
+      fireEvent.contextMenu(overlay, { clientX: 10, clientY: 20 });
+    });
+    expect(getPointState(inst.points[0])).toBe("occluded");
+    expect(inst.points[0].xy).toEqual([10, 20]);
+    expect(screen.getByTestId("node-hover-tooltip")).toHaveTextContent("occluded (supervise absent)");
+
+    await act(async () => {
+      fireEvent.contextMenu(overlay, { clientX: 10, clientY: 20 });
+    });
+    expect(getPointState(inst.points[0])).toBe("unlabeled");
+    expect(inst.points[0].xy).toEqual([10, 20]);
+    expect(screen.getByTestId("node-hover-tooltip")).toHaveTextContent("unlabeled (don't supervise)");
+
+    await act(async () => {
+      fireEvent.contextMenu(overlay, { clientX: 10, clientY: 20 });
+    });
+    expect(getPointState(inst.points[0])).toBe("visible");
+    expect(inst.points[0].xy).toEqual([10, 20]);
+
+    // Pressing U on the hovered visible node marks it unlabeled (node stays hovered!),
+    // and pressing U again toggles it back to visible.
+    await act(async () => {
+      window.dispatchEvent(new KeyboardEvent("keydown", { key: "u", code: "KeyU", bubbles: true }));
+    });
+    expect(getPointState(inst.points[0])).toBe("unlabeled");
+    expect(inst.points[0].xy).toEqual([10, 20]);
+    expect(screen.getByTestId("node-hover-tooltip")).toHaveTextContent("unlabeled (don't supervise)");
+
+    await act(async () => {
+      window.dispatchEvent(new KeyboardEvent("keydown", { key: "u", code: "KeyU", bubbles: true }));
+    });
+    expect(getPointState(inst.points[0])).toBe("visible");
+    expect(inst.points[0].xy).toEqual([10, 20]);
   });
 });

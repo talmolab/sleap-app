@@ -19,15 +19,20 @@ export function instanceGeometry(
     // Cropped videos store points in SOURCE coords; translate into the
     // displayed crop-local image space so they overlay the cropped frame.
     // Identity for uncropped videos. (cropped pkg.slp / SLP-2.3)
-    // A node not labelled (SLP format 3.0) is not drawn, not even as a hidden
-    // marker, and can't be hit: it gets no position, like an unplaced node.
-    const [nx, ny] = isUnlabeledPoint(point)
-      ? [Number.NaN, Number.NaN]
-      : toImageCoords(video, point.xy[0], point.xy[1]);
+    // Placed unlabeled points (finite xy, labeled=false) keep their coords so
+    // they render with a distinct unlabeled marker and stay interactive during
+    // editing; unplaced unlabeled points (NaN xy, e.g. from disk or unmapped
+    // skeleton edits) remain NaN and are skipped by the renderer.
+    const hasFinite = Number.isFinite(point.xy[0]) && Number.isFinite(point.xy[1]);
+    const [nx, ny] = hasFinite
+      ? toImageCoords(video, point.xy[0], point.xy[1])
+      : [Number.NaN, Number.NaN];
+    const unlabeled = isUnlabeledPoint(point);
     return {
       x: nx,
       y: ny,
-      visible: point.visible && !isNaN(point.xy[0]),
+      visible: point.visible && hasFinite,
+      labeled: !unlabeled,
       complete: point.complete,
       name: skeleton.nodes[nIdx]?.name ?? `node_${nIdx}`,
       score: point.score,

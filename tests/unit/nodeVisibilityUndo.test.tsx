@@ -13,6 +13,7 @@ import { useAppStore } from "@/stores/appStore";
 import { commandContext, ToggleNodeVisibility } from "@/commands";
 import { ContextMenu } from "@/components/video/ContextMenu";
 import { classifyDirty } from "@/lib/autosaveDirty";
+import { getPointState } from "@/lib/pointState";
 
 function resetStore() {
   useAppStore.setState(useAppStore.getInitialState());
@@ -50,23 +51,49 @@ describe("ToggleNodeVisibility", () => {
     resetStore();
   });
 
-  it("flips a single node, marks the frame changed, and undoes", async () => {
+  it("cycles a single node through visible -> occluded -> unlabeled -> visible, marks changed, and undoes", async () => {
     const { lf } = setupFrame();
     const overlayBefore = useAppStore.getState().overlayVersion;
+    const origXy: [number, number] = [
+      lf.instances[0].points[1].xy[0],
+      lf.instances[0].points[1].xy[1],
+    ];
 
+    // visible -> occluded
     await commandContext.execute(ToggleNodeVisibility, {
       nodes: [{ instanceIdx: 0, nodeIdx: 1 }],
     });
-
+    expect(getPointState(lf.instances[0].points[1])).toBe("occluded");
     expect(lf.instances[0].points[1].visible).toBe(false);
+    expect(lf.instances[0].points[1].xy).toEqual(origXy);
     const s = useAppStore.getState();
     expect(s.hasChanges).toBe(true);
     expect(s.overlayVersion).toBeGreaterThan(overlayBefore);
     expect(s.frameInteractionStack).toContain("0:0");
     expect(commandContext.undoCommandName).toBe("ToggleNodeVisibility");
 
+    // occluded -> unlabeled (keeps coordinates!)
+    await commandContext.execute(ToggleNodeVisibility, {
+      nodes: [{ instanceIdx: 0, nodeIdx: 1 }],
+    });
+    expect(getPointState(lf.instances[0].points[1])).toBe("unlabeled");
+    expect(lf.instances[0].points[1].labeled).toBe(false);
+    expect(lf.instances[0].points[1].xy).toEqual(origXy);
+
+    // unlabeled -> visible
+    await commandContext.execute(ToggleNodeVisibility, {
+      nodes: [{ instanceIdx: 0, nodeIdx: 1 }],
+    });
+    expect(getPointState(lf.instances[0].points[1])).toBe("visible");
+    expect(lf.instances[0].points[1].xy).toEqual(origXy);
+
+    // Undo all three transitions step-by-step
     expect(commandContext.undo()).toBe(true);
-    expect(lf.instances[0].points[1].visible).toBe(true);
+    expect(getPointState(lf.instances[0].points[1])).toBe("unlabeled");
+    expect(commandContext.undo()).toBe(true);
+    expect(getPointState(lf.instances[0].points[1])).toBe("occluded");
+    expect(commandContext.undo()).toBe(true);
+    expect(getPointState(lf.instances[0].points[1])).toBe("visible");
   });
 
   it("moves several nodes to one state and undoes them together", async () => {
@@ -169,14 +196,15 @@ describe("context menu node visibility", () => {
     return done;
   }
 
-  it("'Mark Node Non-Visible' is undoable and marks the frame changed", () => {
+  it("'Cycle Node State' and 'Mark Node Occluded' are undoable and mark the frame changed", () => {
     const { lf } = setupFrame();
     const overlayBefore = useAppStore.getState().overlayVersion;
     const onClose = openMenuOnNode(1, 2);
 
-    fireEvent.click(screen.getByText("Mark Node Non-Visible"));
+    fireEvent.click(screen.getByText("Cycle Node State (→ Occluded)"));
 
     expect(onClose).toHaveBeenCalled();
+    expect(getPointState(lf.instances[1].points[2])).toBe("occluded");
     expect(lf.instances[1].points[2].visible).toBe(false);
     const s = useAppStore.getState();
     expect(s.hasChanges).toBe(true);
@@ -190,18 +218,19 @@ describe("context menu node visibility", () => {
     expect(lf.instances[0].points.every((p) => p.visible)).toBe(true);
 
     expect(redoInAct()).toBe(true);
-    expect(lf.instances[1].points[2].visible).toBe(false);
+    expect(getPointState(lf.instances[1].points[2])).toBe("occluded");
   });
 
-  it("'Mark Node Visible' is undoable", () => {
+  it("'Mark Node Visible' restores an occluded or unlabeled node and is undoable", () => {
     const { lf } = setupFrame();
     lf.instances[0].points[1].visible = false;
+    lf.instances[0].points[1].labeled = false;
     openMenuOnNode(0, 1);
 
     fireEvent.click(screen.getByText("Mark Node Visible"));
-    expect(lf.instances[0].points[1].visible).toBe(true);
+    expect(getPointState(lf.instances[0].points[1])).toBe("visible");
 
     expect(undoInAct()).toBe(true);
-    expect(lf.instances[0].points[1].visible).toBe(false);
+    expect(getPointState(lf.instances[0].points[1])).toBe("unlabeled");
   });
 });

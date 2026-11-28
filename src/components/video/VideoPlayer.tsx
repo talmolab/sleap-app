@@ -9,7 +9,7 @@
  * Mirrors SLEAP's QtVideoPlayer.
  */
 
-import { useRef, useEffect, useCallback, useState, useMemo } from "react";
+import { useRef, useEffect, useLayoutEffect, useCallback, useState, useMemo } from "react";
 import { PredictedBoundingBox, PredictedInstance } from "@talmolab/sleap-io.js";
 import type { RGB } from "@/lib/colorPalettes";
 import { useAppStore } from "../../stores/appStore";
@@ -37,7 +37,9 @@ import {
   parseNodeKey,
   COMPLETE_COLOR,
   INCOMPLETE_COLOR,
+  OCCLUDED_STATUS_COLOR,
   UNCOLORED_PREDICTED_NODE_COLOR,
+  UNLABELED_NODE_COLOR,
   type RenderedInstance,
   type RenderedNode,
 } from "../../canvas/SkeletonRenderer";
@@ -76,6 +78,7 @@ import { derivePoseBboxes } from "@/lib/poseBboxes";
 import { instanceInsideRect } from "@/lib/bboxLinking";
 import {
   commandContext,
+  AddInstance,
   ConvertPredictionToInstance,
   AddMissingInstanceNodes,
   MarkInstanceComplete,
@@ -158,9 +161,18 @@ import { refuseEditIfViewOnly } from "@/lib/slpAccess";
 import { isUnlabeledPoint, isViewOnlyLabels, markPointLabeled } from "@/lib/slpFormat";
 import {
   getPointState,
+  hasPointCoords,
+  nextCyclePointState,
   nextUnplacedNodeForward,
+  POINT_STATE_DESCRIPTIONS,
   type PointState,
 } from "@/lib/pointState";
+import {
+  computeTooltipPlacement,
+  getInsetRect,
+  INSET_MARGIN,
+} from "@/lib/tooltipPlacement";
+import { resolveEmptyCanvasDoubleClick } from "@/lib/canvasDoubleClick";
 
 /**
  * First unused `node_${k}` name (k = 0, 1, 2, …) for a fresh builder node, so
@@ -463,8 +475,28 @@ export function VideoPlayer() {
   const penActiveRef = useRef<boolean>(false); // a pen stroke is in progress
   const builderHoverIdxRef = useRef<number | null>(null); // builder node under cursor
 
-  // Track drag-start screen position for anchoring tooltip + inset
+  // Track drag-start and live screen positions for anchoring tooltip + inset
   const dragStartClient = useRef<{ clientX: number; clientY: number } | null>(null);
+  const lastDragClientRef = useRef<{ clientX: number; clientY: number } | null>(null);
+  // Timestamp of the last placement-mode click so a rapid final click that exits
+  // placement mode doesn't immediately trigger empty-canvas double-click add.
+  const lastPlacementClickAtRef = useRef(0);
+  // Measured node-hover tooltip box size for non-overlapping placement.
+  const tooltipRef = useRef<HTMLDivElement>(null);
+  const [tooltipSize, setTooltipSize] = useState({ width: 220, height: 105 });
+  useLayoutEffect(() => {
+    const el = tooltipRef.current;
+    if (!el || !hoveredNode) return;
+    const w = el.offsetWidth;
+    const h = el.offsetHeight;
+    if (w > 0 && h > 0) {
+      setTooltipSize((prev) =>
+        Math.abs(prev.width - w) > 1 || Math.abs(prev.height - h) > 1
+          ? { width: w, height: h }
+          : prev
+      );
+    }
+  }, [hoveredNode, overlayVersion, interactionMode, selectedNodes.size]);
   // A press in Label QC Review's placement mode: places the node on release if
   // it was a click (not a drag, which pans, or a long press). `moved` =
   // farthest it went (px).
@@ -807,23 +839,47 @@ export function VideoPlayer() {
       }
 
       // Normal mode: selected nodes first, else hovered node.
+      const resolveDirectTargetState = (
+        targets: { instanceIdx: number; nodeIdx: number }[],
+      ): PointState => {
+        if (targetState !== "unlabeled") return targetState;
+        const placedUserPts = targets
+          .map(({ instanceIdx, nodeIdx }) => {
+            const inst = lf.instances[instanceIdx];
+            if (!inst || inst instanceof PredictedInstance) return undefined;
+            return inst.points[nodeIdx];
+          })
+          .filter((p): p is NonNullable<typeof p> => p !== undefined && hasPointCoords(p));
+        // Pressing U on already-unlabeled placed node(s) toggles them back to visible.
+        if (
+          placedUserPts.length > 0 &&
+          placedUserPts.every((p) => getPointState(p) === "unlabeled")
+        ) {
+          return "visible";
+        }
+        return "unlabeled";
+      };
+
       if (selectedNodes.size > 0) {
         e.preventDefault();
         const targets = [...selectedNodes].map(parseNodeKey);
+        const nextState = resolveDirectTargetState(targets);
         void commandContext.execute(SetPointState, {
           nodes: targets,
-          state: targetState,
+          state: nextState,
         });
-        if (!isViewOnlyLabels(store.labels)) {
+        if (nextState === "absent" && !isViewOnlyLabels(store.labels)) {
           setSelectedNodes(new Set());
         }
       } else if (hoveredNode) {
         e.preventDefault();
+        const targets = [{ instanceIdx: hoveredNode.instanceIdx, nodeIdx: hoveredNode.nodeIdx }];
+        const nextState = resolveDirectTargetState(targets);
         void commandContext.execute(SetPointState, {
-          nodes: [{ instanceIdx: hoveredNode.instanceIdx, nodeIdx: hoveredNode.nodeIdx }],
-          state: targetState,
+          nodes: targets,
+          state: nextState,
         });
-        if (!isViewOnlyLabels(store.labels)) {
+        if (nextState === "absent" && !isViewOnlyLabels(store.labels)) {
           setHoveredNode(null);
         }
       }
@@ -1609,6 +1665,7 @@ export function VideoPlayer() {
     video,
     overlayVersion,
   ]);
+  renderedInstancesRef.current = renderedInstances;
 
   // Bounding boxes on this frame, in image coordinates. A box linked to a pose
   // instance on the frame takes that instance's color; otherwise it's colored
@@ -2346,8 +2403,8 @@ export function VideoPlayer() {
     // Pin the loupe to the top-right corner in every mode (drag, placement,
     // hold-Shift) so it never occludes the point being placed — matches the
     // hold-Shift magnifier the drag case used to diverge from.
-    inset.style.top = "12px";
-    inset.style.right = "12px";
+    inset.style.top = `${INSET_MARGIN}px`;
+    inset.style.right = `${INSET_MARGIN}px`;
     inset.style.left = "auto";
 
     const dpr = window.devicePixelRatio || 1;
@@ -3013,12 +3070,14 @@ export function VideoPlayer() {
           // drag pans instead, and a long press does nothing.
           if (useQcStore.getState().reviewOpen) {
             e.preventDefault();
+            lastPlacementClickAtRef.current = Date.now();
             pendingPlace.current = { clientX: e.clientX, clientY: e.clientY, t: performance.now(), x, y, moved: 0 };
             setIsPanning(true);
             setPanStart({ x: e.clientX - panX, y: e.clientY - panY });
             return;
           }
           if (refuseEditIfViewOnly()) return;
+          lastPlacementClickAtRef.current = Date.now();
           commandContext.execute(BeginEdit);
           // Click is in crop-local image space; store back in source coords.
           currentInstance.points[targetIdx].xy = toSourceCoords(
@@ -3101,6 +3160,7 @@ export function VideoPlayer() {
         setInteractionMode("dragging");
         lastDragPos.current = { x, y };
         dragStartClient.current = { clientX: e.clientX, clientY: e.clientY };
+        lastDragClientRef.current = { clientX: e.clientX, clientY: e.clientY };
         useAppStore.getState().bumpOverlayVersion();
         return true;
       };
@@ -3182,7 +3242,7 @@ export function VideoPlayer() {
           for (const wKey of workingKeys) {
             const { instanceIdx: wInstIdx, nodeIdx: wNodeIdx } = parseNodeKey(wKey);
             const wPoint = lf?.instances[wInstIdx]?.points[wNodeIdx];
-            if (wPoint) {
+            if (wPoint && !isUnlabeledPoint(wPoint)) {
               hintIfFirstNodeConfirm(wPoint.complete);
               wPoint.complete = true;
             }
@@ -3192,6 +3252,7 @@ export function VideoPlayer() {
           setInteractionMode("dragging");
           lastDragPos.current = { x, y };
           dragStartClient.current = { clientX: e.clientX, clientY: e.clientY };
+          lastDragClientRef.current = { clientX: e.clientX, clientY: e.clientY };
           useAppStore.getState().markChanged();
           useAppStore.getState().touchFrame();
           useAppStore.getState().bumpOverlayVersion();
@@ -3470,16 +3531,21 @@ export function VideoPlayer() {
           }
         }
 
-        // Pin the hover tooltip ONCE (at drag-start position). It was set every
-        // move, which re-rendered VideoPlayer and re-ran the overlay effect
-        // (hoveredNode is a dep) on top of the redraw below — pure per-move waste
-        // since the pin never changes during the gesture.
+        // Track the latest pointer position in a ref (zero extra React renders)
+        // so non-overlapping tooltip placement always knows where the dragged
+        // keypoint is when overlayVersion ticks on RAF.
+        lastDragClientRef.current = { clientX: e.clientX, clientY: e.clientY };
+
+        // Pin the hover tooltip target ONCE when drag starts; its rendered
+        // position is computed dynamically on each RAF tick via
+        // computeTooltipPlacement (docked to the inset when visible, or kept
+        // clear of the live dragged keypoint when the inset is hidden).
         if (!dragMovedRef.current) {
           setHoveredNode({
             instanceIdx: dragNodeInfo.instanceIdx,
             nodeIdx: dragNodeInfo.nodeIdx,
-            clientX: dragStartClient.current?.clientX ?? e.clientX,
-            clientY: dragStartClient.current?.clientY ?? e.clientY,
+            clientX: e.clientX,
+            clientY: e.clientY,
           });
           dragMovedRef.current = true;
           // Suspend autosave for the gesture so a drag longer than the debounce
@@ -3719,10 +3785,17 @@ export function VideoPlayer() {
     }
 
     if (interactionMode === "dragging" || isDragging) {
+      const endClient = lastDragClientRef.current;
+      if (endClient) {
+        setHoveredNode((prev) =>
+          prev ? { ...prev, clientX: endClient.clientX, clientY: endClient.clientY } : prev
+        );
+      }
       setIsDragging(false);
       setDragNodeInfo(null);
       lastDragPos.current = null;
       dragStartClient.current = null;
+      lastDragClientRef.current = null;
       setInteractionMode("idle");
       setLabelsAutosaveInteracting(false);
       // Flush the coalesced redraw and commit the gesture's edit ONCE (deferred
@@ -3944,22 +4017,50 @@ export function VideoPlayer() {
         return;
       }
 
-      // Alt+double-click on empty canvas: reset the zoom in any mode (PyQt
-      // SLEAP's clearZoom), through the store so zoom modes turn off too.
-      if (isZoomBoxGesture(e)) {
-        useAppStore.getState().setViewFromUser(null);
+      // Empty canvas double-click: reset zoom (Alt), reset zoom/pan (pan mode),
+      // or create a new instance centered at the clicked coordinates.
+      const store = useAppStore.getState();
+      const emptyAction = resolveEmptyCanvasDoubleClick({
+        isZoomBoxGesture: isZoomBoxGesture(e),
+        shouldPan,
+        altKey: e.altKey,
+        ctrlKey: e.ctrlKey,
+        metaKey: e.metaKey,
+        shiftKey: e.shiftKey,
+        skeletonBuildMode,
+        bboxDrawMode: store.bboxDrawMode,
+        areaDeleteMode,
+        imageFeatureRoiDrawActive,
+        pickingAnchor: !!pickingAnchor,
+        instanceSequencePick: !!instanceSequencePick,
+        isPlacingNodes: store.labelingMode === "place",
+        recentPlacementClick: Date.now() - lastPlacementClickAtRef.current < 600,
+        hasProject: !!store.labels && !!store.video && !!store.skeleton,
+        skeletonNodeCount: store.skeleton?.nodes.length ?? 0,
+        showInstances: store.showInstances,
+        isViewOnly: isViewOnlyLabels(store.labels),
+      });
+
+      if (emptyAction === "reset-zoom") {
+        store.setViewFromUser(null);
         return;
       }
 
-      // No prediction hit - reset zoom/pan only in pan mode
-      if (shouldPan) {
+      if (emptyAction === "reset-pan-zoom") {
         viewRef.current = { zoom: 1, panX: 0, panY: 0 };
         setZoom(1);
         setPanX(0);
         setPanY(0);
+        return;
+      }
+
+      if (emptyAction === "add-instance") {
+        const location = toSourceCoords(store.video, x, y);
+        commandContext.execute(AddInstance, { location });
+        store.bumpOverlayVersion();
       }
     },
-    [canvasToScene, markerSize, nodeLabelSize, showLabels, zoom, baseScale, shouldPan, skeletonBuildMode, skeleton, builderRI, hitModelPose]
+    [canvasToScene, markerSize, nodeLabelSize, showLabels, zoom, baseScale, shouldPan, skeletonBuildMode, skeleton, builderRI, hitModelPose, areaDeleteMode, imageFeatureRoiDrawActive, pickingAnchor, instanceSequencePick]
   );
 
   // Right-click context menu
@@ -4217,46 +4318,97 @@ export function VideoPlayer() {
           const nodeName = lfInst.skeleton.nodes[hoveredNode.nodeIdx]?.name ?? `node_${hoveredNode.nodeIdx}`;
           const containerRect = containerRef.current?.getBoundingClientRect();
           if (!containerRect) return null;
-          const tipX = hoveredNode.clientX - containerRect.left + 16;
-          const tipY = hoveredNode.clientY - containerRect.top - 8;
+
+          const isNodeDrag = interactionMode === "dragging" && !!dragNodeInfo;
+          const isInsetVisible =
+            showInset &&
+            !!frameBitmapRef.current &&
+            (isNodeDrag || (isShiftHeld && !!cursorScene.current));
+          const insetRect = isInsetVisible
+            ? getInsetRect(containerRect.width, INSET_SIZE, INSET_MARGIN)
+            : null;
+
+          // Live container-local anchor: during a drag, follow the dragged
+          // keypoint's real screen coordinates so the tooltip never lags behind
+          // and never obscures the keypoint (docked cleanly to the inset when
+          // the magnifier is visible, or positioned clear of the keypoint when
+          // the magnifier is hidden).
+          let anchorX = hoveredNode.clientX - containerRect.left;
+          let anchorY = hoveredNode.clientY - containerRect.top;
+          if (isNodeDrag) {
+            const liveNode =
+              renderedInstances[hoveredNode.instanceIdx]?.nodes[hoveredNode.nodeIdx];
+            if (liveNode && !Number.isNaN(liveNode.x) && !Number.isNaN(liveNode.y)) {
+              const liveClient = sceneToClient(liveNode.x, liveNode.y);
+              anchorX = liveClient.x - containerRect.left;
+              anchorY = liveClient.y - containerRect.top;
+            } else if (lastDragClientRef.current) {
+              anchorX = lastDragClientRef.current.clientX - containerRect.left;
+              anchorY = lastDragClientRef.current.clientY - containerRect.top;
+            }
+          }
+
+          const tipPos = computeTooltipPlacement({
+            anchor: { x: anchorX, y: anchorY },
+            tooltip: tooltipSize,
+            container: { width: containerRect.width, height: containerRect.height },
+            insetRect,
+            dockToInset: isNodeDrag && isInsetVisible,
+          });
+
           const nodeScore = point.score;
           const instScore = lfInst instanceof PredictedInstance ? lfInst.score : undefined;
           const isPredicted = lfInst instanceof PredictedInstance;
           const isDragActive = interactionMode === "dragging" && selectedNodes.size > 1;
-          // #341: color this line to match the same convention the canvas
-          // node/label itself uses — yellow (predicted), red (unconfirmed),
-          // green (confirmed) — so the tooltip text reads as a direct
-          // translation of what's on screen, not just a separate caption.
+          const pointState = getPointState(point);
+          const nextCycleState = nextCyclePointState(pointState);
+          const cycleShortcut = formatShortcut(currentShortcut("toggle node visibility")) || "V";
+          const unlabeledShortcut = formatShortcut(currentShortcut("mark node unlabeled")) || "U";
+          const absentShortcut = formatShortcut(currentShortcut("mark node absent")) || "Shift+U";
+          // #341: color this line to match the canvas conventions — yellow
+          // (predicted), green (visible confirmed), red (visible unconfirmed),
+          // amber (occluded), muted gray (unlabeled).
           const statusColor = isPredicted
             ? UNCOLORED_PREDICTED_NODE_COLOR
-            : point.complete
-              ? COMPLETE_COLOR
-              : INCOMPLETE_COLOR;
+            : pointState === "unlabeled"
+              ? UNLABELED_NODE_COLOR
+              : pointState === "occluded"
+                ? OCCLUDED_STATUS_COLOR
+                : point.complete
+                  ? COMPLETE_COLOR
+                  : INCOMPLETE_COLOR;
           return (
             <div
+              ref={tooltipRef}
+              data-testid="node-hover-tooltip"
+              data-placement={tipPos.placement}
               className="absolute pointer-events-none bg-black/80 text-white text-xs rounded shadow-lg px-2 py-1.5 z-20 leading-relaxed"
-              style={{ left: tipX, top: tipY }}
+              style={{ left: tipPos.left, top: tipPos.top }}
             >
               <div className="font-medium">{nodeName}</div>
               <div style={{ color: rgbToCSS(statusColor) }}>
-                <strong>{isPredicted ? "predicted" : "user"}</strong> · {point.visible ? "visible" : "occluded"}
+                <strong>{isPredicted ? "predicted" : "user"}</strong> · {pointState}
+                {!isPredicted && ` (${POINT_STATE_DESCRIPTIONS[pointState]})`}
                 {/* #341: translate the red/green node-color convention inline,
                     here rather than a one-shot toast, so it's discoverable
-                    every time — not just once, and not just if the toast
-                    happened to be caught. Doesn't apply to predicted points,
-                    which are always yellow regardless of `complete`. */}
-                {!isPredicted && ` · ${point.complete ? "confirmed" : "unconfirmed"}`}
+                    every time. Applies to visible/occluded user points. */}
+                {!isPredicted &&
+                  pointState !== "unlabeled" &&
+                  pointState !== "absent" &&
+                  ` · ${point.complete ? "confirmed" : "unconfirmed"}`}
               </div>
-              <div className="text-white/70">
-                x: {point.xy[0].toFixed(1)}, y: {point.xy[1].toFixed(1)}
-              </div>
+              {hasPointCoords(point) && (
+                <div className="text-white/70">
+                  x: {point.xy[0].toFixed(1)}, y: {point.xy[1].toFixed(1)}
+                </div>
+              )}
               {!isPredicted && (
                 <div className="text-white/40 text-[10px] mt-0.5">
-                  {formatShortcut(currentShortcut("toggle node visibility")) || "V"}: {point.visible ? "occlude" : "show"}
+                  {cycleShortcut} / R-click: {nextCycleState}
                   {" · "}
-                  {formatShortcut(currentShortcut("mark node unlabeled")) || "U"}: unlabeled
+                  {unlabeledShortcut}: {pointState === "unlabeled" ? "visible" : "unlabeled"}
                   {" · "}
-                  {formatShortcut(currentShortcut("mark node absent")) || "Shift+U"}: absent
+                  {absentShortcut}: absent
                 </div>
               )}
               {nodeScore !== undefined && (
@@ -4285,13 +4437,24 @@ export function VideoPlayer() {
           if (!lfInst) return null;
           const containerRect = containerRef.current?.getBoundingClientRect();
           if (!containerRect) return null;
-          const tipX = hoveredInstanceIdx.clientX - containerRect.left + 16;
-          const tipY = hoveredInstanceIdx.clientY - containerRect.top - 8;
+          const isInsetVisible = showInset && !!frameBitmapRef.current && isShiftHeld && !!cursorScene.current;
+          const tipPos = computeTooltipPlacement({
+            anchor: {
+              x: hoveredInstanceIdx.clientX - containerRect.left,
+              y: hoveredInstanceIdx.clientY - containerRect.top,
+            },
+            tooltip: { width: 140, height: 28 },
+            container: { width: containerRect.width, height: containerRect.height },
+            insetRect: isInsetVisible
+              ? getInsetRect(containerRect.width, INSET_SIZE, INSET_MARGIN)
+              : null,
+            dockToInset: false,
+          });
           const isPredicted = lfInst instanceof PredictedInstance;
           return (
             <div
               className="absolute pointer-events-none bg-black/70 text-white/90 text-[11px] rounded shadow px-1.5 py-1 z-20"
-              style={{ left: tipX, top: tipY }}
+              style={{ left: tipPos.left, top: tipPos.top }}
             >
               {isPredicted ? "Predicted Instance" : "User Instance"}
               {/* Several skeletons in the project: say which one this is
@@ -4675,7 +4838,7 @@ export function VideoPlayer() {
               state,
             });
             if (
-              (state === "absent" || state === "unlabeled") &&
+              state === "absent" &&
               !isViewOnlyLabels(store.labels)
             ) {
               setSelectedNodes(new Set());

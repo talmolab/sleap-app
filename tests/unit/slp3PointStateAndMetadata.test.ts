@@ -32,6 +32,7 @@ import {
   formatPointStateSummary,
   getPointState,
   hasPointCoords,
+  nextCyclePointState,
   nextUnplacedNodeForward,
 } from "@/lib/pointState";
 import { frameHasContent } from "@/lib/frameLabeling";
@@ -143,11 +144,32 @@ describe("pointState pure helpers", () => {
     expect(formatPointStateSummary(counts)).toContain("1 unlabeled (ignored in training)");
   });
 
-  it("refuses visible/occluded transitions on NaN points", () => {
+  it("refuses visible/occluded transitions on NaN points and preserves coords when marking placed points unlabeled", () => {
     const p = { xy: [Number.NaN, Number.NaN] as [number, number], visible: false, complete: false, labeled: false };
     expect(applyPointState(p, "visible")).toBe(false);
     expect(applyPointState(p, "occluded")).toBe(false);
     expect(getPointState(p)).toBe("unlabeled");
+    expect(hasPointCoords(p)).toBe(false);
+
+    // Placed point marked unlabeled keeps finite coords so it stays visible/interactive.
+    const placed = { xy: [12, 34] as [number, number], visible: true, complete: true, labeled: true };
+    expect(applyPointState(placed, "unlabeled")).toBe(true);
+    expect(getPointState(placed)).toBe("unlabeled");
+    expect(hasPointCoords(placed)).toBe(true);
+    expect(placed.xy).toEqual([12, 34]);
+    expect(placed.visible).toBe(false);
+    expect(placed.labeled).toBe(false);
+
+    // Can transition back to visible/occluded without re-placing.
+    expect(applyPointState(placed, "visible")).toBe(true);
+    expect(getPointState(placed)).toBe("visible");
+    expect(placed.xy).toEqual([12, 34]);
+
+    // 3-state cycle helper: visible -> occluded -> unlabeled -> visible.
+    expect(nextCyclePointState("visible")).toBe("occluded");
+    expect(nextCyclePointState("occluded")).toBe("unlabeled");
+    expect(nextCyclePointState("unlabeled")).toBe("visible");
+    expect(nextCyclePointState("absent")).toBe("visible");
   });
 
   it("nextUnplacedNodeForward steps strictly forward without looping", () => {
@@ -186,17 +208,17 @@ describe("SetPointState and ToggleNodeVisibility commands", () => {
     expect(getPt(0).xy).toEqual([10, 20]);
     expect(getPt(0).complete).toBe(true);
 
-    // Visible -> Unlabeled (clears coords, labeled=false)
+    // Visible -> Unlabeled (preserves finite coords in memory, labeled=false)
     await commandContext.execute(SetPointState, {
       nodes: [{ instanceIdx: 0, nodeIdx: 0 }],
       state: "unlabeled",
     });
     expect(getPointState(getPt(0))).toBe("unlabeled");
-    expect(Number.isNaN(getPt(0).xy[0])).toBe(true);
+    expect(getPt(0).xy).toEqual([10, 20]);
     expect(getPt(0).visible).toBe(false);
     expect(getPt(0).labeled).toBe(false);
 
-    // Unlabeled -> Absent (NaN coords, labeled=true)
+    // Unlabeled -> Absent (clears coords to NaN, labeled=true)
     await commandContext.execute(SetPointState, {
       nodes: [{ instanceIdx: 0, nodeIdx: 0 }],
       state: "absent",
@@ -205,18 +227,20 @@ describe("SetPointState and ToggleNodeVisibility commands", () => {
     expect(Number.isNaN(getPt(0).xy[0])).toBe(true);
     expect(getPt(0).labeled).toBe(true);
 
-    // Undo back through Absent -> Unlabeled -> Visible
+    // Undo back through Absent -> Unlabeled (restores coords!) -> Visible
     commandContext.undo();
     expect(getPointState(getPt(0))).toBe("unlabeled");
+    expect(getPt(0).xy).toEqual([10, 20]);
     expect(getPt(0).labeled).toBe(false);
 
     commandContext.undo();
     expect(getPointState(getPt(0))).toBe("visible");
     expect(getPt(0).xy).toEqual([10, 20]);
 
-    // Redo returns to Unlabeled
+    // Redo returns to Unlabeled (with preserved coords)
     commandContext.redo();
     expect(getPointState(getPt(0))).toBe("unlabeled");
+    expect(getPt(0).xy).toEqual([10, 20]);
     expect(getPt(0).labeled).toBe(false);
 
     // Predicted instance is never mutated by SetPointState
@@ -227,21 +251,38 @@ describe("SetPointState and ToggleNodeVisibility commands", () => {
     expect(getPointState(lf.instances[1].points[0])).toBe("visible");
   });
 
-  it("ToggleNodeVisibility toggles placed points and ignores NaN/unlabeled points", async () => {
+  it("ToggleNodeVisibility cycles placed points visible -> occluded -> unlabeled -> visible and ignores NaN points", async () => {
     makeTestProject();
     const getPt = (idx: number) => useAppStore.getState().labeledFrame!.instances[0].points[idx];
 
+    // Unplaced (NaN) unlabeled point is ignored.
     await commandContext.execute(ToggleNodeVisibility, {
       nodes: [{ instanceIdx: 0, nodeIdx: 3 }],
     });
     expect(getPointState(getPt(3))).toBe("unlabeled");
     expect(getPt(3).visible).toBe(false);
 
+    // Placed visible point cycles: visible -> occluded -> unlabeled -> visible,
+    // preserving [10, 20] coordinates throughout!
     await commandContext.execute(ToggleNodeVisibility, {
       nodes: [{ instanceIdx: 0, nodeIdx: 0 }],
     });
     expect(getPointState(getPt(0))).toBe("occluded");
     expect(getPt(0).xy).toEqual([10, 20]);
+
+    await commandContext.execute(ToggleNodeVisibility, {
+      nodes: [{ instanceIdx: 0, nodeIdx: 0 }],
+    });
+    expect(getPointState(getPt(0))).toBe("unlabeled");
+    expect(getPt(0).xy).toEqual([10, 20]);
+    expect(getPt(0).labeled).toBe(false);
+
+    await commandContext.execute(ToggleNodeVisibility, {
+      nodes: [{ instanceIdx: 0, nodeIdx: 0 }],
+    });
+    expect(getPointState(getPt(0))).toBe("visible");
+    expect(getPt(0).xy).toEqual([10, 20]);
+    expect(getPt(0).labeled).toBe(true);
   });
 
   it("refuses SetPointState on View-only projects", async () => {

@@ -26,7 +26,13 @@ import {
   SetPointState,
   MergeInstance,
 } from "../../commands";
-import type { PointState } from "@/lib/pointState";
+import {
+  getPointState,
+  hasPointCoords,
+  nextCyclePointState,
+  POINT_STATE_LABELS,
+  type PointState,
+} from "@/lib/pointState";
 import { cn } from "@/lib/utils";
 import { formatShortcut } from "@/lib/formatShortcut";
 import { currentShortcut } from "@/lib/shortcutPrefs";
@@ -145,7 +151,7 @@ export function ContextMenu({
       {selectedNodes && selectedNodes.size > 1 && !isPredicted && (
         <>
           <ContextMenuItem
-            label={`Toggle ${selectedNodes.size} Selected Nodes Visibility`}
+            label={`Cycle ${selectedNodes.size} Selected Nodes State`}
             shortcut={formatShortcut(currentShortcut("toggle node visibility"))}
             onClick={() => {
               onToggleSelectedNodesVisibility?.();
@@ -153,10 +159,16 @@ export function ContextMenu({
             }}
           />
           <ContextMenuItem
-            label={`Mark ${selectedNodes.size} Selected Nodes Absent`}
-            shortcut={formatShortcut(currentShortcut("mark node absent"))}
+            label={`Mark ${selectedNodes.size} Selected Nodes Visible`}
             onClick={() => {
-              onSetSelectedNodesState?.("absent");
+              onSetSelectedNodesState?.("visible");
+              onClose();
+            }}
+          />
+          <ContextMenuItem
+            label={`Mark ${selectedNodes.size} Selected Nodes Occluded`}
+            onClick={() => {
+              onSetSelectedNodesState?.("occluded");
               onClose();
             }}
           />
@@ -168,53 +180,69 @@ export function ContextMenu({
               onClose();
             }}
           />
+          <ContextMenuItem
+            label={`Mark ${selectedNodes.size} Selected Nodes Absent`}
+            shortcut={formatShortcut(currentShortcut("mark node absent"))}
+            onClick={() => {
+              onSetSelectedNodesState?.("absent");
+              onClose();
+            }}
+          />
           <ContextMenuSeparator />
         </>
       )}
 
       {/* Node-specific state actions */}
-      {hasNode && !isPredicted && (
-        <>
-          <ContextMenuItem
-            label={
-              instance.points[nodeIdx!]?.visible
-                ? "Mark Node Non-Visible"
-                : "Mark Node Visible"
-            }
-            shortcut={formatShortcut(currentShortcut("toggle node visibility"))}
-            onClick={() => {
-              const lf = useAppStore.getState().labeledFrame;
-              const instanceIdx = lf ? lf.instances.indexOf(instance) : -1;
-              exec(ToggleNodeVisibility, { nodes: [{ instanceIdx, nodeIdx: nodeIdx! }] });
-            }}
-          />
-          <ContextMenuItem
-            label="Mark Node Absent"
-            shortcut={formatShortcut(currentShortcut("mark node absent"))}
-            onClick={() => {
-              const lf = useAppStore.getState().labeledFrame;
-              const instanceIdx = lf ? lf.instances.indexOf(instance) : -1;
-              exec(SetPointState, {
-                nodes: [{ instanceIdx, nodeIdx: nodeIdx! }],
-                state: "absent",
-              });
-            }}
-          />
-          <ContextMenuItem
-            label="Mark Node Unlabeled"
-            shortcut={formatShortcut(currentShortcut("mark node unlabeled"))}
-            onClick={() => {
-              const lf = useAppStore.getState().labeledFrame;
-              const instanceIdx = lf ? lf.instances.indexOf(instance) : -1;
-              exec(SetPointState, {
-                nodes: [{ instanceIdx, nodeIdx: nodeIdx! }],
-                state: "unlabeled",
-              });
-            }}
-          />
-          <ContextMenuSeparator />
-        </>
-      )}
+      {hasNode && !isPredicted && (() => {
+        const pt = instance.points[nodeIdx!];
+        const nodeState: PointState = pt ? getPointState(pt) : "absent";
+        const placed = pt ? hasPointCoords(pt) : false;
+        const nextLabel = POINT_STATE_LABELS[nextCyclePointState(nodeState)];
+        const setSingleState = (state: PointState) => {
+          const lf = useAppStore.getState().labeledFrame;
+          const idx = lf ? lf.instances.indexOf(instance) : -1;
+          exec(SetPointState, { nodes: [{ instanceIdx: idx, nodeIdx: nodeIdx! }], state });
+        };
+        return (
+          <>
+            <ContextMenuItem
+              label={`Cycle Node State (→ ${nextLabel})`}
+              shortcut={formatShortcut(currentShortcut("toggle node visibility"))}
+              disabled={!placed}
+              onClick={() => {
+                const lf = useAppStore.getState().labeledFrame;
+                const idx = lf ? lf.instances.indexOf(instance) : -1;
+                exec(ToggleNodeVisibility, { nodes: [{ instanceIdx: idx, nodeIdx: nodeIdx! }] });
+              }}
+            />
+            <ContextMenuItem
+              label="Mark Node Visible"
+              active={nodeState === "visible"}
+              disabled={!placed}
+              onClick={() => setSingleState("visible")}
+            />
+            <ContextMenuItem
+              label="Mark Node Occluded"
+              active={nodeState === "occluded"}
+              disabled={!placed}
+              onClick={() => setSingleState("occluded")}
+            />
+            <ContextMenuItem
+              label="Mark Node Unlabeled"
+              shortcut={formatShortcut(currentShortcut("mark node unlabeled"))}
+              active={nodeState === "unlabeled"}
+              onClick={() => setSingleState("unlabeled")}
+            />
+            <ContextMenuItem
+              label="Mark Node Absent"
+              shortcut={formatShortcut(currentShortcut("mark node absent"))}
+              active={nodeState === "absent"}
+              onClick={() => setSingleState("absent")}
+            />
+            <ContextMenuSeparator />
+          </>
+        );
+      })()}
 
       {/* Instance actions */}
       {hasInstance && (
