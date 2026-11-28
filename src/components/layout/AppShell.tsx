@@ -53,6 +53,8 @@ import { CustomInstanceDeleteDialog } from "../dialogs/CustomInstanceDeleteDialo
 import { MergeProjectDialog } from "../dialogs/MergeProjectDialog";
 import { ExportModelDialog } from "../dialogs/ExportModelDialog";
 import { AddVideoUrlDialog } from "../dialogs/AddVideoUrlDialog";
+import { OpenFromShareDialog } from "../dialogs/OpenFromShareDialog";
+import { UploadToShareDialog } from "../dialogs/UploadToShareDialog";
 import { ExportClipDialog } from "../dialogs/ExportClipDialog";
 import { ModelMetricsDialog } from "../dialogs/ModelMetricsDialog";
 import { SizeDistributionDialog } from "../dialogs/SizeDistributionDialog";
@@ -361,6 +363,8 @@ export function AppShell() {
       <SelectToFrameDialog />
       <MergeProjectDialog />
       <AddVideoUrlDialog />
+      <OpenFromShareDialog />
+      <UploadToShareDialog />
       <ExportModelDialog />
       <BboxesFromPosesDialog />
       <CustomInstanceDeleteDialog />

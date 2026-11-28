@@ -10,6 +10,7 @@ import type { NavigationDomain } from "@/stores/appStore";
 import { useAppStore } from "@/stores/appStore";
 import { useExportStore } from "@/stores/exportStore";
 import { useSlpFormatStore } from "@/stores/slpFormatStore";
+import { useSleapShareStore } from "@/stores/sleapShareStore";
 import { PANELS } from "@/components/layout/panelRegistry";
 import { DEFAULT_SHORTCUTS } from "@/lib/shortcuts";
 import { getDocsUrl } from "@/lib/docsUrl";
@@ -177,6 +178,12 @@ function fileMenu(s: MenuSnapshot): TopMenu {
     { kind: "item", id: "file.new", label: "New Project...", shortcut: "$mod+KeyN", run: () => void openNewInstance() },
     { kind: "item", id: "file.open", label: "Open Project...", shortcut: "$mod+KeyO", run: exec(OpenProjectCommand) },
     {
+      kind: "item",
+      id: "file.openFromShare",
+      label: "Open from SLEAP Share / URL...",
+      run: () => useSleapShareStore.getState().setOpenFromShareDialogOpen(true),
+    },
+    {
       kind: "submenu",
       id: "file.import",
       label: "Import",
@@ -238,6 +245,13 @@ function fileMenu(s: MenuSnapshot): TopMenu {
         { kind: "item", id: "file.export.jsonPackage", label: "JSON Package...", run: exec(ExportPackageCommand) },
         { kind: "item", id: "file.export.clip", label: "Labeled Clip (Video)...", run: () => store().setExportClipDialogOpen(true) },
       ],
+    },
+    {
+      kind: "item",
+      id: "file.uploadToShare",
+      label: "Upload to SLEAP Share...",
+      enabled: loaded,
+      run: () => useSleapShareStore.getState().setUploadToShareDialogOpen(true),
     },
   ];
   items.push(SEP);

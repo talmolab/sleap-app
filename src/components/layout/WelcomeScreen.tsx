@@ -13,9 +13,10 @@ import { useCallback, useEffect, useState } from "react";
 import { useFileIO } from "../../hooks/useFileIO";
 import { useAppStore } from "../../stores/appStore";
 import { useSlpFormatStore } from "../../stores/slpFormatStore";
+import { useSleapShareStore } from "../../stores/sleapShareStore";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
-import { Plus, FolderOpen, Cpu, Globe, ChevronDown } from "lucide-react";
+import { Plus, FolderOpen, Cpu, Globe, ChevronDown, Cloud } from "lucide-react";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -45,6 +46,10 @@ export function WelcomeScreen() {
     }
   }, [welcomeEnvironmentRequestSeq]);
   const openConnect = useCallback(() => useAppStore.getState().setConnectWindowOpen(true), []);
+  const openFromShare = useCallback(
+    () => useSleapShareStore.getState().setOpenFromShareDialogOpen(true),
+    [],
+  );
   // The tutorial's environment check runs before any project (and so any
   // sidebar) exists — this is the only Environment panel there is to point at.
   const tutorialOnEnvironmentStep = useAppStore(
@@ -215,6 +220,10 @@ export function WelcomeScreen() {
                   </Button>
                 </DropdownMenuTrigger>
                 <DropdownMenuContent align="end" className="min-w-0">
+                  <DropdownMenuItem onSelect={openFromShare}>
+                    <Cloud className="h-4 w-4" />
+                    Open from SLEAP Share / URL…
+                  </DropdownMenuItem>
                   <DropdownMenuItem onSelect={openConnect}>
                     <Globe className="h-4 w-4" />
                     Connect…

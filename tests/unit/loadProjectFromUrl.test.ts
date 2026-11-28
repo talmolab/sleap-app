@@ -21,9 +21,22 @@ vi.mock("sonner", () => ({
 }));
 vi.mock("@/lib/resolveVideos", () => ({
   resolveExternalVideos: vi.fn(async () => {}),
+  assignVideoBackendFromUrl: vi.fn(async () => true),
 }));
 
-class RemoteIOError extends Error {}
+class RemoteIOError extends Error {
+  status: number | null;
+  url: string;
+  constructor(
+    msgOrOpts: string | { message: string; url: string; status?: number | null },
+  ) {
+    const isObj = typeof msgOrOpts === "object" && msgOrOpts !== null;
+    super(isObj ? msgOrOpts.message : msgOrOpts);
+    this.name = "RemoteIOError";
+    this.status = isObj ? (msgOrOpts.status ?? null) : null;
+    this.url = isObj ? msgOrOpts.url : "";
+  }
+}
 // Only the class matters here (an instanceof check); the real constructor takes
 // an options object.
 class SlpFormatError extends Error {}
@@ -59,11 +72,23 @@ vi.mock("@talmolab/sleap-io.js", () => ({
 import { loadProjectFromUrl } from "@/lib/loadProject";
 import { useAppStore } from "@/stores/appStore";
 import { useSlpFormatStore } from "@/stores/slpFormatStore";
+import { useSleapShareStore } from "@/stores/sleapShareStore";
 import { toast } from "@/lib/notify";
+import { assignVideoBackendFromUrl } from "@/lib/resolveVideos";
 
 function resetStore() {
   useAppStore.setState(useAppStore.getInitialState());
   useSlpFormatStore.setState({ prompt: null, welcomeEnvironmentRequestSeq: 0 });
+  useSleapShareStore.setState({
+    openFromShareDialogOpen: false,
+    uploadToShareDialogOpen: false,
+    credentials: null,
+    profile: null,
+    authChecked: true,
+    authLoading: false,
+    activeShareSource: null,
+    activeRemoteUrl: null,
+  });
 }
 
 describe("loadProjectFromUrl", () => {
@@ -188,6 +213,123 @@ describe("loadProjectFromUrl", () => {
     if (prompt?.kind === "refused") {
       expect(prompt.fileName).toBe("remote.slp");
       expect(prompt.formatId).toBe(3);
+    }
+  });
+
+  it("redeems a private SLEAP Share ticket, streams via authenticated RangeSource, attaches companion videos, and restores viewState", async () => {
+    const origFetch = globalThis.fetch;
+    const seenAuthHeaders: Array<string | null> = [];
+    const mockVideo = {
+      filename: "/local/dir/trial_cam1.mp4",
+      hasEmbeddedImages: false,
+      backend: null,
+      shape: [200, 480, 640, 3],
+    };
+    readSlpStreamingMock.mockImplementationOnce(async () => ({
+      videos: [mockVideo],
+      skeletons: [],
+      labeledFrames: [],
+      find: () => [],
+    }));
+    (assignVideoBackendFromUrl as unknown as { mockClear: () => void }).mockClear();
+
+    globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      const reqUrl = typeof input === "string" ? input : input.toString();
+      const headers = new Headers(init?.headers);
+      if (reqUrl.endsWith("/api/datasets/abc123/handoff/redeem")) {
+        const body = JSON.parse(String(init?.body ?? "{}")) as { ticket?: string };
+        expect(body.ticket).toBe("ds_tkt_unit_1");
+        return new Response(
+          JSON.stringify({ token: "slp_ds_redeemed_xyz", expiresAt: Date.now() + 3600_000 }),
+          { status: 200, headers: { "Content-Type": "application/json" } }
+        );
+      }
+      if (reqUrl.endsWith("/api/datasets/abc123/members")) {
+        seenAuthHeaders.push(headers.get("Authorization"));
+        return new Response(
+          JSON.stringify({
+            shortcode: "abc123",
+            memberCount: 2,
+            kind: "multifile",
+            members: [
+              {
+                memberIndex: 0,
+                role: "labels",
+                filename: "labels.slp",
+                contentType: "application/octet-stream",
+                objectKey: "abc123/labels.slp",
+                fileSize: 1024,
+                isPrimary: true,
+                url: "/abc123/labels.slp",
+              },
+              {
+                memberIndex: 1,
+                role: "video",
+                filename: "trial_cam1.mp4",
+                contentType: "video/mp4",
+                objectKey: "abc123/trial_cam1.mp4",
+                fileSize: 4096,
+                isPrimary: false,
+                url: "/abc123/trial_cam1.mp4",
+              },
+            ],
+          }),
+          { status: 200, headers: { "Content-Type": "application/json" } }
+        );
+      }
+      if (reqUrl.endsWith("/abc123/labels.slp") && init?.method === "HEAD") {
+        seenAuthHeaders.push(headers.get("Authorization"));
+        return new Response(null, {
+          status: 200,
+          headers: { "Content-Length": "1024" },
+        });
+      }
+      return new Response("not found", { status: 404 });
+    }) as typeof fetch;
+
+    try {
+      const ok = await loadProjectFromUrl("https://slp.sh/abc123/labels.slp", {
+        displayName: "Private Fly Trial",
+        ticket: "ds_tkt_unit_1",
+        viewState: { videoIdx: 0, frameIdx: 42 },
+      });
+      expect(ok).toBe(true);
+
+      // readSlpStreaming received an authenticated RangeSource object (not a raw URL string)
+      const [source] = readSlpStreamingMock.mock.calls[0] as unknown as [
+        { size?: number; readRange?: unknown },
+      ];
+      expect(typeof source).toBe("object");
+      expect(source.size).toBe(1024);
+      expect(typeof source.readRange).toBe("function");
+
+      // Bearer token flowed to HEAD probe, members API, and companion video backend
+      expect(seenAuthHeaders).toEqual([
+        "Bearer slp_ds_redeemed_xyz",
+        "Bearer slp_ds_redeemed_xyz",
+      ]);
+      expect(assignVideoBackendFromUrl).toHaveBeenCalledWith(
+        mockVideo,
+        "https://slp.sh/abc123/trial_cam1.mp4",
+        expect.objectContaining({
+          silent: true,
+          headers: { Authorization: "Bearer slp_ds_redeemed_xyz" },
+        })
+      );
+
+      expect(useAppStore.getState().filename).toBe("Private Fly Trial");
+      expect(useAppStore.getState().frameIdx).toBe(42);
+      expect(useSleapShareStore.getState().activeShareSource).toMatchObject({
+        origin: "https://slp.sh",
+        shortcode: "abc123",
+        member: "labels.slp",
+        displayName: "Private Fly Trial",
+      });
+      expect(useSleapShareStore.getState().activeRemoteUrl).toBe(
+        "https://slp.sh/abc123/labels.slp"
+      );
+    } finally {
+      globalThis.fetch = origFetch;
     }
   });
 });
