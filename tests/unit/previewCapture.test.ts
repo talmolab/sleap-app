@@ -1,27 +1,16 @@
 import { describe, expect, test } from "bun:test";
-import * as sleapIo from "@talmolab/sleap-io.js";
 import {
   Instance,
   LabeledFrame,
   Labels,
+  PreviewFrame,
   Skeleton,
   Video,
   saveSlpToBytes,
   type VideoBackend,
 } from "@talmolab/sleap-io.js";
-import * as sleapIoLite from "@talmolab/sleap-io.js/lite";
+import { loadSlpPreview } from "@talmolab/sleap-io.js/lite";
 import { ensureProjectPreviewFrame } from "@/lib/previewCapture";
-
-type PreviewEntryLike = {
-  frameIdx: number;
-  origWidth: number;
-  origHeight: number;
-  data: Uint8Array;
-};
-
-const hasPreviewSupport =
-  typeof (sleapIo as Record<string, unknown>).createPreviewFrameFromVideoFrame ===
-  "function";
 
 function makeMockBackend(width = 160, height = 120): {
   backend: VideoBackend;
@@ -67,23 +56,17 @@ describe("ensureProjectPreviewFrame", () => {
       videos: [video],
       skeletons: [skel],
     });
-    const labelsView = labels as unknown as { previewFrames?: PreviewEntryLike[] };
 
     await ensureProjectPreviewFrame(labels, {
       currentVideo: video,
       currentFrameIdx: 5,
     });
 
-    if (!hasPreviewSupport) {
-      expect(getCalls()).toEqual([]);
-      return;
-    }
-
     expect(getCalls()).toEqual([5]);
-    expect(labelsView.previewFrames).toHaveLength(1);
-    expect(labelsView.previewFrames![0].frameIdx).toBe(5);
-    expect(labelsView.previewFrames![0].origWidth).toBe(200);
-    expect(labelsView.previewFrames![0].origHeight).toBe(150);
+    expect(labels.previewFrames).toHaveLength(1);
+    expect(labels.previewFrames[0].frameIdx).toBe(5);
+    expect(labels.previewFrames[0].origWidth).toBe(200);
+    expect(labels.previewFrames[0].origHeight).toBe(150);
 
     // Second call is a no-op (cached on labels.previewFrames).
     await ensureProjectPreviewFrame(labels, {
@@ -94,18 +77,11 @@ describe("ensureProjectPreviewFrame", () => {
 
     // Saved SLP carries the captured /preview.
     const bytes = await saveSlpToBytes(labels);
-    const loadPreview = (
-      sleapIoLite as unknown as {
-        loadSlpPreview?: (b: Uint8Array) => Promise<PreviewEntryLike[]>;
-      }
-    ).loadSlpPreview;
-    if (loadPreview) {
-      const previews = await loadPreview(bytes);
-      expect(previews).toHaveLength(1);
-      expect(previews[0].frameIdx).toBe(5);
-      expect(previews[0].data[0]).toBe(0xff);
-      expect(previews[0].data[1]).toBe(0xd8);
-    }
+    const previews = await loadSlpPreview(bytes);
+    expect(previews).toHaveLength(1);
+    expect(previews[0].frameIdx).toBe(5);
+    expect(previews[0].data[0]).toBe(0xff);
+    expect(previews[0].data[1]).toBe(0xd8);
   });
 
   test("skips embedded .pkg.slp projects and preserves existing previews", async () => {
@@ -117,30 +93,31 @@ describe("ensureProjectPreviewFrame", () => {
       openBackend: false,
     });
     const pkgLabels = new Labels({ videos: [embeddedVid] });
-    const pkgView = pkgLabels as unknown as { previewFrames?: PreviewEntryLike[] };
     await ensureProjectPreviewFrame(pkgLabels, {
       currentVideo: embeddedVid,
       currentFrameIdx: 0,
     });
     expect(getCalls()).toEqual([]);
-    expect(pkgView.previewFrames ?? []).toHaveLength(0);
+    expect(pkgLabels.previewFrames).toHaveLength(0);
 
     const linkedVid = new Video({ filename: "v.mp4", backend, openBackend: false });
-    const existing: PreviewEntryLike = {
+    const existing = new PreviewFrame({
+      video: linkedVid,
       frameIdx: 9,
+      data: new Uint8Array([0xff, 0xd8, 0xff, 0xd9]),
+      width: 100,
+      height: 100,
       origWidth: 100,
       origHeight: 100,
-      data: new Uint8Array([0xff, 0xd8, 0xff, 0xd9]),
-    };
+    });
     const labels = new Labels({ videos: [linkedVid] });
-    const labelsView = labels as unknown as { previewFrames?: PreviewEntryLike[] };
-    labelsView.previewFrames = [existing];
+    labels.previewFrames = [existing];
     await ensureProjectPreviewFrame(labels, {
       currentVideo: linkedVid,
       currentFrameIdx: 0,
     });
     expect(getCalls()).toEqual([]);
-    expect(labelsView.previewFrames).toEqual([existing]);
+    expect(labels.previewFrames).toEqual([existing]);
   });
 
   test("never throws when frame decoding fails", async () => {
@@ -158,10 +135,9 @@ describe("ensureProjectPreviewFrame", () => {
       openBackend: false,
     });
     const labels = new Labels({ videos: [video] });
-    const labelsView = labels as unknown as { previewFrames?: PreviewEntryLike[] };
     await expect(
       ensureProjectPreviewFrame(labels, { currentVideo: video, currentFrameIdx: 0 }),
     ).resolves.toBeUndefined();
-    expect(labelsView.previewFrames ?? []).toHaveLength(0);
+    expect(labels.previewFrames).toHaveLength(0);
   });
 });
