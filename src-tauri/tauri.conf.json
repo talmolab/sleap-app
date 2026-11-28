@@ -82,6 +82,11 @@
     }
   },
   "plugins": {
+    "deep-link": {
+      "desktop": {
+        "schemes": ["sleap"]
+      }
+    },
     "fs": {
       "requireLiteralLeadingDot": false
     },

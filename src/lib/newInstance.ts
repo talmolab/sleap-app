@@ -12,25 +12,45 @@
  */
 
 import { getPlatform } from "@/platform/index";
+import type { OpenUrlRequest } from "./urlOpen";
 
 /**
- * URL for a new instance that should auto-open `file` on mount. The path rides
- * as an `?openFile=` query param (URL-encoded) — race-free (unlike a shared Rust
- * slot) and works on both the dev origin and the localhost release origin.
+ * URL for a new instance that should auto-open `file` or a remote `openRequest`
+ * on mount. Params ride in the query/hash — race-free (unlike a shared Rust
+ * slot) and work on both the dev origin and the localhost release origin.
  * `tutorial` adds `?tutorial=1`, which starts the getting-started tutorial in
  * the new window (see lib/tutorial/startTutorial.ts).
  */
-export function buildInstanceUrl(base: string, file?: string, tutorial = false): string {
+export function buildInstanceUrl(
+  base: string,
+  file?: string,
+  tutorial = false,
+  openRequest?: OpenUrlRequest,
+): string {
   const params: string[] = [];
   if (file) params.push(`openFile=${encodeURIComponent(file)}`);
   if (tutorial) params.push("tutorial=1");
-  if (params.length === 0) return base;
-  const sep = base.includes("?") ? "&" : "?";
-  return `${base}${sep}${params.join("&")}`;
+  if (openRequest) {
+    params.push(`open=${encodeURIComponent(openRequest.url)}`);
+    if (openRequest.name) params.push(`name=${encodeURIComponent(openRequest.name)}`);
+  }
+  let result = base;
+  if (params.length > 0) {
+    const sep = base.includes("?") ? "&" : "?";
+    result = `${base}${sep}${params.join("&")}`;
+  }
+  if (openRequest) {
+    const hashParts: string[] = [];
+    if (openRequest.videoIdx !== undefined) hashParts.push(`v=${openRequest.videoIdx}`);
+    if (openRequest.frameIdx !== undefined) hashParts.push(`f=${openRequest.frameIdx}`);
+    if (openRequest.ticket) hashParts.push(`ticket=${encodeURIComponent(openRequest.ticket)}`);
+    if (hashParts.length > 0) result = `${result}#${hashParts.join("&")}`;
+  }
+  return result;
 }
 
 export async function openNewInstance(
-  opts?: { file?: string; tutorial?: boolean }
+  opts?: { file?: string; tutorial?: boolean; openRequest?: OpenUrlRequest }
 ): Promise<void> {
   const platform = await getPlatform();
 
@@ -40,7 +60,7 @@ export async function openNewInstance(
   // new window would lose isolation. In the browser it's the site origin +
   // Vite base (e.g. app.sleap.ai/dev/).
   const base = `${location.origin}${import.meta.env.BASE_URL}`;
-  const url = buildInstanceUrl(base, opts?.file, opts?.tutorial);
+  const url = buildInstanceUrl(base, opts?.file, opts?.tutorial, opts?.openRequest);
 
   if (platform.isTauri) {
     // Desktop: spawn a second native window. Each WebviewWindow is its own

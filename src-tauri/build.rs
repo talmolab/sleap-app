@@ -35,6 +35,7 @@ fn main() {
                     "copy_file",
                     "remove_file",
                     "get_initial_file",
+                    "get_initial_url",
                     "resolve_open",
                     "window_set_file",
                     "read_image_file",
@@ -96,6 +97,13 @@ fn main() {
                     // usage analytics (Help > Share Usage Data)
                     "analytics_post",
                     "system_info",
+                    // SLEAP Share (credentials + streaming R2 uploads)
+                    "sleap_share_load_credentials",
+                    "sleap_share_save_credentials",
+                    "sleap_share_clear_credentials",
+                    "sleap_share_temp_path",
+                    "sleap_share_upload_file",
+                    "sleap_share_cancel_upload",
                 ])
                 .default_permission(DefaultPermissionRule::AllowAllCommands),
         ),

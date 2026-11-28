@@ -29,6 +29,7 @@ tauri-plugin-dialog = "2"
 tauri-plugin-shell = "2"
 tauri-plugin-updater = "2"
 tauri-plugin-process = "2"
+tauri-plugin-deep-link = "2"
 # For update_channels.rs: UpdaterBuilder::endpoints() takes a Vec<url::Url>, so
 # `url` needs to be a direct dependency to name that type (it's already pulled
 # in transitively by tauri-plugin-updater).
@@ -42,8 +43,9 @@ url = "2"
 # would additionally turn on reqwest's http2/http3 support repo-wide (Cargo
 # unifies features across the whole dependency graph), pulling in the quinn
 # QUIC stack and its aws-lc-sys backend -- which needs `cmake` to build --
-# for a plain JSON GET this module never needed.
-reqwest = { version = "0.13", default-features = false, features = ["json"] }
+# for a plain JSON GET this module never needed. "stream" enables streaming
+# presigned PUT uploads in sleap_share.rs without pulling in QUIC/aws-lc-sys.
+reqwest = { version = "0.13", default-features = false, features = ["json", "stream"] }
 # For update_channels.rs: parses/compares release tags as real semver
 # versions (excludes non-version-tagged releases like `dev` from
 # "latest" candidacy, rather than relying on them sorting low by accident).
@@ -94,7 +96,7 @@ webrtc = "0.17"
 tokio-tungstenite = { version = "0.26", features = ["native-tls"] }
 ed25519-dalek = { version = "2", features = ["rand_core"] }
 base64 = "0.22"
-tokio = { version = "1", features = ["sync", "time", "macros"] }
+tokio = { version = "1", features = ["sync", "time", "macros", "fs", "io-util"] }
 futures-util = "0.3"
 urlencoding = "2"
 dirs = "6"
@@ -104,3 +106,6 @@ dirs = "6"
 tiny_http = "0.12"
 getrandom = "0.2"
 iroh = "1.3.0"
+
+[target.'cfg(any(target_os = "windows", target_os = "linux"))'.dependencies]
+tauri-plugin-single-instance = { version = "2", features = ["deep-link"] }

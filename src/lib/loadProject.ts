@@ -41,8 +41,18 @@ import { installTauriFsResolver } from "./fsResolver";
 import { fileSize, readRange } from "./nativeRange";
 import { sleapCmd } from "./sleapPlugin";
 import { basenameFromUrl } from "./urlOpen";
+import { applyHashState } from "./urlState";
 import { isReportedSlpError, toastLoadError, type Format3Policy } from "./slpAccess";
 import { isStreamingIncompleteError } from "./slpFormat";
+import {
+  detectSleapShareUrl,
+  fetchShareMembers,
+  fetchShareMetadata,
+  redeemHandoffTicket,
+  resolveShareCompanionVideos,
+} from "./sleapShare/openFromShare";
+import { createAuthenticatedHttpRangeSource } from "./sleapShare/httpRangeSource";
+import { useSleapShareStore } from "@/stores/sleapShareStore";
 
 // Files larger than this open via the B-seam native range reader (lazy, on-disk)
 // instead of reading the whole file into WASM memory. Below it, eager is simpler
@@ -221,49 +231,187 @@ export async function loadProjectFromFile(file: File): Promise<boolean> {
  * a full buffered download). The remotely-opened project has no local path/handle,
  * so it is Save-As only.
  */
-export async function loadProjectFromUrl(url: string): Promise<boolean> {
+export interface LoadProjectFromUrlOptions {
+  /** Friendly display name (e.g. from `?name=` or SLEAP Share metadata). */
+  displayName?: string;
+  /** Single-use private handoff ticket (`ds_tkt_*`) minted by `slp.sh`. */
+  ticket?: string;
+  /** Optional explicit Bearer token (e.g. user's SLEAP Share API token). */
+  token?: string;
+  /** Optional initial view state to restore after load (overrides first-labeled-frame). */
+  viewState?: { videoIdx?: number; frameIdx?: number };
+}
+
+/**
+ * Load an SLP project from a remote http(s) URL (browser `?open=`, desktop
+ * `sleap://open?url=`, or `File ▸ Open from SLEAP Share / URL…`, issue #217).
+ *
+ * - Public URLs stream directly via sleap-io.js's worker-native HTTP Range
+ *   reader (no full download needed).
+ * - Private SLEAP Share datasets redeem their 1-time `#ticket=` (or reuse the
+ *   user's signed-in SLEAP Share Bearer token) and stream lazily through an
+ *   authenticated `HttpRangeSource` (never putting account tokens in URLs).
+ * - For SLEAP Share multi-file datasets, companion video members are matched
+ *   and attached as streaming URL video backends automatically.
+ * - Restores `#v=&f=` (or explicit `viewState`) when supplied.
+ */
+export async function loadProjectFromUrl(
+  url: string,
+  opts?: LoadProjectFromUrlOptions
+): Promise<boolean> {
   const store = useAppStore.getState();
 
   if (!(await confirmDiscardUnsavedWork("Opening a new project"))) return false;
 
-  const name = basenameFromUrl(url);
-  store.setLoading(true, `Streaming ${name}...`);
+  const urlBasename = basenameFromUrl(url);
+  let displayName = opts?.displayName?.trim() || urlBasename;
+  const shareInfo = detectSleapShareUrl(url);
+
+  store.setLoading(true, `Streaming ${displayName}...`);
 
   try {
+    // 1. Resolve Bearer auth if private ticket was supplied OR if the user is
+    //    signed in to this SLEAP Share origin.
+    let bearerToken = opts?.token;
+    if (!bearerToken && opts?.ticket && shareInfo) {
+      store.setLoading(true, "Authorizing private dataset...");
+      const redeemed = await redeemHandoffTicket(
+        shareInfo.origin,
+        shareInfo.shortcode,
+        opts.ticket
+      );
+      bearerToken = redeemed.token;
+    } else if (!bearerToken && shareInfo) {
+      const shareState = useSleapShareStore.getState();
+      if (!shareState.authChecked) {
+        await shareState.hydrateAuth().catch(() => {});
+      }
+      const creds = useSleapShareStore.getState().credentials;
+      if (creds && creds.baseUrl.replace(/\/+$/, "") === shareInfo.origin) {
+        bearerToken = creds.token;
+      }
+    }
+
+    const authHeaders = bearerToken
+      ? { Authorization: `Bearer ${bearerToken}` }
+      : undefined;
+
+    // 2. For recognized SLEAP Share URLs, fetch members & metadata in parallel
+    //    (best-effort; never blocks opening a plain URL).
+    const shareExtrasPromise = shareInfo
+      ? Promise.all([
+          fetchShareMembers(shareInfo.origin, shareInfo.shortcode, bearerToken),
+          !opts?.displayName
+            ? fetchShareMetadata(shareInfo.origin, shareInfo.shortcode, bearerToken)
+            : Promise.resolve(null),
+        ])
+      : null;
+
+    // 3. Stream the .slp (worker-native URL for public, authenticated
+    //    HttpRangeSource for private/authenticated so large files stay lazy).
+    store.setLoading(true, `Streaming ${displayName}...`);
     let labels: Labels;
+    let httpRangeSource: Awaited<
+      ReturnType<typeof createAuthenticatedHttpRangeSource>
+    > | null = null;
     try {
-      labels = await readSlpStreaming(url, {
+      const streamSource = authHeaders
+        ? (httpRangeSource = await createAuthenticatedHttpRangeSource(url, {
+            headers: authHeaders,
+          }))
+        : url;
+
+      labels = await readSlpStreaming(streamSource, {
         openVideos: !LAZY_VIDEO_METADATA,
         lazyVideoMetadata: LAZY_VIDEO_METADATA,
         // Must be a bare basename, NOT the URL: io's streaming worker uses
         // filenameHint as the in-FS (Emscripten) filename, and a value with
         // "://" and "/" builds an invalid FS path → ENOENT before any range read.
-        filenameHint: name,
+        filenameHint: urlBasename,
         h5wasmUrl: H5WASM_URL,
         onProgress: reportParseProgress,
         // The URL can carry an access token: dialogs name the file only.
-        fileName: name,
+        fileName: displayName,
         // Format 3.0 files holding non-pose tables (ROIs, masks, label images,
         // session links) fall back to the full reader below so those tables are
         // never silently dropped.
         failIfIncomplete: true,
       });
     } catch (streamErr) {
+      if (httpRangeSource?.lastError && !isStreamingIncompleteError(streamErr)) {
+        throw httpRangeSource.lastError;
+      }
       if (!isStreamingIncompleteError(streamErr)) throw streamErr;
-      store.setLoading(true, `Downloading ${name}...`);
+      store.setLoading(true, `Downloading ${displayName}...`);
       labels = await loadSlp(url, {
         openVideos: true,
-        h5: { stream: "download", filenameHint: name, h5wasmUrl: H5WASM_URL },
+        h5: {
+          stream: "download",
+          filenameHint: urlBasename,
+          h5wasmUrl: H5WASM_URL,
+          ...(authHeaders ? { headers: authHeaders } : {}),
+        },
         onProgress: reportParseProgress,
-        fileName: name,
+        fileName: displayName,
       });
     }
+
+    // 4. Resolve friendly dataset name + companion videos from SLEAP Share.
+    let shareIsPrivate: boolean | undefined;
+    if (shareExtrasPromise) {
+      const [membersResp, metaResp] = await shareExtrasPromise;
+      if (metaResp) {
+        shareIsPrivate = metaResp.isPrivate;
+        if (!opts?.displayName) {
+          displayName = metaResp.name || metaResp.originalFilename || displayName;
+        }
+      }
+      if (membersResp && membersResp.members.length > 1) {
+        store.setLoading(true, "Connecting companion videos...");
+        await resolveShareCompanionVideos(
+          labels,
+          url,
+          membersResp.members,
+          authHeaders
+        );
+      }
+    }
+
     store.setLoading(true, "Locating videos...");
     await resolveExternalVideos(labels);
     // No projectPath/handle → plain Save is disabled; user must Save As.
-    store.setLabels(labels, name);
+    store.setLabels(labels, displayName);
+    const shareStore = useSleapShareStore.getState();
+    shareStore.setActiveRemoteUrl(url);
+    shareStore.setActiveShareSource(
+      shareInfo
+        ? {
+            origin: shareInfo.origin,
+            shortcode: shareInfo.shortcode,
+            member: shareInfo.member,
+            displayName,
+            isPrivate: shareIsPrivate,
+          }
+        : null
+    );
+
     await openFirstLabeledFrame(labels);
-    toast.success(`Loaded ${name}`, {
+
+    // Restore explicit viewState (from sleap:// or #v=&f= handoff) if provided.
+    if (opts?.viewState) {
+      const st = useAppStore.getState();
+      if (opts.viewState.videoIdx !== undefined) {
+        const targetVideo = labels.videos[opts.viewState.videoIdx];
+        if (targetVideo) st.setVideo(targetVideo);
+      }
+      if (opts.viewState.frameIdx !== undefined) {
+        useAppStore.getState().setFrameIdx(opts.viewState.frameIdx);
+      }
+    } else if (typeof location !== "undefined" && location.hash) {
+      applyHashState();
+    }
+
+    toast.success(`Loaded ${displayName}`, {
       description: `${labels.videos.length} video(s), ${labels.labeledFrames.length} labeled frames`,
     });
     return true;
@@ -278,7 +426,20 @@ export async function loadProjectFromUrl(url: string): Promise<boolean> {
       err instanceof RemoteIOError
         ? err.message
         : redactedCauseSummary(err);
-    toastLoadError("Failed to open dataset", err, msg);
+    const isLikelyPrivateShare =
+      !!shareInfo &&
+      !opts?.ticket &&
+      !useSleapShareStore.getState().credentials &&
+      err instanceof RemoteIOError &&
+      (err.status === 404 || err.status === 401 || err.status === 403);
+    if (isLikelyPrivateShare) {
+      toast.error("Dataset not found or private", {
+        description:
+          "If this is a private SLEAP Share dataset, sign in via File ▸ Open from SLEAP Share / URL… or open it from slp.sh.",
+      });
+    } else {
+      toastLoadError("Failed to open dataset", err, msg);
+    }
     if (!isReportedSlpError(err)) {
       console.error(
         "Failed to open dataset from URL:",

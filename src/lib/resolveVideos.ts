@@ -1989,6 +1989,11 @@ function persistHdf5Dataset(video: Video): void {
 export interface AssignBackendOptions {
   silent?: boolean;
   /**
+   * Extra HTTP headers (e.g. `{ Authorization: "Bearer …" }`) applied when
+   * streaming a remote video URL (e.g. private SLEAP Share companion videos).
+   */
+  headers?: Record<string, string>;
+  /**
    * Force (`true`/`false`) grayscale on the newly-built backend, or leave it
    * unset (`undefined`) to inherit whatever `video.backendMetadata.grayscale`
    * already records (the round-trip case: reopening/relinking a video that
@@ -2241,15 +2246,18 @@ export async function assignVideoBackendFromUrl(
     opts?.grayscale !== undefined
       ? opts.grayscale
       : (video.backendMetadata.grayscale as boolean | null | undefined);
+  const headers = opts?.headers;
   const ok = await probeAndAssignBackend(
     video,
-    () => createVideoBackend(url, { grayscale }),
+    () => createVideoBackend(url, { grayscale, ...(headers ? { headers } : {}) }),
     getBasename(url),
     { ...opts, grayscale }
   );
   // Browser: upgrade to off-main worker decode (the worker does ranged fetches
   // against this URL). No-ops on desktop / non-mp4. Fire-and-forget.
-  if (ok) void scheduleWorkerDecodeUpgradeBrowser(video, url, getBasename(url));
+  if (ok) {
+    void scheduleWorkerDecodeUpgradeBrowser(video, url, getBasename(url), headers);
+  }
   return ok;
 }
 

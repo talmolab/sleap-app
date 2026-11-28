@@ -1,5 +1,11 @@
 import { describe, it, expect } from "../bun-test";
-import { readOpenParam, basenameFromUrl } from "@/lib/urlOpen";
+import {
+  readOpenParam,
+  readOpenRequest,
+  stripOpenParamsFromUrl,
+  parseSleapDeepLink,
+  basenameFromUrl,
+} from "@/lib/urlOpen";
 
 describe("readOpenParam", () => {
   it("returns the decoded http(s) URL from ?open=", () => {
@@ -42,5 +48,79 @@ describe("basenameFromUrl", () => {
   });
   it("falls back to the raw string when not a URL", () => {
     expect(basenameFromUrl("garbage")).toBe("garbage");
+  });
+});
+
+describe("readOpenRequest & stripOpenParamsFromUrl", () => {
+  it("parses ?open=, ?name=, and #v=&f=&ticket= from search + hash", () => {
+    const dl = "https://slp.sh/abc123/labels.slp";
+    const req = readOpenRequest(
+      `?open=${encodeURIComponent(dl)}&name=${encodeURIComponent("Mouse Trial 1")}`,
+      "#v=2&f=145&ticket=ds_tkt_secret999"
+    );
+    expect(req).toEqual({
+      url: dl,
+      name: "Mouse Trial 1",
+      ticket: "ds_tkt_secret999",
+      videoIdx: 2,
+      frameIdx: 145,
+    });
+  });
+
+  it("ignores negative or non-integer v/f values", () => {
+    const req = readOpenRequest(
+      `?open=${encodeURIComponent("https://slp.sh/abc123/labels.slp")}`,
+      "#v=-1&f=3.5"
+    );
+    expect(req).toEqual({ url: "https://slp.sh/abc123/labels.slp" });
+  });
+
+  it("strips ?open=, ?name=, ?ticket=, and #ticket= while keeping path and #v=&f=", () => {
+    const stripped = stripOpenParamsFromUrl(
+      "https://app.sleap.ai/latest/?open=https%3A%2F%2Fslp.sh%2Fabc123%2Flabels.slp&name=Demo&foo=bar#v=1&f=42&ticket=ds_tkt_abc"
+    );
+    expect(stripped).toBe("https://app.sleap.ai/latest/?foo=bar#v=1&f=42");
+  });
+
+  it("clears hash completely when #ticket= was the only fragment param", () => {
+    const stripped = stripOpenParamsFromUrl(
+      "https://app.sleap.ai/latest/?open=https%3A%2F%2Fslp.sh%2Fabc123%2Flabels.slp#ticket=ds_tkt_only"
+    );
+    expect(stripped).toBe("https://app.sleap.ai/latest/");
+  });
+});
+
+describe("parseSleapDeepLink", () => {
+  it("parses sleap://open?url=... with name, v, f, and ticket", () => {
+    const dl = "https://slp.sh/abc123/val.slp";
+    const req = parseSleapDeepLink(
+      `sleap://open?url=${encodeURIComponent(dl)}&name=Val+Split&v=0&f=12&ticket=ds_tkt_xyz`
+    );
+    expect(req).toEqual({
+      url: dl,
+      name: "Val Split",
+      ticket: "ds_tkt_xyz",
+      videoIdx: 0,
+      frameIdx: 12,
+    });
+  });
+
+  it("resolves sleap://open?share=<shortcode> against default share host", () => {
+    expect(parseSleapDeepLink("sleap://open?share=Ab12Cd")).toEqual({
+      url: "https://slp.sh/Ab12Cd/labels.slp",
+    });
+    expect(
+      parseSleapDeepLink("sleap://open?share=Ab12Cd", "https://staging.slp.sh/")
+    ).toEqual({
+      url: "https://staging.slp.sh/Ab12Cd/labels.slp",
+    });
+  });
+
+  it("rejects non-sleap schemes, unknown actions, and unsafe target URLs", () => {
+    expect(parseSleapDeepLink("https://slp.sh/abc123")).toBeNull();
+    expect(parseSleapDeepLink("sleap://delete?url=https://slp.sh/abc123/labels.slp")).toBeNull();
+    expect(parseSleapDeepLink("sleap://open?url=file:///etc/passwd")).toBeNull();
+    expect(parseSleapDeepLink("sleap://open?share=bad")).toBeNull();
+    expect(parseSleapDeepLink("not-a-url")).toBeNull();
   });
 });

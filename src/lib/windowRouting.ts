@@ -17,6 +17,7 @@
  */
 
 import { sleapCmd } from "./sleapPlugin";
+import type { OpenUrlRequest } from "./urlOpen";
 
 export type ResolveAction = "focus" | "reuse" | "new";
 
@@ -145,6 +146,52 @@ export async function openOrFocusPath(path: string): Promise<void> {
     case "newWindow": {
       const { openNewInstance } = await import("./newInstance");
       await openNewInstance({ file: path });
+      return;
+    }
+  }
+}
+
+/** Load a remote URL request into THIS window directly. */
+export async function loadUrlHere(req: OpenUrlRequest): Promise<void> {
+  const { loadProjectFromUrl } = await import("./loadProject");
+  const viewState =
+    req.videoIdx !== undefined || req.frameIdx !== undefined
+      ? { videoIdx: req.videoIdx, frameIdx: req.frameIdx }
+      : undefined;
+  await loadProjectFromUrl(req.url, {
+    displayName: req.name,
+    ticket: req.ticket,
+    viewState,
+  });
+}
+
+/**
+ * Route an incoming remote URL / `sleap://` open request (desktop only).
+ * Mirrors {@link openOrFocusPath}: focuses a window already holding that URL,
+ * loads into an empty window, or spawns a dedicated new window so an active
+ * labeling session is never clobbered.
+ */
+export async function openOrFocusUrl(req: OpenUrlRequest): Promise<void> {
+  const { getCurrentWindow } = await import("@tauri-apps/api/window");
+  const myLabel = getCurrentWindow().label;
+  const plan = planOpen(await resolveOpen(req.url, myLabel), myLabel);
+
+  switch (plan.kind) {
+    case "focus":
+      await focusWindow(plan.label);
+      return;
+    case "loadHere":
+      await loadUrlHere(req);
+      return;
+    case "loadElsewhere": {
+      const { emitTo } = await import("@tauri-apps/api/event");
+      await emitTo(plan.label, "load-url", req);
+      await focusWindow(plan.label);
+      return;
+    }
+    case "newWindow": {
+      const { openNewInstance } = await import("./newInstance");
+      await openNewInstance({ openRequest: req });
       return;
     }
   }

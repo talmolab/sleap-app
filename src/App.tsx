@@ -7,9 +7,16 @@ import { useNativeMenu } from "@/lib/menu/useNativeMenu";
 import { useWindowTitle } from "./hooks/useWindowTitle";
 import { useAppStore } from "./stores/appStore";
 import { useEnvironmentStore } from "./stores/environmentStore";
+import { useSleapShareStore } from "./stores/sleapShareStore";
 import { applyHashState, initUrlStateSync } from "./lib/urlState";
 import { loadProjectFromPath, loadProjectFromUrl } from "./lib/loadProject";
-import { readOpenParam } from "./lib/urlOpen";
+import {
+  parseSleapDeepLink,
+  readOpenRequest,
+  stripOpenParamsFromUrl,
+  type OpenUrlRequest,
+} from "./lib/urlOpen";
+import { getSleapShareBaseUrl } from "./lib/sleapShare/config";
 import { readOpenFileParam } from "./lib/windowRouting";
 import { isTauri } from "./platform";
 import { setupCloseHandler } from "./lib/quit";
@@ -35,6 +42,24 @@ async function takeInitialFile(): Promise<string | null> {
   // Prefixed for the inlined `sleap` plugin so it resolves from the
   // http://localhost origin (bundled builds) as well as the dev origin.
   return invoke<string | null>(sleapCmd("get_initial_file"));
+}
+
+// Drain (take, once) the pending `sleap://` deep-link URL slot in Rust.
+async function takeInitialUrl(): Promise<string | null> {
+  const { invoke } = await import("@tauri-apps/api/core");
+  return invoke<string | null>(sleapCmd("get_initial_url"));
+}
+
+async function openUrlRequestHere(req: OpenUrlRequest): Promise<void> {
+  const viewState =
+    req.videoIdx !== undefined || req.frameIdx !== undefined
+      ? { videoIdx: req.videoIdx, frameIdx: req.frameIdx }
+      : undefined;
+  await loadProjectFromUrl(req.url, {
+    displayName: req.name,
+    ticket: req.ticket,
+    viewState,
+  });
 }
 
 // Load `path` into THIS window directly (bypassing routing). Used for cold-start
@@ -144,12 +169,30 @@ export default function App() {
         );
         return;
       }
+      const spawnedUrl = readOpenRequest(window.location.search, window.location.hash);
+      if (spawnedUrl) {
+        window.history.replaceState(null, "", stripOpenParamsFromUrl(window.location.href));
+        await openUrlRequestHere(spawnedUrl).catch((err) =>
+          console.warn("[app] Failed to open spawned-window URL:", err)
+        );
+        return;
+      }
       const path = await takeInitialFile();
       if (path) {
         console.log("[app] Loading initial file:", path);
         await loadPathHere(path).catch((err) =>
           console.warn("[app] Failed to load initial file:", err)
         );
+        return;
+      }
+      const rawDeepLink = await takeInitialUrl();
+      if (rawDeepLink) {
+        const req = parseSleapDeepLink(rawDeepLink, getSleapShareBaseUrl());
+        if (req) {
+          await openUrlRequestHere(req).catch((err) =>
+            console.warn("[app] Failed to load initial deep-link URL:", err)
+          );
+        }
       }
     })();
   }, []);
@@ -166,20 +209,15 @@ export default function App() {
   }, []);
 
   // Browser "Open in SLEAP" deep link (issue #217): sleap-share navigates the
-  // browser to `…/?open=<encoded slp download url>`. Stream that remote .slp
-  // straight into the viewer. Desktop (sleap:// custom scheme) is a separate
-  // follow-up. Browser-only here.
+  // browser to `…/?open=<encoded slp download url>[&name=...][#v=&f=&ticket=...]`.
+  // Stream that remote .slp straight into the viewer, stripping ?open= and #ticket=
+  // from the address bar immediately while keeping #v=&f= view-state.
   useEffect(() => {
     if (isTauri) return;
-    const url = readOpenParam(window.location.search);
-    if (!url) return;
-    // Strip ?open= (it carries the access token) from the address bar so it isn't
-    // copied/bookmarked or reopened on reload. Preserves the path (incl. /dev/) and
-    // the #v=&f= view-state hash — mirrors the ?openFile= strip above.
-    const stripped = new URL(window.location.href);
-    stripped.searchParams.delete("open");
-    window.history.replaceState(null, "", stripped.toString());
-    void loadProjectFromUrl(url);
+    const req = readOpenRequest(window.location.search, window.location.hash);
+    if (!req) return;
+    window.history.replaceState(null, "", stripOpenParamsFromUrl(window.location.href));
+    void openUrlRequestHere(req);
   }, []);
 
   // macOS "Open With" / file-association while the app is ALREADY running (or
@@ -237,26 +275,94 @@ export default function App() {
     };
   }, []);
 
-  // Keep the cross-window open-file registry (Rust WindowFiles) in sync with this
-  // window's project. Seeds `null` (empty/Welcome) immediately so routing can
-  // reuse this window, then updates on every projectPath change — which covers
-  // load, Save-As (path changes), and close-to-Welcome (clears to null).
+  // Warm-start `sleap://` deep links (macOS RunEvent::Opened, Windows/Linux
+  // single-instance). Drains the Rust InitialUrl slot once and routes through
+  // openOrFocusUrl so an already-loaded project is never clobbered.
   useEffect(() => {
     if (!isTauri) return;
-    let unsub: (() => void) | undefined;
+    let active = true;
+    let unlistenOpen: (() => void) | undefined;
+    let unlistenLoad: (() => void) | undefined;
+    (async () => {
+      const { listen } = await import("@tauri-apps/api/event");
+      const fnOpen = await listen("open-url", async () => {
+        const raw = await takeInitialUrl();
+        if (!raw) return;
+        const req = parseSleapDeepLink(raw, getSleapShareBaseUrl());
+        if (!req) return;
+        const { openOrFocusUrl } = await import("./lib/windowRouting");
+        await openOrFocusUrl(req).catch((err) =>
+          console.warn("[app] Failed to route deep-link URL:", err)
+        );
+      });
+      const fnLoad = await listen<OpenUrlRequest>("load-url", async (event) => {
+        const req = event.payload;
+        if (!req?.url) return;
+        await openUrlRequestHere(req).catch((err) =>
+          console.warn("[app] Failed to load routed URL:", err)
+        );
+      });
+      if (active) {
+        unlistenOpen = fnOpen;
+        unlistenLoad = fnLoad;
+      } else {
+        fnOpen();
+        fnLoad();
+      }
+    })();
+    return () => {
+      active = false;
+      unlistenOpen?.();
+      unlistenLoad?.();
+    };
+  }, []);
+
+  // Keep activeShareSource / activeRemoteUrl aligned when the user opens a local
+  // file, Save-As's to disk, or closes back to Welcome.
+  useEffect(() => {
+    return useAppStore.subscribe(
+      (s) => `${s.projectLoaded}:${s.projectPath ?? ""}`,
+      () => {
+        const { projectPath, projectLoaded } = useAppStore.getState();
+        if (projectPath || !projectLoaded) {
+          const share = useSleapShareStore.getState();
+          if (share.activeShareSource) share.setActiveShareSource(null);
+          if (share.activeRemoteUrl) share.setActiveRemoteUrl(null);
+        }
+      },
+    );
+  }, []);
+
+  // Keep the cross-window open-file registry (Rust WindowFiles) in sync with this
+  // window's project (local file path OR active remote URL). Seeds `null`
+  // (empty/Welcome) immediately so routing can reuse this window.
+  useEffect(() => {
+    if (!isTauri) return;
+    let unsubApp: (() => void) | undefined;
+    let unsubShare: (() => void) | undefined;
     (async () => {
       const { getCurrentWindow } = await import("@tauri-apps/api/window");
       const label = getCurrentWindow().label;
       const { windowSetFile } = await import("./lib/windowRouting");
-      unsub = useAppStore.subscribe(
-        (s) => s.projectPath,
-        (projectPath) => {
-          windowSetFile(label, projectPath ?? null).catch(() => {});
-        },
-        { fireImmediately: true }
+      const sync = () => {
+        const { projectPath, projectLoaded } = useAppStore.getState();
+        const remoteUrl = useSleapShareStore.getState().activeRemoteUrl;
+        const key = projectPath ?? (projectLoaded ? remoteUrl : null);
+        windowSetFile(label, key ?? null).catch(() => {});
+      };
+      sync();
+      unsubApp = useAppStore.subscribe(
+        (s) => `${s.projectLoaded}:${s.projectPath ?? ""}`,
+        sync
       );
+      unsubShare = useSleapShareStore.subscribe((state, prev) => {
+        if (state.activeRemoteUrl !== prev.activeRemoteUrl) sync();
+      });
     })();
-    return () => unsub?.();
+    return () => {
+      unsubApp?.();
+      unsubShare?.();
+    };
   }, []);
 
   useEffect(() => {

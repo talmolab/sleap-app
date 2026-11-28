@@ -4,6 +4,7 @@ mod environment;
 mod iroh_client;
 mod mcp_bridge;
 mod rtc;
+mod sleap_share;
 mod update_channels;
 
 use std::collections::HashMap;
@@ -35,6 +36,19 @@ struct InitialFile(Mutex<Option<String>>);
 #[tauri::command]
 fn get_initial_file(state: tauri::State<InitialFile>) -> Option<String> {
     state.0.lock().unwrap().take()
+}
+
+/// Holds a `sleap://` deep-link URL passed on launch or while running, consumed once.
+struct InitialUrl(Mutex<Option<String>>);
+
+/// Returns (and consumes) the pending `sleap://` deep-link URL, if any.
+#[tauri::command]
+fn get_initial_url(state: tauri::State<InitialUrl>) -> Option<String> {
+    state.0.lock().unwrap().take()
+}
+
+fn is_sleap_deep_link(arg: &str) -> bool {
+    arg.len() >= 8 && arg[..8].eq_ignore_ascii_case("sleap://")
 }
 
 /// Read a file's raw bytes natively (`std::fs::read`), bypassing the fs plugin's
@@ -557,6 +571,9 @@ struct WindowFiles(Mutex<HashMap<String, Option<String>>>);
 /// one key. Falls back to logical `normalize_path` when the file can't be
 /// canonicalized (e.g. it no longer exists), so a key is always produced.
 fn canonical_key(path: &str) -> String {
+    if path.starts_with("http://") || path.starts_with("https://") {
+        return path.to_string();
+    }
     let p = PathBuf::from(path);
     match std::fs::canonicalize(&p) {
         Ok(c) => c.to_string_lossy().into_owned(),
@@ -666,6 +683,7 @@ fn sleap_plugin<R: tauri::Runtime>() -> tauri::plugin::TauriPlugin<R> {
             copy_file,
             remove_file,
             get_initial_file,
+            get_initial_url,
             resolve_open,
             window_set_file,
             read_image_file,
@@ -720,6 +738,12 @@ fn sleap_plugin<R: tauri::Runtime>() -> tauri::plugin::TauriPlugin<R> {
             mcp_bridge::mcp_response,
             analytics::analytics_post,
             analytics::system_info,
+            sleap_share::sleap_share_load_credentials,
+            sleap_share::sleap_share_save_credentials,
+            sleap_share::sleap_share_clear_credentials,
+            sleap_share::sleap_share_temp_path,
+            sleap_share::sleap_share_upload_file,
+            sleap_share::sleap_share_cancel_upload,
         ])
         .build()
 }
@@ -882,12 +906,12 @@ pub fn run() {
   // (impossible this early, but harmless either way) -- never a fatal state.
   let _ = rustls::crypto::ring::default_provider().install_default();
 
-  // Extract the first non-flag argument as a file path to open on launch.
-  // Resolve to absolute path so the frontend FS plugin can read it.
-  let file_arg = std::env::args()
-      .skip(1)
-      .find(|a| !a.starts_with('-'))
-      .map(|p| {
+  // Extract the first non-flag argument as either a `sleap://` deep link or a
+  // local file path to open on launch.
+  let first_arg = std::env::args().skip(1).find(|a| !a.starts_with('-'));
+  let (file_arg, url_arg) = match first_arg {
+      Some(arg) if is_sleap_deep_link(&arg) => (None, Some(arg)),
+      Some(p) => {
           let path = PathBuf::from(&p);
           let abs = if path.is_relative() {
               std::env::current_dir()
@@ -899,10 +923,11 @@ pub fn run() {
           // Normalize to remove .. segments (Tauri FS plugin rejects them).
           // We use logical normalization instead of canonicalize() because
           // canonicalize() fails if the file doesn't exist.
-          normalize_path(abs)
-      })
-      .map(|p| p.to_string_lossy().into_owned());
-  println!("[sleap-label] file_arg: {:?}", file_arg);
+          (Some(normalize_path(abs).to_string_lossy().into_owned()), None)
+      }
+      None => (None, None),
+  };
+  println!("[sleap-label] file_arg: {:?}, url_arg: {:?}", file_arg, url_arg.as_deref().map(|_| "<sleap://...>"));
 
   // SPIKE (spike/tauri-localhost-origin): serve the frontend over http://localhost
   // for any BUNDLED build so WKWebView grants crossOriginIsolated (→ SharedArrayBuffer
@@ -927,8 +952,44 @@ pub fn run() {
   // when unused (tauri:// / dev).
   let localhost_port = if use_localhost { resolve_localhost_port() } else { 0 };
 
-  let mut builder = tauri::Builder::default()
+  let mut builder = tauri::Builder::default();
+
+  // Windows & Linux deliver `sleap://` deep links and file opens by launching a
+  // second process with the URL/path in argv. Forward them to the running
+  // instance via single-instance so an existing session handles routing cleanly.
+  #[cfg(any(target_os = "windows", target_os = "linux"))]
+  {
+    use tauri::{Emitter, Manager};
+    builder = builder.plugin(tauri_plugin_single_instance::init(|app, argv, cwd| {
+      if let Some(arg) = argv.into_iter().skip(1).find(|a| !a.starts_with('-')) {
+        if is_sleap_deep_link(&arg) {
+          *app.state::<InitialUrl>().0.lock().unwrap() = Some(arg);
+          let _ = app.emit("open-url", ());
+          return;
+        }
+        let path = PathBuf::from(&arg);
+        let abs = if path.is_relative() {
+          PathBuf::from(cwd).join(&path)
+        } else {
+          path
+        };
+        let normalized = normalize_path(abs).to_string_lossy().into_owned();
+        *app.state::<InitialFile>().0.lock().unwrap() = Some(normalized);
+        let _ = app.emit("open-file", ());
+        return;
+      }
+      if let Some(win) = app.get_webview_window("main") {
+        let _ = win.unminimize();
+        let _ = win.show();
+        let _ = win.set_focus();
+      }
+    }));
+  }
+
+  builder = builder
     .manage(InitialFile(Mutex::new(file_arg)))
+    .manage(InitialUrl(Mutex::new(url_arg)))
+    .manage(sleap_share::SleapShareUploads::default())
     .manage(RunningProcess(Mutex::new(None)))
     .manage(ZmqRelay(Mutex::new(None)))
     .manage(ProgressRelay(Mutex::new(None)))
@@ -971,6 +1032,7 @@ pub fn run() {
     .plugin(tauri_plugin_shell::init())
     .plugin(tauri_plugin_updater::Builder::new().build())
     .plugin(tauri_plugin_process::init())
+    .plugin(tauri_plugin_deep_link::init())
     // SPIKE (spike/tauri-localhost-origin): expose read_range + file_size as an INLINED
     // plugin so they're reachable from the http://localhost (remote) origin — bare custom
     // commands are blocked there (see build.rs). Command names become
@@ -1124,7 +1186,15 @@ pub fn run() {
     {
       use tauri::Emitter;
       if let tauri::RunEvent::Opened { urls } = _event {
-        if let Some(path) = urls
+        if let Some(deep_link) = urls
+          .iter()
+          .find(|u| u.scheme().eq_ignore_ascii_case("sleap"))
+          .map(|u| u.as_str().to_string())
+        {
+          println!("[sleap-label] opened deep link (sleap://...)");
+          *_app_handle.state::<InitialUrl>().0.lock().unwrap() = Some(deep_link);
+          let _ = _app_handle.emit("open-url", ());
+        } else if let Some(path) = urls
           .iter()
           .filter_map(|u| u.to_file_path().ok())
           .next()
@@ -1274,5 +1344,13 @@ mod tests {
             .into_owned();
         assert_eq!(canonical_key(&direct), canonical_key(&dotted));
         let _ = std::fs::remove_file(&file);
+    }
+
+    #[test]
+    fn canonical_key_preserves_http_urls() {
+        let u = "https://slp.sh/abc123/labels.slp";
+        assert_eq!(canonical_key(u), u);
+        let local = "http://127.0.0.1:8787/abc123/labels.slp";
+        assert_eq!(canonical_key(local), local);
     }
 }
