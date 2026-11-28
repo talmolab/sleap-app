@@ -26,7 +26,9 @@ import {
 } from "@/lib/slpFormat";
 import {
   applyPointState,
+  getPointState,
   hasPointCoords,
+  nextCyclePointState,
   POINT_STATES,
   type PointState,
 } from "@/lib/pointState";
@@ -843,16 +845,21 @@ export const BeginEdit: Command = {
 };
 
 /**
- * Toggle node visibility on the current frame (V key, right-click, context
- * menu). Every toggle path goes through here so each one is undoable.
+ * Cycle node supervision state on the current frame (V key, right-click,
+ * context menu): `visible` (supervise present) → `occluded` (supervise absent)
+ * → `unlabeled` (don't supervise) → `visible`.
+ *
+ * Every toggle path goes through here so each one is undoable and keeps the
+ * incremental autosave's per-frame fast path.
  *
  * Params:
  *   nodes: { instanceIdx: number; nodeIdx: number }[] - indices into the
  *     current labeled frame's instances and that instance's points.
  *
- * A single node flips. Several nodes all move to one state — visible unless
- * more than half already are — so a mixed selection converges instead of
- * every node flipping independently.
+ * A single placed node (or a uniform multi-node selection) advances to the next
+ * state in the 3-state cycle. A mixed multi-node selection converges to a
+ * single state — `visible` unless more than half already are, otherwise
+ * `occluded` — so subsequent presses cycle them in lockstep.
  */
 export const ToggleNodeVisibility: Command = {
   name: "ToggleNodeVisibility",
@@ -871,12 +878,19 @@ export const ToggleNodeVisibility: Command = {
       .filter((p): p is NonNullable<typeof p> => p !== undefined && hasPointCoords(p));
     if (points.length === 0) return;
 
-    const visibleCount = points.filter((p) => p.visible).length;
-    const makeVisible = visibleCount <= points.length / 2;
+    const states = points.map(getPointState);
+    const firstState = states[0];
+    const allSame = states.every((s) => s === firstState);
+    let targetState: PointState;
+    if (allSame) {
+      targetState = nextCyclePointState(firstState);
+    } else {
+      const visibleCount = states.filter((s) => s === "visible").length;
+      targetState = visibleCount <= points.length / 2 ? "visible" : "occluded";
+    }
+
     for (const point of points) {
-      point.visible = makeVisible;
-      // Showing a node labels it (a visible node is always labelled).
-      if (makeVisible) markPointLabeled(point);
+      applyPointState(point, targetState);
     }
 
     ctx.state.markChanged();
@@ -894,7 +908,8 @@ export const ToggleNodeVisibility: Command = {
  *     current labeled frame (predicted instances are skipped).
  *   state: PointState - target state. `"visible"` and `"occluded"` require
  *     finite coordinates; `"absent"` clears coords with `labeled = true`;
- *     `"unlabeled"` clears coords with `labeled = false`.
+ *     `"unlabeled"` sets `labeled = false` while preserving finite coordinates
+ *     in memory so the node remains interactive on the canvas.
  */
 export const SetPointState: Command = {
   name: "SetPointState",

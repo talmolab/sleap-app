@@ -468,12 +468,14 @@ function NodeStateControl({
 
   const title =
     state === "occluded"
-      ? `Occluded at ${x.toFixed(1)}, ${y.toFixed(1)}`
+      ? `Occluded at ${x.toFixed(1)}, ${y.toFixed(1)} (supervise absent)`
       : state === "unlabeled"
-        ? "Unlabeled (not annotated — ignored in training)"
+        ? placed
+          ? `Unlabeled at ${x.toFixed(1)}, ${y.toFixed(1)} (don't supervise)`
+          : "Unlabeled (don't supervise — no position)"
         : state === "absent"
-          ? "Absent (marked absent with no position)"
-          : `Visible at ${x.toFixed(1)}, ${y.toFixed(1)}`;
+          ? "Absent (supervise absent — no position)"
+          : `Visible at ${x.toFixed(1)}, ${y.toFixed(1)} (supervise present)`;
 
   if (!editable) {
     return (
@@ -539,6 +541,7 @@ function NodeStateControl({
         <button
           type="button"
           disabled={!placed}
+          title="Supervise present"
           onClick={() => applyState("visible")}
           className={cn(
             "flex w-full items-center justify-between rounded-sm px-2 py-1 text-left text-xs",
@@ -547,12 +550,18 @@ function NodeStateControl({
               : "cursor-not-allowed text-muted-foreground opacity-40",
           )}
         >
-          <span className="text-green-500">Visible</span>
-          {state === "visible" && <Check className="h-3 w-3" />}
+          <span className="flex flex-col items-start leading-tight">
+            <span className="text-green-500">Visible</span>
+            <span className="text-[10px] text-muted-foreground/70" aria-hidden="true">
+              supervise present
+            </span>
+          </span>
+          {state === "visible" && <Check className="h-3 w-3 shrink-0" />}
         </button>
         <button
           type="button"
           disabled={!placed}
+          title="Supervise absent (keep position)"
           onClick={() => applyState("occluded")}
           className={cn(
             "flex w-full items-center justify-between rounded-sm px-2 py-1 text-left text-xs",
@@ -561,24 +570,41 @@ function NodeStateControl({
               : "cursor-not-allowed text-muted-foreground opacity-40",
           )}
         >
-          <span className="text-amber-500">Occluded (hidden)</span>
-          {state === "occluded" && <Check className="h-3 w-3" />}
+          <span className="flex flex-col items-start leading-tight">
+            <span className="text-amber-500">Occluded</span>
+            <span className="text-[10px] text-muted-foreground/70" aria-hidden="true">
+              supervise absent
+            </span>
+          </span>
+          {state === "occluded" && <Check className="h-3 w-3 shrink-0" />}
         </button>
         <button
           type="button"
-          onClick={() => applyState("absent")}
-          className="flex w-full items-center justify-between rounded-sm px-2 py-1 text-left text-xs hover:bg-accent hover:text-accent-foreground"
-        >
-          <span className="text-red-500">Absent</span>
-          {state === "absent" && <Check className="h-3 w-3" />}
-        </button>
-        <button
-          type="button"
+          title="Don't supervise (ignored in training)"
           onClick={() => applyState("unlabeled")}
           className="flex w-full items-center justify-between rounded-sm px-2 py-1 text-left text-xs hover:bg-accent hover:text-accent-foreground"
         >
-          <span className="italic text-muted-foreground">Unlabeled</span>
-          {state === "unlabeled" && <Check className="h-3 w-3" />}
+          <span className="flex flex-col items-start leading-tight">
+            <span className="italic text-muted-foreground">Unlabeled</span>
+            <span className="text-[10px] text-muted-foreground/70" aria-hidden="true">
+              don&apos;t supervise
+            </span>
+          </span>
+          {state === "unlabeled" && <Check className="h-3 w-3 shrink-0" />}
+        </button>
+        <button
+          type="button"
+          title="Supervise absent (clear position)"
+          onClick={() => applyState("absent")}
+          className="flex w-full items-center justify-between rounded-sm px-2 py-1 text-left text-xs hover:bg-accent hover:text-accent-foreground"
+        >
+          <span className="flex flex-col items-start leading-tight">
+            <span className="text-red-500">Absent</span>
+            <span className="text-[10px] text-muted-foreground/70" aria-hidden="true">
+              clear position
+            </span>
+          </span>
+          {state === "absent" && <Check className="h-3 w-3 shrink-0" />}
         </button>
       </PopoverContent>
     </Popover>
