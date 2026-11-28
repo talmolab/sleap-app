@@ -5,7 +5,7 @@ import { preferredTransport } from "@/lib/protocolV1/pairingPlan";
 import { irohTransportAvailable, transportLabel, type TransportKind } from "@/lib/protocolV1/transport";
 import { useConnectStore } from "@/stores/connectStore";
 import { useAppStore } from "@/stores/appStore";
-import { PairWorkerForm } from "@/components/connect/PairWorkerForm";
+import { PairWorkerForm, WorkerQuickStart } from "@/components/connect/PairWorkerForm";
 import { forgetWorkerWithConfirm } from "@/components/connect/forgetWorker";
 
 export function ConnectPanel() {
@@ -188,6 +188,8 @@ export function ConnectPanel() {
           showCancel={pairedWorkers.length > 0}
         />
       )}
+
+      <WorkerQuickStart />
 
       {deviceId && (
         <p className="text-[9px] text-muted-foreground/70 font-mono truncate pt-1">

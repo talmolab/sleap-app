@@ -112,14 +112,17 @@ export function StatusBar() {
     document.documentElement.style.setProperty("--ui-scale", "1");
   };
 
+  const hasProject = Boolean(filename || labels);
+  const projectLabel = filename || "Unsaved project";
+
   return (
     <div className="flex items-center h-7 px-2 text-xs bg-card border-t border-border text-muted-foreground gap-2 shrink-0">
       {/* Left: project info */}
       <div className="flex items-center gap-2 flex-1 min-w-0 select-text">
-        {filename ? (
+        {hasProject ? (
           <>
             <span className="text-foreground truncate">
-              {filename}
+              {projectLabel}
               {hasChanges ? " *" : ""}
             </span>
             {/* Video index / total. Gate on a valid (>=0) index so a broken/
@@ -219,7 +222,7 @@ export function StatusBar() {
       {/* Right: format status pill, platform indicator, interaction mode + UI scale controls */}
       <TooltipProvider delayDuration={300}>
         <div className="flex items-center gap-0.5 shrink-0">
-          {filename && formatStatus && (
+          {hasProject && formatStatus && (
             <>
               <Popover open={formatPopoverOpen} onOpenChange={setFormatPopoverOpen}>
                 <PopoverTrigger asChild>
@@ -253,7 +256,9 @@ export function StatusBar() {
                       {formatStatus.viewOnly
                         ? "Opened View only. Nothing is written until you allow editing."
                         : formatStatus.pendingUpgradeFromV2
-                          ? "Opened from SLP 2.x; saving will upgrade this project to SLP 3.0."
+                          ? filename
+                            ? "Opened from SLP 2.x; saving will upgrade this project to SLP 3.0."
+                            : "Saving will use SLP format 3.0."
                           : formatStatus.willWriteFormat3
                             ? "Project saves in SLP format 3.0."
                             : "Project saves in the SLP 2.x layout."}

@@ -24,11 +24,14 @@
  * queue bumps `refreshToken` so the Jobs tab catches up right away.
  */
 import { useEffect, useRef, useState } from "react";
-import { RefreshCw, Trash2, X } from "lucide-react";
+import { BookOpen, RefreshCw, Trash2, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogClose, DialogContent, DialogDescription, DialogTitle } from "@/components/ui/dialog";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { useDocsUrl } from "@/lib/docsUrl";
+import { openExternal } from "@/lib/openExternal";
 import { useConnectStore } from "@/stores/connectStore";
+import { remoteComputeDocsUrl, WorkerQuickStart } from "./PairWorkerForm";
 import { WorkerList } from "./WorkerList";
 import { WorkerJobs } from "./WorkerJobs";
 import { WorkerDataAccess } from "./WorkerDataAccess";
@@ -44,6 +47,8 @@ export interface ConnectDialogProps {
 type WorkerTab = "jobs" | "data";
 
 export function ConnectDialog({ open, onOpenChange }: ConnectDialogProps) {
+  const docsUrl = useDocsUrl();
+  const docsHref = remoteComputeDocsUrl(docsUrl);
   const pairedWorkers = useConnectStore((s) => s.pairedWorkers);
   const activeSelectedWorkerId = useConnectStore((s) => s.selectedWorkerId);
   const refreshWorkerInfo = useConnectStore((s) => s.refreshWorkerInfo);
@@ -117,16 +122,38 @@ export function ConnectDialog({ open, onOpenChange }: ConnectDialogProps) {
           <DialogDescription className="text-xs text-muted-foreground mt-0">
             Your workers and the jobs on them
           </DialogDescription>
-          <Button
-            variant="ghost"
-            size="xs"
-            className="ml-auto text-xs"
-            disabled={refreshing}
-            onClick={() => void handleRefresh()}
-          >
-            <RefreshCw className={refreshing ? "animate-spin" : undefined} />
-            Refresh
-          </Button>
+          <div className="ml-auto flex items-center gap-1">
+            <Button
+              variant="ghost"
+              size="xs"
+              className="text-xs"
+              asChild
+            >
+              <a
+                href={docsHref}
+                target="_blank"
+                rel="noopener noreferrer"
+                title="Open Remote Compute documentation"
+                onClick={(e) => {
+                  e.preventDefault();
+                  void openExternal(docsHref);
+                }}
+              >
+                <BookOpen className="h-3.5 w-3.5" />
+                Docs
+              </a>
+            </Button>
+            <Button
+              variant="ghost"
+              size="xs"
+              className="text-xs"
+              disabled={refreshing}
+              onClick={() => void handleRefresh()}
+            >
+              <RefreshCw className={refreshing ? "animate-spin" : undefined} />
+              Refresh
+            </Button>
+          </div>
           <DialogClose asChild>
             <Button variant="ghost" size="icon-xs" aria-label="Close">
               <X className="h-4 w-4" />
@@ -201,8 +228,11 @@ export function ConnectDialog({ open, onOpenChange }: ConnectDialogProps) {
                 </div>
               </>
             ) : (
-              <div className="flex-1 flex items-center justify-center text-xs text-muted-foreground p-4 text-center">
-                Pair a worker to see its jobs here.
+              <div className="flex-1 flex flex-col items-center justify-center gap-3 p-6 text-center">
+                <p className="text-xs text-muted-foreground">
+                  Pair a worker to see its jobs here.
+                </p>
+                <WorkerQuickStart className="w-full max-w-md" />
               </div>
             )}
           </div>
