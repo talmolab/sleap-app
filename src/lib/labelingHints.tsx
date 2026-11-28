@@ -29,7 +29,7 @@
  * `components/video/VideoPlayer.tsx`) — NOT from a continuous per-frame
  * check — so a still-true condition doesn't reopen a toast on every render.
  *
- * Gating (#341): the "Show Hints During Labeling" setting (Labels menu /
+ * Gating (#341): the "Show Hints During Labeling" setting (Help menu /
  * Welcome screen, default on, persisted as `showLabelingHints`) is the ONLY
  * PERSISTED gate — there is deliberately no per-hint "seen it, never again"
  * tracking in storage. (An earlier version permanently silenced a hint on

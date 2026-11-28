@@ -35,29 +35,9 @@ const BASE: MenuSnapshot = {
   qcDisplayMode: "all",
   showLabels: true,
   showEdges: true,
-  showBboxes: true,
-  showCentroids: true,
-  showPoseBboxes: false,
   bboxDrawMode: false,
-  showCrosshair: true,
   showInset: true,
-  temporalLoupe: false,
-  edgeStyle: "Line",
-  markerSize: 4,
-  poseOpacity: 100,
-  nodeLabelSize: 10,
-  trailLength: 0,
-  trailNode: "centroid",
-  trailNodeOptions: ["head", "tail"],
-  trailAlpha: 1,
-  trailFade: true,
-  trailWidth: 4,
-  boldLines: false,
-  showMeanNodeScore: false,
-  palette: "standard",
-  distinctlyColor: "auto",
   colorPredicted: false,
-  showTrackScore: false,
   scrubProxyEnabled: false,
   hiddenPanels: [],
   instanceInitMethod: "best",
@@ -88,11 +68,84 @@ const find = (menu: AppMenu, id: string) => all(menu).find((n) => "id" in n && n
 const top = (menu: AppMenu, id: string) => menu.find((t) => t.id === id) as TopMenu;
 
 describe("buildAppMenu", () => {
-  it("has PyQt SLEAP's menus in its order, with Connect and Start Tutorial as buttons", () => {
+  it("has PyQt SLEAP's menus in order, without top-level Connect or Start Tutorial buttons", () => {
     expect(buildAppMenu(BASE).map((t) => t.label)).toEqual([
-      "File", "Go", "View", "Labels", "Analyze", "Tracks", "Predict",
-      "Connect", "Start Tutorial", "Help",
+      "File", "Go", "View", "Labels", "Analyze", "Tracks", "Predict", "Help",
     ]);
+    expect(buildAppMenu(BASE).every((t) => t.kind === "menu")).toBe(true);
+  });
+
+  it("puts Documentation at the top of Help, with Start Tutorial and Show Hints During Labeling in Help", async () => {
+    const menu = buildAppMenu(BASE);
+    const helpItems = top(menu, "help").items;
+    const helpIds = helpItems.flatMap((n) => ("id" in n ? [n.id] : []));
+    expect(helpItems[0]).toMatchObject({ kind: "item", id: "help.docs", label: "Documentation" });
+    expect(helpIds.slice(0, 4)).toEqual([
+      "help.docs",
+      "help.tutorial",
+      "help.labelingTips",
+      "help.hints",
+    ]);
+    expect(find(menu, "help.tutorial")).toMatchObject({ kind: "item", label: "Start Tutorial" });
+    expect(find(menu, "help.hints")).toMatchObject({
+      kind: "check",
+      label: "Show Hints During Labeling",
+      checked: true,
+    });
+    expect(find(menu, "labels.hints")).toBeUndefined();
+
+    // Toggling Help ▸ Show Hints During Labeling flips store.showLabelingHints.
+    const { useAppStore } = await import("@/stores/appStore");
+    useAppStore.setState({ showLabelingHints: true });
+    await (find(menu, "help.hints") as { run: () => void }).run();
+    expect(useAppStore.getState().showLabelingHints).toBe(false);
+  });
+
+  it("streamlines the View menu with an Open View Panel shortcut at the top", async () => {
+    const menu = buildAppMenu(BASE);
+    const viewItems = top(menu, "view").items;
+    expect(viewItems[0]).toMatchObject({
+      kind: "item",
+      id: "view.openPanel",
+      label: "Open View Panel",
+    });
+
+    // Heavy styling/color/trail controls now live in the View panel instead of View menu.
+    for (const movedId of [
+      "view.edgeStyle",
+      "view.boldLines",
+      "view.markerSize",
+      "view.poseOpacity",
+      "view.nodeLabelSize",
+      "view.trailLength",
+      "view.trailNode",
+      "view.trailFade",
+      "view.trailAlpha",
+      "view.trailWidth",
+      "view.palette",
+      "view.distinctlyColor",
+      "view.trackScores",
+      "view.showMeanNodeScore",
+      "view.showBboxes",
+      "view.showCentroids",
+      "view.showPoseBboxes",
+      "view.crosshair",
+      "view.temporalLoupe",
+    ]) {
+      expect(find(menu, movedId)).toBeUndefined();
+    }
+
+    // Clicking Open View Panel opens (and unhides) the View sidebar panel.
+    const { useAppStore } = await import("@/stores/appStore");
+    useAppStore.setState({
+      sidebarCollapsed: true,
+      sidebarOpenPanels: ["videos"],
+      hiddenPanels: ["view"],
+    });
+    await (find(menu, "view.openPanel") as { run: () => void }).run();
+    expect(useAppStore.getState().sidebarCollapsed).toBe(false);
+    expect(useAppStore.getState().hiddenPanels).not.toContain("view");
+    expect(useAppStore.getState().sidebarOpenPanels).toContain("view");
   });
 
   it("imports predictions through File ▸ Merge into Project, as legacy SLEAP does (no Predict item)", () => {
@@ -189,20 +242,22 @@ describe("searchableCommands", () => {
   });
 
   it("lists each radio choice, marking the current one", () => {
-    const wedge = cmds.find((c) => c.label === "Edge Style: Wedge");
-    const line = cmds.find((c) => c.label === "Edge Style: Line");
-    expect(wedge?.checked).toBe(false);
-    expect(line?.checked).toBe(true);
+    const template = cmds.find((c) => c.label === "Instance Placement Method: Template");
+    const best = cmds.find((c) => c.label === "Instance Placement Method: Best");
+    expect(template?.checked).toBe(false);
+    expect(best?.checked).toBe(true);
   });
 
-  it("includes every menu, the top-level buttons, and the dynamic lists", () => {
+  it("includes every menu, Help items, View Panel shortcut, and the dynamic lists", () => {
     expect(new Set(cmds.map((c) => c.group))).toEqual(
       new Set(["File", "Go", "View", "Labels", "Analyze", "Tracks", "Predict", "Help"]),
     );
     expect(labels).toContain("Predict: Connect (Remote Training / Inference)");
-    // Listed once (the in-window Connect button isn't a second entry).
     expect(labels.filter((l) => l.startsWith("Predict: Connect"))).toHaveLength(1);
+    expect(labels).toContain("Help: Documentation");
     expect(labels).toContain("Help: Start Tutorial");
+    expect(labels).toContain("Help: Show Hints During Labeling");
+    expect(labels).toContain("View: Open View Panel");
     expect(labels).toContain("Tracks: Delete Track › mouse2");
   });
 
@@ -300,9 +355,8 @@ describe("menu usage counting", () => {
       await (find(menu, "view.showLabels") as { run: () => void }).run();
       // Search Menus runs the same nodes, so it is counted too.
       await searchableCommands(menu).find((c) => c.id === "help.labelingTips")?.run();
-      // A top-level button.
-      await (menu.find((t) => t.id === "connect") as { run: () => void }).run();
-      expect(counted).toEqual(["m:help.shortcuts", "m:view.showLabels", "m:help.labelingTips", "m:connect"]);
+      await (find(menu, "view.openPanel") as { run: () => void }).run();
+      expect(counted).toEqual(["m:help.shortcuts", "m:view.showLabels", "m:help.labelingTips", "m:view.openPanel"]);
     } finally {
       setAnalyticsClient(null);
     }

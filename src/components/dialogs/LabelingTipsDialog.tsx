@@ -197,9 +197,9 @@ export function LabelingTipsDialog({ open, onOpenChange }: LabelingTipsDialogPro
 
           <p className="text-xs text-muted-foreground/70 pt-1 border-t border-border">
             These same tips also show up as contextual "<Lightbulb className="inline h-3 w-3 align-[-2px]" /> Tip" toasts while
-            you label — see <strong>Labels → Show Hints During Labeling</strong>{" "}
-            to turn them on or off. For the full guided walkthrough, click{" "}
-            <strong>Start Tutorial</strong> in the menu bar, or see{" "}
+            you label — see <strong>Help → Show Hints During Labeling</strong>{" "}
+            to turn them on or off. For the full guided walkthrough, choose{" "}
+            <strong>Help → Start Tutorial</strong>, or see{" "}
             <a
               href={docsUrl}
               target="_blank"

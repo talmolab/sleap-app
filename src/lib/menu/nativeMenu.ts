@@ -152,13 +152,11 @@ function convert(nodes: MenuNode[]): NativeNode[] {
 }
 
 /**
- * The in-window bar's top-level buttons, as items in a menu (native only).
- * Connect has no entry: Predict ▸ Connect (Remote Training / Inference)… is
- * already in the menus.
+ * Optional mapping for any top-level `TopAction` buttons into a native menu.
+ * Currently unused: Start Tutorial lives directly in Help and Connect lives in
+ * Predict, so both appear in their native menus without extra injection.
  */
-const ACTION_HOMES: Record<string, { menu: string; position: "start" | "end" }> = {
-  tutorial: { menu: "help", position: "start" },
-};
+const ACTION_HOMES: Record<string, { menu: string; position: "start" | "end" }> = {};
 
 export function toNativeSpec(menu: AppMenu): NativeMenuSpec {
   const tops = menu.filter((t): t is TopMenu => t.kind === "menu");

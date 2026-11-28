@@ -8,6 +8,7 @@ import type { ReactNode } from "react";
 import { isTauri } from "../../lib/platform";
 import { APP_VERSION, APP_VERSION_KIND_LABEL } from "@/lib/version";
 import { formatShortcut } from "@/lib/formatShortcut";
+import { cn } from "@/lib/utils";
 import { useAppMenu } from "@/lib/menu/useAppMenu";
 import type { MenuNode, TopMenu } from "@/lib/menu/types";
 import {
@@ -32,7 +33,7 @@ export function MenuBar() {
   const menu = useAppMenu();
   return (
     <Menubar
-      className={`h-8 rounded-none border-0 border-b border-border bg-card pr-0 gap-0 shadow-none ${
+      className={`h-8 py-0 rounded-none border-0 border-b border-border bg-card pr-0 gap-0 shadow-none ${
         // Web deployments have no OS title bar to carry the app's identity, so
         // show a SLEAP icon + wordmark on the left. The desktop (Tauri) build
         // already has a native title bar showing "SLEAP", so it's hidden there
@@ -71,7 +72,7 @@ export function MenuBar() {
             key={top.id}
             variant="ghost"
             size="sm"
-            className="h-8 rounded-none px-3 text-xs font-normal"
+            className="h-full rounded-none px-3 text-xs font-normal"
             onClick={() => void top.run()}
           >
             {top.label}
@@ -88,19 +89,21 @@ function TopMenuView({ menu }: { menu: TopMenu }) {
   return (
     <MenubarMenu>
       <MenubarTrigger
-        className="px-3 h-8 text-xs rounded-none"
+        className="px-3 h-full text-xs rounded-none"
         data-tutorial={menu.tutorialId}
       >
         {menu.label}
       </MenubarTrigger>
       <MenubarContent
-        className={
-          // Long menus (View) are capped to the viewport and scroll so items
+        sideOffset={0}
+        alignOffset={0}
+        className={cn(
+          "rounded-t-none",
+          // Long menus are capped to the viewport and scroll so items
           // near the bottom stay reachable on short screens.
-          menu.scroll
-            ? "max-h-(--radix-menubar-content-available-height) overflow-x-hidden overflow-y-auto"
-            : undefined
-        }
+          menu.scroll &&
+            "max-h-(--radix-menubar-content-available-height) overflow-x-hidden overflow-y-auto",
+        )}
       >
         <Nodes nodes={menu.items} />
       </MenubarContent>
@@ -109,8 +112,8 @@ function TopMenuView({ menu }: { menu: TopMenu }) {
 }
 
 function Shortcut({ binding, hint }: { binding?: string; hint?: string }) {
-  if (binding) return <MenubarShortcut>{formatShortcut(binding)}</MenubarShortcut>;
-  if (hint) return <MenubarShortcut className="text-xs opacity-60">{hint}</MenubarShortcut>;
+  if (binding) return <MenubarShortcut className="pl-4 text-xs">{formatShortcut(binding)}</MenubarShortcut>;
+  if (hint) return <MenubarShortcut className="pl-4 text-xs opacity-60">{hint}</MenubarShortcut>;
   return null;
 }
 
@@ -124,13 +127,14 @@ function NodeView({ node }: { node: MenuNode }): ReactNode {
       return <MenubarSeparator />;
     case "label":
       return (
-        <MenubarLabel className="text-xs text-muted-foreground font-normal">
+        <MenubarLabel className="py-1 text-xs text-muted-foreground font-normal">
           {node.text}
         </MenubarLabel>
       );
     case "item":
       return (
         <MenubarItem
+          className="py-1 text-xs"
           disabled={node.enabled === false}
           title={node.title}
           onClick={() => void node.run()}
@@ -141,6 +145,7 @@ function NodeView({ node }: { node: MenuNode }): ReactNode {
     case "check":
       return (
         <MenubarCheckboxItem
+          className="py-1 pl-7 pr-2 text-xs [&_svg]:size-3.5"
           checked={node.checked}
           disabled={node.enabled === false}
           title={node.title}
@@ -154,7 +159,12 @@ function NodeView({ node }: { node: MenuNode }): ReactNode {
       return (
         <MenubarRadioGroup value={node.value} onValueChange={node.select}>
           {node.options.map((o) => (
-            <MenubarRadioItem key={o.value} value={o.value} disabled={o.enabled === false}>
+            <MenubarRadioItem
+              key={o.value}
+              value={o.value}
+              className="py-1 pl-7 pr-2 text-xs"
+              disabled={o.enabled === false}
+            >
               {o.label}
             </MenubarRadioItem>
           ))}
@@ -163,7 +173,9 @@ function NodeView({ node }: { node: MenuNode }): ReactNode {
     case "submenu":
       return (
         <MenubarSub>
-          <MenubarSubTrigger disabled={node.enabled === false}>{node.label}</MenubarSubTrigger>
+          <MenubarSubTrigger className="py-1 text-xs [&_svg]:size-3.5" disabled={node.enabled === false}>
+            {node.label}
+          </MenubarSubTrigger>
           <MenubarSubContent>
             {node.scroll ? (
               // Bounded, scrollable so long lists (many videos or tracks)
