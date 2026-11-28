@@ -159,7 +159,7 @@ export function WelcomeScreen() {
           </div>
         )}
 
-                {drafts.length > 0 && (
+        {drafts.length > 0 && (
           <UnsavedWorkDropdown
             drafts={drafts}
             loading={loading}
@@ -168,49 +168,19 @@ export function WelcomeScreen() {
           />
         )}
 
-        <div className="flex items-center gap-3">
-          {/* One-time "new to SLEAP?" prompt (#341), off to the side rather
-              than stacked in-line — sets the default for the contextual
-              labeling hints. Answering either way (or dismissing) marks it
-              seen so it never asks again. Shown once, ever. */}
-          {!hasSeenLabelingHintsPrompt && (
-            <div className="w-52 rounded-lg border border-border/60 bg-card/70 backdrop-blur-sm px-3 py-2.5 shadow-md">
-              <div className="flex items-start justify-between gap-2">
-                <span className="text-xs font-medium text-foreground/90">
-                  New to SLEAP?
-                </span>
-                <button
-                  type="button"
-                  aria-label="Dismiss"
-                  className="text-xs leading-none text-muted-foreground hover:text-foreground"
-                  onClick={() =>
-                    useAppStore.getState().set("hasSeenLabelingHintsPrompt", true)
-                  }
-                >
-                  ✕
-                </button>
-              </div>
-              <p className="mt-1 text-[11px] leading-snug text-muted-foreground">
-                Show gentle tips for common labeling pitfalls as you go?
-              </p>
-              <div className="mt-2 flex gap-1.5">
-                <Button size="xs" onClick={() => answerLabelingHintsPrompt(true)}>
-                  Yes
-                </Button>
-                <Button
-                  size="xs"
-                  variant="outline"
-                  onClick={() => answerLabelingHintsPrompt(false)}
-                >
-                  No
-                </Button>
-              </div>
-            </div>
-          )}
-
+        {/* Anchor the New/Open card dead-center (aligned with the logo in
+            background.jpg). On normal viewports (>=920px) the one-time
+            "New to SLEAP?" prompt sits out of normal flow further to the left
+            so showing or dismissing it never pushes the main card off-center;
+            on narrow viewports (<920px) it falls back to stacking cleanly
+            below the main card so it never clips off the left edge. */}
+        <div className="relative flex flex-col items-center gap-3">
           {/* Compact popup: New + Open (with a Connect dropdown), in two equal
               columns so New Project matches the whole split button. */}
-          <div className="grid grid-cols-2 items-center gap-3 rounded-xl border border-border bg-card/95 backdrop-blur-sm px-4 py-3 shadow-lg">
+          <div
+            data-testid="welcome-main-card"
+            className="grid grid-cols-2 items-center gap-3 rounded-xl border border-border bg-card/95 backdrop-blur-sm px-4 py-3 shadow-lg"
+          >
             <Button
               onClick={() => useAppStore.getState().setNewProjectDialogOpen(true)}
               size="lg"
@@ -253,6 +223,48 @@ export function WelcomeScreen() {
               </DropdownMenu>
             </div>
           </div>
+
+          {/* One-time "new to SLEAP?" prompt (#341), positioned out of flow to
+              the left on normal viewports — sets the default for the contextual
+              labeling hints. Answering either way (or dismissing) marks it
+              seen so it never asks again. Shown once, ever. */}
+          {!hasSeenLabelingHintsPrompt && (
+            <div
+              data-testid="welcome-hints-prompt"
+              className="w-52 rounded-lg border border-border/60 bg-card/70 backdrop-blur-sm px-3 py-2.5 shadow-md min-[920px]:absolute min-[920px]:right-full min-[920px]:top-1/2 min-[920px]:-translate-y-1/2 min-[920px]:mr-8 lg:mr-12 xl:mr-16"
+            >
+              <div className="flex items-start justify-between gap-2">
+                <span className="text-xs font-medium text-foreground/90">
+                  New to SLEAP?
+                </span>
+                <button
+                  type="button"
+                  aria-label="Dismiss"
+                  className="text-xs leading-none text-muted-foreground hover:text-foreground"
+                  onClick={() =>
+                    useAppStore.getState().set("hasSeenLabelingHintsPrompt", true)
+                  }
+                >
+                  ✕
+                </button>
+              </div>
+              <p className="mt-1 text-[11px] leading-snug text-muted-foreground">
+                Show gentle tips for common labeling pitfalls as you go?
+              </p>
+              <div className="mt-2 flex gap-1.5">
+                <Button size="xs" onClick={() => answerLabelingHintsPrompt(true)}>
+                  Yes
+                </Button>
+                <Button
+                  size="xs"
+                  variant="outline"
+                  onClick={() => answerLabelingHintsPrompt(false)}
+                >
+                  No
+                </Button>
+              </div>
+            </div>
+          )}
         </div>
 
         <p className="text-xs text-muted-foreground/80">
@@ -260,7 +272,7 @@ export function WelcomeScreen() {
         </p>
 
         {/* Persistent (not one-time, unlike the prompt above) — same setting
-            as Labels > Show Hints During Labeling, surfaced here too since
+            as Help > Show Hints During Labeling, surfaced here too since
             not everyone finds it in the menu. */}
         <label className="flex items-center gap-1.5 text-xs text-muted-foreground/80">
           <Checkbox

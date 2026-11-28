@@ -1,13 +1,16 @@
 /**
  * PR4b §4b.2 — ConnectDialog shell: opens from the `connectWindowOpen` flag,
- * refreshes every paired worker's info on open, and releases idle managed
- * connections on close. WorkerList/WorkerJobs/WorkerDataAccess (§4b.3-4b.5)
- * get their own dedicated tests once they exist; this only covers the shell.
+ * refreshes every paired worker's info on open, releases idle managed
+ * connections on close, links to the Remote Compute docs from the header, and
+ * surfaces the copyable uvx worker launch command in the empty state.
  */
 import { describe, it, expect, afterEach, beforeEach, vi } from "../bun-test";
-import { render, screen, cleanup, fireEvent, waitFor } from "@testing-library/react";
+import { render, screen, cleanup, fireEvent, waitFor, within } from "@testing-library/react";
 import { useConnectStore, type PairedWorker } from "@/stores/connectStore";
-import { ConnectDialog } from "@/components/connect/ConnectDialog";
+import { getDocsUrl } from "@/lib/docsUrl";
+
+const openExternal = vi.fn(async () => {});
+vi.mock("@/lib/openExternal", () => ({ openExternal }));
 
 const WORKER_A: PairedWorker = {
   nodeId: "node-a",
@@ -23,6 +26,7 @@ const WORKER_B: PairedWorker = {
 };
 
 function resetConnectStore() {
+  openExternal.mockClear();
   useConnectStore.setState({
     pairedWorkers: [],
     selectedWorkerId: null,
@@ -41,12 +45,14 @@ beforeEach(resetConnectStore);
 afterEach(cleanup);
 
 describe("ConnectDialog", () => {
-  it("renders nothing of its content while closed", () => {
+  it("renders nothing of its content while closed", async () => {
+    const { ConnectDialog } = await import("@/components/connect/ConnectDialog");
     render(<ConnectDialog open={false} onOpenChange={() => {}} />);
     expect(screen.queryByText("Connect")).not.toBeInTheDocument();
   });
 
-  it("opens from the store flag, showing the header and paired workers", () => {
+  it("opens from the store flag, showing the header and paired workers", async () => {
+    const { ConnectDialog } = await import("@/components/connect/ConnectDialog");
     useConnectStore.setState({ pairedWorkers: [WORKER_A, WORKER_B] });
     render(<ConnectDialog open onOpenChange={() => {}} />);
     expect(screen.getByText("Connect")).toBeInTheDocument();
@@ -57,6 +63,7 @@ describe("ConnectDialog", () => {
   });
 
   it("refreshes every paired worker's info in parallel on open", async () => {
+    const { ConnectDialog } = await import("@/components/connect/ConnectDialog");
     const refreshed: string[] = [];
     useConnectStore.setState({
       pairedWorkers: [WORKER_A, WORKER_B],
@@ -69,6 +76,7 @@ describe("ConnectDialog", () => {
   });
 
   it("Refresh re-fetches every paired worker's info and the picked worker's jobs (Jobs tab + queue)", async () => {
+    const { ConnectDialog } = await import("@/components/connect/ConnectDialog");
     const refreshed: string[] = [];
     const listed: string[] = [];
     useConnectStore.setState({
@@ -93,6 +101,7 @@ describe("ConnectDialog", () => {
   });
 
   it("shows the picked worker's queue in the sidebar, and a card click opens that run in Jobs", async () => {
+    const { ConnectDialog } = await import("@/components/connect/ConnectDialog");
     useConnectStore.setState({
       pairedWorkers: [WORKER_A],
       listJobs: async () => [
@@ -119,13 +128,38 @@ describe("ConnectDialog", () => {
     await waitFor(() => expect(screen.getByRole("tab", { name: "Jobs" })).toHaveAttribute("data-state", "active"));
   });
 
-  it("shows the picked worker's label as the right-pane header", () => {
+  it("shows the picked worker's label as the right-pane header", async () => {
+    const { ConnectDialog } = await import("@/components/connect/ConnectDialog");
     useConnectStore.setState({ pairedWorkers: [WORKER_A], selectedWorkerId: "node-a" });
     render(<ConnectDialog open onOpenChange={() => {}} />);
     expect(screen.getAllByText("Lab GPU").length).toBeGreaterThan(0);
   });
 
-  it("closing (via the header close button) calls onOpenChange(false) and releases idle connections", () => {
+  it("links to Remote Compute docs from the header and shows the uvx quick-start in the empty state", async () => {
+    const { ConnectDialog } = await import("@/components/connect/ConnectDialog");
+    const { WORKER_UVX_COMMAND } = await import("@/components/connect/PairWorkerForm");
+    render(<ConnectDialog open onOpenChange={() => {}} />);
+
+    const expectedUrl = `${getDocsUrl()}guides/remote-compute/`;
+    expect(screen.getByText("Pair a worker to see its jobs here.")).toBeInTheDocument();
+
+    const quickStart = screen.getByTestId("worker-quick-start");
+    expect(within(quickStart).getByTestId("worker-uvx-command").textContent).toBe(
+      WORKER_UVX_COMMAND,
+    );
+
+    const docsLinks = screen.getAllByRole("link", { name: /Docs/i });
+    expect(docsLinks.length).toBeGreaterThanOrEqual(2);
+    for (const link of docsLinks) {
+      expect(link).toHaveAttribute("href", expectedUrl);
+    }
+
+    fireEvent.click(docsLinks[0]!);
+    expect(openExternal).toHaveBeenCalledWith(expectedUrl);
+  });
+
+  it("closing (via the header close button) calls onOpenChange(false) and releases idle connections", async () => {
+    const { ConnectDialog } = await import("@/components/connect/ConnectDialog");
     const releaseIdleConnections = vi.fn();
     useConnectStore.setState({ pairedWorkers: [WORKER_A], releaseIdleConnections });
     // `vi.fn()` can't satisfy a strictly-typed `(open: boolean) => void` prop

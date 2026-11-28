@@ -1,7 +1,20 @@
 import { useEffect, useState } from "react";
-import { AlertTriangle, CheckCircle2, ChevronRight, Loader2, XCircle } from "lucide-react";
+import {
+  AlertTriangle,
+  BookOpen,
+  Check,
+  CheckCircle2,
+  ChevronRight,
+  Copy,
+  ExternalLink,
+  Loader2,
+  XCircle,
+} from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { useDocsUrl } from "@/lib/docsUrl";
+import { openExternal } from "@/lib/openExternal";
+import { cn } from "@/lib/utils";
 import { decodePairCode, isPairCode } from "@/lib/protocolV1/pairCode";
 import {
   NOT_A_CODE,
@@ -11,6 +24,103 @@ import {
 } from "@/lib/protocolV1/pairingPlan";
 import { irohTransportAvailable, parseTicketIroh } from "@/lib/protocolV1/transport";
 import { useConnectStore } from "@/stores/connectStore";
+
+/** One-liner to start a sleap-connect worker via uvx on a GPU machine. */
+export const WORKER_UVX_COMMAND =
+  'uvx --python 3.11 --from "sleap-connect[nn]" --torch-backend auto sleap-connect serve';
+
+/** Resolve the Remote Compute guide URL for the running app's docs channel. */
+export function remoteComputeDocsUrl(docsBaseUrl: string): string {
+  const base = docsBaseUrl.endsWith("/") ? docsBaseUrl : `${docsBaseUrl}/`;
+  return `${base}guides/remote-compute/`;
+}
+
+/**
+ * Compact helper showing a copyable `uvx` command to launch a worker on a
+ * remote GPU machine plus a channel-aware link to the Remote Compute docs.
+ * Shared by the Connect sidebar panel and the Connect window's empty state.
+ */
+export function WorkerQuickStart({ className }: { className?: string }) {
+  const docsUrl = useDocsUrl();
+  const [copied, setCopied] = useState(false);
+
+  useEffect(() => {
+    if (!copied) return;
+    const timer = setTimeout(() => setCopied(false), 1500);
+    return () => clearTimeout(timer);
+  }, [copied]);
+
+  const docsHref = remoteComputeDocsUrl(docsUrl);
+
+  const handleCopy = async () => {
+    if (!navigator.clipboard?.writeText) return;
+    try {
+      await navigator.clipboard.writeText(WORKER_UVX_COMMAND);
+      setCopied(true);
+    } catch {
+      // Clipboard unavailable (e.g., restricted context) — select-all still lets the user copy manually.
+    }
+  };
+
+  return (
+    <div
+      data-testid="worker-quick-start"
+      className={cn(
+        "bg-zinc-800/50 border border-border rounded-md p-2.5 space-y-2 text-left",
+        className,
+      )}
+    >
+      <div className="flex items-center justify-between gap-2">
+        <span className="text-[10px] font-medium text-muted-foreground uppercase tracking-wider">
+          Run a worker
+        </span>
+        <a
+          href={docsHref}
+          target="_blank"
+          rel="noopener noreferrer"
+          title="Open Remote Compute documentation"
+          onClick={(e) => {
+            e.preventDefault();
+            void openExternal(docsHref);
+          }}
+          className="inline-flex items-center gap-1 text-[10px] text-primary hover:underline shrink-0"
+        >
+          <BookOpen className="h-3 w-3" />
+          Docs
+          <ExternalLink className="h-2.5 w-2.5" />
+        </a>
+      </div>
+      <p className="text-[10px] text-muted-foreground leading-relaxed">
+        On your GPU machine (with{" "}
+        <code className="bg-black/30 px-1 py-0.5 rounded font-mono">uv</code>{" "}
+        installed), run in your data folder:
+      </p>
+      <div className="flex items-start gap-1">
+        <code
+          data-testid="worker-uvx-command"
+          className="min-w-0 flex-1 select-all break-words rounded bg-black/30 px-1.5 py-1 font-mono text-[10px] leading-snug text-foreground/90"
+        >
+          {WORKER_UVX_COMMAND}
+        </code>
+        <Button
+          type="button"
+          size="icon"
+          variant="ghost"
+          className="h-6 w-6 shrink-0"
+          title={copied ? "Copied" : "Copy command"}
+          aria-label={copied ? "Copied" : "Copy worker command"}
+          onClick={() => void handleCopy()}
+        >
+          {copied ? (
+            <Check className="h-3 w-3 text-green-500" />
+          ) : (
+            <Copy className="h-3 w-3" />
+          )}
+        </Button>
+      </div>
+    </div>
+  );
+}
 
 /**
  * What pasted text says about reaching the worker — a one-line pairing code
