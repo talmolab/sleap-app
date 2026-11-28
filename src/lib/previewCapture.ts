@@ -96,8 +96,13 @@ export async function ensureProjectPreviewFrame(
   labels: Labels,
   ctx?: PreviewCaptureContext,
 ): Promise<void> {
-  if (labels.videos.some((v) => v.hasEmbeddedImages)) return;
-  if (labels.previewFrames.length > 0) return;
+  if (
+    !Array.isArray(labels.videos) ||
+    labels.videos.some((v) => v.hasEmbeddedImages)
+  ) {
+    return;
+  }
+  if ((labels.previewFrames?.length ?? 0) > 0) return;
 
   const candidate = pickCandidate(labels, ctx);
   if (!candidate || !candidate.video.backend) return;
