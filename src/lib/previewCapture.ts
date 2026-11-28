@@ -5,18 +5,13 @@
  * `labels.previewFrames` so saved `.slp` files include a `/preview` thumbnail
  * (used by macOS Finder Quick Look and file browsers) without re-decoding on
  * subsequent saves in the same session.
- *
- * Feature-detects `createPreviewFrameFromVideoFrame` on `@talmolab/sleap-io.js`
- * so `sleap-app` compiles and degrades gracefully until a sleap-io.js release
- * with `/preview` support is installed.
  */
 
-import * as sleapIo from "@talmolab/sleap-io.js";
-import type {
-  Labels,
-  LabeledFrame,
-  Video,
-  VideoFrame,
+import {
+  createPreviewFrameFromVideoFrame,
+  type Labels,
+  type LabeledFrame,
+  type Video,
 } from "@talmolab/sleap-io.js";
 
 export interface PreviewCaptureContext {
@@ -24,29 +19,6 @@ export interface PreviewCaptureContext {
   currentVideo?: Video | null;
   /** Currently viewed frame index in the GUI, if any. */
   currentFrameIdx?: number | null;
-}
-
-type PreviewFrameFactory = (
-  video: Video,
-  frameIdx: number,
-  frame: VideoFrame,
-  options?: {
-    maxSize?: number;
-    quality?: number;
-    channelOrder?: string;
-    rawShape?: [number, number, number, number];
-  },
-) => Promise<unknown>;
-
-type LabelsWithPreview = { previewFrames?: unknown[] };
-
-function getPreviewFrameFactory(): PreviewFrameFactory | null {
-  const mod = sleapIo as unknown as {
-    createPreviewFrameFromVideoFrame?: PreviewFrameFactory;
-  };
-  return typeof mod.createPreviewFrameFromVideoFrame === "function"
-    ? mod.createPreviewFrameFromVideoFrame
-    : null;
 }
 
 function frameHasAnnotations(lf: LabeledFrame | undefined | null): boolean {
@@ -124,17 +96,13 @@ export async function ensureProjectPreviewFrame(
   labels: Labels,
   ctx?: PreviewCaptureContext,
 ): Promise<void> {
-  if (labels.videos.some((v) => v.hasEmbeddedImages)) return;
-  const labelsWithPreview = labels as unknown as LabelsWithPreview;
   if (
-    Array.isArray(labelsWithPreview.previewFrames) &&
-    labelsWithPreview.previewFrames.length > 0
+    !Array.isArray(labels.videos) ||
+    labels.videos.some((v) => v.hasEmbeddedImages)
   ) {
     return;
   }
-
-  const createPreview = getPreviewFrameFactory();
-  if (!createPreview) return;
+  if ((labels.previewFrames?.length ?? 0) > 0) return;
 
   const candidate = pickCandidate(labels, ctx);
   if (!candidate || !candidate.video.backend) return;
@@ -145,7 +113,7 @@ export async function ensureProjectPreviewFrame(
       scrub: true,
     });
     if (!frame) return;
-    const pf = await createPreview(
+    const pf = await createPreviewFrameFromVideoFrame(
       candidate.video,
       candidate.frameIdx,
       frame,
@@ -155,7 +123,7 @@ export async function ensureProjectPreviewFrame(
           candidate.video.shape ?? candidate.video.backend.shape ?? undefined,
       },
     );
-    labelsWithPreview.previewFrames = [pf];
+    labels.previewFrames = [pf];
   } catch {
     // Best-effort: never block or fail a project save if preview decoding fails.
   }
